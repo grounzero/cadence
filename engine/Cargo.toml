@@ -1,0 +1,25 @@
+[package]
+name         = "cadence-engine"
+description  = "Search, UCI and datagen for Cadence"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "cadence"
+path = "src/main.rs"
+
+[features]
+default = []
+# Stub. Unimplemented; present so the tablebase feature name is reserved.
+syzygy  = []
+
+[dependencies]
+cadence-core = { path = "../core" }
+cadence-nnue = { path = "../nnue" }
+
+[lints]
+workspace = true

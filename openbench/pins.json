@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "resolved_at": "2026-08-23",
+  "server": {
+    "repository": "https://github.com/AndyGrant/OpenBench",
+    "commit": "2b8949d1c1d15e6ecab8879b8adc249dd2f99e6d",
+    "requirements_sha256": "d9fb803e561aa3c44f2e94d1d7b31a553930218355bbe83b85cfde96b818ac3a",
+    "provenance": "Resolved from the official OpenBench repository; the tree is client version 49."
+  },
+  "client": {
+    "repository": "https://github.com/AndyGrant/OpenBench",
+    "commit": "2b8949d1c1d15e6ecab8879b8adc249dd2f99e6d",
+    "version": 49,
+    "requirements_sha256": "e272c459c64228b30c19c2ee4881d5f098578df96be28fa335fe9802c09c9366",
+    "provenance": "Expanded the short 2b8949d revision recorded by the Cadence deployment against a fresh official clone."
+  },
+  "fastchess": {
+    "repository": "https://github.com/AndyGrant/fastchess",
+    "commit": "90babe434bbfee23a6287f42d791f07b206fc82b",
+    "reported_version": "1.8.1",
+    "minimum_version": "1.8.1",
+    "provenance": "Resolved the server's upstream fastchess master on 2026-08-23; app/src/main.cpp reports 1.8.1."
+  }
+}

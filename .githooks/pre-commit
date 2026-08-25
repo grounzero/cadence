@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# Runs `cargo xtask check-boundary --staged` over the content this commit is
+# about to record.
+#
+# `--staged`, not the working tree, and the difference is not pedantic. A check
+# that reads the files on disk passes a commit whose staged content is wrong
+# whenever the fix is written and not added, and rejects a commit that is fine
+# whenever an unstaged edit is not. Both were reproduced before this hook was
+# written: a character outside the exempt list, staged with the fix unstaged,
+# passed a working-tree read, and another left only in the tree failed one.
+#
+# This is fast feedback, not the gate. CI runs the same check over the whole
+# tree on both architectures, and that is what cannot be skipped. Hooks are not
+# cloned: this one runs only in a checkout that has run
+# `cargo xtask install-hooks`, so anything relying on it holding everywhere is
+# relying on a courtesy.
+#
+# Speed matters more than completeness here, because a slow pre-commit hook is
+# a hook that gets `--no-verify`d and then protects nothing. Measured on the dev
+# machine: 0.02 s through the built binary against a typical index, 0.15 s for
+# the whole-tree read that CI does, and about 0.19 s if it goes through cargo's
+# freshness check instead. So the built binary is preferred when it is newer
+# than its source, and cargo is the fallback that also builds it.
+#
+# If neither is usable the hook exits 0 with a note rather than blocking the
+# commit, on the same reasoning `commit-msg` gives for being inert without
+# `bench.txt`: a hook that refuses every commit for a reason the author cannot
+# act on gets turned off, and then the checks it also carried are gone too.
+
+set -eu
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
+SRC=xtask/src/main.rs
+BIN=xtask/target/debug/xtask
+
+if [ -x "$BIN" ] && [ "$BIN" -nt "$SRC" ]; then
+    RUN="$BIN"
+elif command -v cargo >/dev/null 2>&1; then
+    RUN="cargo xtask"
+else
+    echo "pre-commit: no built xtask and no cargo, so the boundary check did not run." >&2
+    echo "            CI runs it over the whole tree; this commit is not checked here." >&2
+    exit 0
+fi
+
+if ! $RUN check-boundary --staged; then
+    echo >&2
+    echo "pre-commit: the staged content fails the boundary check." >&2
+    echo "            Each line above names the file, the line, and what to write" >&2
+    echo "            instead. Fix it and stage the fix: this reads the index, so an" >&2
+    echo "            unstaged correction does not count." >&2
+    echo "            CI runs the same check over the whole tree, so --no-verify" >&2
+    echo "            moves this failure rather than removing it." >&2
+    exit 1
+fi

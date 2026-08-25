@@ -1,0 +1,17 @@
+[package]
+name         = "cadence-core"
+description  = "Board representation, move generation and feature indexing for Cadence"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "cadence_core"
+
+[dependencies]
+
+[lints]
+workspace = true

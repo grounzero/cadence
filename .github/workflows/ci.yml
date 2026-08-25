@@ -1,0 +1,191 @@
+# Every gate that must be green before a change lands.
+#
+# Native on both architectures rather than cross-compiled. Cross-compiling
+# x86-64 from a macOS runner buys a linker to babysit and runs no tests, and
+# the tests are the point.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A superseded push has nothing to say.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace on a failing assertion is the difference between "CI is red"
+  # and "CI told me where".
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            name: aarch64-apple-darwin
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the version and the components; this makes
+      # the install a visible step rather than something that happens inside
+      # whichever cargo command runs first.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+          cargo --version
+
+      # The per-target rustflags in .cargo/config.toml are keyed on the host
+      # triple. If a runner image changes architecture -- macos-latest was
+      # x86_64 until it wasn't -- those flags silently stop applying and
+      # nothing else here would notice.
+      - name: Assert the runner is the architecture we think it is
+        shell: bash
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "host triple: $host"
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::expected ${{ matrix.target }}, runner is $host"
+            exit 1
+          fi
+
+      # Not decoration. `-C target-feature` names that rustc does not
+      # recognise for the target it is compiling for produce a *warning* --
+      # "unknown and unstable feature specified" -- and are then passed
+      # through to codegen anyway. That warning is not a lint, so `-D
+      # warnings` does not catch it, and it is easy to miss in a build log.
+      # Printing the resulting feature set makes a typo or a
+      # wrong-target-section mistake visible.
+      - name: Show the target features actually in effect
+        shell: bash
+        run: |
+          flags=$(sed -n '/^\[target\.${{ matrix.target }}\]/,/^$/p' .cargo/config.toml \
+                  | sed -n 's/.*"-C", "\(.*\)".*/\1/p')
+          echo "rustflags: -C $flags"
+          rustc --print cfg --target ${{ matrix.target }} -C "$flags" \
+            | grep target_feature | tr '\n' ' '
+          echo
+
+      - name: fmt --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path xtask/Cargo.toml -- --check
+
+      # xtask is excluded from the workspace, so --workspace does not reach
+      # it. It is linted on its own manifest or not at all.
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
+
+      - name: check-headers and check-boundary
+        run: |
+          cargo xtask check-headers
+          cargo xtask check-boundary
+
+      # check-boundary's punctuation and vocabulary rules are matchers with
+      # false-positive cases they deliberately allow, and this crate is
+      # excluded from the workspace, so `cargo test --workspace` above does not
+      # run their tests. The same reach gap that landed xtask unformatted and
+      # clippy-red once already; a matcher whose tests nothing runs is the
+      # shape of a rule nothing checks.
+      - name: Test xtask's own matchers
+        run: cargo test --manifest-path xtask/Cargo.toml
+
+      # The hook is local-only and inert until bench.txt exists, so nothing
+      # else here would notice a syntax error in it. It would be found on the
+      # day the first node count is declared, by someone who did not write it.
+      - name: Parse the commit-msg hook
+        run: sh -n .githooks/commit-msg
+
+      - name: build
+        run: cargo build --workspace --all-targets
+
+      # The slider attack tables are const-evaluated, and
+      # #[allow(long_running_const_eval)] on them is a statement of intent
+      # rather than a requirement: the evaluation sits under the lint's step
+      # budget, by a margin that is not large. The budget is a step count, so
+      # it is the same on every machine; what varies is the wall-clock cost.
+      # Recorded on every run so a change to it is visible.
+      - name: Time a clean build of the const-evaluated tables
+        shell: bash
+        run: |
+          cargo clean -p cadence-core
+          start=$(date +%s.%N)
+          cargo build -p cadence-core --quiet
+          dev=$(echo "$(date +%s.%N) - $start" | bc)
+          cargo clean -p cadence-core --release
+          start=$(date +%s.%N)
+          cargo build -p cadence-core --release --quiet
+          rel=$(echo "$(date +%s.%N) - $start" | bc)
+          printf 'cadence-core clean build: dev %.2f s, release %.2f s\n' "$dev" "$rel"
+          printf '### const-eval clean build (%s)\ndev %.2f s · release %.2f s\n' \
+            "${{ matrix.name }}" "$dev" "$rel" >> "$GITHUB_STEP_SUMMARY"
+
+      # The whole workspace, the movegen specification included. Every corpus
+      # test was a known failure until the generator landed and ran under
+      # `continue-on-error` so the red was visible without being a gate; the
+      # fast tier passes now, and a regression in it must fail the job.
+      # The per-binary totals go to the step summary so the count is visible
+      # without opening the log.
+      - name: test
+        shell: bash
+        run: |
+          cargo test --workspace --no-fail-fast 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          echo "### tests" >> "$GITHUB_STEP_SUMMARY"
+          grep -h '^test result:' test.log >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$status"
+
+      # The profile that ships: lto = "fat", codegen-units = 1,
+      # panic = "abort", incremental = false. A release-only link failure is
+      # not something to discover at deploy time.
+      - name: build --release
+        run: cargo build --workspace --release
+
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          out=$(printf 'uci\nisready\nquit\n' | ./target/release/cadence)
+          echo "$out"
+          echo "$out" | grep -qx 'uciok'   || { echo "::error::no uciok";   exit 1; }
+          echo "$out" | grep -qx 'readyok' || { echo "::error::no readyok"; exit 1; }
+
+      # The regression detector. The last line of `cadence bench` is
+      # `<nodes> nodes <nps> nps`; the count must equal bench.txt, and a commit
+      # that changes bench.txt carries a `Bench: <n>` trailer (enforced locally
+      # by .githooks/commit-msg). An undeclared change to the number fails the
+      # job on both architectures -- the count is a function of the code alone,
+      # so the two runners must agree with each other as well as with the file.
+      - name: bench against bench.txt
+        shell: bash
+        run: |
+          out=$(./target/release/cadence bench)
+          echo "$out"
+          last=$(echo "$out" | tail -n 1)
+          got=$(echo "$last" | awk '{print $1}')
+          expected=$(tr -d '[:space:]' < bench.txt)
+          printf '### bench (%s)\n%s\n' "${{ matrix.name }}" "$last" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$got" != "$expected" ]; then
+            echo "::error::cadence bench is $got nodes but bench.txt says $expected: an undeclared change to the node count"
+            exit 1
+          fi
+          echo "bench: $got nodes, as bench.txt says"

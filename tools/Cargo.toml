@@ -1,0 +1,20 @@
+[package]
+name         = "cadence-tools"
+description  = "Magic generation, net inspection and format conversion for Cadence"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "cadence-tools"
+path = "src/main.rs"
+
+[dependencies]
+cadence-core = { path = "../core" }
+cadence-nnue = { path = "../nnue" }
+
+[lints]
+workspace = true

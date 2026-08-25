@@ -1,0 +1,23 @@
+# Not a workspace member (root Cargo.toml `exclude`s it). xtask must not
+# appear in `cargo build --workspace`, must not be published, and must not
+# drag its own dependencies into the engine's dependency graph.
+[package]
+name         = "xtask"
+version      = "0.0.0"
+description  = "Repository chores for Cadence: header checking, hook installation"
+edition      = "2024"
+rust-version = "1.97"
+license      = "GPL-3.0-or-later"
+publish      = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

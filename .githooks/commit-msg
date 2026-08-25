@@ -1,0 +1,130 @@
+#!/bin/sh
+#
+# Enforces the `Bench: <n>` trailer required by the bench contract.
+#
+# The node count printed by a fixed-depth search over a fixed position set is
+# the regression detector for the whole engine, and it is only a usable signal
+# if every change to it is declared. `bench.txt` holds the current expected
+# count; this hook makes the commit message agree with it.
+#
+# Inert when bench.txt is absent -- as it was before the first bench landed,
+# and as it is in a checkout that has lost the file -- because a hook that
+# rejects every commit for a file that does not exist would simply be turned
+# off. CI diffs the count against the file and catches what this cannot.
+#
+# Install with:  cargo xtask install-hooks
+#            or: git config core.hooksPath .githooks
+
+set -eu
+
+MSG_FILE="$1"
+BENCH_FILE="bench.txt"
+
+fail() {
+    echo "commit-msg: $1" >&2
+    shift
+    for line in "$@"; do echo "            $line" >&2; done
+    exit 1
+}
+
+# --- cases where the message is not the author's to write -----------------
+
+# A merge commit's message is generated, and a conflict resolution changes no
+# node count of its own.
+if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+    exit 0
+fi
+
+# fixup!/squash!/amend! messages are consumed by the rebase that absorbs them;
+# the trailer belongs on the commit they fold into.
+if head -n 1 "$MSG_FILE" | grep -qE '^(fixup|squash|amend)! '; then
+    exit 0
+fi
+
+# --- inert until there is a bench to count --------------------------------
+
+if [ ! -f "$BENCH_FILE" ]; then
+    exit 0
+fi
+
+# --- read the trailer -----------------------------------------------------
+
+# `git stripspace --strip-comments` first: the hook sees the raw file, still
+# carrying the editor's `#` lines, which git itself removes only later.
+TRAILERS=$(git stripspace --strip-comments < "$MSG_FILE" | git interpret-trailers --parse)
+BENCH_LINES=$(printf '%s\n' "$TRAILERS" | grep -c '^Bench:' || true)
+BENCH_VALUE=$(printf '%s\n' "$TRAILERS" | sed -n 's/^Bench:[[:space:]]*//p' | head -n 1)
+
+if [ "$BENCH_LINES" -gt 1 ]; then
+    fail "$BENCH_LINES \`Bench:\` trailers in one message." \
+         "OpenBench reads the last one; a human reads the first. Keep one."
+fi
+
+if [ "$BENCH_LINES" -eq 1 ] && ! printf '%s' "$BENCH_VALUE" | grep -qE '^[0-9]+$'; then
+    fail "\`Bench: $BENCH_VALUE\` is not a node count." \
+         "The trailer must be \`Bench: <n>\` with n a plain decimal integer."
+fi
+
+# --- agree with bench.txt -------------------------------------------------
+
+# The staged content, not the working tree's: that is what is being committed.
+STAGED=$(git show ":$BENCH_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+CHANGED=$(git diff --cached --name-only -- "$BENCH_FILE")
+
+if [ -n "$CHANGED" ]; then
+    if [ "$BENCH_LINES" -eq 0 ]; then
+        fail "this commit changes $BENCH_FILE but declares no node count." \
+             "Add a trailer to the message:" \
+             "" \
+             "    Bench: $STAGED" \
+             "" \
+             "An undeclared change to this number is indistinguishable from" \
+             "a bug that changed it by accident, which is the entire reason" \
+             "the number is worth having."
+    fi
+    if [ "$BENCH_VALUE" != "$STAGED" ]; then
+        fail "trailer says \`Bench: $BENCH_VALUE\`, $BENCH_FILE says \`$STAGED\`." \
+             "These have to be the same number."
+    fi
+elif [ "$BENCH_LINES" -eq 1 ] && [ "$BENCH_VALUE" != "$STAGED" ]; then
+    fail "trailer says \`Bench: $BENCH_VALUE\` but $BENCH_FILE says \`$STAGED\`," \
+         "and this commit does not change $BENCH_FILE." \
+         "A trailer that disagrees with the file is worse than no trailer:" \
+         "it is a wrong number that looks like a declared one."
+fi
+
+# --- no planning labels in the message ------------------------------------
+
+# The message is the one place `cargo xtask check-boundary` cannot reach: it
+# reads files, and a commit message is not one yet. So the file half of that
+# rule runs in CI and this half runs here, which means this half is enforced
+# only in a clone that has run `cargo xtask install-hooks`. Hooks are not
+# cloned.
+#
+# The pattern is a planning noun, an optional plural, optional label
+# punctuation, and a digit. `(^|[^A-Za-z0-9_])` rather than `\b`, which is a
+# GNU extension the BSD grep on the dev machine does not have.
+#
+# `step` is absent for the same reason it is absent from check-boundary: it
+# ordinarily means the stride of a loop. The collision that remains is
+# `phase`, which is also the tapered evaluation's own word, and there is no
+# file path here to exempt as check-boundary does. The escapes are in the
+# message below, and each of them is how the code itself writes it.
+LABEL='(^|[^A-Za-z0-9_])(phase|item|gate|task|batch|milestone|checkpoint|review)s?[ _:#-]*[0-9]'
+FOUND=$(git stripspace --strip-comments < "$MSG_FILE" | grep -inE "$LABEL" | head -n 1 || true)
+
+if [ -n "$FOUND" ]; then
+    fail "the message carries a planning label: $FOUND" \
+         "" \
+         "Phase and item numbers are planning vocabulary. They mean nothing to" \
+         "a reader without the plan in hand, including their author a year" \
+         "later, and they go stale with nothing to force an update. Name the" \
+         "condition instead: \"once something reads it\", \"before the table" \
+         "lands\"." \
+         "" \
+         "If this is the evaluation's game phase rather than a plan, write it" \
+         "the way the code does and this passes: \"phase == 0\", \"the phase" \
+         "scale\", \"PHASE_MAX\"."
+fi
+
+exit 0

@@ -1,0 +1,22 @@
+[package]
+name         = "cadence-nnue"
+description  = "Quantised NNUE inference for Cadence"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "cadence_nnue"
+
+[features]
+default = ["simd"]
+simd    = []
+
+[dependencies]
+cadence-core = { path = "../core" }
+
+[lints]
+workspace = true

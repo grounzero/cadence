@@ -1,0 +1,60 @@
+# The fixed bench position set. A change to
+# this file is a change to the bench number and carries a `Bench:` trailer
+# like any other. One FEN per line; `#` starts a comment.
+#
+# Openings, middlegames and endings, standard and DFRC, both sides to move,
+# a position in check. Nothing here is tuned or special; the set exists to
+# exercise every part of the code the node count should be sensitive to.
+
+# --- standard suite ----------------------------------------------------------
+rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1
+r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1
+8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1
+r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1
+rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8
+r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10
+
+# --- openings ----------------------------------------------------------------
+r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3
+rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6
+rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 0 4
+rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP2BPPP/R1BQK2R b KQ - 3 6
+rnbqkbnr/pp3ppp/4p3/2ppP3/3P4/8/PPP2PPP/RNBQKBNR w KQkq c6 0 4
+rn1qkbnr/pp2pppp/2p5/3pPb2/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 1 4
+r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4
+r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQ - 0 8
+
+# --- middlegames -------------------------------------------------------------
+r2q1rk1/1b1nbppp/pp1ppn2/8/2PNP3/1PN1B3/P2QBPPP/R4RK1 w - - 0 13
+2r2rk1/pp1bqppp/3p1n2/3Pp3/2B1P3/2N2Q2/PP3PPP/3R1RK1 b - - 2 17
+r1b2rk1/2q1bppp/p2p1n2/1p2p3/3nP3/1BN1BN2/PPP2PPP/R2QR1K1 w - - 0 13
+2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14
+r1bqr1k1/pp2bppp/2n2n2/3p4/3P4/2NBBN2/PPQ2PPP/R3K2R w KQ - 5 11
+
+# --- in check ----------------------------------------------------------------
+rnb1kbnr/pppp1ppp/8/4p3/4P2q/5P2/PPPP2PP/RNBQKBNR w KQkq - 1 3
+
+# --- endings -----------------------------------------------------------------
+8/8/4k3/8/2K5/8/3P4/8 w - - 0 1
+8/2k5/8/8/8/8/1Q6/K7 w - - 0 1
+8/8/8/8/8/2k5/8/R3K3 w Q - 0 1
+8/8/8/8/3k4/8/8/2BNK3 w - - 0 1
+8/pp3pk1/2p3p1/8/8/2P3P1/PP3PK1/8 w - - 0 30
+8/5pk1/6p1/8/8/6P1/5PK1/3r4 w - - 0 40
+3k4/8/3K4/8/8/8/8/3Q1r2 w - - 0 1
+6k1/5p2/6p1/7p/1P5P/5PP1/r7/2R3K1 b - - 0 41
+
+# --- DFRC start arrays -------------------------------------------------------
+rkrnnqbb/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFca - 0 1
+rbbkqrnn/pppppppp/8/8/8/8/PPPPPPPP/NNQRBBKR w HDfa - 0 1
+brnbqknr/pppppppp/8/8/8/8/PPPPPPPP/BBRNQKNR b HChb - 0 1
+bbrnkrqn/pppppppp/8/8/8/8/PPPPPPPP/NBQRBNKR w HDfc - 0 1
+
+# --- DFRC middlegames, reached by play from the arrays -----------------------
+bb1nnr1r/p1ppNkpp/5p2/1p2p3/q5P1/3N4/PPPPPP1P/BB1Q1RKR w HF - 6 7
+bbq2rkr/1nppppp1/pp1n4/7p/8/P1PP1N1P/1P2PPP1/RKRN1QBB w CAhf - 3 6
+bb1rk1q1/pppppppr/3nn2p/8/2P1BP2/3N2P1/PP1PPR1P/NRKQ2B1 b B - 5 7
+qnbrknr1/pp1pppb1/2p5/6pp/3P4/4NPB1/PPP1P1PP/RBQ2KRN w GAgd h6 0 7
+brknrb1q/1ppp3p/4p2n/p2N1pp1/7P/P7/1PPPPPP1/BRK1RBNQ w EBeb f6 0 6
+nrkbr1bn/2p4p/pp2p3/3p1pp1/Pq1P1PP1/1P1K4/2P1PB1P/NR1BRQ1N w eb - 2 9

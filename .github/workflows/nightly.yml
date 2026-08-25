@@ -1,0 +1,63 @@
+# The tier of tests too expensive to run on every merge: the deep perft
+# values -- startpos d6-d7, Kiwipete d6, positions 3-6 to d6/d7 -- which are
+# the `#[ignore]`d half of core/tests/standard_perft.rs. Roughly 2.2e10 leaf
+# nodes, counted in bulk.
+#
+# Ubuntu only. Perft is architecture-independent and the macOS runner bills
+# at ten times the rate for the same answer. The fast tier, which runs on both
+# architectures on every push, is what catches a platform difference.
+#
+# This is not the sign-off run. That is startpos d7 and Kiwipete d6 run once
+# by hand and recorded with date, machine and wall-clock; this catches later
+# regressions.
+
+name: nightly
+
+on:
+  schedule:
+    # 03:17 UTC. Off the hour deliberately: GitHub drops scheduled runs at
+    # popular times under load, and :00 is the most popular time there is.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  deep:
+    name: deep perft (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+
+      # Release: the fast tier runs in the dev profile on every push, so the
+      # release build is exercised too, and the deep values would take hours
+      # unoptimised.
+      - name: Build the deep tier
+        run: cargo test -p cadence-core --release --test standard_perft --no-run
+
+      - name: Deep perft
+        shell: bash
+        run: |
+          start=$(date +%s)
+          cargo test -p cadence-core --release --test standard_perft -- --ignored --nocapture 2>&1 | tee deep.log
+          status=${PIPESTATUS[0]}
+          elapsed=$(( $(date +%s) - start ))
+          echo "deep tier wall-clock: ${elapsed}s"
+          {
+            echo "### deep perft"
+            echo "wall-clock: ${elapsed}s"
+            grep -h '^test ' deep.log || true
+            grep -h '^test result:' deep.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

@@ -1,0 +1,344 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Cadence perft corpus fixture.
+#
+# Provenance and diagnostic explanation: docs/testing/perft.md
+#
+# The two leading pipe tables supply standard-position FENs and the
+# human-readable summary that the integrity tests cross-check against the
+# standard-perft TSV block. Named fenced blocks retain their original info
+# strings; fields in TSV blocks are separated by literal tab characters.
+# An empty summary-table cell means no value is recorded at that depth. The
+# cell keeps its spaces: a `||` with nothing between the pipes would be one
+# column short, because the parser trims repeated pipes from the row's ends.
+| # | Position | FEN |
+|---|---|---|
+| 1 | startpos | `rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1` |
+| 2 | Kiwipete | `r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1` |
+| 3 | pos3 | `8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1` |
+| 4 | pos4 | `r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1` |
+| 5 | pos5 | `rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8` |
+| 6 | pos6 | `r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10` |
+
+| Position | d1 | d2 | d3 | d4 | d5 | d6 | d7 |
+|---|---|---|---|---|---|---|---|
+| startpos | 20 | 400 | 8,902 | 197,281 | 4,865,609 | 119,060,324 | 3,195,901,860 |
+| Kiwipete | 48 | 2,039 | 97,862 | 4,085,603 | 193,690,690 | 8,031,647,685 |   |
+| pos3 | 14 | 191 | 2,812 | 43,238 | 674,624 | 11,030,083 | 178,633,661 |
+| pos4 | 6 | 264 | 9,467 | 422,333 | 15,833,292 | 706,045,033 |   |
+| pos5 | 44 | 1,486 | 62,379 | 2,103,487 | 89,941,194 | 3,048,196,529 |   |
+| pos6 | 46 | 2,079 | 89,890 | 3,894,594 | 164,075,551 | 6,923,051,137 |   |
+```tsv standard-perft
+startpos	1	20
+startpos	2	400
+startpos	3	8902
+startpos	4	197281
+startpos	5	4865609
+startpos	6	119060324
+startpos	7	3195901860
+kiwipete	1	48
+kiwipete	2	2039
+kiwipete	3	97862
+kiwipete	4	4085603
+kiwipete	5	193690690
+kiwipete	6	8031647685
+pos3	1	14
+pos3	2	191
+pos3	3	2812
+pos3	4	43238
+pos3	5	674624
+pos3	6	11030083
+pos3	7	178633661
+pos4	1	6
+pos4	2	264
+pos4	3	9467
+pos4	4	422333
+pos4	5	15833292
+pos4	6	706045033
+pos5	1	44
+pos5	2	1486
+pos5	3	62379
+pos5	4	2103487
+pos5	5	89941194
+pos5	6	3048196529
+pos6	1	46
+pos6	2	2079
+pos6	3	89890
+pos6	4	3894594
+pos6	5	164075551
+pos6	6	6923051137
+```
+
+```tsv dfrc-arrays
+518	518	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1	20	400	8902	197281	4865609
+0	0	bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFhf - 0 1	20	400	9006	201143	4975808
+959	959	rkrnnqbb/pppppppp/8/8/8/8/PPPPPPPP/RKRNNQBB w CAca - 0 1	20	400	9006	201143	4973573
+0	959	rkrnnqbb/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w HFca - 0 1	20	400	9014	202136	5023155
+959	0	bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/RKRNNQBB w CAhf - 0 1	20	400	9014	202136	5020902
+1	2	bqnnrbkr/pppppppp/8/8/8/8/PPPPPPPP/BQNBNRKR w HFhe - 0 1	20	400	8950	199250	4886661
+17	342	nrbkqbrn/pppppppp/8/8/8/8/PPPPPPPP/BNQBNRKR w HFgb - 0 1	20	360	8048	165304	4065493
+42	900	rbbkqrnn/pppppppp/8/8/8/8/PPPPPPPP/NNQRBBKR w HDfa - 0 1	19	361	7712	163897	3910863
+100	101	qnbbrnkr/pppppppp/8/8/8/8/PPPPPPPP/QBBNRNKR w HEhe - 0 1	20	400	9030	200664	4968333
+255	256	bbnrknqr/pppppppp/8/8/8/8/PPPPPPPP/NRKQNRBB w FBhd - 0 1	19	380	8216	184688	4434493
+333	777	qrkbbnrn/pppppppp/8/8/8/8/PPPPPPPP/NRQBKRBN w FBgb - 0 1	18	342	7028	149749	3475072
+400	55	nnbrqkrb/pppppppp/8/8/8/8/PPPPPPPP/BBRQNNKR w HCgd - 0 1	20	400	9038	197443	4964613
+512	513	brnbqknr/pppppppp/8/8/8/8/PPPPPPPP/BBRNQKNR w HChb - 0 1	20	400	9052	202227	5029831
+600	199	qnbrknrb/pppppppp/8/8/8/8/PPPPPPPP/RBQNBKRN w GAgd - 0 1	20	400	8972	200219	4941226
+700	701	rqkbnnbr/pppppppp/8/8/8/8/PPPPPPPP/RBQKNNBR w HAha - 0 1	20	400	8990	200471	4973756
+800	3	bqnnrkrb/pppppppp/8/8/8/8/PPPPPPPP/BBRKQNRN w GCge - 0 1	20	420	9364	215613	5301439
+850	850	brknrbnq/pppppppp/8/8/8/8/PPPPPPPP/BRKNRBNQ w EBeb - 0 1	20	400	8972	199539	4918144
+911	88	nbnrbkrq/pppppppp/8/8/8/8/PPPPPPPP/RKQRNNBB w DAgd - 0 1	20	400	8948	197089	4812770
+120	640	bbrnkrqn/pppppppp/8/8/8/8/PPPPPPPP/NBQRBNKR w HDfc - 0 1	19	361	7797	168436	4083466
+365	365	nrkbrqbn/pppppppp/8/8/8/8/PPPPPPPP/NRKBRQBN w EBeb - 0 1	18	324	6656	136014	3174175
+```
+
+```tsv immediate-castles
+400	55	b	nnbrqkrb/pppppppp/8/8/8/P7/1PPPPPPP/BBRQNNKR b HCgd - 0 1	f8g8	20	400	8792	200545
+600	199	w	qnbrknrb/pppppppp/8/8/8/8/PPPPPPPP/RBQNBKRN w GAgd - 0 1	f1g1	20	400	8972	200219
+800	3	w	bqnnrkrb/pppppppp/8/8/8/8/PPPPPPPP/BBRKQNRN w GCge - 0 1	d1c1	20	420	9364	215613
+800	3	b	bqnnrkrb/pppppppp/8/8/8/P7/1PPPPPPP/BBRKQNRN b GCge - 0 1	f8g8	21	420	9742	219174
+911	88	b	nbnrbkrq/pppppppp/8/8/8/P7/1PPPPPPP/RKQRNNBB b DAgd - 0 1	f8g8	20	420	9299	213576
+```
+
+```tsv castling-legality
+legal	g1h1	4k3/8/8/8/8/8/8/6KR w H - 0 1	12	53	948	Kg1,Rh1 kingside. KING DOES NOT MOVE (g1->g1); rook h1->f1.
+legal	e1f1	4k3/8/8/8/8/8/8/4KR2 w F - 0 1	14	47	781	Ke1,Rf1 kingside. ROOK DOES NOT MOVE (f1->f1); king e1->g1 CROSSES the rook's own square.
+legal	f1g1	4k3/8/8/8/8/8/8/5KR1 w G - 0 1	13	58	1033	Kf1,Rg1 kingside. PURE SWAP: king f1->g1, rook g1->f1.
+legal	c1a1	4k3/8/8/8/8/8/8/R1K5 w A - 0 1	14	63	1125	Kc1,Ra1 queenside. KING DOES NOT MOVE (c1->c1); rook a1->d1.
+legal	d1a1	4k3/8/8/8/8/8/8/R2K4 w A - 0 1	15	68	1220	Kd1,Ra1 queenside. Rook LANDS ON THE KING'S ORIGIN (a1->d1); king d1->c1.
+legal	b1c1	6k1/8/8/8/8/8/8/1KR5 w C - 0 1	17	73	1303	Kb1,Rc1. Rook is KINGSIDE (higher file): king b1->g1 travels five squares, rook c1->f1.
+illegal	NONE	4k3/8/8/8/8/8/8/rRK5 w B - 0 1	5	57	821	BACK-RANK PINNED ROOK. Kc1,Rb1 queenside, black ra1. White is NOT in check (a1 is blocked by the white rook on b1). Castling would put the rook on d1 and leave the king on c1, exposed along rank 1. ONLY lifted-rook occupancy detects this. This geometry cannot occur in standard chess.
+illegal	NONE	4r3/6k1/8/8/8/8/8/3KR3 w E - 0 1	13	214	3378	Kd1,Re1 kingside, black re8. The rook VACATING e1 exposes e1, which is on the king's path d1->g1.
+illegal	NONE	5r2/4k3/8/8/8/8/8/4KR2 w F - 0 1	12	188	2921	Ke1,Rf1 kingside, black rf8. f1 is attacked once the rook is LIFTED, even though the rook's destination IS f1 and it never really leaves.
+legal	e1a1	1r4k1/8/8/8/8/8/8/R3K3 w A - 0 1	16	262	4022	Ke1,Ra1 queenside, black rb8. b1 IS attacked, but lies only on the ROOK's path. The rook path must be EMPTY, not unattacked.
+illegal	NONE	6k1/8/8/8/8/8/8/RN2K3 w A - 0 1	15	70	1365	Ke1,Ra1 queenside, white Nb1. The knight BLOCKS the rook path a1->d1. b1 is NOT on the king's path e1->c1, so a king-path-only emptiness test wrongly accepts.
+legal	e1h1	3r2k1/8/8/8/8/8/8/4K2R w H - 0 1	13	171	2534	Ke1,Rh1 kingside, black rd8. d1 is attacked and irrelevant: it is not on the king's path e1->g1.
+illegal	NONE	4r1k1/8/8/8/8/8/8/4K2R w H - 0 1	4	60	864	Castling OUT OF check.
+illegal	NONE	4r1k1/8/8/8/8/8/8/1KR5 w C - 0 1	16	243	3817	Kb1,Rc1 kingside, black re8. e1 lies on the king's path b1->g1 and is attacked.
+legal	f1h1	6k1/8/8/8/8/8/8/5K1R w H - 0 1	14	42	718	THE AMBIGUITY PROOF. Kf1, Rh1, g1 empty. f1g1 (ordinary king move) and f1h1 (castling) are BOTH legal in this position, so "king moves two squares" notation has no unambiguous reading. See the full move list below.
+legal	g8h8	6kr/8/8/8/8/8/8/4K3 b h - 0 1	12	53	948	MIRRORED (rank 8): Kg1,Rh1 kingside. KING DOES NOT MOVE (g1->g1); rook h1->f1.
+legal	e8f8	4kr2/8/8/8/8/8/8/4K3 b f - 0 1	14	47	781	MIRRORED (rank 8): Ke1,Rf1 kingside. ROOK DOES NOT MOVE (f1->f1); king e1->g1 CROSSES the rook's own square.
+legal	f8g8	5kr1/8/8/8/8/8/8/4K3 b g - 0 1	13	58	1033	MIRRORED (rank 8): Kf1,Rg1 kingside. PURE SWAP: king f1->g1, rook g1->f1.
+legal	c8a8	r1k5/8/8/8/8/8/8/4K3 b a - 0 1	14	63	1125	MIRRORED (rank 8): Kc1,Ra1 queenside. KING DOES NOT MOVE (c1->c1); rook a1->d1.
+legal	d8a8	r2k4/8/8/8/8/8/8/4K3 b a - 0 1	15	68	1220	MIRRORED (rank 8): Kd1,Ra1 queenside. Rook LANDS ON THE KING'S ORIGIN (a1->d1); king d1->c1.
+legal	b8c8	1kr5/8/8/8/8/8/8/6K1 b c - 0 1	17	73	1303	MIRRORED (rank 8): Kb1,Rc1. Rook is KINGSIDE (higher file): king b1->g1 travels five squares, rook c1->f1.
+illegal	NONE	Rrk5/8/8/8/8/8/8/4K3 b b - 0 1	5	57	821	MIRRORED (rank 8): BACK-RANK PINNED ROOK. Kc1,Rb1 queenside, black ra1. White is NOT in check (a1 is blocked by the white rook on b1). Castling would put the rook on d1 and leave the king on c1, exposed along rank 1. ONLY lifted-rook occupancy detects this. This geometry cannot occur in standard chess.
+illegal	NONE	3kr3/8/8/8/8/8/6K1/4R3 b e - 0 1	13	214	3378	MIRRORED (rank 8): Kd1,Re1 kingside, black re8. The rook VACATING e1 exposes e1, which is on the king's path d1->g1.
+illegal	NONE	4kr2/8/8/8/8/8/4K3/5R2 b f - 0 1	12	188	2921	MIRRORED (rank 8): Ke1,Rf1 kingside, black rf8. f1 is attacked once the rook is LIFTED, even though the rook's destination IS f1 and it never really leaves.
+legal	e8a8	r3k3/8/8/8/8/8/8/1R4K1 b a - 0 1	16	262	4022	MIRRORED (rank 8): Ke1,Ra1 queenside, black rb8. b1 IS attacked, but lies only on the ROOK's path. The rook path must be EMPTY, not unattacked.
+illegal	NONE	rn2k3/8/8/8/8/8/8/6K1 b a - 0 1	15	70	1365	MIRRORED (rank 8): Ke1,Ra1 queenside, white Nb1. The knight BLOCKS the rook path a1->d1. b1 is NOT on the king's path e1->c1, so a king-path-only emptiness test wrongly accepts.
+legal	e8h8	4k2r/8/8/8/8/8/8/3R2K1 b h - 0 1	13	171	2534	MIRRORED (rank 8): Ke1,Rh1 kingside, black rd8. d1 is attacked and irrelevant: it is not on the king's path e1->g1.
+illegal	NONE	4k2r/8/8/8/8/8/8/4R1K1 b h - 0 1	4	60	864	MIRRORED (rank 8): Castling OUT OF check.
+illegal	NONE	1kr5/8/8/8/8/8/8/4R1K1 b c - 0 1	16	243	3817	MIRRORED (rank 8): Kb1,Rc1 kingside, black re8. e1 lies on the king's path b1->g1 and is attacked.
+legal	f8h8	5k1r/8/8/8/8/8/8/6K1 b h - 0 1	14	42	718	MIRRORED (rank 8): THE AMBIGUITY PROOF. Kf1, Rh1, g1 empty. f1g1 (ordinary king move) and f1h1 (castling) are BOTH legal in this position, so "king moves two squares" notation has no unambiguous reading. See the full move list below.
+```
+
+```text ambiguity-proof
+FEN:   6k1/8/8/8/8/8/8/5K1R w H - 0 1
+legal: f1e1 f1e2 f1f2 f1g1 f1g2 f1h1 h1g1 h1h2 h1h3 h1h4 h1h5 h1h6 h1h7 h1h8
+                        ^^^^        ^^^^
+                   quiet king move   castling (king takes rook)
+
+FEN:   5k1r/8/8/8/8/8/8/6K1 b h - 0 1
+legal: f8e7 f8e8 f8f7 f8g7 f8g8 f8h8 h8g8 h8h1 h8h2 h8h3 h8h4 h8h5 h8h6 h8h7
+                        ^^^^        ^^^^
+                   quiet king move   castling (king takes rook)
+```
+
+```tsv edge-cases
+8/8/8/4k3/8/8/8/4R1K1 b - - 0 1	6	102	562	9777	King may not retreat ALONG the checking ray. The king must be removed from the occupancy when testing its own destination squares, or it blocks the checking ray beyond itself and e4/e6 test as safe. A naive generator yields 8 here instead of 6.
+4k3/8/8/8/3Pp3/8/8/4R1K1 b - d3 0 1	6	82	574	8889	En passant, VERTICAL pin on the capturing pawn: e4xd3 e.p. is ILLEGAL. A standard pin mask DOES catch this one.
+8/8/8/K2pP2r/8/8/8/7k w - d6 0 1	6	78	528	8288	En passant, HORIZONTAL double-vacate: e5xd6 e.p. is ILLEGAL. NEITHER pawn is individually pinned - remove only one and the other still blocks. A pin mask does NOT catch this. Requires an explicit occupancy-modified attack test.
+8/8/8/2pP4/8/8/8/K6k w - c6 0 1	5	19	110	688	POSITIVE CONTROL: d5xc6 e.p. is LEGAL. Guards against an over-eager ep filter.
+8/8/1k6/2b5/2pP4/8/5K2/8 b - d3 0 1	15	126	1928	13931	POSITIVE CONTROL with a bishop on the board: c4xd3 e.p. is LEGAL.
+4k3/8/5N2/8/8/8/8/4RK2 b - - 0 1	3	69	214	4782	DOUBLE CHECK (slider + knight). Black Ke8 is checked by Re1 and Nf6 at once. No capture of one checker and no interposition can resolve both, so generation must restrict to king moves the moment checkers.count() >= 2. All three legal moves are king moves. This is the ONLY position in the corpus that exercises that branch.
+2r3K1/4P3/8/8/8/8/8/k7 w - - 0 1	7	107	1031	15495	UNDERPROMOTION RESOLVING CHECK BY INTERPOSITION. White Kg8 is checked along rank 8 by Rc8; e7-e8 promotes onto the checking ray and blocks. All FOUR promotion pieces block equally well. A generator that emits only queen promotions when in check, or that computes block squares without expanding promotion pieces, returns 4 instead of 7.
+7k/P7/8/8/8/8/8/K7 w - - 0 1	7	19	213	1103	PROMOTION GIVING CHECK. a7-a8=Q and a7-a8=R check Kh8 along rank 8; =B and =N do not. The check is delivered by a piece that did not exist in the parent position, so anything caching attack sets by piece type across make_move is wrong here.
+2r4k/1P6/8/8/8/8/8/K7 w - - 0 1	11	104	1012	12433	PROMOTION-CAPTURE GIVING CHECK. b7xc8=Q/R check Kh8 along rank 8. The quiet b7-b8 promotion does NOT check, because the rook on c8 is still there to block: the capture and the check are the same move, and removing the blocker is what enables the check. Promotion-capture is also the only move type reaching the DirtyPieces maximum of 3 entries.
+8/8/8/4k3/3Pp3/8/8/7K b - d3 0 1	8	29	215	1234	EN PASSANT AS A CHECK EVASION. Black Ke5 is checked by the pawn that just played d2-d4. e4xd3 e.p. removes the checker, but its DESTINATION (d3) is neither the checker's square (d4) nor on BETWEEN[e5][d4], which is empty because the two are adjacent. A generator whose evasion target mask is `checker | BETWEEN[king][checker]` misses it and returns 7.
+4k3/8/8/2PpP3/8/8/8/4K3 w - d6 0 2	9	47	376	2321	TWO PAWNS CAPTURING THE SAME EP SQUARE. Both c5xd6 and e5xd6 are legal. An implementation written against the false invariant "at most one ep capture per position" generates one of them and returns 8.
+```
+
+```text edge-case-moves
+8/8/8/4k3/8/8/8/4R1K1 b - - 0 1
+  (6)  e5d4 e5d5 e5d6 e5f4 e5f5 e5f6
+       -- note the ABSENCE of e5e4 and e5e6
+
+4k3/8/8/8/3Pp3/8/8/4R1K1 b - d3 0 1
+  (6)  e4e3 e8d7 e8d8 e8e7 e8f7 e8f8
+       -- note the ABSENCE of e4d3
+
+8/8/8/K2pP2r/8/8/8/7k w - d6 0 1
+  (6)  a5a4 a5a6 a5b4 a5b5 a5b6 e5e6
+       -- note the ABSENCE of e5d6
+
+8/8/8/2pP4/8/8/8/K6k w - c6 0 1
+  (5)  a1a2 a1b1 a1b2 d5c6 d5d6
+       -- d5c6 IS present
+
+8/8/1k6/2b5/2pP4/8/5K2/8 b - d3 0 1
+  (15) b6a5 b6a6 b6a7 b6b5 b6b7 b6c6 b6c7 c4c3 c4d3
+       c5a3 c5b4 c5d4 c5d6 c5e7 c5f8
+       -- c4d3 IS present
+
+4k3/8/5N2/8/8/8/8/4RK2 b - - 0 1
+  (3)  e8d8 e8f7 e8f8
+       -- king moves ONLY. Note the ABSENCE of any capture or interposition;
+          e8e7 is illegal (Re1) and e8d7 is illegal (Nf6)
+
+2r3K1/4P3/8/8/8/8/8/k7 w - - 0 1
+  (7)  e7e8b e7e8n e7e8q e7e8r g8f7 g8g7 g8h7
+       -- ALL FOUR promotions are legal blocks; g8f8 and g8h8 are illegal
+          (f8 is on the checking ray, h8 is behind the king on it)
+
+7k/P7/8/8/8/8/8/K7 w - - 0 1
+  (7)  a1a2 a1b1 a1b2 a7a8b a7a8n a7a8q a7a8r
+       -- a7a8q and a7a8r give check; a7a8b and a7a8n do not
+
+2r4k/1P6/8/8/8/8/8/K7 w - - 0 1
+  (11) a1a2 a1b1 a1b2 b7b8b b7b8n b7b8q b7b8r b7c8b b7c8n b7c8q b7c8r
+       -- b7c8q and b7c8r give check; the quiet b7b8 promotions do not
+
+8/8/8/4k3/3Pp3/8/8/7K b - d3 0 1
+  (8)  e4d3 e5d4 e5d5 e5d6 e5e6 e5f4 e5f5 e5f6
+       -- e4d3 IS present, and it is an EP CAPTURE resolving a check
+
+4k3/8/8/2PpP3/8/8/8/4K3 w - d6 0 2
+  (9)  c5c6 c5d6 e1d1 e1d2 e1e2 e1f1 e1f2 e5d6 e5e6
+       -- BOTH c5d6 and e5d6 are present
+```
+
+```tsv ep-evasion
+8/8/8/4k3/3Pp3/8/8/7K b - d3 0 1	e4d3	d4		The checker is the pawn on d4 and it is adjacent to the king on e5, so BETWEEN is empty and the whole mask is {d4}. The legal evasion e4xd3 e.p. lands on d3, outside the mask, because en passant captures a piece that is not on the destination square.
+```
+
+```text ep-rule
+occ2 = (occ ^ from ^ captured_pawn) | to
+if slider attacks on our king under occ2 exist -> reject
+```
+
+```tsv castling-rights-capture
+rkr5/8/8/8/8/8/8/Q5K1 w ca - 0 1	a1a8	ca	c	24	392	8475	163366	OPPONENT'S RIGHT DIES. A queen captures the rook on its ORIGIN square. No white right is involved, so this isolates update_mask[to].
+rkr5/8/8/8/8/8/8/RKR5 w CAca - 0 1	a1a8	CAca	Cc	20	328	6855	138584	ROOK-TAKES-ROOK. Both rights die in one move: White's because its rook left a1 (update_mask[from]), Black's because its rook was captured on a8 (update_mask[to]). This is the case the single branchless AND exists for.
+```
+
+```tsv fen-notation
+rkr5/8/8/8/8/8/8/RKR5 w CAca - 0 1	rkr5/8/8/8/8/8/8/RKR5 w KQkq - 0 1	20	328	6855	138584	King between its rooks but NO rook on the h- or a-file edge beyond them. X-FEN spells this KQkq, where K denotes the OUTERMOST rook on the king's side (c1), not the h-file. A parser that reads K as 'the h1 rook' finds nothing there and silently drops the right.
+rkr3r1/8/8/8/8/8/8/RKR3R1 w CAca - 0 1	rkr3r1/8/8/8/8/8/8/RKR3R1 w CQcq - 0 1	29	710	20488	561661	THE FALLBACK. An extra rook on g1/g8 sits outside the castling rook, so K would be ambiguous and X-FEN is FORCED to name the file. Note the mixed spelling: the queenside keeps Q because a1 IS outermost. Shredder never mixes.
+```
+
+```tsv move-capacity
+R6R/3Q4/1Q4Q1/4Q3/2Q4Q/Q4Q2/pp1Q4/kBNN1KB1 w - - 0 1	218	99	19073	85043	MAXIMUM LEGAL MOVE COUNT. 218 moves, the known maximum. Black is close to stalemate, so d2 is only 99 -- the width of this position is entirely at the root, which is exactly what is wanted.
+```
+
+```text move-capacity-moves
+R6R/3Q4/1Q4Q1/4Q3/2Q4Q/Q4Q2/pp1Q4/kBNN1KB1 w - - 0 1
+  (218)  a3a2 a3a4 a3a5 a3a6 a3a7 a3b2 a3b3 a3b4 a3c3 a3c5 a3d3 a3d6 a3e3 a3e7
+       a3f8 a8a4 a8a5 a8a6 a8a7 a8b8 a8c8 a8d8 a8e8 a8f8 a8g8 b1a2 b1c2 b1d3
+       b1e4 b1f5 b6a5 b6a6 b6a7 b6b2 b6b3 b6b4 b6b5 b6b7 b6b8 b6c5 b6c6 b6c7
+       b6d4 b6d6 b6d8 b6e3 b6e6 b6f2 b6f6 c1a2 c1b3 c1d3 c1e2 c4a2 c4a4 c4a6
+       c4b3 c4b4 c4b5 c4c2 c4c3 c4c5 c4c6 c4c7 c4c8 c4d3 c4d4 c4d5 c4e2 c4e4
+       c4e6 c4f4 c4f7 c4g4 c4g8 d1b2 d1c3 d1e3 d1f2 d2a5 d2b2 d2b4 d2c2 d2c3
+       d2d3 d2d4 d2d5 d2d6 d2e1 d2e2 d2e3 d2f2 d2f4 d2g2 d2g5 d2h2 d2h6 d7a4
+       d7a7 d7b5 d7b7 d7c6 d7c7 d7c8 d7d3 d7d4 d7d5 d7d6 d7d8 d7e6 d7e7 d7e8
+       d7f5 d7f7 d7g4 d7g7 d7h3 d7h7 e5a5 e5b2 e5b5 e5b8 e5c3 e5c5 e5c7 e5d4
+       e5d5 e5d6 e5e1 e5e2 e5e3 e5e4 e5e6 e5e7 e5e8 e5f4 e5f5 e5f6 e5g3 e5g5
+       e5g7 e5h2 e5h5 f1e1 f1e2 f1f2 f1g2 f3b3 f3b7 f3c3 f3c6 f3d3 f3d5 f3e2
+       f3e3 f3e4 f3f2 f3f4 f3f5 f3f6 f3f7 f3f8 f3g2 f3g3 f3g4 f3h1 f3h3 f3h5
+       g1c5 g1d4 g1e3 g1f2 g1h2 g6c2 g6c6 g6d3 g6d6 g6e4 g6e6 g6e8 g6f5 g6f6
+       g6f7 g6g2 g6g3 g6g4 g6g5 g6g7 g6g8 g6h5 g6h6 g6h7 h4d4 h4d8 h4e1 h4e4
+       h4e7 h4f2 h4f4 h4f6 h4g3 h4g4 h4g5 h4h1 h4h2 h4h3 h4h5 h4h6 h4h7 h8b8
+       h8c8 h8d8 h8e8 h8f8 h8g8 h8h5 h8h6 h8h7
+       -- all 218; a wrapped u8 length yields 0
+```
+
+```tsv perft-divide
+startpos	1	a2a3	1
+startpos	1	a2a4	1
+startpos	1	b1a3	1
+startpos	1	b1c3	1
+startpos	1	b2b3	1
+startpos	1	b2b4	1
+startpos	1	c2c3	1
+startpos	1	c2c4	1
+startpos	1	d2d3	1
+startpos	1	d2d4	1
+startpos	1	e2e3	1
+startpos	1	e2e4	1
+startpos	1	f2f3	1
+startpos	1	f2f4	1
+startpos	1	g1f3	1
+startpos	1	g1h3	1
+startpos	1	g2g3	1
+startpos	1	g2g4	1
+startpos	1	h2h3	1
+startpos	1	h2h4	1
+startpos	2	a2a3	20
+startpos	2	a2a4	20
+startpos	2	b1a3	20
+startpos	2	b1c3	20
+startpos	2	b2b3	20
+startpos	2	b2b4	20
+startpos	2	c2c3	20
+startpos	2	c2c4	20
+startpos	2	d2d3	20
+startpos	2	d2d4	20
+startpos	2	e2e3	20
+startpos	2	e2e4	20
+startpos	2	f2f3	20
+startpos	2	f2f4	20
+startpos	2	g1f3	20
+startpos	2	g1h3	20
+startpos	2	g2g3	20
+startpos	2	g2g4	20
+startpos	2	h2h3	20
+startpos	2	h2h4	20
+kiwipete	1	a1b1	1
+kiwipete	1	a1c1	1
+kiwipete	1	a1d1	1
+kiwipete	1	a2a3	1
+kiwipete	1	a2a4	1
+kiwipete	1	b2b3	1
+kiwipete	1	c3a4	1
+kiwipete	1	c3b1	1
+kiwipete	1	c3b5	1
+kiwipete	1	c3d1	1
+kiwipete	1	d2c1	1
+kiwipete	1	d2e3	1
+kiwipete	1	d2f4	1
+kiwipete	1	d2g5	1
+kiwipete	1	d2h6	1
+kiwipete	1	d5d6	1
+kiwipete	1	d5e6	1
+kiwipete	1	e1a1	1
+kiwipete	1	e1d1	1
+kiwipete	1	e1f1	1
+kiwipete	1	e1h1	1
+kiwipete	1	e2a6	1
+kiwipete	1	e2b5	1
+kiwipete	1	e2c4	1
+kiwipete	1	e2d1	1
+kiwipete	1	e2d3	1
+kiwipete	1	e2f1	1
+kiwipete	1	e5c4	1
+kiwipete	1	e5c6	1
+kiwipete	1	e5d3	1
+kiwipete	1	e5d7	1
+kiwipete	1	e5f7	1
+kiwipete	1	e5g4	1
+kiwipete	1	e5g6	1
+kiwipete	1	f3d3	1
+kiwipete	1	f3e3	1
+kiwipete	1	f3f4	1
+kiwipete	1	f3f5	1
+kiwipete	1	f3f6	1
+kiwipete	1	f3g3	1
+kiwipete	1	f3g4	1
+kiwipete	1	f3h3	1
+kiwipete	1	f3h5	1
+kiwipete	1	g2g3	1
+kiwipete	1	g2g4	1
+kiwipete	1	g2h3	1
+kiwipete	1	h1f1	1
+kiwipete	1	h1g1	1
+```

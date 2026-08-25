@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=Official OpenBench server for Cadence
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@SERVICE_USER@@
+Group=@@SERVICE_GROUP@@
+WorkingDirectory=@@STATE_DIRECTORY@@
+EnvironmentFile=@@CONFIG_DIRECTORY@@/server.env
+Environment=PYTHONPATH=@@CHECKOUT@@
+Environment=DJANGO_SETTINGS_MODULE=CadenceSite.settings
+ExecStart=@@VENV@@/bin/gunicorn OpenSite.wsgi:application --bind 127.0.0.1:8000 --workers 3 --timeout 120 --graceful-timeout 30 --access-logfile - --error-logfile -
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@@STATE_DIRECTORY@@
+
+[Install]
+WantedBy=multi-user.target
