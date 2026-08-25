@@ -127,4 +127,16 @@ if [ -n "$FOUND" ]; then
          "scale\", \"PHASE_MAX\"."
 fi
 
+# --- no tool metadata in the message --------------------------------------
+
+# The rule and the reasoning behind it live in `check-message-metadata`,
+# beside this file, because CI runs that same script over the commits a
+# change adds. Hooks are per clone and are not cloned, so this half is the
+# fast one and the CI step is the gate, exactly as it is for the boundary
+# check that runs in `pre-commit`.
+#
+# It is reached through `$0` rather than a path relative to the repository
+# root, so that it is found whatever `core.hooksPath` points at.
+"$(dirname "$0")/check-message-metadata" "$MSG_FILE"
+
 exit 0

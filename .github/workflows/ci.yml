@@ -27,6 +27,52 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # The messages a change adds, read as text. `check-boundary` cannot reach
+  # them: it reads tracked files, and a commit message is neither a file nor
+  # a path. The commit-msg hook holds the same rule and runs from the same
+  # script, but hooks are per clone and are not cloned, so the hook is the
+  # fast half and this is the gate.
+  messages:
+    name: commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The default is one commit, and this reads a range of them.
+          fetch-depth: 0
+
+      - name: Trailer keys and references in the messages this change adds
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -eu
+          NIL=0000000000000000000000000000000000000000
+          if [ -n "${PR_BASE:-}" ]; then
+            RANGE="$PR_BASE..$PR_HEAD"
+          elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "$NIL" ]; then
+            RANGE="$PUSH_BEFORE..$PUSH_AFTER"
+          else
+            # A manual run and a first push have no range to read. Say so
+            # rather than pass silently, which would look like a check.
+            echo "no commit range for this event; nothing read"
+            exit 0
+          fi
+          echo "reading $RANGE"
+          # Merge messages are generated, and the hook exempts them for the
+          # same reason.
+          rc=0
+          for sha in $(git rev-list --no-merges "$RANGE"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/commit-message"
+            if ! .githooks/check-message-metadata "$RUNNER_TEMP/commit-message"; then
+              git log -1 --format='            in %h %s' "$sha" >&2
+              rc=1
+            fi
+          done
+          exit "$rc"
+
   check:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -114,7 +160,9 @@ jobs:
       # else here would notice a syntax error in it. It would be found on the
       # day the first node count is declared, by someone who did not write it.
       - name: Parse the commit-msg hook
-        run: sh -n .githooks/commit-msg
+        run: |
+          sh -n .githooks/commit-msg
+          sh -n .githooks/check-message-metadata
 
       - name: build
         run: cargo build --workspace --all-targets
