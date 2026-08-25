@@ -662,6 +662,18 @@ fn the_table_saves_nodes() {
 /// It is visible from inside. After a search to depth D nothing below the
 /// root was searched deeper than D-1, so no entry may claim more, and the
 /// root's own children must claim exactly that.
+///
+/// **Narrowed when the check extension landed, and it got sharper rather
+/// than looser.** "D-1 below the root" was the same arithmetic the search
+/// used to justify its stack safety with, and this is the third place it
+/// was written down. A root move that gives check is now searched at D, so
+/// its entry claims D. What replaces the old bound is not a weaker one: the
+/// depth a child is searched at is exactly D-1 when the move gave no check
+/// and exactly D when it did, both checked here against the child's own
+/// `in_check`, so this gate now also says the extension is one ply and
+/// fires on the checking moves and no others. Nothing anywhere may claim
+/// more than D, because a ply costs one and an extension gives back at most
+/// one.
 #[test]
 fn no_entry_claims_more_depth_than_was_searched() {
     let depth = 6u32;
@@ -677,13 +689,19 @@ fn no_entry_claims_more_depth_than_was_searched() {
         let mut children = 0;
         for m in generate_legal(&b).iter() {
             b.make_move(m);
+            // What this child was entitled to: one ply back if the move
+            // gave check, and nothing otherwise.
+            let gave_check = b.in_check();
+            let entitled = if gave_check { depth } else { depth - 1 };
             if let Some(hit) = tt.probe(b.key()) {
                 assert!(
-                    u32::from(hit.depth) < depth,
-                    "{fen}: a child of the root claims depth {} after a depth-{depth} search",
-                    hit.depth
+                    u32::from(hit.depth) <= entitled,
+                    "{fen}: a child of the root claims depth {} after a depth-{depth} \
+                     search, and its move gave {}",
+                    hit.depth,
+                    if gave_check { "check" } else { "no check" }
                 );
-                if u32::from(hit.depth) == depth - 1 {
+                if u32::from(hit.depth) == entitled {
                     at_full_depth += 1;
                 }
                 children += 1;
@@ -693,8 +711,8 @@ fn no_entry_claims_more_depth_than_was_searched() {
         assert!(
             at_full_depth * 2 >= children && at_full_depth > 0,
             "{fen}: only {at_full_depth} of {children} stored children were searched to \
-             depth {}, so the claim above is not being checked against anything",
-            depth - 1
+             the depth their move entitled them to, so the claim above is not being \
+             checked against anything"
         );
     }
 }

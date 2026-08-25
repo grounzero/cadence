@@ -60,24 +60,41 @@
 //! the legal list, every entry is an answer to the check, and skipping one
 //! is skipping an answer.
 //!
+//! **The check extension.** A move that gives check is searched one ply
+//! deeper: the child's depth is its parent's rather than one less. The
+//! predicate is the child's `Board::in_check`, read after the move is made,
+//! because `make_move` recomputes the checkers whatever the caller wants
+//! and that read is already paid for. It applies at the root's moves for
+//! the same reason it applies at every other node's.
+//!
+//! **What bounds it.** On a line where every move gives check the depth
+//! never falls, so the arithmetic the search used to rest on -- depth is at
+//! most the root's and loses one per ply -- stops holding, and a rule
+//! conditioned on depth would never stop being true. Four things bound it,
+//! and only the third is this change's own. A repetition is a draw wherever
+//! it is met, so a true perpetual is scored at the second visit rather than
+//! searched. The fifty-move rule ends any check sequence that neither
+//! captures nor moves a pawn. **The ply cap** refuses the extension to any
+//! child past `EXTEND_WITHIN` times the root depth, which is what holds
+//! the tree to a multiple of its nominal depth rather than merely finite.
+//! And the ply bound below is what holds the arrays when the cap is above
+//! `MAX_PLY`, which it is for a root depth over 85.
+//!
 //! **The ply bound.** Both searches stop at `MAX_PLY` whatever depth is
 //! left and answer with the static evaluation: the per-ply arrays end
 //! there, and in release a read past their end is a bounds check rather
-//! than the assertion a debug build gets. No search reaches it as things
-//! stand, because the root depth is capped at `MAX_PLY` and depth falls by
-//! one per ply, so the bound costs one comparison at each interior node and
-//! moves no node count. It is here ahead of the first thing to give a ply
-//! back rather than alongside it, because a search that can extend without
-//! it is a release binary that stops playing mid-game.
+//! than the assertion a debug build gets. It landed before anything
+//! extended, when no search could reach it, and the extension above is what
+//! makes it reachable: it is the floor the cap does not stand on.
 //!
 //! **What it is not, on purpose.** No history, so the quiet moves the
 //! killers did not claim are not ranked against each other: that is a
 //! separate change with its own SPRT, plugging into the same sort. No
-//! extensions or reductions, and no other pruning, in the quiescence
-//! search included: no delta pruning. The exchange value is read by the
-//! rule above and by nothing else yet; ranking the losing captures by it
-//! is a separate, independently match-tested change. Folded in together
-//! the result would not identify which change helped or hurt.
+//! reduction anywhere, no extension on anything but a check, and no other
+//! pruning, in the quiescence search included: no delta pruning. That
+//! search extends nothing and has nothing to extend: it carries no depth,
+//! and in check it already answers with every legal evasion. Folded in
+//! together the result would not identify which change helped or hurt.
 //!
 //! **Determinism.** The node count at a fixed depth is a function of the
 //! position, the code, and the state of the table it is given: both move
@@ -233,11 +250,11 @@ fn small<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u32> {
 /// How often the clock is read, in nodes. A power of two.
 const CLOCK_INTERVAL: u64 = 1024;
 
-/// The deepest iteration: `MAX_PLY`, which is the state stack's bound. With
-/// no extensions, depth is the deepest ply the main search reaches, so no
-/// search can produce an interior node past `MAX_PLY - 1`. Both searches
-/// stop at `MAX_PLY` whatever depth is left and stand on the evaluation
-/// there.
+/// The deepest iteration: `MAX_PLY`, which is the state stack's bound. It
+/// is no longer the deepest ply either search reaches -- a check extension
+/// gives a ply back, and [`extension`] states the bound that replaces it --
+/// so both searches stop at `MAX_PLY` whatever depth is left and stand on
+/// the evaluation there.
 const MAX_DEPTH: u32 = MAX_PLY as u32;
 const _: () = assert!(MAX_DEPTH as usize == MAX_PLY);
 
@@ -301,6 +318,50 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
     killers[0] = m;
 }
 
+/// How many times the root depth a check extension is granted within.
+///
+/// Two, which is the figure with the longest record elsewhere. One is the
+/// variant this change named and did not take: it would hold the deepest
+/// interior node to twice the root depth rather than three times it, and
+/// it is a cheaper search and a separately testable one, not a tidier
+/// version of this. Deciding between them is deciding what the extension
+/// is worth, which is what its match test measures, so the alternative is
+/// named here and left where a later test can reach it.
+const EXTEND_WITHIN: usize = 2;
+
+/// How much deeper the child of `m` is searched, in plies: one when the
+/// move gave check, none otherwise.
+///
+/// `check` is the child's `Board::in_check`, read after the move is made.
+/// `make_move` recomputes the checkers whether or not anyone asks, so that
+/// read is already paid for. `Board::gives_check` answers the same question
+/// before the move is made, at two slider lookups, and what wants it is a
+/// decision taken instead of making the move rather than after it, so it
+/// goes on waiting for its first caller.
+///
+/// **The cap is on ply, and a cap on depth would not be a cap.** Where
+/// every move gives check the depth never falls, so a rule of the form
+/// "extend while at least so much depth is left" stays true for as long as
+/// the checks do, and what would stop the recursion is the fifty-move rule
+/// and a repetition, hundreds of plies down. A ply cap stops it where it is
+/// asked to. `ply` is the child's, and past `EXTEND_WITHIN` times the root
+/// depth no child is granted one, so from there depth falls by one per ply
+/// and the deepest interior node an iteration can produce is at ply
+/// `(EXTEND_WITHIN + 1) * root_depth - 2`.
+///
+/// **That bounds the tree and not the arrays.** It is above `MAX_PLY` for
+/// a root depth over 85, and what holds there is the ply bound in
+/// [`Search::negamax`], which is why that bound was established before
+/// anything extended rather than beside it.
+///
+/// A free function for the same reason [`order_first`] is: the thing worth
+/// gating is a total function of three arguments, and a gate that can call
+/// it directly does not have to find a position that reaches every case.
+#[must_use]
+pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
+    u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
+}
+
 /// One search. All state is here, per thread; nothing is global.
 pub struct Search<'a> {
     limits: Limits,
@@ -332,6 +393,11 @@ pub struct Search<'a> {
     /// that have refuted nothing. Indexed by ply, cleared when a search
     /// starts, and a kibibyte inline like `PvTable`'s row lengths.
     killers: [[Move; 2]; MAX_PLY],
+    /// The depth of the iteration in progress, which is what the check
+    /// extension's ply cap is a multiple of. Set at the head of each
+    /// iteration; a field rather than a sixth argument to `negamax`
+    /// because it does not change inside one.
+    root_depth: u32,
 }
 
 impl<'a> Search<'a> {
@@ -352,6 +418,7 @@ impl<'a> Search<'a> {
             pv: Vec::with_capacity(MAX_PLY),
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
+            root_depth: 0,
         }
     }
 
@@ -390,6 +457,7 @@ impl<'a> Search<'a> {
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         for depth in 1..=max_depth {
+            self.root_depth = depth;
             let (best, score) = self.search_root(board, &root_moves, depth);
             if self.aborted {
                 // The last completed iteration stands. If there is none,
@@ -438,7 +506,11 @@ impl<'a> Search<'a> {
         let mut best_score = -INFINITE;
         for &m in moves {
             board.make_move(m);
-            let score = -self.negamax(board, depth - 1, 1, -beta, -alpha);
+            // A root move that gives check is extended like any other: the
+            // rule is about the move, and the root has no claim on being
+            // the exception.
+            let ext = extension(board.in_check(), 1, depth);
+            let score = -self.negamax(board, depth - 1 + ext, 1, -beta, -alpha);
             board.unmake_move(m);
             if self.aborted {
                 break;
@@ -460,15 +532,20 @@ impl<'a> Search<'a> {
     ///
     /// Public for the same reason [`order_first`] is a free function: the
     /// thing worth gating is reached directly rather than through a search.
-    /// What needs it here is the ply bound in `negamax`, and that bound
-    /// cannot be reached through [`Search::run`] at all: the root depth is
-    /// capped at `MAX_PLY` and depth falls by one per ply, so ply `MAX_PLY`
-    /// is always a quiescence node, and a gate driven through `run` would
-    /// pass without reaching the guard it names. The first thing to give a
-    /// ply back makes the boundary reachable, and the bound is gated ahead
-    /// of it rather than after the fact.
+    /// What needs it here is the ply bound in `negamax`. That bound was
+    /// unreachable through [`Search::run`] when it landed, because depth
+    /// fell by one per ply and the root's was capped at `MAX_PLY`, so a
+    /// gate driven through `run` would have passed without reaching the
+    /// guard it names. The check extension gives a ply back and makes the
+    /// boundary reachable in principle, at a root depth over 85; a gate
+    /// through `run` would still not reach it, because no search of that
+    /// depth finishes.
     #[must_use]
     pub fn node(&mut self, board: &mut Board, depth: u32, ply: usize) -> Score {
+        // As though `depth` were the iteration's, so that the extension's
+        // ply cap means here what it means in a search rather than reading
+        // whatever the last iteration left behind.
+        self.root_depth = depth;
         self.negamax(board, depth, ply, -INFINITE, INFINITE)
     }
 
@@ -512,11 +589,12 @@ impl<'a> Search<'a> {
         // A `debug_assert!(ply < MAX_PLY)` stood here instead, over a
         // comment arguing that depth is at most `MAX_DEPTH` at ply zero and
         // falls by one per ply, so an interior node is always inside the
-        // state stack. The argument is sound and the assertion is inert in
-        // release, which is where the games are played; and the argument
-        // holds only while nothing gives a ply back. Anything that extends
-        // falsifies it, so the bound is a real one here, ahead of the first
-        // extension rather than behind it.
+        // state stack. The argument was sound and the assertion was inert
+        // in release, which is where the games are played; and the argument
+        // held only while nothing gave a ply back. The check extension
+        // below gives one back, so what stands here is a bound and not an
+        // assertion, and it was established before the extension rather
+        // than beside it.
         //
         // The answer is the one `quiesce` gives at the same boundary: the
         // static evaluation, whether or not the side to move is in check.
@@ -580,7 +658,11 @@ impl<'a> Search<'a> {
         let mut best_move = Move::NULL;
         for m in legal.iter() {
             board.make_move(m);
-            let score = -self.negamax(board, depth - 1, ply + 1, -beta, -alpha);
+            // The check extension, on the child's own state: `make_move`
+            // has just recomputed the checkers, so asking costs nothing
+            // that was not already spent.
+            let ext = extension(board.in_check(), ply + 1, self.root_depth);
+            let score = -self.negamax(board, depth - 1 + ext, ply + 1, -beta, -alpha);
             board.unmake_move(m);
             if self.aborted {
                 return DRAW;

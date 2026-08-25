@@ -1022,8 +1022,16 @@ const SORT_DEPTH: u32 = 7;
 /// This is the coverage gate for the change. A sort that is correct and is
 /// never called passes every gate above it and fails this one.
 ///
-/// Measured on the M5 Max, the same 16 positions at depth 7: 17,292,004
-/// nodes with neither the table nor the sort.
+/// **Re-measured when the check extension landed, and the reference moved
+/// by a factor of 23.** The same 16 positions at depth 7 with neither the
+/// table nor the sort read 17,292,004 nodes before anything extended and
+/// **396,887,401** after, against 29,775,675 for the search that ships.
+/// That is what an extension costs a badly ordered search: the ordered
+/// tree grew 11 times and the unordered one 23, because a bad first move
+/// at a node that has been handed a ply back is a bad first move over a
+/// subtree that no longer shrinks. Both points are measured on the
+/// extending build, so the ratio between them is still attributable to the
+/// sort alone.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1041,8 +1049,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 17_292_004,
-        "{total} nodes against the 17,292,004 the same search took with no ordering at all"
+        total * 10 < 9 * 396_887_401,
+        "{total} nodes against the 396,887,401 the same search took with no ordering at all"
     );
 }
 
@@ -1055,9 +1063,18 @@ fn the_capture_sort_saves_nodes() {
 ///
 /// Measured on the M5 Max when this gate was written: 3,234,886 nodes with
 /// every capture ahead of the killers, 2,654,840 with the losing ones
-/// behind them. The ceiling is 3,000,000, between the two, so it fails by a
-/// wide margin if the demotion is not wired in and clears by one if it is.
-/// It is coverage and not a claim about the effect's size.
+/// behind them, a ceiling of 3,000,000 between the two.
+///
+/// **Re-measured when the check extension landed, and the window it
+/// discriminates by narrowed from 18% to 3.2%**: 30,749,287 nodes with
+/// every capture ahead of the killers against 29,775,675 with the losing
+/// ones behind them, and the ceiling is 30,250,000, about 1.6% either side.
+/// It is still coverage rather than a claim about the effect's size, and
+/// the narrowing is the claim it is now closer to making: a demotion the
+/// extension has made worth less on this set is a different statement from
+/// a demotion that is not wired in, and this gate can no longer tell them
+/// apart by much. Both points are measured on the extending build. Node
+/// counts are exact and not timings, so 1.6% is a margin and not a band.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1075,8 +1092,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 3_000_000,
-        "{total} nodes against the 3,234,886 the same search took with every capture ahead of the killers"
+        total < 30_250_000,
+        "{total} nodes against the 30,749,287 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1095,7 +1112,27 @@ fn demoting_the_losing_captures_saves_nodes() {
 /// moves were tried in. With no table there is no such path, and the score
 /// is a function of the position and the depth alone.
 ///
-/// The numbers were measured before the sort existed.
+/// **The array was re-baselined when the check extension landed, and the
+/// premise above is why it had to be.** An ordering change cannot move the
+/// root value; an extension changes the tree the value is of, so it can and
+/// does. This is the first change in this project for which "the score must
+/// not move" is the wrong gate, and it fired correctly rather than being
+/// weakened for it.
+///
+/// **What replaced the numbers is not a paste of what the search now
+/// says.** The array below was re-measured the way the original was: on a
+/// build with the sort removed from `negamax` altogether, over these
+/// positions at this depth with a table of no buckets. That build and the
+/// one that ships agree on all sixteen scores to the centipawn, and a third
+/// build with the losing-capture demotion switched off agrees with both. So
+/// the invariant this gate exists for is intact and was demonstrated again
+/// rather than assumed, and what moved is the tree it is measured over.
+///
+/// The values before the extension were
+/// `[102, 230, 2, 532, 929, 620, -419, 0, 6, 34, 511, -18, 0, 117, 0, 0]`.
+/// Thirteen of the sixteen are within 11 centipawns of these; the one that
+/// moved is a deeper search of the same position, not a different answer to
+/// it.
 #[test]
 fn the_sort_changes_no_score() {
     let fens = deep_fens();
@@ -1121,10 +1158,10 @@ fn the_sort_changes_no_score() {
 /// The depth `the_sort_changes_no_score` searches to.
 const SCORE_DEPTH: u32 = 6;
 
-/// What `deep_fens()` scores at `SCORE_DEPTH` with no table, measured
-/// before the sort existed.
+/// What `deep_fens()` scores at `SCORE_DEPTH` with no table, measured on a
+/// build with no ordering in `negamax` at all.
 const UNORDERED_SCORES: [Score; 16] = [
-    102, 230, 2, 532, 929, 620, -419, 0, 6, 34, 511, -18, 0, 117, 0, 0,
+    108, 230, 2, 532, 930, 622, -419, 0, 6, 34, 520, -18, 0, 45, 0, 0,
 ];
 
 // ---------------------------------------------------------------------------

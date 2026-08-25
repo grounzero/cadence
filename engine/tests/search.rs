@@ -28,7 +28,7 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, to_uci};
 use cadence_engine::eval;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, Search};
+use cadence_engine::search::{Limits, Search, extension};
 use support::{Outcome, Rng, play_game, random_mover, table};
 
 /// The result of one search: move, score, nodes, completed depth, pv.
@@ -487,6 +487,36 @@ fn the_depth_limit_is_exact() {
 // ---------------------------------------------------------------------------
 // The check extension
 // ---------------------------------------------------------------------------
+
+/// The extension itself, as arithmetic: one ply for a check, nothing for
+/// anything else, and nothing at all past the ply cap.
+///
+/// This is the only gate that sees the cap exactly. Everything below it
+/// runs a search, and a search shows the cap only where a line happens to
+/// reach it; here every case either side of the boundary is visited,
+/// including the root depth of zero that [`Search::node`] leaves when it is
+/// called at a boundary rather than run.
+///
+/// What it cannot see is whether the function is wired into the depth the
+/// child is searched at. That is the next gate.
+#[test]
+fn a_check_extends_by_one_ply_and_nothing_does_past_the_cap() {
+    for root_depth in [0u32, 1, 2, 7, 20] {
+        let cap = EXTEND_WITHIN * root_depth as usize;
+        for ply in 0..cap + 4 {
+            assert_eq!(
+                extension(false, ply, root_depth),
+                0,
+                "root depth {root_depth}, ply {ply}: a move that gave no check extended"
+            );
+            assert_eq!(
+                extension(true, ply, root_depth),
+                u32::from(ply < cap),
+                "root depth {root_depth}, ply {ply}: the cap is {cap}"
+            );
+        }
+    }
+}
 
 /// A forced mate delivered by quiet checks is found a full move earlier
 /// than the depth it needs without the extension, and no earlier than that.
