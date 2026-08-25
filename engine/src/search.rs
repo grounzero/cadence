@@ -60,6 +60,16 @@
 //! the legal list, every entry is an answer to the check, and skipping one
 //! is skipping an answer.
 //!
+//! **The ply bound.** Both searches stop at `MAX_PLY` whatever depth is
+//! left and answer with the static evaluation: the per-ply arrays end
+//! there, and in release a read past their end is a bounds check rather
+//! than the assertion a debug build gets. No search reaches it as things
+//! stand, because the root depth is capped at `MAX_PLY` and depth falls by
+//! one per ply, so the bound costs one comparison at each interior node and
+//! moves no node count. It is here ahead of the first thing to give a ply
+//! back rather than alongside it, because a search that can extend without
+//! it is a release binary that stops playing mid-game.
+//!
 //! **What it is not, on purpose.** No history, so the quiet moves the
 //! killers did not claim are not ranked against each other: that is a
 //! separate change with its own SPRT, plugging into the same sort. No
@@ -224,9 +234,10 @@ fn small<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u32> {
 const CLOCK_INTERVAL: u64 = 1024;
 
 /// The deepest iteration: `MAX_PLY`, which is the state stack's bound. With
-/// no extensions, depth is the deepest ply the main search reaches; the
-/// quiescence search below it stops at `MAX_PLY` and stands on the
-/// evaluation there.
+/// no extensions, depth is the deepest ply the main search reaches, so no
+/// search can produce an interior node past `MAX_PLY - 1`. Both searches
+/// stop at `MAX_PLY` whatever depth is left and stand on the evaluation
+/// there.
 const MAX_DEPTH: u32 = MAX_PLY as u32;
 const _: () = assert!(MAX_DEPTH as usize == MAX_PLY);
 
@@ -444,6 +455,23 @@ impl<'a> Search<'a> {
         (best, best_score)
     }
 
+    /// One interior node of the main search, at the `ply` and `depth` given,
+    /// full window.
+    ///
+    /// Public for the same reason [`order_first`] is a free function: the
+    /// thing worth gating is reached directly rather than through a search.
+    /// What needs it here is the ply bound in `negamax`, and that bound
+    /// cannot be reached through [`Search::run`] at all: the root depth is
+    /// capped at `MAX_PLY` and depth falls by one per ply, so ply `MAX_PLY`
+    /// is always a quiescence node, and a gate driven through `run` would
+    /// pass without reaching the guard it names. The first thing to give a
+    /// ply back makes the boundary reachable, and the bound is gated ahead
+    /// of it rather than after the fact.
+    #[must_use]
+    pub fn node(&mut self, board: &mut Board, depth: u32, ply: usize) -> Score {
+        self.negamax(board, depth, ply, -INFINITE, INFINITE)
+    }
+
     /// Negamax with alpha-beta, fail-soft. The value returned after an abort
     /// is meaningless and is discarded by every caller.
     fn negamax(
@@ -458,9 +486,6 @@ impl<'a> Search<'a> {
         if depth == 0 {
             return self.quiesce(board, ply, alpha, beta);
         }
-        // Depth is at most MAX_DEPTH at ply zero and falls by one per ply,
-        // so an interior node is always inside the state stack.
-        debug_assert!(ply < MAX_PLY);
         self.nodes += 1;
         self.table.clear(ply);
         // At every node, so that `nodes N` stops at N and not at N plus a
@@ -473,6 +498,32 @@ impl<'a> Search<'a> {
         // the tree, threefold against the game history.
         if board.is_repetition() {
             return DRAW;
+        }
+
+        // The ply bound, above the sort because that is where the first
+        // read past the arrays is. `killers` is `MAX_PLY` long and
+        // `self.killers[ply]` is an argument to `sort_from` below, taken
+        // before any move is made; `make_move`'s push of `states[ply + 1]`
+        // is the failure behind it, and a guard placed at the make would
+        // look right and never be reached. Both are slice bounds checks,
+        // which release keeps and which end the process under
+        // `panic = "abort"`.
+        //
+        // A `debug_assert!(ply < MAX_PLY)` stood here instead, over a
+        // comment arguing that depth is at most `MAX_DEPTH` at ply zero and
+        // falls by one per ply, so an interior node is always inside the
+        // state stack. The argument is sound and the assertion is inert in
+        // release, which is where the games are played; and the argument
+        // holds only while nothing gives a ply back. Anything that extends
+        // falsifies it, so the bound is a real one here, ahead of the first
+        // extension rather than behind it.
+        //
+        // The answer is the one `quiesce` gives at the same boundary: the
+        // static evaluation, whether or not the side to move is in check.
+        // Handing the node to `quiesce` instead would reach the same value
+        // by way of its own bound and count a second node for it.
+        if ply >= MAX_PLY {
+            return eval::evaluate(board);
         }
 
         // The table, before the moves are generated: that saving is most of

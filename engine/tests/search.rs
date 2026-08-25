@@ -25,7 +25,8 @@ mod support;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
-use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci, to_uci};
+use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, to_uci};
+use cadence_engine::eval;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, Search};
 use support::{Outcome, Rng, play_game, random_mover, table};
@@ -451,6 +452,69 @@ fn the_depth_limit_is_exact() {
             "pv {:?} longer than depth {depth}",
             r.pv
         );
+    }
+}
+
+/// The ply bound, which is the limit the search cannot be asked for.
+///
+/// At `ply == MAX_PLY` the per-ply arrays end. The first thing an interior
+/// node touches past their end is `killers[ply]`, read for the sort before
+/// any move is made; the state stack `make_move` pushes is the failure
+/// behind it, and `PvTable` guards itself so it is neither. Both are slice
+/// bounds checks, which are present in release, where the `debug_assert`
+/// that used to stand in for them is not, and where `panic = "abort"` makes
+/// either one a process that stops playing mid-game.
+///
+/// **This cannot be driven through `run`, and a gate that tried would be
+/// vacuous.** The root depth is capped at `MAX_PLY` and depth falls by one
+/// per ply, so the deepest interior node any search can produce is at ply
+/// `MAX_PLY - 1` and ply `MAX_PLY` is always a quiescence node, which has
+/// carried its own bound all along. So the boundary is called at directly,
+/// with depth still to go: the state an extension is what creates.
+#[test]
+fn an_interior_node_at_the_ply_bound_answers_instead_of_running_off_its_arrays() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for fen in sample() {
+        let mut b = board(&fen);
+        // Past the bound as well as at it: an extension that gives back
+        // more than one ply, or a bound written as an equality, both land
+        // here.
+        for ply in [MAX_PLY, MAX_PLY + 1, MAX_PLY + 64] {
+            for depth in [1u32, 2, 8] {
+                let mut s = Search::new(Limits::default(), &stop, &tt);
+                let score = s.node(&mut b, depth, ply);
+                assert_eq!(
+                    score,
+                    eval::evaluate(&b),
+                    "{fen}: ply {ply} depth {depth} did not stand on the evaluation"
+                );
+                assert_eq!(s.nodes(), 1, "{fen}: ply {ply} depth {depth} searched on");
+                assert_eq!(b.ply(), 0, "{fen}: ply {ply} depth {depth} made a move");
+            }
+        }
+    }
+}
+
+/// The other side of it: the bound is at `MAX_PLY` and not below. A guard
+/// one ply early would pass the gate above while truncating the deepest
+/// interior node a search can reach, and `bench` would not catch it,
+/// because nothing at bench depth goes near ply `MAX_PLY - 1`.
+#[test]
+fn the_deepest_ply_a_search_reaches_is_still_searched() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for fen in sample() {
+        // Cleared between positions, as `bench` does: the sample holds one
+        // start array twice over, once as a FEN and once as a DFRC one,
+        // and a table carried across them answers the second from the
+        // first without searching anything.
+        tt.clear();
+        let mut b = board(&fen);
+        let mut s = Search::new(Limits::default(), &stop, &tt);
+        let _ = s.node(&mut b, 1, MAX_PLY - 1);
+        assert!(s.nodes() > 1, "{fen}: ply {} searched nothing", MAX_PLY - 1);
+        assert_eq!(b.ply(), 0, "{fen}: board left off its root");
     }
 }
 
