@@ -9,7 +9,9 @@
 //!
 //! **What the search is.** Negamax with alpha-beta, fail-soft, over the
 //! legal move list, to a fixed depth; iterative deepening from depth one,
-//! the previous iteration's best move searched first at the root; a
+//! the previous iteration's best move searched first at the root; the
+//! first move at a node searched with the window the node was given and
+//! every move behind it with a null one; a
 //! triangular table for the principal variation. At
 //! the horizon, a quiescence search: the captures, en-passant captures and
 //! promotions are resolved, and a side in check gets out of it, before the
@@ -79,6 +81,35 @@
 //! the tree to a multiple of its nominal depth rather than merely finite.
 //! And the ply bound below is what holds the arrays when the cap is above
 //! `MAX_PLY`, which it is for a root depth over 85.
+//!
+//! **The null window.** The first move at a node is searched with the
+//! window the node was given. Every move behind it is asked a narrower
+//! question first -- not what it is worth, but whether it is worth more
+//! than the move already in hand -- which is the window `(alpha, alpha+1)`
+//! and holds no room for an answer to the first. Nearly all of them are
+//! not, and a move that is not better is refuted inside that window over a
+//! smaller tree than the full one would take to refute it. A move that is
+//! better fails high in it, and what comes back then is a bound and not a
+//! value, so that move is searched again with the full window to find out
+//! what it is worth. Nothing is discarded and nothing is trusted that was
+//! not searched: the whole of the effect is on how much of a tree has to
+//! be visited to reach the same value, and the values are the same values.
+//! Two conditions the re-search is not run under: a score at or above beta
+//! is already the bound this node returns, and at a node whose own window
+//! is a null one there is no room between alpha and beta for a score to
+//! ask for one, so the re-searches happen along the principal variation
+//! rather than through the tree hanging off it.
+//!
+//! What it is paid for is the ordering above it. When the first move
+//! searched is the best one, every move behind it is refuted cheaply; when
+//! it is not, the re-search is work the full window would have done once.
+//! The root is where the first move is likeliest to be best, because it is
+//! the move the previous iteration chose, and the root window is the full
+//! one and stays that way: narrowing it is a separate change against a
+//! different mechanism, and both narrow the window a search runs in, so
+//! whichever lands first takes the overlap and the second is measured
+//! against a search that already has it. Revisit this paragraph when
+//! something narrows the root window.
 //!
 //! **The ply bound.** Both searches stop at `MAX_PLY` whatever depth is
 //! left and answer with the static evaluation: the per-ply arrays end
@@ -496,7 +527,8 @@ impl<'a> Search<'a> {
         self.best
     }
 
-    /// The root: every move, full window, the best move and its score.
+    /// The root: every move, the first in the full window and the rest in
+    /// a null one, the best move and its score.
     fn search_root(&mut self, board: &mut Board, moves: &[Move], depth: u32) -> (Move, Score) {
         self.nodes += 1;
         self.table.clear(0);
@@ -504,13 +536,28 @@ impl<'a> Search<'a> {
         let beta = INFINITE;
         let mut best = moves[0];
         let mut best_score = -INFINITE;
-        for &m in moves {
+        for (i, &m) in moves.iter().enumerate() {
             board.make_move(m);
             // A root move that gives check is extended like any other: the
             // rule is about the move, and the root has no claim on being
             // the exception.
             let ext = extension(board.in_check(), 1, depth);
-            let score = -self.negamax(board, depth - 1 + ext, 1, -beta, -alpha);
+            let child = depth - 1 + ext;
+            // The same rule as the interior nodes, and the root is where
+            // it is most nearly free: the move in hand is the one the last
+            // iteration chose, and a root move that beats it is what an
+            // iteration is looking for rather than what it expects. `beta`
+            // here is `INFINITE`, so the second condition on the re-search
+            // is true whenever the first is; it is written out because the
+            // rule is one rule.
+            let mut score = if i == 0 {
+                -self.negamax(board, child, 1, -beta, -alpha)
+            } else {
+                -self.negamax(board, child, 1, -alpha - 1, -alpha)
+            };
+            if i > 0 && !self.aborted && score > alpha && score < beta {
+                score = -self.negamax(board, child, 1, -beta, -alpha);
+            }
             board.unmake_move(m);
             if self.aborted {
                 break;
@@ -527,8 +574,8 @@ impl<'a> Search<'a> {
         (best, best_score)
     }
 
-    /// One interior node of the main search, at the `ply` and `depth` given,
-    /// full window.
+    /// One interior node of the main search, at the `ply` and `depth`
+    /// given, searched with the full window.
     ///
     /// Public for the same reason [`order_first`] is a free function: the
     /// thing worth gating is reached directly rather than through a search.
@@ -679,13 +726,43 @@ impl<'a> Search<'a> {
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
-        for m in legal.iter() {
+        for (i, m) in legal.iter().enumerate() {
             board.make_move(m);
             // The check extension, on the child's own state: `make_move`
             // has just recomputed the checkers, so asking costs nothing
             // that was not already spent.
             let ext = extension(board.in_check(), ply + 1, self.root_depth);
-            let score = -self.negamax(board, depth - 1 + ext, ply + 1, -beta, -alpha);
+            let child = depth - 1 + ext;
+            // The first move gets the window this node was given. Every
+            // move behind it is asked the cheaper question first: not
+            // "what is this worth" but "is it worth more than the move in
+            // hand", which is the window `(alpha, alpha + 1)` and holds no
+            // room for an answer to the first. A move that is not better
+            // fails low inside it and is refuted over a smaller tree than
+            // the full window would have taken to refute it; a move that
+            // is better fails high, and what comes back is a bound and not
+            // a value, so it is searched again with the full window to
+            // find out what it is worth.
+            let mut score = if i == 0 {
+                -self.negamax(board, child, ply + 1, -beta, -alpha)
+            } else {
+                -self.negamax(board, child, ply + 1, -alpha - 1, -alpha)
+            };
+            // The re-search, and the two conditions it is not run under.
+            // A score at or above beta needs none: fail-soft makes it a
+            // lower bound, this node is cutting on it, and what the parent
+            // is told is a bound either way. And where this node is itself
+            // inside a null window, `beta` is `alpha + 1` and no score can
+            // sit between them, so a node searched by the rule above never
+            // re-searches its own children under it: the re-searches
+            // happen on the principal variation and not through the tree
+            // hanging off it. The abort is checked here rather than after
+            // the unmake because a search that stopped mid-way returns a
+            // value that means nothing, and re-searching it would only
+            // spend the time twice.
+            if i > 0 && !self.aborted && score > alpha && score < beta {
+                score = -self.negamax(board, child, ply + 1, -beta, -alpha);
+            }
             board.unmake_move(m);
             if self.aborted {
                 return DRAW;

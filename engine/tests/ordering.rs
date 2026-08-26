@@ -1032,6 +1032,17 @@ const SORT_DEPTH: u32 = 7;
 /// subtree that no longer shrinks. Both points are measured on the
 /// extending build, so the ratio between them is still attributable to the
 /// sort alone.
+///
+/// **Re-measured again when the null window landed, and this time the
+/// unordered point moved four and a half times further than the sorted
+/// one**: 89,173,515 nodes with no ordering in the main search against
+/// 17,187,706 with it, where the same two points were 396,887,401 and
+/// 29,775,675 before. A null window refutes a move over a smaller tree, and
+/// an unordered node is nothing but moves waiting to be refuted, so the
+/// change is worth most exactly where the ordering is worst. The gate is
+/// unaffected either way -- it discriminates by a factor of five -- but the
+/// old reference would have left it passing with the sort removed, which is
+/// the one thing it exists to fail.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1049,8 +1060,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 396_887_401,
-        "{total} nodes against the 396,887,401 the same search took with no ordering at all"
+        total * 10 < 9 * 89_173_515,
+        "{total} nodes against the 89,173,515 the same search took with no ordering at all"
     );
 }
 
@@ -1075,6 +1086,19 @@ fn the_capture_sort_saves_nodes() {
 /// a demotion that is not wired in, and this gate can no longer tell them
 /// apart by much. Both points are measured on the extending build. Node
 /// counts are exact and not timings, so 1.6% is a margin and not a band.
+///
+/// **Re-measured again when the null window landed, and the window is now
+/// 1.3%**: 17,418,454 nodes with every capture ahead of the killers against
+/// 17,187,706 with the losing ones behind them, and the ceiling is
+/// 17,300,000, about 0.65% either side. The old ceiling would have passed
+/// the build with the demotion switched off, so re-measuring was not
+/// optional. **What this gate is close to, said before it arrives:** the
+/// margin has gone 18%, 3.2%, 1.3% over three changes, none of which
+/// touched the demotion, and the next change to the tree can be expected to
+/// halve it again. At that point it stops being a gate against a demotion
+/// that never reaches a search and becomes a gate against nothing, and the
+/// answer will be a set or a depth where the band is worth more rather than
+/// a tighter ceiling on this one.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1092,8 +1116,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 30_250_000,
-        "{total} nodes against the 30,749,287 the same search took with every capture ahead of the killers"
+        total < 17_300_000,
+        "{total} nodes against the 17,418,454 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1528,6 +1552,13 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 /// This is the coverage gate for the change. Killers remembered and never
 /// read, or read and never remembered, pass every unit gate above and fail
 /// this one.
+///
+/// **The reference was re-measured when the null window landed**, because
+/// 1,754,505 was a count of a tree two changes ago. The same build with the
+/// killers taken out of the main search's sort and `remember_killer`
+/// removed reads 1,674,084 against the 1,090,926 this search takes with
+/// them, so the gate still discriminates by a third, and the constant is
+/// again a number this tree produces rather than one it used to.
 #[test]
 fn the_killers_save_nodes() {
     let fens = deep_fens();
@@ -1538,8 +1569,8 @@ fn the_killers_save_nodes() {
     }
     println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
     assert!(
-        total * 4 < 3 * 1_754_505,
-        "{total} against the 1,754,505 the same search took before the killers"
+        total * 4 < 3 * 1_674_084,
+        "{total} against the 1,674,084 the same search took with no killers in the main search"
     );
 }
 

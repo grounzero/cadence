@@ -185,6 +185,33 @@ fn best_static_reply(b: &mut Board) -> Score {
     best
 }
 
+/// How many root moves the null window costs a second search.
+///
+/// Every root move behind the first is searched in a window with no room
+/// in it for an answer better than the move in hand, and a move that
+/// beats it comes back with a bound rather than a value and is searched
+/// again with the full window. So a leaf under such a move is visited
+/// twice, and the count is the number of root moves that are strictly
+/// better than everything tried before them.
+///
+/// Only sound where the value of a root move is minus the static
+/// evaluation of the position it leads to, which is what a quiet horizon
+/// means: the callers below each establish that before using this.
+fn root_re_searches(b: &mut Board) -> u64 {
+    let mut best = Score::MIN;
+    let mut re_searched = 0;
+    for (i, m) in generate_legal(b).iter().enumerate() {
+        b.make_move(m);
+        let v = -eval::evaluate(b);
+        b.unmake_move(m);
+        if i > 0 && v > best {
+            re_searched += 1;
+        }
+        best = best.max(v);
+    }
+    re_searched
+}
+
 // ---------------------------------------------------------------------------
 // Captures at the horizon
 // ---------------------------------------------------------------------------
@@ -360,8 +387,21 @@ fn a_losing_capture_is_never_forced_on_the_side_to_move_at_the_horizon() {
 }
 
 /// Where no root move allows a capture or a promotion, the horizon is
-/// already quiet: the search costs exactly one node per leaf, as it always
-/// did, and scores the best static reply.
+/// already quiet: the search costs one node per leaf and scores the best
+/// static reply.
+///
+/// **One node per leaf, and one more for each leaf the null window has to
+/// visit twice.** The root searches its first move in the full window and
+/// the rest in a window with no room in it for a better answer, so a root
+/// move that turns out to be better comes back with a bound and is
+/// searched again. Here every leaf is a single node -- there is nothing
+/// noisy to resolve under any of them -- so the whole of the count is
+/// arithmetic: the root, one node per root move, and one more for each
+/// root move that beat everything before it. `root_re_searches` computes
+/// the last term from the static evaluations, which is what those moves
+/// are worth at this depth, so this gate pins the re-search rule as well
+/// as the cost of a quiet horizon. It read `1 + legal.len()` before the
+/// null window existed.
 #[test]
 fn a_quiet_horizon_costs_one_node_per_leaf_and_scores_the_static_evaluation() {
     let mut fens = vec![START_FEN.to_string()];
@@ -382,8 +422,9 @@ fn a_quiet_horizon_costs_one_node_per_leaf_and_scores_the_static_evaluation() {
             b.unmake_move(m);
         }
         let expected = best_static_reply(&mut b);
+        let re_searched = root_re_searches(&mut b);
         let r = search(&mut b, Limits::depth(1));
-        assert_eq!(r.nodes, 1 + legal.len() as u64, "{fen}");
+        assert_eq!(r.nodes, 1 + legal.len() as u64 + re_searched, "{fen}");
         assert_eq!(r.score, expected, "{fen}");
     }
 }
@@ -1020,7 +1061,14 @@ fn fen(b: &Board) -> String {
 
 /// The stand-pat position: after every white king move Black's only noisy
 /// move is Qxb3, a pawn defended by a pawn. Refused without being searched:
-/// exactly one node per root move, and the score is the best static reply.
+/// one node per root move, and the score is the best static reply.
+///
+/// The refusal is what makes each leaf a single node, and the count is the
+/// same arithmetic as the quiet horizon above: a leaf under a root move
+/// that beat everything before it is visited twice, because the window it
+/// was first searched in had no room for the answer it gave. A capture
+/// searched instead of refused shows up as a node under a leaf, which
+/// neither term accounts for.
 #[test]
 fn a_losing_capture_at_the_horizon_is_refused_without_being_searched() {
     for (fen, reply) in both_colours(STAND_PAT, "f7b3") {
@@ -1028,9 +1076,14 @@ fn a_losing_capture_at_the_horizon_is_refused_without_being_searched() {
         assert!(the_only_reply_exchange(&mut b, &reply) < 0);
         let expected = best_static_reply(&mut b);
         let roots = generate_legal(&b).len() as u64;
+        let re_searched = root_re_searches(&mut b);
         let r = search(&mut b, Limits::depth(1));
         assert_eq!(r.score, expected, "{fen}");
-        assert_eq!(r.nodes, 1 + roots, "{fen}: the losing capture was searched");
+        assert_eq!(
+            r.nodes,
+            1 + roots + re_searched,
+            "{fen}: the losing capture was searched"
+        );
     }
 }
 
@@ -1080,15 +1133,32 @@ fn an_even_exchange_at_the_horizon_is_searched() {
 
 /// In check, nothing is refused. The defended-blocker position: Ng1 is
 /// White's only move and gives check; Black's answers are Qxg1, which
-/// loses the queen for the knight, and seven king moves. Eleven nodes at
-/// depth one, and the queen capture is two of them: it is searched, and
-/// the king takes back under it.
+/// loses the queen for the knight, and seven king moves. Nine of the nodes
+/// are the eight evasions and the recapture under the queen capture, and
+/// the queen capture being two of them is the point: it is searched, and
+/// the king takes back under it. A refused evasion is those two nodes
+/// missing.
+///
+/// **Two more nodes are the root and the node below the check, and the
+/// rest are the null window paying for being wrong.** The node below the
+/// check searches its first evasion in the full window and the rest in one
+/// with no room for a better answer, so an evasion that turns out to be
+/// better is searched twice. Three of them are in one colour and one in
+/// the other: eleven nodes became fourteen and twelve. That difference is
+/// not a difference about check evasions. It is how many of them improved
+/// on the evasions tried before them, which is the order they are tried in
+/// and what they are worth, and a mirrored position is not searched in a
+/// mirrored order. The counts are exact and stay exact; what they stopped
+/// being is one number.
 #[test]
 fn a_losing_evasion_is_searched_all_the_same() {
-    for (fen, _) in both_colours(DEFENDED_BLOCKER, "a1a1") {
+    for ((fen, _), expected) in both_colours(DEFENDED_BLOCKER, "a1a1")
+        .into_iter()
+        .zip([14, 12])
+    {
         let mut b = board(&fen);
         let r = search(&mut b, Limits::depth(1));
-        assert_eq!(r.nodes, 11, "{fen}");
+        assert_eq!(r.nodes, expected, "{fen}");
     }
 }
 
