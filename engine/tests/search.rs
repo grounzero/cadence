@@ -29,6 +29,7 @@ use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, 
 use cadence_engine::eval;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, Search, extension};
+use cadence_engine::tt::Table;
 use support::{Outcome, Rng, play_game, random_mover, table};
 
 /// The result of one search: move, score, nodes, completed depth, pv.
@@ -672,6 +673,187 @@ fn the_deepest_ply_a_search_reaches_is_still_searched() {
         assert!(s.nodes() > 1, "{fen}: ply {} searched nothing", MAX_PLY - 1);
         assert_eq!(b.ply(), 0, "{fen}: board left off its root");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The window
+// ---------------------------------------------------------------------------
+
+/// The depth the two end-to-end window gates run at.
+///
+/// Seven, the bench's own depth, over `sample()` with a table of no
+/// buckets, so that what they see is a tree of the size the regression
+/// detector reads and the value at the root is a function of the position
+/// and the depth alone.
+const WINDOW_DEPTH: u32 = 7;
+
+/// The depth the property gate runs to.
+///
+/// Five, and it is a different constant because it is answering a
+/// different question. The property does not depend on the depth -- a
+/// window that brackets the value returns the value at depth one -- so
+/// what depth buys here is positions where the recursion has passed the
+/// window through several plies, and five is enough of that to cost a
+/// tenth of a second rather than three seconds.
+const BRACKET_DEPTH: u32 = 5;
+
+fn no_table() -> Table {
+    Table::with_buckets(0).expect("a table of no buckets")
+}
+
+/// A window that brackets the value returns that value, whichever side of
+/// it the window sits on.
+///
+/// **This is the property every null-window search rests on.** Alpha-beta
+/// is fail-soft here, so a search that fails high returns a lower bound on
+/// the value and one that fails low returns an upper bound. Ask a window of
+/// one point either side of a value `v` obtained from the full window and
+/// both bounds are pinned to it: `(v - 1, v)` fails high, so what it
+/// returns is at least `v` and at most the value, which is `v`; `(v, v + 1)`
+/// fails low, so what it returns is at most `v` and at least the value.
+/// Both come back equal to `v`, and neither had to search what a full
+/// window searches to say so.
+///
+/// A null window that is off by one, inverted, or negated on the wrong
+/// side of the recursion breaks this, and it breaks it at depth one on
+/// positions with nothing interesting in them. What it cannot see is
+/// **which** window a search chooses to ask: that is the coverage gate at
+/// the end of this section.
+///
+/// With no table, deliberately. An entry stored by one of these searches
+/// and read by the next would let a narrow window answer from a wide one's
+/// work, which is a legitimate thing for a table to do and would make this
+/// gate agree with itself for the wrong reason.
+#[test]
+fn a_window_that_brackets_the_value_returns_the_value() {
+    let stop = AtomicBool::new(false);
+    for fen in sample() {
+        let mut b = board(&fen);
+        for depth in 1..=BRACKET_DEPTH {
+            let tt = no_table();
+            let full = Search::new(Limits::default(), &stop, &tt).node(&mut b, depth, 0);
+            let below = Search::new(Limits::default(), &stop, &tt).node_window(
+                &mut b,
+                depth,
+                0,
+                full - 1,
+                full,
+            );
+            let above = Search::new(Limits::default(), &stop, &tt).node_window(
+                &mut b,
+                depth,
+                0,
+                full,
+                full + 1,
+            );
+            assert_eq!(
+                below,
+                full,
+                "{fen}: depth {depth}, the window ({}, {full}) did not agree with the full one",
+                full - 1
+            );
+            assert_eq!(
+                above,
+                full,
+                "{fen}: depth {depth}, the window ({full}, {}) did not agree with the full one",
+                full + 1
+            );
+        }
+    }
+}
+
+/// The move and the score a full-window search returns, position by
+/// position, as a fixture.
+///
+/// **A narrower window may not change the answer.** The window a search
+/// asks in is an argument about what it can afford to ignore, and the value
+/// at the root is not one of the things it may ignore: a search that comes
+/// back with a different move or a different score is not a cheaper search,
+/// it is a wrong one. `the_sort_changes_no_score` in `tests/ordering.rs`
+/// makes the same argument for an ordering change over its own set; this is
+/// the move as well as the score, and it is here because the window is the
+/// search's own arithmetic rather than the picker's.
+///
+/// The fixture was measured on the tree that searched every move with the
+/// full window, over the positions of `sample()` at `WINDOW_DEPTH` with a
+/// table of no buckets. **It is not re-baselined by a windowing change.**
+/// An extension changes the tree the value is of and may move a score
+/// (`tests/ordering.rs` records the one time that was the right answer); a
+/// window changes which parts of a fixed tree have to be visited to
+/// establish the same value, and nothing else. If this array has to move,
+/// what moved is not a window.
+#[test]
+fn a_narrower_window_returns_the_same_move_and_the_same_score() {
+    let tt = no_table();
+    let stop = AtomicBool::new(false);
+    let got: Vec<(String, Score)> = sample()
+        .iter()
+        .map(|fen| {
+            let mut b = board(fen);
+            let mut s = Search::new(Limits::depth(WINDOW_DEPTH), &stop, &tt);
+            let best = s.run(&mut b, &mut Vec::new());
+            (best.to_uci_chess960(), s.score())
+        })
+        .collect();
+    println!("depth {WINDOW_DEPTH}, no table: {got:?}");
+    let want: Vec<(String, Score)> = FULL_WINDOW_ANSWERS
+        .iter()
+        .map(|(m, s)| ((*m).to_string(), *s))
+        .collect();
+    assert_eq!(
+        got, want,
+        "a move or a score moved, so the window is not only a window"
+    );
+}
+
+/// What `sample()` answers at `WINDOW_DEPTH` with no table, measured on the
+/// tree that searched every move with the full window.
+const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
+    ("b1c3", 9),
+    ("d5e6", -18),
+    ("b4f4", 37),
+    ("c4c5", -504),
+    ("d7c8q", 507),
+    ("b2b4", 14),
+    ("b1c3", 9),
+    ("d1e3", 12),
+    ("e1d3", 12),
+    ("e1d3", 10),
+    ("h1h7", 539),
+    ("f1h1", 525),
+    ("g1g7", 536),
+    ("a1a7", 539),
+];
+
+/// End to end: the narrower window has to be worth nodes.
+///
+/// The same positions at the same depth with no table, so the window is the
+/// only thing that can move the count: with no table there is no probe to
+/// answer a re-search from, and the ordering, the killers and the extension
+/// are what they were. A windowing that is correct at every node and is
+/// never asked for passes both gates above and fails this one.
+///
+/// Measured when this gate was written: 17,337,259 nodes with every move
+/// searched in the full window.
+#[test]
+fn the_narrower_window_saves_nodes() {
+    let tt = no_table();
+    let stop = AtomicBool::new(false);
+    let mut total = 0u64;
+    for fen in sample() {
+        let mut b = board(&fen);
+        let mut s = Search::new(Limits::depth(WINDOW_DEPTH), &stop, &tt);
+        let _ = s.run(&mut b, &mut Vec::new());
+        total += s.nodes();
+    }
+    println!(
+        "depth {WINDOW_DEPTH}, {} positions, no table: {total} nodes",
+        sample().len()
+    );
+    assert!(
+        total < 17_000_000,
+        "{total} nodes against the 17,337,259 the same search took with the full window everywhere"
+    );
 }
 
 // ---------------------------------------------------------------------------

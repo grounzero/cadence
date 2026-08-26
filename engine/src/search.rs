@@ -542,11 +542,34 @@ impl<'a> Search<'a> {
     /// depth finishes.
     #[must_use]
     pub fn node(&mut self, board: &mut Board, depth: u32, ply: usize) -> Score {
+        self.node_window(board, depth, ply, -INFINITE, INFINITE)
+    }
+
+    /// The same node, searched with the window given instead of the full
+    /// one.
+    ///
+    /// The seam a null window is reached through. What wants it is the
+    /// gate on the property the search's own windows rest on: a search of
+    /// a window that brackets the value agrees with a full-window search
+    /// about that value, and answers a question the full window did not
+    /// have to ask. Driving that through [`Search::run`] would test the
+    /// windows the search chooses rather than the arithmetic they are
+    /// chosen by, which is the distinction [`Search::node`] above exists
+    /// for.
+    #[must_use]
+    pub fn node_window(
+        &mut self,
+        board: &mut Board,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Score {
         // As though `depth` were the iteration's, so that the extension's
         // ply cap means here what it means in a search rather than reading
         // whatever the last iteration left behind.
         self.root_depth = depth;
-        self.negamax(board, depth, ply, -INFINITE, INFINITE)
+        self.negamax(board, depth, ply, alpha, beta)
     }
 
     /// Negamax with alpha-beta, fail-soft. The value returned after an abort
