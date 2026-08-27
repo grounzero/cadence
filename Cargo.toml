@@ -8,10 +8,11 @@ resolver = "3"
 # tree at one commit, so they must not be able to disagree about which
 # version they are; only `cadence-engine`'s reaches the UCI id, and a
 # per-crate version would leave the other three frozen while it advanced.
-# Minor versions mark milestone releases; patches distinguish anything that
-# ships between them. Promotions are recorded by their archived binaries,
-# not by a version.
-version      = "0.2.0"
+# The minor marks a milestone and is cut when that milestone opens; the patch
+# counts the changes that passed a test inside it. The archived binary is
+# still what identifies a promotion, because a version says which release a
+# build is and not what it played like.
+version      = "0.3.0"
 edition      = "2024"
 rust-version = "1.97"
 license      = "GPL-3.0-or-later"
