@@ -6,7 +6,7 @@ any chess GUI or match runner that supports UCI.
 
 ## Requirements
 
-Install Git and Rust through `rustup`. The repository pins Rust 1.97.1 and
+Install Git and Rust through `rustup`. The repository pins Rust 1.98.0 and
 includes the required `rustfmt` and `clippy` components in
 `rust-toolchain.toml`.
 

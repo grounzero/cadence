@@ -6,7 +6,7 @@ name         = "xtask"
 version      = "0.0.0"
 description  = "Repository chores for Cadence: header checking, hook installation"
 edition      = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 license      = "GPL-3.0-or-later"
 publish      = false
 

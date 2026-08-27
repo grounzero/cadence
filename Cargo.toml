@@ -14,7 +14,7 @@ resolver = "3"
 # build is and not what it played like.
 version      = "0.3.0"
 edition      = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 license      = "GPL-3.0-or-later"
 authors      = ["Michael Grounds"]
 repository   = "https://github.com/grounzero/cadence"
