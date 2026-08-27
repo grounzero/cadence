@@ -30,6 +30,30 @@
 # What it cannot see is a closing line that is neither a trailer nor a link.
 # No pattern decides that one; whoever writes the message does, and the
 # reading happens before the commit exists rather than after.
+#
+# WHY IT READS THE WHOLE MESSAGE AND NOT ONLY THE TRAILER BLOCK. Two passes,
+# and both are kept. The first asks `git interpret-trailers` where the block
+# is and checks the keys it reports, which agrees with git and is the
+# argument for it. But git reads the last paragraph alone, so a
+# trailer-shaped line above that paragraph is outside what the first pass can
+# see at all, and a message whose last paragraph is prose has no trailer
+# block for it to inspect. The second pass reads every line instead. The
+# first is not thereby redundant: a lower-case key inside a genuine trailer
+# block is a shape the second pass does not look for.
+#
+# The second pass needs a shape that separates a trailer from a sentence that
+# wrapped at a colon, and the shape is capitalisation. That is measured
+# rather than assumed. Across the messages it was written against, every
+# trailer-shaped line with a lower-case key is prose that happened to break
+# there, and every real trailer is capitalised. The subject is exempt because
+# a subject is never a trailer, which is what admits a `build:` prefix on
+# line 1.
+#
+# The cost, stated rather than discovered: a body line that legitimately
+# opens `Word: ` is refused. "Measured: 34,680,021 nodes" at the start of a
+# line would fail, and the fix is to write the sentence differently. No
+# instance appears in what was measured; the rule is a bet that none is worth
+# more than what the second pass reaches.
 
 set -eu
 
@@ -63,6 +87,31 @@ for key in $KEYS; do
     done
     if [ "$allowed" -eq 0 ]; then
         echo "commit message: \"$key\" is not a trailer key this repository uses." >&2
+        rc=1
+    fi
+done
+
+# The second pass: every line but the subject, whatever git thinks a trailer
+# block is. A capitalised key, a colon, then whitespace.
+ANYWHERE=$(
+    printf '%s\n' "$CLEAN" |
+    tail -n +2 |
+    sed -n 's/^\([A-Z][A-Za-z0-9-]*\)[ ]*:[ 	].*/\1/p' |
+    tr '[:upper:]' '[:lower:]'
+)
+
+for key in $ANYWHERE; do
+    allowed=0
+    for ok in $ALLOWED; do
+        if [ "$key" = "$ok" ]; then
+            allowed=1
+        fi
+    done
+    if [ "$allowed" -eq 0 ]; then
+        echo "commit message: \"$key\" is not a trailer key this repository uses." >&2
+        echo "            It is not in the trailer block, so \`git interpret-trailers\`" >&2
+        echo "            does not see it. This check reads every line for that reason." >&2
+        echo "            If the line is prose, write it so it does not open \"Word:\"." >&2
         rc=1
     fi
 done
