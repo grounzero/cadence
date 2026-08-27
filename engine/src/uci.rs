@@ -26,10 +26,16 @@ use cadence_core::{START_FEN, generate_legal, parse_uci, to_uci};
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
 
-/// The public identity. This is what appears on rating lists, so it tracks
-/// the repository name and package version and nothing else.
+/// The public identity. This is what appears on rating lists and in the
+/// header of every game a GUI records, so it is the repository name, what
+/// the build calls itself, and nothing else.
+///
+/// The version half is [`crate::version::VERSION`] rather than the package
+/// version directly: a build that is not at a release tag says so and names
+/// the commit it came from, which is what makes two builds of two different
+/// commits two different names here.
 const ENGINE_NAME: &str = "Cadence";
-const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ENGINE_VERSION: &str = crate::version::VERSION;
 const ENGINE_AUTHOR: &str = "Michael Grounds";
 
 /// Stack for the search thread. The search recurses one frame per ply to

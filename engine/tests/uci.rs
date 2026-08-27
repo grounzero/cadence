@@ -22,8 +22,12 @@ use support::{Engine, bestmove, bestmoves, talk, talk_bytes};
 fn uci_reports_identity() {
     let out = talk("uci\nquit\n");
     let lines: Vec<&str> = out.lines().collect();
+    // Against `version::VERSION` and not the package version: what is being
+    // checked is that whatever this build calls itself is what comes out of
+    // the pipe. A dev build reports the commit, and a GUI reading this line
+    // is how anyone tells two of them apart.
     assert!(
-        lines.contains(&format!("id name Cadence {}", env!("CARGO_PKG_VERSION")).as_str()),
+        lines.contains(&format!("id name Cadence {}", cadence_engine::version::VERSION).as_str()),
         "no id name line in {lines:?}"
     );
     assert!(
