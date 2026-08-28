@@ -7,11 +7,17 @@
 //! into a name lives here, in the crate, because it is the part that can be
 //! wrong in a way that matters and a build script has no tests.
 //!
-//! Two forms, and only two:
+//! Two forms, and only two, where `<version>` is the package version:
 //!
-//! - `0.4.0` -- built at the annotated tag for this package version.
-//! - `0.4.0-dev-<short commit>` -- anything else, carrying the commit it came
-//!   from, or `0.4.0-dev-unknown` where there was no repository to ask.
+//! - `<version>` -- built at the annotated tag for this package version.
+//! - `<version>-dev-<short commit>` -- anything else, carrying the commit it
+//!   came from, or `<version>-dev-unknown` where there was no repository to
+//!   ask.
+//!
+//! Written as a placeholder rather than spelled out: a patch is cut at every
+//! promotion, so an example naming one version is an edit owed at each, and
+//! the one thing a stale example here would misdescribe is the subject of
+//! the file.
 //!
 //! **The bare form is reachable only through a tag that matches the package
 //! version character for character.** Every way of not knowing arrives here
@@ -107,7 +113,7 @@ mod tests {
     }
 
     /// The commit is never empty, so the dev form can never trail off into
-    /// `0.4.0-dev-`, which reads as a truncation rather than as a fact.
+    /// `<version>-dev-`, which reads as a truncation rather than as a fact.
     #[test]
     fn the_commit_is_always_something() {
         assert!(!COMMIT.is_empty());
