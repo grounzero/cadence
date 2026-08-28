@@ -1,6 +1,6 @@
 [package]
 name         = "cadence-tools"
-description  = "Magic generation, net inspection and format conversion for Cadence"
+description  = "Magic generation for Cadence"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

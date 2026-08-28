@@ -27,9 +27,15 @@ const SKIP_DIRS: &[&str] = &[".git", "target", "__pycache__"];
 /// The hooks `install-hooks` expects to find in `.githooks/`.
 const HOOKS: &[&str] = &["commit-msg", "pre-commit"];
 
-/// Concurrent copies the reference machine's SPRT worker runs at: the `-T` it
-/// is started with. The bench has to be measured at it because that is the
-/// state the worker measures in, and the figure is concurrency-dependent.
+/// Concurrent copies to run at once: the `-T` an SPRT worker is started with.
+/// The bench has to be measured at the worker's own concurrency because that
+/// is the state the worker measures in, and the figure is
+/// concurrency-dependent.
+///
+/// Six is the default because it is what the worker these figures are taken
+/// for was started with. It is a property of a machine and not of this
+/// repository, so a different one is measured with `--concurrency` rather
+/// than by editing this.
 const DEFAULT_CONCURRENCY: usize = 6;
 
 /// Pairs of rounds to run. Each pair is one dev bench followed by one base
@@ -154,7 +160,7 @@ fn header_defect(text: &str) -> Option<String> {
 // The cleanup that removed the last such references touched 44 lines across
 // 15 files, which is the proof that the habit of writing them is real and
 // will write them again; a rule enforced by memory erodes, so this one runs
-// beside check-headers, in CI and in the checklist.
+// beside check-headers, in CI and in `.githooks/pre-commit`.
 //
 // The rules are deliberately SHAPES, not names, so there is no list of
 // outside documents to maintain here -- or to read:
@@ -1038,8 +1044,8 @@ fn nps(args: &[String]) -> ExitCode {
         eprintln!("The figure is a property of the release profile, so build it first:");
         eprintln!("    cargo build --release -p cadence-engine");
         eprintln!("or point this at the binary the scaling will divide by, which for a");
-        eprintln!("test against the champion is the archived one:");
-        eprintln!("    cargo xtask nps --binary ~/cadence-champions/<version>/$(uname -m)/cadence");
+        eprintln!("test against an earlier version is that version's own build:");
+        eprintln!("    cargo xtask nps --binary <path to that build>/cadence");
         return ExitCode::FAILURE;
     }
 
@@ -1325,9 +1331,12 @@ mod tests {
         }
     }
 
-    /// The seven the review asked about by name, the bidi overrides that make a
-    /// line read as something other than what it holds, and the replacement
-    /// character that means the bytes were not UTF-8.
+    /// The seven invisibles that actually arrive in pasted prose -- the space
+    /// that does not break, the hyphen that does not print, the zero-width
+    /// space, the two joiners and the non-joiner, and the byte-order mark --
+    /// plus the bidi overrides that make a line read as something other than
+    /// what it holds, and the replacement character that means the bytes were
+    /// not UTF-8.
     #[test]
     fn every_invisible_that_actually_arrives_is_named() {
         for (c, expected) in [

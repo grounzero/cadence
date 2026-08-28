@@ -1,6 +1,6 @@
 [package]
 name         = "cadence-engine"
-description  = "Search, UCI and datagen for Cadence"
+description  = "Search and UCI for Cadence"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

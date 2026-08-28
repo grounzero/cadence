@@ -3,9 +3,9 @@
 //! What commit this binary was built from, asked of git at build time.
 //!
 //! The engine reported its package version and nothing else, so every build
-//! of every commit answered `id name Cadence 0.2.0`: the archived champions,
-//! `main`, and a branch under test were one name in a GUI, in a PGN, and in
-//! any log that records the identity a match was played under.
+//! of every commit answered `id name Cadence 0.2.0`: an archived release
+//! build, `main`, and a branch under test were one name in a GUI, in a PGN,
+//! and in any log that records the identity a match was played under.
 //!
 //! This script asks git two questions and emits the answers as environment
 //! variables. It does not decide what the version string looks like --

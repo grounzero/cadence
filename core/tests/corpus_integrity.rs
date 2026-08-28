@@ -101,7 +101,8 @@ fn corpus_section_1_summary_table_agrees_with_the_tsv_block() {
     }
 }
 
-/// The two values the sign-off gate is recorded against have to be in here.
+/// The two values the one-time completion gate is run against have to be in
+/// here. `tests/standard_perft.rs` names the gate and the command.
 #[test]
 fn corpus_holds_the_completion_gate_values() {
     let startpos = support::standard("startpos");

@@ -13,13 +13,17 @@
 //! ```text
 //! fast     depth <= 5   `cargo test`                        every PR
 //! nightly  depth >= 6   `cargo test --release -- --ignored`  scheduled
-//! gate     startpos d7 and Kiwipete d6, run once by hand and recorded:
+//! gate     startpos d7 and Kiwipete d6, run once by hand:
 //!            cargo test --release --test standard_perft -- --ignored \
 //!                deep_perft_startpos deep_perft_kiwipete
 //! ```
 //!
 //! The gate is a filter over the nightly tests rather than a tier of its own,
-//! so that no value is ever run twice in one nightly.
+//! so that no value is ever run twice in one nightly. It asserts the corpus
+//! values these tests already carry, so the command above is the whole of it
+//! and a reader wanting it has it. What a by-hand run adds over a nightly one
+//! is a date, a machine and a wall clock, which this repository does not
+//! record.
 //!
 //! The deep tier is cheap to run: 23.56 s for all six positions together,
 //! release, M5 Max, measured 2026-08-25. An earlier ignore label said

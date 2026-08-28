@@ -75,23 +75,30 @@ pub const HASH_MB: usize = 16;
 /// depth chooses the length of the window that speed is read over, and a
 /// short window does not only read noisily, it reads low: the run ends
 /// before the machine has settled. This binary, three runs at each depth,
-/// on an otherwise idle M5 Max, against the champion it is tested against
-/// at its own compiled-in depth of six:
+/// on an otherwise idle M5 Max, against the binary it was match-tested
+/// against, which is the previously promoted version at its own
+/// compiled-in depth of six:
 ///
 /// | binary | depth | wall clock | reported |
 /// |---|---|---|---|
 /// | this | 6 | 680-696 ms | 11.05 to 11.31 Mnps |
 /// | this | 7 | 2,344-2,386 ms | 14.19 to 14.44 Mnps |
-/// | champion | 6 | 1,105-1,116 ms | 13.81 to 13.95 Mnps |
-/// | champion | 7 | 3,247-3,270 ms | 15.58 to 15.69 Mnps |
+/// | previous | 6 | 1,105-1,116 ms | 13.81 to 13.95 Mnps |
+/// | previous | 7 | 3,247-3,270 ms | 15.58 to 15.69 Mnps |
 ///
-/// Read at depth six this binary is 20% slower than the champion; read at
-/// depth seven, like for like, it is 8.4% slower, and the rest of the 20%
-/// is the length of the run. Under `scale_method = BOTH` each side's clock
-/// is the nominal one scaled by the reference over its own reading, so a
-/// side that reads low is handed a longer clock: at six this side would
-/// have played about a quarter longer than the champion for a difference
-/// that is mostly the window. At seven the two readings are within 4%.
+/// **The lower two rows are not a reading of this tree**, which is worth
+/// saying beside them: they are the other binary's, kept as a binary, and
+/// nothing built from this source reproduces them. The upper two are this
+/// tree's own. The four are quoted together because the comparison is the
+/// argument and neither pair makes it alone.
+///
+/// Read at depth six this binary is 20% slower than the previous one; read
+/// at depth seven, like for like, it is 8.4% slower, and the rest of the
+/// 20% is the length of the run. Under `scale_method = BOTH` each side's
+/// clock is the nominal one scaled by the reference over its own reading,
+/// so a side that reads low is handed a longer clock: at six this side
+/// would have played about a quarter longer for a difference that is
+/// mostly the window. At seven the two readings are within 4%.
 /// That is why seven, and why the mismatch in run length that six would
 /// have avoided (2.4 s against 1.1 s) is the lesser evil: `BOTH` accounts
 /// for a length mismatch, while nothing corrects a biased reading.

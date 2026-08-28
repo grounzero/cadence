@@ -7,9 +7,11 @@
 # at ten times the rate for the same answer. The fast tier, which runs on both
 # architectures on every push, is what catches a platform difference.
 #
-# This is not the sign-off run. That is startpos d7 and Kiwipete d6 run once
-# by hand and recorded with date, machine and wall-clock; this catches later
-# regressions.
+# This is not the one-time completion run. That is startpos d7 and Kiwipete d6
+# run once by hand, against the same corpus values these tests use, so the two
+# differ in when they run and not in what they assert. What the by-hand run
+# adds is a date, a machine and a wall clock, none of which this repository
+# records. This job is the recurring half: it catches a later regression.
 
 name: nightly
 

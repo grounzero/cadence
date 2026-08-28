@@ -15,8 +15,8 @@ use cadence_engine::{bench, perft, uci};
 
 /// The subcommand table.
 ///
-/// `cadence` with no subcommand speaks UCI on stdin. `bench` and `datagen`
-/// land here too, each one gated on the thing it measures existing first.
+/// `cadence` with no subcommand speaks UCI on stdin. `perft` and `bench` are
+/// the whole of the rest of it: one row here and one arm below for each.
 const SUBCOMMANDS: &[(&str, &str)] = &[
     (
         "perft",

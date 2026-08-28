@@ -1,6 +1,6 @@
 [package]
 name         = "cadence-nnue"
-description  = "Quantised NNUE inference for Cadence"
+description  = "Reserved for Cadence's quantised NNUE inference; empty today"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ name = "cadence_nnue"
 
 [features]
 default = ["simd"]
+# Stub. Gates nothing; present so the feature name the SIMD paths will be
+# switched by is reserved, and so the default is already the one they want.
 simd    = []
 
 [dependencies]

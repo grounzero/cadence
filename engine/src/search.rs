@@ -351,13 +351,23 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
 
 /// How many times the root depth a check extension is granted within.
 ///
-/// Two, which is the figure with the longest record elsewhere. One is the
-/// variant this change named and did not take: it would hold the deepest
-/// interior node to twice the root depth rather than three times it, and
-/// it is a cheaper search and a separately testable one, not a tidier
-/// version of this. Deciding between them is deciding what the extension
-/// is worth, which is what its match test measures, so the alternative is
-/// named here and left where a later test can reach it.
+/// Two. One is the variant this change named and did not take: it would
+/// hold the deepest interior node to twice the root depth rather than
+/// three times it, and it is a cheaper search and a separately testable
+/// one, not a tidier version of this. Deciding between them is deciding
+/// what the extension is worth, which is what its match test measures, so
+/// the alternative is named here and left where a later test can reach it.
+///
+/// **The bench cannot choose between the two, and that is measured rather
+/// than assumed.** Built at each cap, over the same list, the counts are
+/// within 1.6% of each other at every depth tried -- 1.3% at five, 0.8% at
+/// six, 0.9% at seven, 1.6% at nine, each read as the ratio against the
+/// same list before any extension. At these depths the cap almost never
+/// binds: what ends an extended line is depth running out, not ply. So the
+/// cap is doing the job the module doc gives it, which is bounding the
+/// pathological line, and it is not shaping the ordinary tree -- this is
+/// not a tuning decision wearing a safety decision's clothes, and a node
+/// count is the wrong instrument for it either way.
 const EXTEND_WITHIN: usize = 2;
 
 /// How much deeper the child of `m` is searched, in plies: one when the
