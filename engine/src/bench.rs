@@ -56,10 +56,18 @@ pub const HASH_MB: usize = 16;
 /// Seven. It was three under the new quiescence search, five once the
 /// capture ordering made three too short to time, six once the ordering of
 /// the check evasions had taken depth five to about 200 ms on the M5 Max,
-/// and seven now that refusing losing captures has taken depth six to
-/// 7,691,290 nodes and about 690 ms. At seven the same list is 33,848,419
-/// and about 2,400 ms. It goes up again as the search gets cheaper per ply,
-/// each time with a `Bench:` trailer.
+/// and seven when refusing losing captures took depth six to 7,691,290
+/// nodes and about 690 ms, the same list at seven reading 33,848,419 and
+/// about 2,400 ms. The depth goes up again as the search gets cheaper per
+/// ply, each time with a `Bench:` trailer.
+///
+/// **Every count in this comment is a reading at the commit that made the
+/// change it describes, and none of them is the count today**, which is
+/// whatever `bench.txt` holds: each promotion since has moved it, which is
+/// what the detector is for. They are kept because what they justify is the
+/// choice of depth, and that argument is about the readings that were in
+/// hand when the choice was made. The table below is the same kind of
+/// figure and is read the same way.
 ///
 /// **What decides it is a measurement, and it is not a measurement of the
 /// search.** The SPRT harness scales the time control by the speed it

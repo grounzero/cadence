@@ -2,10 +2,15 @@
 
 //! Checks on the public corpus fixture itself.
 //!
-//! These are the only tests in this directory that pass today. They assert
-//! nothing about the engine: they assert that the fixture was read the way
-//! the other tests assume, which is what makes the other tests' failures
-//! meaningful rather than a parser artefact.
+//! They assert nothing about the engine: they assert that the fixture was
+//! read the way the other tests in this directory assume, so that a failure
+//! there is a fact about the move generator and not an artefact of the
+//! parser.
+//!
+//! That paragraph opened "these are the only tests in this directory that
+//! pass today", which was true when the corpus landed ahead of the
+//! generator it gates. Every test here passes now, and what still holds is
+//! the reason these exist rather than the count.
 //!
 //! They also catch the fixture contradicting itself. The standard values
 //! appear once in a readable summary table and once in the named TSV block,

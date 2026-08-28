@@ -54,9 +54,17 @@
 //! board and the move alone. Each recapture costs one
 //! slider lookup for the x-ray it reveals and, when the capturer stands on
 //! a line with either king, one more for the pin or the discovered check.
-//! Nothing reads this yet: its first reader is the quiescence search's
-//! pruning of losing captures, and until that lands the bench is
-//! unchanged, which is the evidence that nothing does.
+//! Two readers, both in `engine`. The quiescence search refuses a noisy
+//! move whose exchange is negative before searching it, out of check only
+//! (`Search::quiesce`), and the sort ranks the same moves below the
+//! killers rather than above every quiet move (`picker::move_key`, under
+//! `demote_losing`).
+//!
+//! This paragraph ended "nothing reads this yet ... and until that lands
+//! the bench is unchanged, which is the evidence that nothing does". That
+//! was written when the function landed ahead of both readers, and its
+//! evidence clause is what retired it: the pruning landed, the bench moved,
+//! and an unchanged count would now be the thing to investigate.
 
 use cadence_core::attacks;
 use cadence_core::position::Board;
