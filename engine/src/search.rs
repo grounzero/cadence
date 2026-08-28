@@ -439,6 +439,14 @@ pub struct Search<'a> {
     /// iteration; a field rather than a sixth argument to `negamax`
     /// because it does not change inside one.
     root_depth: u32,
+    /// Elapsed milliseconds at the end of each completed iteration, in
+    /// order, and empty where there is no budget.
+    ///
+    /// Written from the reading the soft-budget test already takes, so it
+    /// adds no clock read anywhere, and under a depth or node limit it adds
+    /// no entry either: `bench` leaves this empty and reads no clock, which
+    /// is the contract `tests/time.rs` pins.
+    iterations: Vec<u64>,
 }
 
 impl<'a> Search<'a> {
@@ -460,6 +468,7 @@ impl<'a> Search<'a> {
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             root_depth: 0,
+            iterations: Vec::new(),
         }
     }
 
@@ -482,6 +491,7 @@ impl<'a> Search<'a> {
         self.best = Move::NULL;
         self.pv.clear();
         self.killers = [[Move::NULL; 2]; MAX_PLY];
+        self.iterations.clear();
         self.budget = if self.limits.infinite {
             None
         } else {
@@ -527,10 +537,12 @@ impl<'a> Search<'a> {
             if let Some(i) = root_moves.iter().position(|&m| m == best) {
                 root_moves[..=i].rotate_right(1);
             }
-            if let Some(b) = self.budget
-                && self.elapsed_ms() >= b.soft
-            {
-                break;
+            if let Some(b) = self.budget {
+                let elapsed = self.elapsed_ms();
+                self.iterations.push(elapsed);
+                if elapsed >= b.soft {
+                    break;
+                }
             }
         }
         self.wait_if_infinite();
@@ -998,6 +1010,14 @@ impl<'a> Search<'a> {
     }
 
     /// The depth of the last completed iteration; zero before any.
+    /// Elapsed milliseconds at the end of each completed iteration, in
+    /// order. Empty when the search ran without a time budget, which is
+    /// what `bench` and every `go depth` run under.
+    #[must_use]
+    pub fn iterations_ms(&self) -> &[u64] {
+        &self.iterations
+    }
+
     #[must_use]
     pub fn completed_depth(&self) -> u32 {
         self.completed_depth

@@ -14,12 +14,14 @@
 
 mod support;
 
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal, parse_uci};
-use cadence_engine::search::Limits;
+use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{Budget, MOVE_OVERHEAD_MS, budget};
+use cadence_engine::tt::Table;
 use support::Engine;
 
 fn limits(s: &str) -> Limits {
@@ -341,5 +343,145 @@ fn a_go_with_only_the_other_side_s_clock_comes_back() {
     assert!(
         lines.iter().any(|l| l.starts_with("info string go:")),
         "the missing clock is not reported: {lines:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The iteration that is started and never finished
+// ---------------------------------------------------------------------------
+
+/// The position the waste is measured on: bench position 16, a middlegame,
+/// so the ladder is one this repository already searches and nothing here is
+/// chosen to make a number come out.
+const MIDDLEGAME: &str = "r2q1rk1/1b1nbppp/pp1ppn2/8/2PNP3/1PN1B3/P2QBPPP/R4RK1 w - - 0 13";
+
+/// The table size the bench runs with, so the ladder is the shape the
+/// engine actually searches rather than one a starved table produces.
+const HASH_MB: usize = 16;
+
+/// One search of `MIDDLEGAME` under `limits`, against a table of its own.
+///
+/// Returns the elapsed milliseconds at the end of each completed iteration
+/// and the elapsed milliseconds at the move. In process, so no part of what
+/// is measured is a binary starting up -- the class of fault a timing test
+/// that measured process start-up already cost this project once.
+fn ladder(limits: Limits) -> (Vec<u64>, u64) {
+    let stop = AtomicBool::new(false);
+    let tt = Table::new(HASH_MB).expect("a table");
+    let mut board = Board::from_fen(MIDDLEGAME).expect("the middlegame position");
+    let mut s = Search::new(limits, &stop, &tt);
+    let start = Instant::now();
+    s.run(&mut board, &mut std::io::sink());
+    let returned = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    (s.iterations_ms().to_vec(), returned)
+}
+
+/// The clock that spends `soft` on a move, in sudden death with no
+/// increment: `budget` takes a twenty-fifth of what is left after the
+/// overhead, and the half-clock cap is nowhere near three times that.
+fn clock_for(soft: u64) -> Limits {
+    let wtime = 25 * soft + MOVE_OVERHEAD_MS;
+    Limits {
+        time: [Some(wtime), Some(wtime)],
+        ..Limits::default()
+    }
+}
+
+/// The seam the gate below reads: one elapsed reading per completed
+/// iteration, and none at all where there is no budget.
+///
+/// The second half is the bench contract at the recording site. A depth
+/// limit yields no budget, the clock is never read, and nothing is
+/// recorded; if that ever stops being true the node count has stopped being
+/// a function of the code alone.
+#[test]
+fn the_ladder_is_recorded_under_a_clock_and_not_under_a_depth() {
+    let (rungs, _) = ladder(Limits::depth(6));
+    assert!(rungs.is_empty(), "a depth limit read the clock: {rungs:?}");
+
+    let mut limits = Limits::depth(6);
+    limits.movetime = Some(30_000);
+    let (rungs, _) = ladder(limits);
+    assert_eq!(rungs.len(), 6, "six iterations, {} rungs", rungs.len());
+    assert!(
+        rungs.windows(2).all(|w| w[1] >= w[0]),
+        "elapsed went backwards: {rungs:?}"
+    );
+}
+
+/// **The waste.** An iteration whose cost the search can already predict
+/// will not fit inside the hard budget must not be started: it runs to the
+/// hard limit and returns the move the last completed iteration had
+/// already produced.
+///
+/// The clock is derived from this machine and not written down, because a
+/// clock that puts one machine in the window puts another either side of
+/// it, and a gate for a condition that cannot be triggered passes without
+/// covering anything. So: measure the ladder here, find a depth whose
+/// successor cannot fit, and build the clock that lands on it. Two coverage
+/// assertions carry that:
+///
+/// - a depth in the window exists on this machine at all, from the free
+///   ladder;
+/// - and the search under that clock stopped for some reason other than
+///   the soft budget, from its own ladder. Without the second, a machine
+///   whose ladder had drifted 25% between the two runs would pass this by
+///   never reaching the window.
+///
+/// The property itself is scale-free and is read off the run that asserts
+/// it: the time spent after the last completed iteration may not exceed
+/// what that iteration itself cost. Today it is two and a half times it.
+#[test]
+fn an_iteration_that_cannot_finish_is_not_started() {
+    // The free ladder: enough depth to see the window, and a movetime that
+    // bounds the calibration whatever machine this is.
+    let mut free = Limits::depth(10);
+    free.movetime = Some(3_000);
+    let (rungs, _) = ladder(free);
+    assert!(rungs.len() >= 3, "no ladder to read: {rungs:?}");
+
+    // The window: the last completed iteration finished before `soft`, so
+    // the next is started, and it cannot finish before `hard`, which is
+    // three times `soft`. A quarter of headroom on `soft` so the clock
+    // survives the run-to-run variation between this ladder and the next.
+    // The deepest such depth, capped so the gate costs about a second.
+    let mut window = None;
+    for d in 1..rungs.len() {
+        let cum = rungs[d - 1];
+        let next = rungs[d] - rungs[d - 1];
+        let soft = cum + cum / 4 + 1;
+        if cum > 0 && 3 * soft <= 1_500 && cum + next > 3 * soft {
+            window = Some((d, soft));
+        }
+    }
+    let (depth, soft) = window.unwrap_or_else(|| {
+        panic!("no depth on this machine starts an iteration it cannot finish: {rungs:?}")
+    });
+
+    let (run, returned) = ladder(clock_for(soft));
+    assert!(
+        !run.is_empty(),
+        "not one iteration completed under {soft} ms"
+    );
+    let last = *run.last().expect("a completed iteration");
+    let cost = last
+        - if run.len() >= 2 {
+            run[run.len() - 2]
+        } else {
+            0
+        };
+    let wasted = returned.saturating_sub(last);
+
+    assert!(
+        last < soft,
+        "the soft budget ended this search, so the window was never reached: \
+         calibrated on depth {depth} of {rungs:?}, ran {run:?} against soft {soft}"
+    );
+    assert!(
+        wasted <= cost,
+        "{wasted} ms spent after the last completed iteration, which cost {cost} ms: \
+         calibrated on depth {depth} of {rungs:?}, ran {run:?}, \
+         soft {soft}, hard {}, returned at {returned}",
+        3 * soft
     );
 }
