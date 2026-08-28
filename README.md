@@ -180,7 +180,7 @@ The installer prompts without echo for the OpenBench password and, where the
 engine repository is private, a fine-grained GitHub token with read access to
 it. That condition is the client's, not this project's: a worker fetches
 source for a private engine with credentials and for a public one without.
-It stores credentials outside both repositories, installs the pinned official
+It stores credentials outside version control, installs the pinned official
 client in the platform data directory, builds the server-named fastchess
 revision with bounded parallelism, and installs the platform user launcher.
 Use `--dry-run` to inspect paths without writing, downloading, or starting
