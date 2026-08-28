@@ -10,7 +10,7 @@
 //! Two forms, and only two:
 //!
 //! - `0.3.0` -- built at the annotated tag for this package version.
-//! - `0.3.0-dev-93663ea` -- anything else, carrying the commit it came from,
+//! - `0.3.0-dev-ee1dabd` -- anything else, carrying the commit it came from,
 //!   or `0.3.0-dev-unknown` where there was no repository to ask.
 //!
 //! **The bare form is reachable only through a tag that matches the package
