@@ -22,6 +22,8 @@
 //!   tuned later, no move can spend more than half the clock, so search
 //!   time alone can never run it out, and latency up to the overhead per
 //!   move is covered by an increment that covers it.
+//! - And an iteration is started only if it is predicted to finish inside
+//!   the hard budget: [`another_iteration_fits`].
 //!
 //! Below the overhead there is no time to spend; the budget is zero and the
 //! search returns its first iteration, which completes in microseconds. A
@@ -82,4 +84,79 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     let soft = (share + inc * 3 / 4).min(cap);
     let hard = (soft * 3).min(cap);
     Some(Budget { soft, hard })
+}
+
+/// Whether to start another iteration, given the elapsed milliseconds at the
+/// end of each completed one and the budget.
+///
+/// **What this is for.** Starting an iteration on "the last one finished
+/// before the soft budget" and abandoning it at the hard budget leaves a
+/// window in which an iteration is always started and never finished: the
+/// search spends up to two and a half times the soft budget and returns the
+/// move it already had. The window is not a badly chosen fraction. With an
+/// effective branching factor of EBF, iteration times are geometric, so the
+/// cumulative time after each iteration is EBF times the one before it, and
+/// in log-space the window is `ln(EBF / 3) / ln(EBF)` of all moves -- 39% at
+/// EBF 6 and 47% at EBF 8. No time control and no tunable fraction appears
+/// in that expression. Moving the soft fraction moves which clocks land in
+/// the window; it cannot close it, because the window is the hard-to-soft
+/// ratio of three measured against a branching factor larger than three.
+/// Only a different rule closes it, and this is the rule.
+///
+/// **The prediction is free.** Cumulative iteration times are geometric in
+/// EBF, so the elapsed time carries its own estimate of it, and the next
+/// iteration is predicted to end at EBF times the elapsed time. It is
+/// started only if that lands inside the hard budget.
+///
+/// **EBF is read over two iterations and not one, which is the one thing
+/// here a measurement decided.** Alpha-beta iteration times alternate: an
+/// iteration whose parity suits the ordering the last one left is cheap and
+/// the next is dear. A one-step ratio therefore samples half a period and
+/// reads the alternation as the trend. Measured on the middlegame position
+/// `tests/time.rs` gates this with, the costs run 2, 7, 37, 107, 617 ms and
+/// the one-step ratios 3.5, 5.3, 2.9, 5.8: at the step that matters the
+/// one-step estimate reads 2.9 against a true 5.8, predicts the iteration
+/// will fit, and starts it. Two steps span a full period, and the elapsed
+/// times two apart are in the ratio EBF squared.
+///
+/// **Three further things settled here rather than inside a test.**
+///
+/// - **The rule is inert where the hard budget equals the soft one**, which
+///   is what `movetime` gives. There the time is not transferable: nothing
+///   later gets what this move does not spend, so an abandoned iteration
+///   costs nothing and refusing to start one only gives up the chance that
+///   the prediction was wrong. The condition is read off the budget rather
+///   than off the limits, so it is a property of what there is to save and
+///   not a case named after a `go` token.
+/// - **There is no safety factor on the prediction.** One would be a
+///   tunable fraction, which is the thing this rule exists to not be.
+/// - **Every way of not knowing answers "start it":** fewer than three
+///   completed iterations, or one two back that was too fast to have taken
+///   a millisecond. The search must always have a move, the early
+///   iterations are the cheap ones, and a wrong "start it" is no worse than
+///   the rule this replaces.
+///
+/// Integer throughout, like the rest of this module: no float reaches a
+/// path that decides anything.
+#[must_use]
+pub fn another_iteration_fits(completed: &[u64], budget: Budget) -> bool {
+    if budget.hard <= budget.soft {
+        return true;
+    }
+    let n = completed.len();
+    if n < 3 {
+        return true;
+    }
+    let elapsed = completed[n - 1];
+    let two_back = completed[n - 3];
+    if two_back == 0 {
+        return true;
+    }
+    // Two iterations apart the elapsed times are in the ratio EBF squared.
+    // Scaled by a million so the root comes back in thousandths, which is
+    // enough resolution to be exact at this scale and keeps every step an
+    // integer one.
+    let ebf_milli = (elapsed.saturating_mul(1_000_000) / two_back).isqrt();
+    let predicted = elapsed.saturating_mul(ebf_milli) / 1_000;
+    predicted <= budget.hard
 }

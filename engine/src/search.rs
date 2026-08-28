@@ -147,8 +147,10 @@
 //! inside its first iteration, the search returns the best root move it
 //! has fully searched -- the first root move, if not even one -- so there
 //! is always a move. The soft budget only prevents starting another
-//! iteration. Under `infinite` the search returns only when `stop` is
-//! raised, as the protocol requires.
+//! iteration, and so does a prediction that the next one cannot finish
+//! inside the hard budget ([`crate::time::another_iteration_fits`]). Under
+//! `infinite` the search returns only when `stop` is raised, as the
+//! protocol requires.
 
 use std::io::Write;
 use std::iter::Peekable;
@@ -540,7 +542,12 @@ impl<'a> Search<'a> {
             if let Some(b) = self.budget {
                 let elapsed = self.elapsed_ms();
                 self.iterations.push(elapsed);
-                if elapsed >= b.soft {
+                // Two reasons not to start another, and they are different
+                // reasons: the soft budget says this move has had its
+                // share, and the prediction says the next iteration would
+                // be abandoned unfinished at the hard budget and buy
+                // nothing.
+                if elapsed >= b.soft || !time::another_iteration_fits(&self.iterations, b) {
                     break;
                 }
             }

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal, parse_uci};
 use cadence_engine::search::{Limits, Search};
-use cadence_engine::time::{Budget, MOVE_OVERHEAD_MS, budget};
+use cadence_engine::time::{Budget, MOVE_OVERHEAD_MS, another_iteration_fits, budget};
 use cadence_engine::tt::Table;
 use support::Engine;
 
@@ -484,4 +484,67 @@ fn an_iteration_that_cannot_finish_is_not_started() {
          soft {soft}, hard {}, returned at {returned}",
         3 * soft
     );
+}
+
+/// The rule as arithmetic, which is how the rest of this module is tested.
+///
+/// The ladder is the one measured on the middlegame position above, so the
+/// case the gate below covers end to end is pinned here as numbers too: at
+/// a hard budget of 576 ms, elapsed 153 with 9 two iterations back predicts
+/// 630 and the iteration is refused.
+#[test]
+fn an_iteration_is_started_only_when_it_is_predicted_to_finish() {
+    let clocked = |hard: u64| Budget {
+        soft: hard / 3,
+        hard,
+    };
+    let ladder = [0, 0, 0, 2, 9, 46, 153];
+
+    assert!(!another_iteration_fits(&ladder, clocked(576)));
+    // The same ladder with room for the prediction starts it.
+    assert!(another_iteration_fits(&ladder, clocked(700)));
+    // And a larger hard budget never refuses where a smaller one started.
+    let mut started = false;
+    for hard in (100..1200).step_by(10) {
+        let fits = another_iteration_fits(&ladder, clocked(hard));
+        assert!(
+            fits || !started,
+            "hard {hard} refuses what a shorter one started"
+        );
+        started |= fits;
+    }
+    assert!(started, "no hard budget in the range started an iteration");
+}
+
+/// Every way of not knowing answers "start it", so the search always has a
+/// move and the early iterations are never refused.
+#[test]
+fn the_rule_starts_an_iteration_whenever_it_cannot_predict() {
+    let tight = Budget { soft: 1, hard: 3 };
+    for rungs in [&[][..], &[0][..], &[0, 0][..], &[5, 400][..]] {
+        assert!(another_iteration_fits(rungs, tight), "{rungs:?}");
+    }
+    // Three rungs, but the one two back took under a millisecond, so there
+    // is no ratio to read.
+    assert!(another_iteration_fits(&[0, 40, 900], tight));
+}
+
+/// `movetime` makes the hard budget the soft one, and there the rule is
+/// inert: nothing later gets what this move does not spend, so an
+/// abandoned iteration costs nothing and refusing to start one only gives
+/// up the chance that the prediction was wrong.
+#[test]
+fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
+    let ladder = [0, 0, 0, 2, 9, 46, 153];
+    let movetime = budget(&limits("movetime 200"), Colour::White).expect("budget");
+    assert_eq!(movetime.soft, movetime.hard);
+    assert!(another_iteration_fits(&ladder, movetime));
+    // The same numbers on a clock, where the time is transferable.
+    assert!(!another_iteration_fits(
+        &ladder,
+        Budget {
+            soft: movetime.hard / 3,
+            hard: movetime.hard
+        }
+    ));
 }
