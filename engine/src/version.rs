@@ -9,9 +9,9 @@
 //!
 //! Two forms, and only two:
 //!
-//! - `0.3.0` -- built at the annotated tag for this package version.
-//! - `0.3.0-dev-ee1dabd` -- anything else, carrying the commit it came from,
-//!   or `0.3.0-dev-unknown` where there was no repository to ask.
+//! - `0.4.0` -- built at the annotated tag for this package version.
+//! - `0.4.0-dev-<short commit>` -- anything else, carrying the commit it came
+//!   from, or `0.4.0-dev-unknown` where there was no repository to ask.
 //!
 //! **The bare form is reachable only through a tag that matches the package
 //! version character for character.** Every way of not knowing arrives here
@@ -42,7 +42,9 @@ pub const VERSION: &str = if is_release(TAG, PACKAGE) {
 ///
 /// Not a prefix test and not a "starts with the version" test. `0.3.0-rc1`
 /// and `v0.3.0` are both tags a person might reasonably write and neither is
-/// this package's version, so neither releases it.
+/// the `package` they are asked about, so neither releases it. The literals
+/// here and in the test below are an example of the function and not of this
+/// package, so they do not move when the version does.
 const fn is_release(tag: &str, package: &str) -> bool {
     let (tag, package) = (tag.as_bytes(), package.as_bytes());
     if tag.is_empty() || tag.len() != package.len() {
@@ -105,7 +107,7 @@ mod tests {
     }
 
     /// The commit is never empty, so the dev form can never trail off into
-    /// `0.3.0-dev-`, which reads as a truncation rather than as a fact.
+    /// `0.4.0-dev-`, which reads as a truncation rather than as a fact.
     #[test]
     fn the_commit_is_always_something() {
         assert!(!COMMIT.is_empty());

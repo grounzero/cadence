@@ -74,9 +74,9 @@ impl Facts {
     fn read(root: &Path) -> Self {
         let commit = git(root, &["rev-parse", "--short", "HEAD"]);
         // The short commit is the same token the archived binaries are filed
-        // under, so `Cadence 0.3.0-dev-ee1dabd` and the directory holding that
-        // build are searchable by one string. That is worth more here than
-        // matching the eight characters other engines print.
+        // under, so `Cadence 0.4.0-dev-<short commit>` and the directory
+        // holding that build are searchable by one string. That is worth more
+        // here than matching the eight characters other engines print.
         let Some(commit) = commit else {
             return Self::unknown();
         };
