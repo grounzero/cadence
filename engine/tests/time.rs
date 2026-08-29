@@ -430,7 +430,22 @@ fn the_ladder_is_recorded_under_a_clock_and_not_under_a_depth() {
 ///
 /// The property itself is scale-free and is read off the run that asserts
 /// it: the time spent after the last completed iteration may not exceed
-/// what that iteration itself cost. Today it is two and a half times it.
+/// what that iteration itself cost. When the rule landed it was two and a
+/// half times it.
+///
+/// **The window can be closed, and a closed window is verified rather
+/// than failed.** The waste exists only where an iteration can cost more
+/// than the hard budget leaves: with hard at three times soft, that needs
+/// the next iteration to outweigh roughly 2.75 times everything searched
+/// so far, which the derivation behind the rule states as the window
+/// closing at a branching factor of three. Null-move pruning brought this
+/// tree's ladder under that everywhere on this machine, so the free
+/// ladder can present no depth to build the trial on. The gate then
+/// asserts the closure off the whole ladder, cap ignored, and passes with
+/// the ladder printed: a rung the calibration cap alone excluded still
+/// fails loudly, and any tree that reopens the window re-arms the trial
+/// by itself. What must not happen is the third option, a quiet pass that
+/// looked and found nothing to ask.
 #[test]
 fn an_iteration_that_cannot_finish_is_not_started() {
     // The free ladder: enough depth to see the window, and a movetime that
@@ -454,9 +469,23 @@ fn an_iteration_that_cannot_finish_is_not_started() {
             window = Some((d, soft));
         }
     }
-    let (depth, soft) = window.unwrap_or_else(|| {
-        panic!("no depth on this machine starts an iteration it cannot finish: {rungs:?}")
-    });
+    let Some((depth, soft)) = window else {
+        // The closed window, verified over every rung with the cost cap
+        // ignored: a rung the cap alone excluded is a trial this gate
+        // should have run and did not, and fails rather than passing over
+        // it.
+        for d in 1..rungs.len() {
+            let cum = rungs[d - 1];
+            let next = rungs[d] - rungs[d - 1];
+            let soft = cum + cum / 4 + 1;
+            assert!(
+                cum == 0 || cum + next <= 3 * soft,
+                "a depth in the window exists at {d} and only the calibration cap hid it: {rungs:?}"
+            );
+        }
+        println!("the window is closed on this ladder, at every rung: {rungs:?}");
+        return;
+    };
 
     let (run, returned) = ladder(clock_for(soft));
     assert!(

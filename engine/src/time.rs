@@ -103,6 +103,17 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
 /// ratio of three measured against a branching factor larger than three.
 /// Only a different rule closes it, and this is the rule.
 ///
+/// **The window is closed on the tree as it stands, and this rule is kept
+/// deliberately, not by oversight.** Null-move pruning brought the
+/// iteration ratios under three, so the expression above says no clock
+/// lands in the window and the prediction here almost always answers
+/// "start it". That makes the rule nearly inert, and it stays: it re-arms
+/// wherever the ladder steepens past three again, on a position or a
+/// machine this reading was not taken on, and removing it would be a
+/// behavioural change needing its own test. The gate in `tests/time.rs`
+/// makes the same move, verifying the closure instead of demonstrating
+/// the waste.
+///
 /// **The prediction is free.** Cumulative iteration times are geometric in
 /// EBF, so the elapsed time carries its own estimate of it, and the next
 /// iteration is predicted to end at EBF times the elapsed time. It is

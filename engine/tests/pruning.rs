@@ -23,7 +23,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{START_FEN, generate_legal};
 use cadence_engine::search::{Limits, Search};
-use support::table;
+use support::{PAWN_ENDGAMES, table};
 
 /// The depth the gates search to. Six: deep enough that null-window nodes
 /// with the evaluation above beta are plentiful, shallow enough that no
@@ -34,17 +34,6 @@ const GATE_DEPTH: u32 = 6;
 fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
-
-/// Pawn-and-king positions where one side stands far enough ahead that the
-/// evaluation sits above beta at null-window nodes throughout the tree:
-/// the null move would be offered constantly, so a search that never tries
-/// one is a guard deciding, not a quiet tree. Pawns start on their own
-/// second and third ranks, so no promotion is reachable inside
-/// `GATE_DEPTH` plies and every node of the subtree is pawn-and-king only.
-const PAWN_ENDGAMES: [&str; 2] = [
-    "4k3/pppp4/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
-    "4k3/pppppppp/8/8/8/8/4PPPP/4K3 b - - 0 1",
-];
 
 /// The pruning happens: a middlegame search tries null moves and cuts on
 /// them.

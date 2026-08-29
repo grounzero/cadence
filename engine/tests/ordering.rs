@@ -1043,6 +1043,14 @@ const SORT_DEPTH: u32 = 7;
 /// unaffected either way -- it discriminates by a factor of five -- but the
 /// old reference would have left it passing with the sort removed, which is
 /// the one thing it exists to fail.
+///
+/// **Re-measured again when null-move pruning landed, for the same
+/// reason**: 72,422,385 nodes with no ordering in the main search against
+/// 14,565,111 with it. The pruning cut both trees, the ceiling of nine
+/// tenths of 89,173,515 had fallen above the new unordered point, and the
+/// build this gate exists to fail had started passing it. The shape of the
+/// assertion is unchanged and the gate discriminates by a factor of five
+/// again.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1060,8 +1068,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 89_173_515,
-        "{total} nodes against the 89,173,515 the same search took with no ordering at all"
+        total * 10 < 9 * 72_422_385,
+        "{total} nodes against the 72,422,385 the same search took with no ordering at all"
     );
 }
 
@@ -1099,6 +1107,17 @@ fn the_capture_sort_saves_nodes() {
 /// that never reaches a search and becomes a gate against nothing, and the
 /// answer will be a set or a depth where the band is worth more rather than
 /// a tighter ceiling on this one.
+///
+/// **That point arrived with null-move pruning, further than predicted**:
+/// 14,582,345 nodes with every capture ahead of the killers against
+/// 14,565,111 with the losing ones behind them, a window of 0.12%, and the
+/// old ceiling sat far above both. The counts are exact, so a ceiling
+/// between the two new points still separates the builds today, and it is
+/// re-baselined once more on that ground alone. What the paragraph above
+/// asked for is now due rather than approaching: the pruning has cut away
+/// most of the subtrees the demotion was saving on this set at this depth,
+/// and the next tree change should replace this gate's set or depth
+/// instead of its constant.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1116,8 +1135,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 17_300_000,
-        "{total} nodes against the 17,418,454 the same search took with every capture ahead of the killers"
+        total < 14_574_000,
+        "{total} nodes against the 14,582,345 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1151,6 +1170,16 @@ fn demoting_the_losing_captures_saves_nodes() {
 /// build with the losing-capture demotion switched off agrees with both. So
 /// the invariant this gate exists for is intact and was demonstrated again
 /// rather than assumed, and what moved is the tree it is measured over.
+///
+/// **Null-move pruning weakened the premise without moving a number.** The
+/// pruning reads beta, and the windows a node sees depend on the order its
+/// parent tried its moves in, so under it an ordering change *can* move a
+/// root value. Measured when it landed: the shipped build, the build with
+/// no sort in `negamax`, and this fixture agree on all sixteen scores at
+/// this depth, so the invariant held on this set and the array did not
+/// move. If this gate ever fires after an ordering change, check whether
+/// what moved is the pruning's window before concluding the sort dropped a
+/// move.
 ///
 /// The values before the extension were
 /// `[102, 230, 2, 532, 929, 620, -419, 0, 6, 34, 511, -18, 0, 117, 0, 0]`.
@@ -1559,6 +1588,15 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 /// removed reads 1,674,084 against the 1,090,926 this search takes with
 /// them, so the gate still discriminates by a third, and the constant is
 /// again a number this tree produces rather than one it used to.
+///
+/// **And re-measured when null-move pruning landed, which is when the old
+/// reference stopped discriminating**: the killerless build reads 663,124
+/// against 598,617 with them, both under the old ceiling, so a build with
+/// no killers had started passing. The killers are worth 11% on this set
+/// where they were worth a third, because the pruning now decides many of
+/// the nodes a killer used to decide before the sort is consulted. The
+/// assertion becomes a plain ceiling between the two points, exact counts,
+/// about 5% either side.
 #[test]
 fn the_killers_save_nodes() {
     let fens = deep_fens();
@@ -1569,8 +1607,8 @@ fn the_killers_save_nodes() {
     }
     println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
     assert!(
-        total * 4 < 3 * 1_674_084,
-        "{total} against the 1,674,084 the same search took with no killers in the main search"
+        total < 630_000,
+        "{total} against the 663,124 the same search took with no killers in the main search"
     );
 }
 

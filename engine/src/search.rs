@@ -91,9 +91,16 @@
 //! smaller tree than the full one would take to refute it. A move that is
 //! better fails high in it, and what comes back then is a bound and not a
 //! value, so that move is searched again with the full window to find out
-//! what it is worth. Nothing is discarded and nothing is trusted that was
-//! not searched: the whole of the effect is on how much of a tree has to
-//! be visited to reach the same value, and the values are the same values.
+//! what it is worth. Nothing is discarded on the window's account and
+//! nothing is trusted that was not searched. This paragraph used to end
+//! "the values are the same values", and null-move pruning is what ended
+//! that: the pruning below reads beta, so what a node returns now depends
+//! on the window it was asked in, and two searches of one position agree
+//! only where their windows do. The machinery stands anyway, because
+//! every score that comes back is a fail-soft bound and every consumer
+//! treats it as one; what was lost is the guarantee that a re-search
+//! walks to the value the narrow window found, and the window gates in
+//! `tests/search.rs` are scoped around exactly that.
 //! Two conditions the re-search is not run under: a score at or above beta
 //! is already the bound this node returns, and at a node whose own window
 //! is a null one there is no room between alpha and beta for a score to
@@ -118,11 +125,22 @@
 //! extended, when no search could reach it, and the extension above is what
 //! makes it reachable: it is the floor the cap does not stand on.
 //!
+//! **Null-move pruning.** At an interior node of the main search, out of
+//! check and inside a null window, where the static evaluation already
+//! stands at or above beta, the side to move hands the opponent the move
+//! and a reduced search asks whether it still stands there
+//! ([`null_reduction`] plies past the one the move would have cost). If it
+//! does, the node is cut without its move list being generated. Every
+//! condition that refuses it is named at the rule in `negamax` with the
+//! wrong answer it exists to avoid; the one that is a chess claim rather
+//! than a search claim is the zugzwang guard, [`has_non_pawn_material`].
+//!
 //! **What it is not, on purpose.** No history, so the quiet moves the
 //! killers did not claim are not ranked against each other: that is a
 //! separate change with its own SPRT, plugging into the same sort. No
-//! reduction anywhere, no extension on anything but a check, and no other
-//! pruning, in the quiescence search included: no delta pruning. That
+//! reduction of any real move's search, no extension on anything but a
+//! check, and no pruning beyond the null move above and the quiescence
+//! exchange rule below: no delta pruning. That
 //! search extends nothing and has nothing to extend: it carries no depth,
 //! and in check it already answers with every legal evasion. Folded in
 //! together the result would not identify which change helped or hurt.
@@ -158,7 +176,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
-use cadence_core::{Colour, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, to_uci};
+use cadence_core::{
+    Colour, MAX_PLY, Move, MoveList, PieceType, generate_legal, generate_noisy, to_uci,
+};
 
 use crate::eval;
 use crate::picker;
@@ -403,6 +423,49 @@ const EXTEND_WITHIN: usize = 2;
 #[must_use]
 pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
+}
+
+/// How many plies past the one the move would have cost a null-move
+/// verification is shortened by: the reduced search runs at
+/// `depth - 1 - null_reduction(depth)`, floored at zero, where the floor
+/// hands the question to the quiescence search.
+///
+/// Three plus a third of the depth, and the depth term is why. The
+/// verification is not trying to value the position, it is asking whether
+/// a side that stands above beta *after giving up the move* can be pushed
+/// back under it, and the deeper the node the more depth the answer keeps
+/// even after a large reduction. A constant sized for the shallow nodes
+/// wastes most of the saving at the deep ones, which is where the subtrees
+/// are. Scaling by how far the evaluation clears beta is a separate
+/// mechanism with its own test, refused here, not folded in.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of one argument, gateable without a search.
+#[must_use]
+pub fn null_reduction(depth: u32) -> u32 {
+    3 + depth / 3
+}
+
+/// Whether the side to move has any piece beside its pawns and king.
+///
+/// The zugzwang guard. The null move reads "even giving up the move, I
+/// stand above beta" as strength, and in a pawn-and-king position that
+/// reading inverts: the obligation to move is often the losing condition,
+/// so passing is exactly the move the side wants and cannot have, and a
+/// cutoff taken on it prunes the one class of position where the
+/// conclusion is systematically wrong. With a piece on the board a waiting
+/// move nearly always exists and the reading holds. Zugzwang with pieces
+/// exists and is not checked for; what makes that survivable is that it is
+/// rare, that the damage is one wrong bound at a node the evaluation
+/// already called winning, and that nothing is stored in the table on the
+/// way out.
+///
+/// The side checked is the side to move, and only that side: the guard is
+/// about who is asking to pass, not about what is left on the board.
+#[must_use]
+pub fn has_non_pawn_material(board: &Board) -> bool {
+    let us = board.side_to_move();
+    (board.by_colour(us) & !(board.by_type(PieceType::Pawn) | board.by_type(PieceType::King))).any()
 }
 
 /// Whether the side to move's position is improving: the static evaluation
@@ -799,6 +862,10 @@ impl<'a> Search<'a> {
             Some(eval::evaluate(board))
         };
 
+        if let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
+            return score;
+        }
+
         let mut legal = generate_legal(board);
         if legal.is_empty() {
             return if in_check { mated_in(ply) } else { DRAW };
@@ -894,6 +961,74 @@ impl<'a> Search<'a> {
             bound,
         );
         best
+    }
+
+    /// Null-move pruning at one node: where the side to move can hand the
+    /// opponent the move and still stand at or above beta at reduced
+    /// depth, the node is cut without its move list being generated.
+    /// `Some` is the cutoff (or the meaningless post-abort value every
+    /// caller discards); `None` means search the node. Standing above beta
+    /// after conceding a whole tempo is the strongest cheap evidence a
+    /// node can offer that it will not fail low, and the reduced search
+    /// ([`null_reduction`] plies past the one the move would have cost) is
+    /// what checks the evidence rather than trusting the evaluation alone.
+    ///
+    /// What refuses it, and each condition is a wrong answer somewhere: a
+    /// node in check (`evals[ply]` is `None` there: passing is not
+    /// available, in rule or in spirit); a full-window node, because the
+    /// consumer of a bound is a null-window question and the principal
+    /// variation wants a value and a line; a beta on the mate scale,
+    /// because a reduced search asserting or denying a forced mate has not
+    /// proved one, and refusing here is what keeps mate proofs searched in
+    /// full; an evaluation below beta, where the evidence is not there to
+    /// check; a position reached by the null move itself
+    /// (`plies_from_null` of zero), because two passes in a row search the
+    /// same position two reductions shallower and answer nothing; a
+    /// halfmove clock at the limit, where the node is a draw by rule and
+    /// `negamax` has not run its draw check yet; and a side to move with
+    /// nothing but pawns beside the king, which is the zugzwang guard
+    /// ([`has_non_pawn_material`]).
+    ///
+    /// A cutoff returns the reduced search's score, fail-soft like every
+    /// other bound here, except that a score on the mate scale comes back
+    /// as `beta`: the reduction means no mate was proved at this node's
+    /// depth, and an unproved mate distance poisons the scale in the way
+    /// `score::to_tt` documents. Nothing is stored in the table: the entry
+    /// would carry a reduced depth as if it were `depth`, and the saving a
+    /// probe hit buys is the saving this rule already took.
+    fn null_move(
+        &mut self,
+        board: &mut Board,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Option<Score> {
+        let admitted = self.evals[ply].is_some_and(|eval| eval >= beta)
+            && beta == alpha + 1
+            && !score::is_mate(beta)
+            && board.plies_from_null() != 0
+            && board.halfmove_clock() < 100;
+        if !admitted {
+            return None;
+        }
+        if !has_non_pawn_material(board) {
+            self.null_refused_material += 1;
+            return None;
+        }
+        self.null_attempts += 1;
+        let reduced = depth.saturating_sub(1 + null_reduction(depth));
+        let _ = board.make_null_move();
+        let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1);
+        board.unmake_null_move();
+        if self.aborted {
+            return Some(DRAW);
+        }
+        if score >= beta {
+            self.null_cutoffs += 1;
+            return Some(if score::is_mate(score) { beta } else { score });
+        }
+        None
     }
 
     /// The quiescence search: the horizon, made quiet before it is

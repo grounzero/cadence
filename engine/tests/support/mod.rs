@@ -16,6 +16,20 @@ use std::time::{Duration, Instant};
 
 pub const FIXTURE: &str = include_str!("../../../tests/fixtures/perft-corpus.txt");
 
+/// Pawn-and-king positions where one side stands far enough ahead that the
+/// evaluation sits above beta at null-window nodes throughout the tree.
+/// Two gates read them for opposite halves of one fact -- null-move pruning
+/// refuses these positions, so a search of them tries no null move
+/// (`tests/pruning.rs`) and remains a function of the position and the
+/// depth alone, independent of the window it is asked in
+/// (`tests/search.rs`). Pawns start on their own second and third ranks, so
+/// no promotion is reachable inside six plies of the main search and every
+/// node of a depth-six subtree is pawn-and-king only.
+pub const PAWN_ENDGAMES: [&str; 2] = [
+    "4k3/pppp4/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+    "4k3/pppppppp/8/8/8/8/4PPPP/4K3 b - - 0 1",
+];
+
 /// The rows of the fenced TSV block named `name`.
 pub fn tsv(name: &str) -> Vec<Vec<String>> {
     let mut rows = Vec::new();

@@ -702,7 +702,8 @@ fn no_table() -> Table {
 }
 
 /// A window that brackets the value returns that value, whichever side of
-/// it the window sits on.
+/// it the window sits on -- wherever the search is still a function of the
+/// position and the depth alone.
 ///
 /// **This is the property every null-window search rests on.** Alpha-beta
 /// is fail-soft here, so a search that fails high returns a lower bound on
@@ -720,6 +721,19 @@ fn no_table() -> Table {
 /// **which** window a search chooses to ask: that is the coverage gate at
 /// the end of this section.
 ///
+/// **Null-move pruning shrank where this holds, and the gate is scoped to
+/// where it does rather than retired.** The pruning reads beta, so past
+/// depth one a node's value depends on the window it was asked in and the
+/// two sides of this assertion legitimately diverge (the first divergence
+/// observed was two points, at depth four, on a quiet middlegame). What
+/// is left exact is exactly what is asserted: every position at depth
+/// one, where no node below the root exists for the pruning to fire at,
+/// which is the depth the arithmetic faults break at anyway; and the
+/// pawn-and-king positions at every depth, where the zugzwang guard
+/// refuses the null move at every node and the search is
+/// window-independent in full. A failure here is window arithmetic, not
+/// pruning.
+///
 /// With no table, deliberately. An entry stored by one of these searches
 /// and read by the next would let a narrow window answer from a wide one's
 /// work, which is a legitimate thing for a table to do and would make this
@@ -727,9 +741,13 @@ fn no_table() -> Table {
 #[test]
 fn a_window_that_brackets_the_value_returns_the_value() {
     let stop = AtomicBool::new(false);
-    for fen in sample() {
+    for (fen, depths) in sample().into_iter().map(|f| (f, 1..=1)).chain(
+        support::PAWN_ENDGAMES
+            .into_iter()
+            .map(|f| (f.to_string(), 1..=BRACKET_DEPTH)),
+    ) {
         let mut b = board(&fen);
-        for depth in 1..=BRACKET_DEPTH {
+        for depth in depths {
             let tt = no_table();
             let full = Search::new(Limits::default(), &stop, &tt).node(&mut b, depth, 0);
             let below = Search::new(Limits::default(), &stop, &tt).node_window(
@@ -774,11 +792,14 @@ fn a_window_that_brackets_the_value_returns_the_value() {
 /// the move as well as the score, and it is here because the window is the
 /// search's own arithmetic rather than the picker's.
 ///
-/// The fixture was measured on the tree that searched every move with the
-/// full window, over the positions of `sample()` at `WINDOW_DEPTH` with a
-/// table of no buckets. **It is not re-baselined by a windowing change.**
-/// An extension changes the tree the value is of and may move a score
-/// (`tests/ordering.rs` records the one time that was the right answer); a
+/// The fixture was measured over the positions of `sample()` at
+/// `WINDOW_DEPTH` with a table of no buckets, first on the tree that
+/// searched every move with the full window, and re-measured when
+/// null-move pruning landed. **It is not re-baselined by a windowing
+/// change.** An extension changes the tree the value is of and may move a
+/// score (`tests/ordering.rs` records the one time that was the right
+/// answer); a pruning rule that reads beta does the same, which is what
+/// moved two scores here by two points each with every move unchanged; a
 /// window changes which parts of a fixed tree have to be visited to
 /// establish the same value, and nothing else. If this array has to move,
 /// what moved is not a window.
@@ -806,8 +827,10 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
     );
 }
 
-/// What `sample()` answers at `WINDOW_DEPTH` with no table, measured on the
-/// tree that searched every move with the full window.
+/// What `sample()` answers at `WINDOW_DEPTH` with no table, measured on
+/// the tree null-move pruning left. Against the full-window-everywhere
+/// tree it was first measured on, every move is the same and two scores
+/// moved by two points.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 9),
     ("d5e6", -18),
@@ -816,8 +839,8 @@ const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("d7c8q", 507),
     ("b2b4", 14),
     ("b1c3", 9),
-    ("d1e3", 12),
-    ("e1d3", 12),
+    ("d1e3", 10),
+    ("e1d3", 10),
     ("e1d3", 10),
     ("h1h7", 539),
     ("f1h1", 525),
@@ -834,7 +857,11 @@ const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
 /// never asked for passes both gates above and fails this one.
 ///
 /// Measured when this gate was written: 17,337,259 nodes with every move
-/// searched in the full window.
+/// searched in the full window. That figure survived null-move pruning,
+/// because the pruning fires only inside a null window: a build that asks
+/// every question with the full window has no null move either, so the
+/// ceiling still separates the tree from its counterfactual rather than
+/// from a counterfactual that no longer exists.
 #[test]
 fn the_narrower_window_saves_nodes() {
     let tt = no_table();
