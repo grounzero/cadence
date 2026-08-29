@@ -405,6 +405,34 @@ pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
 }
 
+/// Whether the side to move's position is improving: the static evaluation
+/// written at `ply` exceeds the one written two plies above it, where both
+/// exist. `false` wherever either reading is missing -- the ply is inside
+/// the first two, or either node was in check -- because a rule reading
+/// this flag wants "known to be getting better", and an unknown is not
+/// that.
+///
+/// Read by nothing yet, deliberately: the rules that consult it each carry
+/// their own test, and a flag folded into the first of them would be two
+/// changes in one. It exists now because the evaluation stack it reads
+/// exists now, and the definition is settled once rather than per reader.
+///
+/// A free function for the same reason [`order_first`] is: a total function
+/// of a slice and an index, gateable without a search.
+#[must_use]
+pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
+    let now = evals.get(ply).copied().flatten();
+    let then = ply
+        .checked_sub(2)
+        .and_then(|p| evals.get(p))
+        .copied()
+        .flatten();
+    match (now, then) {
+        (Some(now), Some(then)) => now > then,
+        _ => false,
+    }
+}
+
 /// One search. All state is here, per thread; nothing is global.
 pub struct Search<'a> {
     limits: Limits,
@@ -441,6 +469,27 @@ pub struct Search<'a> {
     /// iteration; a field rather than a sixth argument to `negamax`
     /// because it does not change inside one.
     root_depth: u32,
+    /// The static evaluation at each ply of the line being searched:
+    /// written at every interior node of the main search that survives the
+    /// table probe, `None` where the side to move is in check, because a
+    /// position under attack has no quiet reading worth comparing. Two
+    /// kibibytes inline, like `killers`. One stack rather than a local per
+    /// rule, so that a rule comparing this ply's reading against an
+    /// ancestor's ([`improving`]) reads what that ancestor wrote instead of
+    /// re-deriving it.
+    evals: [Option<Score>; MAX_PLY],
+    /// How often the search tried a null move, cut on one, and refused one
+    /// for material alone. Written wherever the rule runs and read on no
+    /// decision path, so a depth-limited search stays a function of the
+    /// code alone; what reads them is `tests/pruning.rs`, whose gates need
+    /// to see that the pruning happened, not only that the count moved.
+    null_attempts: u64,
+    null_cutoffs: u64,
+    /// Every other condition admitted the null move and the side to move
+    /// had nothing but pawns beside the king. The zugzwang gate asserts
+    /// this is the reason a pawn endgame never tried one, rather than the
+    /// question never coming up.
+    null_refused_material: u64,
     /// Elapsed milliseconds at the end of each completed iteration, in
     /// order, and empty where there is no budget.
     ///
@@ -470,6 +519,10 @@ impl<'a> Search<'a> {
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             root_depth: 0,
+            evals: [None; MAX_PLY],
+            null_attempts: 0,
+            null_cutoffs: 0,
+            null_refused_material: 0,
             iterations: Vec::new(),
         }
     }
@@ -493,6 +546,10 @@ impl<'a> Search<'a> {
         self.best = Move::NULL;
         self.pv.clear();
         self.killers = [[Move::NULL; 2]; MAX_PLY];
+        self.evals = [None; MAX_PLY];
+        self.null_attempts = 0;
+        self.null_cutoffs = 0;
+        self.null_refused_material = 0;
         self.iterations.clear();
         self.budget = if self.limits.infinite {
             None
@@ -728,13 +785,23 @@ impl<'a> Search<'a> {
             }
         }
 
+        // The static evaluation, written whether or not anything below
+        // reads it at this node: the stack is how a rule at ply `p`
+        // compares its own reading against the one at `p - 2`, so a hole
+        // here is a wrong answer there, not a saving. A node in check
+        // writes `None` rather than a number, because what the evaluation
+        // measures is a position nobody is about to win material in, and a
+        // check is exactly that claim being contested.
+        let in_check = board.in_check();
+        self.evals[ply] = if in_check {
+            None
+        } else {
+            Some(eval::evaluate(board))
+        };
+
         let mut legal = generate_legal(board);
         if legal.is_empty() {
-            return if board.in_check() {
-                mated_in(ply)
-            } else {
-                DRAW
-            };
+            return if in_check { mated_in(ply) } else { DRAW };
         }
         // After the mate check: a mate delivered on the hundredth half-move
         // is a mate, not a draw.
@@ -1014,6 +1081,25 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.nodes
+    }
+
+    /// How many null moves the last search tried.
+    #[must_use]
+    pub fn null_attempts(&self) -> u64 {
+        self.null_attempts
+    }
+
+    /// How many of those produced a cutoff.
+    #[must_use]
+    pub fn null_cutoffs(&self) -> u64 {
+        self.null_cutoffs
+    }
+
+    /// How often every other condition admitted a null move and the side
+    /// to move had nothing but pawns beside the king.
+    #[must_use]
+    pub fn null_refused_by_material(&self) -> u64 {
+        self.null_refused_material
     }
 
     /// The depth of the last completed iteration; zero before any.
