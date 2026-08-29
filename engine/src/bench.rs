@@ -58,8 +58,19 @@ pub const HASH_MB: usize = 16;
 /// the check evasions had taken depth five to about 200 ms on the M5 Max,
 /// and seven when refusing losing captures took depth six to 7,691,290
 /// nodes and about 690 ms, the same list at seven reading 33,848,419 and
-/// about 2,400 ms. The depth goes up again as the search gets cheaper per
-/// ply, each time with a `Bench:` trailer.
+/// about 2,400 ms. **Nine when null-move pruning landed, and this raise
+/// has the opposite cause from every one before it**: not the search
+/// getting cheaper per ply, but a pruning rule cutting the depth-seven
+/// tree to a fifth, 7,072,634 nodes in about 0.6 s, which is the
+/// sub-second window where the reading comes back low even when its
+/// run-to-run band is narrow. Measured on the M5 Max, otherwise idle,
+/// three release runs per depth: depth eight reads 19,065,351 nodes in
+/// 1.56 to 1.65 s, still short of the couple of seconds the scaling
+/// needs; depth nine reads 43,121,255 nodes in 3.49 to 3.57 s, beside
+/// the previous champion's 2.4 to 2.5 s at its own compiled depth of
+/// seven, and with the tightest speed band of the three. The depth goes
+/// up again whenever the run leaves that scale, whichever direction the
+/// tree moved, each time with a `Bench:` trailer.
 ///
 /// **Every count in this comment is a reading at the commit that made the
 /// change it describes, and none of them is the count today**, which is
@@ -104,8 +115,10 @@ pub const HASH_MB: usize = 16;
 /// for a length mismatch, while nothing corrects a biased reading.
 ///
 /// The gate in `tests/bench.rs` runs this six times and pays for the depth
-/// as well: about 4.6 s at six, about 9 s at seven in the test profile.
-pub const DEPTH: u32 = 7;
+/// as well: about 4.6 s at six, about 9 s at seven in the test profile,
+/// and about 14 s at nine on the pruned tree, up from about 2.5 s at that
+/// tree's depth seven.
+pub const DEPTH: u32 = 9;
 
 /// The checked-in position list, one FEN per line, `#` for comments.
 pub const POSITIONS: &str = include_str!("../bench_positions.txt");
