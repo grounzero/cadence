@@ -12,7 +12,7 @@ resolver = "3"
 # counts the changes that passed a test inside it. The archived binary is
 # still what identifies a promotion, because a version says which release a
 # build is and not what it played like.
-version      = "0.4.1"
+version      = "0.4.2"
 edition      = "2024"
 rust-version = "1.98"
 license      = "GPL-3.0-or-later"
