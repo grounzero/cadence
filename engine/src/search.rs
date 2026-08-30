@@ -446,6 +446,82 @@ pub fn null_reduction(depth: u32) -> u32 {
     3 + depth / 3
 }
 
+/// How many plies a late move's first search is shortened by: zero for the
+/// first three moves of a node, zero below depth three, and otherwise one
+/// plus a quarter of the product of the two integer logarithms. The caller
+/// holds the exemptions (what is never reduced is its decision, not this
+/// function's); this is only the size of the reduction where one applies.
+///
+/// Logarithmic in both arguments, because that is the shape of the claim
+/// being made. The move index measures how far down a sorted list the move
+/// sits, and the ordering's confidence falls off multiplicatively rather
+/// than linearly: the difference between the fourth move and the eighth is
+/// worth about as much as the difference between the eighth and the
+/// sixteenth. The depth measures how much tree hangs below the node, which
+/// grows exponentially, so equal plies of reduction buy exponentially more
+/// saving at equal risk. `ilog2` is the integer logarithm the determinism
+/// contract allows; the floats the textbook formula uses have no place on
+/// a decision path.
+///
+/// The table this produces, reduction by depth band and move index band:
+///
+/// | depth \ index | 3 | 4-7 | 8-15 | 16-31 | 32+ |
+/// |---|---|---|---|---|---|
+/// | 3 | 1 | 1 | 1 | 2 | 2 |
+/// | 4-7 | 1 | 2 | 2 | 3 | 3 |
+/// | 8-15 | 1 | 2 | 3 | 4 | 4 |
+/// | 16-31 | 2 | 3 | 4 | 5 | 6 |
+///
+/// Below depth three the child search is at most one ply from the
+/// quiescence search already, so there is nothing left to shorten that a
+/// reduction would not hand straight to it. Below index three the moves
+/// are the ones the ordering placed deliberately, and three is cheap
+/// insurance besides: a list short enough that its tail starts earlier is
+/// a list too small for reductions to pay on.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of two arguments, gateable without a search.
+#[must_use]
+pub fn lmr_reduction(depth: u32, index: usize) -> u32 {
+    if depth < 3 || index < 3 {
+        return 0;
+    }
+    1 + depth.ilog2() * index.ilog2() / 4
+}
+
+/// How many plies the first search of move `m`, at `index` in its node's
+/// sorted list, is reduced by: [`lmr_reduction`]'s size where a reduction
+/// applies, and zero for every move on the exempt list. Each exemption is
+/// a wrong answer somewhere: a move while the node is in check (`in_check`
+/// -- every move answers the check and the line is forcing); a move that
+/// gives check (`gives_check` -- forcing whether or not the extension's
+/// ply cap still grants the ply back, and otherwise the extension deepens
+/// what this would undo); a noisy move, whose point is a tactic a
+/// shallower search is built to miss; and a killer, the one class of
+/// quiet move with evidence behind its placement. What is left is the
+/// quiet moves the sort ranked behind everything with no evidence to
+/// their name, which is what makes them safe to reduce: the ones the
+/// ordering misjudged fail high in the reduced search and are re-searched
+/// at full depth before anything believes them.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of its arguments, so a gate can pin every exemption without finding a
+/// position that reaches it.
+#[must_use]
+pub fn reduction(
+    in_check: bool,
+    gives_check: bool,
+    m: Move,
+    killers: [Move; 2],
+    depth: u32,
+    index: usize,
+) -> u32 {
+    if in_check || gives_check || m.is_noisy() || m == killers[0] || m == killers[1] {
+        return 0;
+    }
+    lmr_reduction(depth, index)
+}
+
 /// Whether the side to move has any piece beside its pawns and king.
 ///
 /// The zugzwang guard. The null move reads "even giving up the move, I
@@ -553,6 +629,14 @@ pub struct Search<'a> {
     /// this is the reason a pawn endgame never tried one, rather than the
     /// question never coming up.
     null_refused_material: u64,
+    /// How often a late move's first search ran at reduced depth, and how
+    /// often that reduced search beat alpha and was re-run at full depth
+    /// before being believed. Written wherever the rule runs and read on
+    /// no decision path, like the null-move counters above: the first is
+    /// how a gate sees that later moves were searched shallower, the
+    /// second that a reduced fail-high was verified rather than trusted.
+    lmr_reductions: u64,
+    lmr_researches: u64,
     /// Elapsed milliseconds at the end of each completed iteration, in
     /// order, and empty where there is no budget.
     ///
@@ -586,6 +670,8 @@ impl<'a> Search<'a> {
             null_attempts: 0,
             null_cutoffs: 0,
             null_refused_material: 0,
+            lmr_reductions: 0,
+            lmr_researches: 0,
             iterations: Vec::new(),
         }
     }
@@ -613,6 +699,8 @@ impl<'a> Search<'a> {
         self.null_attempts = 0;
         self.null_cutoffs = 0;
         self.null_refused_material = 0;
+        self.lmr_reductions = 0;
+        self.lmr_researches = 0;
         self.iterations.clear();
         self.budget = if self.limits.infinite {
             None
@@ -1235,6 +1323,20 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn null_refused_by_material(&self) -> u64 {
         self.null_refused_material
+    }
+
+    /// How many late moves the last search first searched at reduced
+    /// depth.
+    #[must_use]
+    pub fn lmr_reductions(&self) -> u64 {
+        self.lmr_reductions
+    }
+
+    /// How many of those reduced searches beat alpha and were re-run at
+    /// full depth.
+    #[must_use]
+    pub fn lmr_researches(&self) -> u64 {
+        self.lmr_researches
     }
 
     /// The depth of the last completed iteration; zero before any.
