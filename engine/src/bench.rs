@@ -74,7 +74,13 @@ pub const HASH_MB: usize = 16;
 /// 0.99 s; depth ten reads 18,903,696 nodes in about 1.6 s, the same
 /// short window the raise before this one refused at depth eight; depth
 /// eleven reads 32,455,264 nodes in 2.72 to 2.81 s, beside the previous
-/// champion's 3.5 s at its own compiled depth of nine. The depth goes
+/// champion's 3.5 s at its own compiled depth of nine. **Twelve when
+/// reverse futility landed, the same cause a third time**: that rule took
+/// the depth-eleven tree to 16,024,935 nodes in 1.57 to 1.67 s, back
+/// inside the short window. Depth twelve reads 29,658,388 nodes in 3.08
+/// to 3.09 s beside the champion's 2.43 to 2.48 s at eleven; depth
+/// thirteen reads 50,225,574 in 5.17 to 5.20 s and was refused. The depth
+/// goes
 /// up again whenever the run leaves that scale, whichever direction the
 /// tree moved, each time with a `Bench:` trailer.
 ///
@@ -124,7 +130,7 @@ pub const HASH_MB: usize = 16;
 /// as well: about 4.6 s at six, about 9 s at seven in the test profile,
 /// about 14 s at nine on the pruned tree, up from about 2.5 s at that
 /// tree's depth seven, and about 11 s at eleven on the reduced tree.
-pub const DEPTH: u32 = 11;
+pub const DEPTH: u32 = 12;
 
 /// The checked-in position list, one FEN per line, `#` for comments.
 pub const POSITIONS: &str = include_str!("../bench_positions.txt");
