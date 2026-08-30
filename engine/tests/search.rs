@@ -706,6 +706,15 @@ const WINDOW_DEPTH: u32 = 7;
 /// still diverges at seven. The constant stands on a new measurement
 /// rather than on the old one.
 ///
+/// **Re-checked again when reverse futility landed, and the run is
+/// unmoved.** That rule reads beta and returns the node outright, so it is
+/// window-dependent in the sharpest way anything here has been and could
+/// have shortened the run a third time. Measured on the tree it landed on,
+/// both endgames, depths one to seven: they agree through four, the second
+/// endgame diverges first at five (452 against 454 below), and the first
+/// diverges at seven. Two of the three numbers moved by a point or two and
+/// the structure did not: the last unbroken run still ends at four.
+///
 /// **Four, down from five when the history heuristic landed, and what
 /// shrank is the region rather than the property.** The pawn-endgame arm
 /// rested on the null move being the only rule whose answer depends on the
@@ -891,16 +900,36 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// within two points, and `e1d3` rose from 8 to 10 two positions later,
 /// which is the same effect one ply further up with the sign turned over.
 /// Eleven of the fourteen entries did not move at all.
+///
+/// **Reverse futility moved two scores and one move, and the move is an
+/// underpromotion, which is worth the paragraph it takes to say why that
+/// is not a defect.** `d7c8q` at 504 becomes `d7c8r` at 516 in pos5, where
+/// a pawn on d7 promotes by capturing on c8. That square is defended twice,
+/// by the queen on d8 and the knight on b8, so the promoted piece is taken
+/// at once whichever piece it is and **the two promotions search to the
+/// same value**: the choice between them is a tie-break, not a material
+/// judgement. Measured across depths one to twelve, the base build already
+/// prefers the rook at depths one to four and switches to the queen at
+/// five; the shipped build switches at seven **with a table** and not at
+/// all without one, and this fixture is the no-table configuration. So the
+/// rule delays a tie-break in a configuration the engine never plays in,
+/// and in the one it does play in the two builds agree from depth seven.
+/// Read a promotion piece moving here as a tie until the two moves are
+/// shown to search to different values.
+///
+/// The other entry is `e1d3` falling from 10 back to 8, which is the value
+/// it carried before futility pruning raised it, in the same position.
+/// Twelve of the fourteen entries did not move.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 9),
     ("d5e6", -18),
     ("b4f4", 37),
     ("c4c5", -504),
-    ("d7c8q", 504),
+    ("d7c8r", 516),
     ("c3d5", 12),
     ("b1c3", 9),
     ("d1c3", 6),
-    ("e1d3", 10),
+    ("e1d3", 8),
     ("e1d3", 4),
     ("h1h7", 539),
     ("f1h1", 525),

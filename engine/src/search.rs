@@ -189,6 +189,31 @@
 //! two share the same pool of late quiet moves and the second gets what
 //! the first leaves.
 //!
+//! **Reverse futility.** The same margin read from the other side of the
+//! window, and the one rule here that returns a node rather than a move.
+//! At an interior node out of check, inside a null window, where the
+//! static evaluation stands [`reverse_futility_margin`] *above* beta, the
+//! node answers with `eval - margin` and generates no moves at all: a side
+//! that far ahead is not going to fail low, and the margin is what the
+//! search left below it would have to take away for that to be wrong.
+//! [`reverse_futile`] is the arithmetic and [`Search::reverse_futility`]
+//! the half that reads the board and the window.
+//!
+//! **It carries no depth limit**, which is the one place it departs from
+//! every formulation of the rule elsewhere, and the reason is that the
+//! margin already is one: the trigger demands a further pawn and a half of
+//! evidence at every further ply while the spread of what the evaluation
+//! reports does not grow with the depth, so the requirement outruns the
+//! distribution without being told to. Measured rather than argued, at
+//! [`reverse_futile`], including that a limit does *less* the deeper the
+//! search runs.
+//!
+//! **It and futility pruning cannot both fire**, and nothing arranges
+//! that: inside a null window beta is `alpha + 1`, so the two conditions
+//! are the two sides of one window. It sits above the null move, whose
+//! trigger it strictly implies, and that placement is what stops it
+//! consisting entirely of the nodes a null-move verification refused.
+//!
 //! **What it is not, on purpose.** No extension on anything but a
 //! check, and no pruning beyond the two rules above and the quiescence
 //! exchange rule below: no delta pruning. That
@@ -1351,6 +1376,13 @@ impl<'a> Search<'a> {
             Some(eval::evaluate(board))
         };
 
+        // The margin, above the null move because the node's preamble runs
+        // the margin tests there and because below it the rule would be
+        // nothing but its own error case: see [`Search::reverse_futility`].
+        if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
+            return bound;
+        }
+
         if let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
             return score;
         }
@@ -1636,6 +1668,88 @@ impl<'a> Search<'a> {
         for &beaten in tried.iter().filter(|q| !q.is_noisy()) {
             self.history.update(us, beaten, -bonus);
         }
+    }
+
+    /// Reverse futility at one node: where the static evaluation stands
+    /// [`reverse_futility_margin`] above beta, the node is returned at the
+    /// bound its own arithmetic established, without generating a move.
+    /// `Some` is that bound; `None` means search the node.
+    ///
+    /// [`reverse_futile`] holds the arithmetic and the refusals that follow
+    /// from it. Two more are here, because both read the board or the
+    /// window rather than the margin:
+    ///
+    /// - **A full-window node is refused**, which is the refusal the null
+    ///   move takes and for the same reason: what this returns is a bound
+    ///   and no move and no line, which is the answer a null-window
+    ///   question wants and not the answer the principal variation wants.
+    ///   Where [`futile_node`] declined a window condition, it could: that
+    ///   rule returns no score of its own and the node still searches its
+    ///   first move. This one returns the node, so the argument that
+    ///   excused it there is exactly what does not carry here.
+    /// - **A halfmove clock at the limit is refused**, where the node is a
+    ///   draw by rule whatever the evaluation reads and `negamax` has not
+    ///   run its draw check yet. The same guard the null move carries, one
+    ///   line above it, for the same reason.
+    ///
+    /// **What it shares with the null move and does not guard against.** A
+    /// stalemated side is not in check, so it has an evaluation, and a node
+    /// that clears beta on it is returned rather than scored as the draw it
+    /// is. That exposure is already the null move's and is accepted on the
+    /// same ground: the move list is what would settle it, and generating
+    /// one is the whole of what both rules save.
+    ///
+    /// **The zugzwang guard is deliberately not taken**, and that is the
+    /// one place these two rules part company. The null move refuses a side
+    /// with nothing but pawns beside its king because its mechanism is
+    /// passing, and passing is precisely what a side in zugzwang wants and
+    /// may not have, so the evidence it collects is inverted there. This
+    /// rule collects no such evidence: it compares a reading against a
+    /// bound, and its exposure to a position the evaluation misreads is the
+    /// one every member of the margin family carries rather than the one
+    /// the null move's mechanism creates. `tests/reverse_futility.rs` gates
+    /// the difference as a difference, so adding the guard for symmetry
+    /// fails a test rather than passing quietly.
+    ///
+    /// **Why it sits above the null move, which is a measurement and not
+    /// only the preamble's order.** The two triggers are nested: this rule
+    /// fires where the evaluation clears beta by a margin, the null move
+    /// where it merely reaches beta, so every node this returns is a node
+    /// the null move would also have taken up. Measured over the bench
+    /// positions at depth eleven, of the nodes this rule returns, 91.3% are
+    /// nodes whose null-move verification would have cut anyway, at the
+    /// cost of a reduced search each, and 8.7% are nodes whose verification
+    /// would have come back refusing. **Below the null move, only that
+    /// second group would ever reach this rule** -- the first would already
+    /// have been cut -- so the whole of what it did would be overruling a
+    /// search that had just disagreed with it. The ordering is what makes
+    /// the ratio 91 to 9 instead of 0 to 100.
+    ///
+    /// Nothing is stored in the table. The null move withholds a store
+    /// because its entry would carry a reduced depth as if it were `depth`;
+    /// here no search happened at all, so the entry would offer a later
+    /// probe a cutoff at a depth nothing ever paid for.
+    ///
+    /// A method rather than a free function, like [`Search::futile`],
+    /// because it is the half that reads the board and writes the counters.
+    fn reverse_futility(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Option<Score> {
+        let bound = reverse_futile(self.evals[ply], depth, beta)?;
+        if board.halfmove_clock() >= 100 {
+            return None;
+        }
+        if beta != alpha + 1 {
+            self.reverse_futility_refused_window += 1;
+            return None;
+        }
+        self.reverse_futility_cutoffs += 1;
+        Some(bound)
     }
 
     /// Null-move pruning at one node: where the side to move can hand the

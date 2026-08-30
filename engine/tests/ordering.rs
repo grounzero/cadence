@@ -1083,6 +1083,22 @@ const SORT_DEPTH: u32 = 7;
 /// build with no ordering loses most of the pruning as well as the
 /// ordering, and the two losses compound in the counterfactual's favour.
 /// Re-based anyway, on the same ground as last time.
+///
+/// **And reverse futility survived it too, for a third reason that is
+/// neither of the two above.** 25,835,504 nodes with no ordering in the
+/// main search against 2,313,475 with it. Neither side moved much: the
+/// counterfactual fell 0.18% and the shipped tree **grew** 0.95%, so the
+/// ratio went from 11.29 to 11.17 and the gate never came near its
+/// ceiling. The reason is not that the counterfactual kept the change's
+/// trigger, which is what the paragraph above established for futility
+/// pruning. It is that **the change is worth nothing on this set**: these
+/// sixteen positions are twelve endgames, and measured on the two halves
+/// separately the rule costs 0.98% on the endgames (2,227,553 to
+/// 2,249,395) and saves 0.19% on the other four, against the 34.6% it
+/// takes off the bench positions. A ceiling gate can outlive a change
+/// because the counterfactual keeps its trigger, or because the change
+/// cannot reach the gate's positions, and only the first says anything
+/// about the ordering. Re-based on the same ground as before.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1100,8 +1116,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 25_881_212,
-        "{total} nodes against the 25,881,212 the same search took with no ordering at all"
+        total * 10 < 9 * 25_835_504,
+        "{total} nodes against the 25,835,504 the same search took with no ordering at all"
     );
 }
 
@@ -1182,6 +1198,16 @@ fn the_capture_sort_saves_nodes() {
 /// separating exact counts by under one per cent since null-move pruning
 /// landed, and every item since has re-based a constant instead of
 /// building the set that would restore the window.
+///
+/// **Reverse futility re-based it a fifth time and narrowed it again**:
+/// 2,319,727 nodes with every capture ahead of the killers against
+/// 2,313,475 with the losing ones behind them, a window of 0.27% against
+/// the 0.42% futility pruning left. Both points **rose**, which no change
+/// has done to this gate before, and the reason is the set rather than the
+/// demotion: twelve of these sixteen positions are endgames, where a
+/// static evaluation of material and piece-square tables is at its least
+/// informative and the margin rule above costs nodes instead of saving
+/// them. The open item is unchanged and is still the position set.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1199,8 +1225,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 2_296_000,
-        "{total} nodes against the 2,301,352 the same search took with every capture ahead of the killers"
+        total < 2_316_000,
+        "{total} nodes against the 2,319,727 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1275,6 +1301,16 @@ fn demoting_the_losing_captures_saves_nodes() {
 /// reading on this set and not a property of the depth. If it ever fires
 /// after an ordering change, the first thing to check is whether an
 /// ordering difference moved a margin decision.
+///
+/// **Reverse futility acts at this depth too and the gate holds**, which
+/// is a second reading on this set rather than a restored premise. That
+/// rule returns a whole node before any list is sorted, so a node it
+/// answers is a node where the sort's presence cannot matter, and the
+/// nodes it does not answer are sorted as before. Measured when it landed:
+/// it fires sixteen times over these sixteen positions at this depth, so
+/// the agreement below is not the rule failing to reach the set, and the
+/// shipped build and the build with no sort in `negamax` return all
+/// sixteen scores identically.
 ///
 /// The values at depth six, before the reductions, were
 /// `[108, 230, 2, 532, 930, 622, -419, 0, 6, 34, 520, -18, 0, 45, 0, 0]`.
@@ -1729,6 +1765,24 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 /// same moves fall into the band the margin skips. That is one more thing
 /// the history table does not cover, on top of the two above, and it is
 /// measured rather than argued. The set is still what this gate wants next.
+///
+/// **Reverse futility took it back to the narrowest it has ever been,
+/// 0.146%**: the killerless build reads 167,673 against 167,429 with them,
+/// a gap of 244 nodes. The mechanism is the rule returning **whole nodes
+/// before a move list is generated at all**: a killer's entire value is
+/// the ordering of a generated list, so at every node this rule answers
+/// there is nothing for the slots to do, and what is left for them to
+/// decide shrinks with the tree. The counts are exact, so a ceiling
+/// between the two points still separates the builds, and it is re-based
+/// once more on that ground alone.
+///
+/// **The set this gate has been asking for since null-move pruning is now
+/// the only thing that would restore it.** Six re-baselines have each
+/// moved a constant instead, the window has run 18%, 3.2%, 1.3%, 0.12%,
+/// 23%, 1.4%, 3.2% and now 0.146%, and a gate separating exact counts by
+/// 244 nodes is one the next change is as likely to invert as to widen.
+/// Read a failure here as the set having run out before reading it as the
+/// killers having stopped paying.
 #[test]
 fn the_killers_save_nodes() {
     let fens = deep_fens();
@@ -1739,8 +1793,8 @@ fn the_killers_save_nodes() {
     }
     println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
     assert!(
-        total < 167_000,
-        "{total} against the 169,664 the same search took with no killers in the main search"
+        total < 167_550,
+        "{total} against the 167,673 the same search took with no killers in the main search"
     );
 }
 

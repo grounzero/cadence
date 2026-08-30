@@ -41,16 +41,31 @@ use cadence_engine::score::{Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, Search, reverse_futile, reverse_futility_margin};
 use support::{PAWN_ENDGAMES, table};
 
-/// The depth the set gate below searches to.
+/// The depth the two set gates below search to.
 ///
-/// Six, which is where the null-move gates stand, and for a related
-/// reason: the rule needs an interior node inside a null window whose
-/// evaluation clears beta by a margin, and a null window below the root is
-/// something the search only produces once a node has a move in hand.
-/// Deeper than the first depth that works, on the standing ground that a
-/// coverage assertion resting on the first depth that works is one the
-/// next tree change empties in silence.
-const GATE_DEPTH: u32 = 6;
+/// **Nine, and it was measured rather than chosen.** The rule needs an
+/// interior node inside a null window whose static evaluation clears beta
+/// by a margin, and a balanced position does not produce one until the
+/// search is deep enough for a line to have gone somewhere. Measured on
+/// the tree this landed on, over the five positions the two gates below
+/// use, the start position is the laggard by a long way: Kiwipete and the
+/// middlegame fire from depth four, the two pawn endgames from depth
+/// seven, and the start position not until **depth eight**, where it fires
+/// forty times against Kiwipete's 26,612.
+///
+/// Nine is taken, one ply past the first depth that works, because a
+/// coverage assertion standing exactly on the first depth that works is
+/// one the next tree change empties in silence -- which is the failure the
+/// counterfactual ceilings in `tests/ordering.rs` keep finding, arriving
+/// on a coverage assertion instead of on a ceiling. At nine the five
+/// positions fire 591, 52,015, 30,481, 702 and 443 times.
+///
+/// **This constant was six and asserted rather than measured**, on the
+/// argument that it is where the null-move gates stand. Both set gates
+/// failed on the tree the rule landed on, which is the cheap version of
+/// this mistake: an unmeasured coverage depth that is too shallow fails
+/// loudly, and one that is too deep passes and covers nothing.
+const GATE_DEPTH: u32 = 9;
 
 /// A quiet middlegame, the same position the reduction and futility gates
 /// use. Nothing is en prise, so the static evaluation is a reading the rule
