@@ -634,6 +634,159 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
     }
 }
 
+/// The deepest node at which a quiet move may be skipped for the margin.
+///
+/// **Three, chosen where the saving stops paying for the risk, and both
+/// halves of that are measured.** The margin is a claim that the remaining
+/// search cannot recover the gap, and the deeper the node the less the
+/// claim is worth: at depth three the child still has two plies of real
+/// search under it, which is enough to play a quiet move, be answered, and
+/// cash a tactic. What the depths past it buy, on the bench positions at
+/// depth eleven against 32,872,578: one 30,201,879, two 25,691,630, three
+/// 24,519,578, four 23,660,924, five 23,333,146. In doublings saved that
+/// is 0.122, 0.356, 0.423, 0.474, 0.494, so the third ply is worth 0.067
+/// and the fourth 0.051 and the fifth 0.020. **The curve flattens where
+/// the claim gets weaker, which is the argument**: a fourth ply would add
+/// about a tenth of the saving already taken and would stake it on a
+/// margin covering three plies of real search rather than two.
+///
+/// **Below the limit the rule is off, not weaker.** A node outside the
+/// band searches every move it generates, so the exemptions below are the
+/// only thing that has to be right about the nodes inside it.
+///
+/// The band being a constant is also why the fixed-depth node ratio this
+/// change produces is the same at every depth, where a rule that fires at
+/// every node compounds: the tree this removes sits in the last three
+/// plies, and the share of a tree that sits in its last three plies does
+/// not grow with the root depth.
+const FUTILITY_DEPTH: u32 = 3;
+
+/// What the margin grows by per ply of remaining depth, in centipawns.
+///
+/// A hundred and fifty, which is a pawn and a half on this evaluation's
+/// own scale, where a pawn is a hundred.
+///
+/// **Measured against the distribution the rule reads, over the bench
+/// positions at depth nine.** At the sites the rule can act on -- a quiet
+/// move behind a node's first, out of check, not giving check -- the gap
+/// between alpha and the static evaluation has a median of 300 at depths
+/// one to three, with quartiles at 0 and between 700 and 800, and **about
+/// a fifth of all sites sit within fifty centipawns of zero**, which is
+/// where the evaluation is saying nothing at all. The margin has to clear
+/// that mass and this one does; past it the distribution is flat, so at
+/// depth one a margin of 100 skips 61% of the sites, 300 skips 48% and 600
+/// skips 28%.
+///
+/// **What the choice is worth on the tree**, same positions at depth
+/// eleven against 32,872,578: a margin of 100 leaves 21,521,020, 150
+/// leaves 24,519,578, 200 leaves 26,190,374 and 300 leaves 27,881,084.
+/// The lever is much sharper than the depth limit above, which is the
+/// reason to set it against the distribution rather than against the
+/// saving.
+///
+/// **Why not a pawn, which the saving argues for.** This evaluation is
+/// material and piece-square tables and is the seed for the first trained
+/// net rather than a serious reading, so a gap it reports is worth less
+/// than the same gap from a strong evaluation, and the margin is what
+/// prices that. Half a pawn of slack per ply is the price paid for it, and
+/// it is deliberately paid: the constant is the first thing to hand a
+/// parameter tune once there is an evaluation worth trusting.
+///
+/// **What the slope is for.** A quiet move at depth one is answered by the
+/// quiescence search, which resolves captures and nothing else, so what it
+/// can swing is the move's own placement plus one exchange. At depth three
+/// there are two plies of real search below it and a piece can be won, so
+/// the margin has to grow with the depth or the deepest band of the rule
+/// is the reckless one. Linear rather than squared because the evidence is
+/// linear: the material a search can win grows with the moves it has, not
+/// with their square. A constant term beside the slope is the obvious
+/// second parameter and is left out on purpose, so that this rule arrives
+/// with one number to tune rather than two.
+const FUTILITY_MARGIN: Score = 150;
+
+/// How far below alpha a node's static evaluation may sit and still have
+/// its quiet moves searched: [`FUTILITY_MARGIN`] per ply of `depth`.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of one argument, gateable without a search.
+#[must_use]
+pub fn futility_margin(depth: u32) -> Score {
+    // Saturating, and total for that reason: no caller passes a depth
+    // outside the band, and a function that is only right for the
+    // arguments something happens to hand it is one a gate cannot pin.
+    // [`futile_node`] adds it to the evaluation with a saturating add for
+    // the same reason, so the pair cannot overflow at any depth at all.
+    FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
+}
+
+/// Whether a node may skip quiet moves for the margin: its static
+/// evaluation plus [`futility_margin`] still does not reach `alpha`.
+///
+/// **The in-check exemption is the missing evaluation and not a condition.**
+/// `evals[ply]` is `None` wherever the side to move is in check, because a
+/// position under attack has no quiet reading worth comparing, and a rule
+/// that cannot read the evaluation cannot claim anything about it. So the
+/// exemption that would otherwise have to be written and remembered falls
+/// out of the shape of the data.
+///
+/// **Alpha on the mate scale refuses it**, which is the same refusal the
+/// null move takes on beta and for the same reason: a mate score is not a
+/// quantity a margin is commensurable with, and an alpha that already
+/// names a mate would make every quiet move futile at a node that may hold
+/// a shorter one.
+///
+/// It reads the node's own alpha, once, before the move loop. Alpha only
+/// rises inside the loop, so a node the test admitted stays admitted, and
+/// one it refused is never re-admitted by a move beating alpha -- which is
+/// the conservative direction: a node whose alpha rises is a node that is
+/// no longer failing low.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of its arguments, gateable without a search.
+#[must_use]
+pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
+    let Some(eval) = eval else {
+        return false;
+    };
+    depth <= FUTILITY_DEPTH
+        && !score::is_mate(alpha)
+        && eval.saturating_add(futility_margin(depth)) <= alpha
+}
+
+/// Whether the move at `index` of a node [`futile_node`] admitted is a
+/// candidate to be skipped without being searched, on everything that can
+/// be decided from the move and its place in the list.
+///
+/// Two exemptions, and neither is about the ordering:
+///
+/// - **A noisy move**, whose whole point is the material it changes. The
+///   margin is a claim about what a *quiet* move can do to the score, and a
+///   capture answers it by taking a queen.
+/// - **The node's first move**, so that a node that skips everything else
+///   still returns a score something searched and a move to store. It is
+///   not the reduction's index threshold arriving again: that one is a
+///   claim about how far the sort can be trusted, and this one is a claim
+///   about the node having an answer at all.
+///
+/// **A killer is not exempt, deliberately.** [`reduction`] exempts one
+/// because a reduction is a bet on the sort and a killer is the one quiet
+/// move with evidence behind its placement. This rule is not a bet on the
+/// sort: it says the evaluation is too far below alpha for any quiet move
+/// to matter, which is a claim about the node and not about the move's
+/// rank. A move that cut at a sibling is still a quiet move, and a quiet
+/// move still cannot make up a minor piece.
+///
+/// **The check exemption is not here**, because it is the one question that
+/// costs something ([`Board::gives_check`], two slider lookups) and only a
+/// move this returns `true` for ever has to answer it.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of its arguments, gateable without a search.
+#[must_use]
+pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
+    futile && index > 0 && !m.is_noisy()
+}
+
 /// One search. All state is here, per thread; nothing is global.
 pub struct Search<'a> {
     limits: Limits,
@@ -713,6 +866,19 @@ pub struct Search<'a> {
     /// table that credits from a table that also debits.
     history_reduced_less: u64,
     history_reduced_more: u64,
+    /// How often the margin admitted a node, how many quiet moves it
+    /// skipped there, and how often it would have skipped one and did not
+    /// because the move gives check. Written where the rule runs and read
+    /// on no decision path, like the counters above.
+    ///
+    /// The third is the shape [`Search::null_refused_by_material`] has: a
+    /// gate asserting that an exempt move was searched needs to see the
+    /// exemption *decide*, not merely see that no counterexample turned
+    /// up, and a rule that never met a checking move at a futile node
+    /// would pass a gate written the other way.
+    futility_nodes: u64,
+    futility_skipped: u64,
+    futility_kept_check: u64,
     /// Elapsed milliseconds at the end of each completed iteration, in
     /// order, and empty where there is no budget.
     ///
@@ -751,6 +917,9 @@ impl<'a> Search<'a> {
             lmr_researches: 0,
             history_reduced_less: 0,
             history_reduced_more: 0,
+            futility_nodes: 0,
+            futility_skipped: 0,
+            futility_kept_check: 0,
             iterations: Vec::new(),
         }
     }
@@ -783,6 +952,9 @@ impl<'a> Search<'a> {
         self.lmr_researches = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
+        self.futility_nodes = 0;
+        self.futility_skipped = 0;
+        self.futility_kept_check = 0;
         self.iterations.clear();
         self.budget = if self.limits.infinite {
             None
@@ -1535,6 +1707,24 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn history_reduced_more(&self) -> u64 {
         self.history_reduced_more
+    }
+
+    /// How many nodes the margin admitted, how many quiet moves it skipped
+    /// there, and how many it would have skipped and did not because the
+    /// move gives check.
+    #[must_use]
+    pub fn futility_nodes(&self) -> u64 {
+        self.futility_nodes
+    }
+
+    #[must_use]
+    pub fn futility_skipped(&self) -> u64 {
+        self.futility_skipped
+    }
+
+    #[must_use]
+    pub fn futility_kept_check(&self) -> u64 {
+        self.futility_kept_check
     }
 
     /// The table the last search left behind, for a gate that wants to see
