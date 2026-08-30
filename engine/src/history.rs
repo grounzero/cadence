@@ -25,15 +25,12 @@
 //! node whose twentieth move is still decent from one whose fourth is
 //! worthless. The score is an absolute reading and can.
 //!
-//! **Ageing is a multiply toward zero, and it is integer.** [`apply`] adds
-//! the bonus and subtracts a share of the entry proportional to the bonus's
-//! size, so an entry near the cap barely moves and one near zero moves the
-//! whole bonus. That bounds the table at [`HISTORY_MAX`] without a
-//! saturating add's dead zone, it makes the equilibrium a function of how
-//! often the move cuts rather than of how many times it has been seen, and
-//! it uses no float, which nothing that decides a move may: the bench's
-//! node count has to be a function of the code alone, and a float on this
-//! path would make it a function of the rounding as well.
+//! **Ageing is a multiply toward zero, and it is integer.** [`apply`] has
+//! the update and the equilibrium it settles to. What the shape buys here
+//! is the bound at [`HISTORY_MAX`] without a saturating add's dead zone,
+//! and no float, which nothing that decides a move may: the bench's node
+//! count has to be a function of the code alone, and a float on this path
+//! would make it a function of the rounding as well.
 //!
 //! **Lifetime: one search.** [`Search::run`](crate::search::Search::run)
 //! clears it where it clears the killers, so the table carries across the

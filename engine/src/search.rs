@@ -775,12 +775,8 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
 /// depth, in centipawns.
 ///
 /// A hundred and fifty, a pawn and a half on this evaluation's own scale,
-/// and the same slope [`FUTILITY_MARGIN`] carries for the same reason: this
-/// evaluation is material and piece-square tables and is the seed for the
-/// first trained net rather than a serious reading, so a gap it reports is
-/// worth less than the same gap from a strong evaluation, and half a pawn
-/// of slack per ply is what prices that. It is the first thing to hand a
-/// parameter tune once there is an evaluation worth trusting.
+/// and the same slope [`FUTILITY_MARGIN`] carries for the reason written
+/// there, which prices this constant and that one alike.
 ///
 /// **It is the only thing bounding this rule, so it is chosen where it
 /// bounds as well as where it sizes.** There is no depth limit here and
@@ -825,9 +821,7 @@ const REVERSE_FUTILITY_MARGIN: Score = 150;
 /// ply of `depth`.
 #[must_use]
 pub fn reverse_futility_margin(depth: u32) -> Score {
-    // Saturating, and total for that reason, like [`futility_margin`]: a
-    // function that is only right for the arguments something happens to
-    // hand it is one a gate cannot pin.
+    // Saturating, and total for that reason, like [`futility_margin`].
     REVERSE_FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
@@ -1365,16 +1359,9 @@ impl<'a> Search<'a> {
             let gives_check = board.in_check();
             let ext = extension(gives_check, ply + 1, self.root_depth);
             let child = depth - 1 + ext;
-            // The first move gets the window this node was given. Every
-            // move behind it is asked the cheaper question first: not
-            // "what is this worth" but "is it worth more than the move in
-            // hand", which is the window `(alpha, alpha + 1)` and holds no
-            // room for an answer to the first. A move that is not better
-            // fails low inside it and is refuted over a smaller tree than
-            // the full window would have taken to refute it; a move that
-            // is better fails high, and what comes back is a bound and not
-            // a value, so it is searched again with the full window to
-            // find out what it is worth.
+            // The first move gets the window this node was given and
+            // every move behind it the narrower question. The module doc
+            // has the window, what it buys and what it costs.
             //
             // Late move reductions sit inside that cheaper question:
             // [`reduction`] holds the exemptions, [`lmr_reduction`] the
@@ -1384,13 +1371,9 @@ impl<'a> Search<'a> {
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
-                // The index decides whether this move is reduced at all,
-                // and the history score decides by how much. The two
-                // readings are not the same reading: the index is a rank
-                // inside this node's list, so it says where the move came
-                // in the sort, and after that sort reads the same table the
-                // rank is derived from the score and has lost the part of
-                // it that is absolute.
+                // The index decides whether this move is reduced at all
+                // and the score by how much; [`history_reduction`] has why
+                // those are not the same reading.
                 let base = reduction(in_check, gives_check, m, killers, depth, i);
                 self.late_move(board, child, base, self.history.get(us, m), ply, alpha)
             };
@@ -1455,11 +1438,11 @@ impl<'a> Search<'a> {
     /// and the score to return where the stored bound answers this node's
     /// question outright.
     ///
-    /// **The move is worth having whatever the depth says.** A hit too
-    /// shallow to answer the question still names the move that answered it
-    /// before, and `verify` matched the whole key, so that move belongs to
-    /// this position. That is why the two halves come back separately: the
-    /// ordering fires far more often than the cutoff does.
+    /// **The move is worth having whatever the depth says**, which is
+    /// [`tt::Hit::mv`]'s own claim, and `verify` matched the whole key, so
+    /// that move belongs to this position. That is why the two halves come
+    /// back separately: the ordering fires far more often than the cutoff
+    /// does.
     ///
     /// **The cutoff is withheld at the fifty-move limit**, where this node
     /// is a draw or a mate by rule whatever any subtree found, because the

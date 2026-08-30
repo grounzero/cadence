@@ -19,10 +19,8 @@
 //! **Every rank here is a band, and only one band has anything inside
 //! it.** A score is not a constant and does not fit between two of them,
 //! so the ranks below are multiplied by [`BAND`] and the history score is
-//! added within the quiet one. `BAND` is wider than the score's whole
-//! range, so no history can carry a move out of the class its rank put it
-//! in: the stage order is a property of the ranks and the score only
-//! decides position inside the last stage.
+//! added within the quiet one. `BAND` has why that leaves the stage order
+//! a property of the ranks alone.
 //!
 //! **Why this is part of the quiescence search rather than a refinement
 //! of it.** Measured before it existed: depth one from Kiwipete, noisy
