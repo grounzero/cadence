@@ -795,14 +795,16 @@ fn a_window_that_brackets_the_value_returns_the_value() {
 /// The fixture was measured over the positions of `sample()` at
 /// `WINDOW_DEPTH` with a table of no buckets, first on the tree that
 /// searched every move with the full window, and re-measured when
-/// null-move pruning landed. **It is not re-baselined by a windowing
-/// change.** An extension changes the tree the value is of and may move a
-/// score (`tests/ordering.rs` records the one time that was the right
-/// answer); a pruning rule that reads beta does the same, which is what
-/// moved two scores here by two points each with every move unchanged; a
-/// window changes which parts of a fixed tree have to be visited to
-/// establish the same value, and nothing else. If this array has to move,
-/// what moved is not a window.
+/// null-move pruning landed, and again when late move reductions did.
+/// **It is not re-baselined by a windowing change.** An extension changes
+/// the tree the value is of and may move a score (`tests/ordering.rs`
+/// records the one time that was the right answer); a pruning rule that
+/// reads beta does the same, which is what moved two scores here by two
+/// points each with every move unchanged; a reduction searches parts of
+/// the tree shallower and moved scores and moves both; a window changes
+/// which parts of a fixed tree have to be visited to establish the same
+/// value, and nothing else. If this array has to move, what moved is not
+/// a window.
 #[test]
 fn a_narrower_window_returns_the_same_move_and_the_same_score() {
     let tt = no_table();
@@ -828,23 +830,29 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 }
 
 /// What `sample()` answers at `WINDOW_DEPTH` with no table, measured on
-/// the tree null-move pruning left. Against the full-window-everywhere
-/// tree it was first measured on, every move is the same and two scores
-/// moved by two points.
+/// the tree late move reductions left. Against the full-window-everywhere
+/// tree it was first measured on, the null-move landing moved two scores
+/// by two points with every move unchanged; the reductions moved five
+/// scores by two to nine points and three moves, which is what a rule
+/// that searches parts of the tree shallower does to the value the tree
+/// has -- the extension's re-baseline in `tests/ordering.rs` is the same
+/// event in the other direction. The root's own moves are never reduced,
+/// so the move that changed did so because a subtree's value moved, not
+/// because it was searched at less than its depth.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 9),
     ("d5e6", -18),
-    ("b4f4", 37),
+    ("b4f4", 35),
     ("c4c5", -504),
-    ("d7c8q", 507),
-    ("b2b4", 14),
+    ("d7c8q", 516),
+    ("c3d5", 8),
     ("b1c3", 9),
     ("d1e3", 10),
-    ("e1d3", 10),
-    ("e1d3", 10),
+    ("d1e3", 6),
+    ("d1e3", 8),
     ("h1h7", 539),
     ("f1h1", 525),
-    ("g1g7", 536),
+    ("g1g7", 535),
     ("a1a7", 539),
 ];
 
@@ -861,7 +869,9 @@ const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
 /// because the pruning fires only inside a null window: a build that asks
 /// every question with the full window has no null move either, so the
 /// ceiling still separates the tree from its counterfactual rather than
-/// from a counterfactual that no longer exists.
+/// from a counterfactual that no longer exists. Late move reductions sit
+/// inside the same null-window question, so the same argument carries
+/// them: the full-window counterfactual has no reductions to lose.
 #[test]
 fn the_narrower_window_saves_nodes() {
     let tt = no_table();

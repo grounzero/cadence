@@ -135,10 +135,30 @@
 //! wrong answer it exists to avoid; the one that is a chess claim rather
 //! than a search claim is the zugzwang guard, [`has_non_pawn_material`].
 //!
+//! **Late move reductions.** A quiet move far down the sorted list of an
+//! interior node is first searched shallower than its siblings, by
+//! [`lmr_reduction`] plies, inside the null window the move behind the
+//! first is asked anyway; a reduced search that beats alpha is re-run at
+//! the full child depth before its answer is believed, and only then may
+//! the full-window re-search above follow. The ordering is what the
+//! reduction spends: a move the sort ranked behind everything, with no
+//! evidence to its name, rarely turns out best, and where it does the
+//! re-search pays the full price once rather than every sibling paying it
+//! always. The exemptions -- the first three moves, moves at a node in
+//! check, noisy moves, killers, moves that give check -- are named at
+//! [`reduction`] with the wrong answer each exists to avoid. The
+//! null-move rule above and this one compose vertically, never on the
+//! same search: that one cuts a whole node before its move list exists,
+//! this one shortens one real move's subtree, and a reduced child may
+//! itself null -- its verification then reads the already-reduced depth,
+//! which is fine because every conclusion above alpha climbs back through
+//! the re-search ladder at full depth before anything trusts it.
+//!
 //! **What it is not, on purpose.** No history, so the quiet moves the
-//! killers did not claim are not ranked against each other: that is a
-//! separate change with its own SPRT, plugging into the same sort. No
-//! reduction of any real move's search, no extension on anything but a
+//! killers did not claim are not ranked against each other, and the
+//! reduction above reads the move's index rather than any per-move score:
+//! the history-modulated reduction is a separate change with its own
+//! SPRT, plugging into the same seam. No extension on anything but a
 //! check, and no pruning beyond the null move above and the quiescence
 //! exchange rule below: no delta pruning. That
 //! search extends nothing and has nothing to extend: it carries no depth,
@@ -972,7 +992,8 @@ impl<'a> Search<'a> {
         // ranks. A killer is a move that cut at a sibling and may not be
         // legal here, which needs no check: it matches nothing in the list.
         let ordered = usize::from(order_first(&mut legal, tt_move));
-        picker::sort_from(board, &mut legal, ordered, self.killers[ply]);
+        let killers = self.killers[ply];
+        picker::sort_from(board, &mut legal, ordered, killers);
 
         let original_alpha = alpha;
         let mut best = -INFINITE;
@@ -981,8 +1002,10 @@ impl<'a> Search<'a> {
             board.make_move(m);
             // The check extension, on the child's own state: `make_move`
             // has just recomputed the checkers, so asking costs nothing
-            // that was not already spent.
-            let ext = extension(board.in_check(), ply + 1, self.root_depth);
+            // that was not already spent. The same read is the reduction's
+            // check exemption below, so it is taken once and named.
+            let gives_check = board.in_check();
+            let ext = extension(gives_check, ply + 1, self.root_depth);
             let child = depth - 1 + ext;
             // The first move gets the window this node was given. Every
             // move behind it is asked the cheaper question first: not
@@ -994,10 +1017,17 @@ impl<'a> Search<'a> {
             // is better fails high, and what comes back is a bound and not
             // a value, so it is searched again with the full window to
             // find out what it is worth.
+            //
+            // Late move reductions sit inside that cheaper question:
+            // [`reduction`] holds the exemptions, [`lmr_reduction`] the
+            // size, and [`Search::late_move`] the reduced search and the
+            // full-depth verification of anything it concluded above
+            // alpha.
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
-                -self.negamax(board, child, ply + 1, -alpha - 1, -alpha)
+                let r = reduction(in_check, gives_check, m, killers, depth, i);
+                self.late_move(board, child, r, ply, alpha)
             };
             // The re-search, and the two conditions it is not run under.
             // A score at or above beta needs none: fail-soft makes it a
@@ -1049,6 +1079,44 @@ impl<'a> Search<'a> {
             bound,
         );
         best
+    }
+
+    /// The null-window search of one move behind a node's first, reduced
+    /// by `r` plies where `r` is not zero: the late-move arm of the move
+    /// loop, on the board with the move already made. The reduced search
+    /// asks the same question the null window always asks, over a smaller
+    /// tree; an answer at or below alpha is the expected one and stands,
+    /// and an answer above alpha is re-earned at the full child depth
+    /// before anything believes it, so no score a shallow search
+    /// concluded reaches the node unverified. The caller's full-window
+    /// re-search then follows its own rule on what this returns, which is
+    /// how a reduced move that turns out best still gets the window the
+    /// node was given.
+    ///
+    /// The floor of one ply keeps the reduced search a main-search node
+    /// with the quiescence search below it, where the null move's own
+    /// reduction may saturate to the quiescence search directly: that
+    /// verification starts from a position already above beta, while this
+    /// is the first look at a real move.
+    fn late_move(
+        &mut self,
+        board: &mut Board,
+        child: u32,
+        r: u32,
+        ply: usize,
+        alpha: Score,
+    ) -> Score {
+        if r == 0 {
+            return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
+        }
+        self.lmr_reductions += 1;
+        let reduced = child.saturating_sub(r).max(1);
+        let score = -self.negamax(board, reduced, ply + 1, -alpha - 1, -alpha);
+        if score > alpha && !self.aborted {
+            self.lmr_researches += 1;
+            return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
+        }
+        score
     }
 
     /// Null-move pruning at one node: where the side to move can hand the

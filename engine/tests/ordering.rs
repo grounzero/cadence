@@ -1051,6 +1051,13 @@ const SORT_DEPTH: u32 = 7;
 /// build this gate exists to fail had started passing it. The shape of the
 /// assertion is unchanged and the gate discriminates by a factor of five
 /// again.
+///
+/// **And again when late move reductions landed**: 23,395,608 nodes with
+/// no ordering in the main search against 5,495,043 with it, and the old
+/// ceiling had once more fallen above the unordered point. Every pruning
+/// or reduction change cuts the counterfactual as fast as the shipped
+/// tree, so this re-measurement is due at each of them, not once. The
+/// gate discriminates by a factor of about four.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1068,8 +1075,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 72_422_385,
-        "{total} nodes against the 72,422,385 the same search took with no ordering at all"
+        total * 10 < 9 * 23_395_608,
+        "{total} nodes against the 23,395,608 the same search took with no ordering at all"
     );
 }
 
@@ -1118,6 +1125,19 @@ fn the_capture_sort_saves_nodes() {
 /// most of the subtrees the demotion was saving on this set at this depth,
 /// and the next tree change should replace this gate's set or depth
 /// instead of its constant.
+///
+/// **The depth replacement was tried when late move reductions landed,
+/// and it runs the wrong way.** The pair on that tree reads 5,506,625
+/// against 5,495,043 at depth 7 (a window of 0.21%), 30,279,091 against
+/// 30,253,806 at depth 8 (0.084%), and 164,009,563 against 163,899,386
+/// at depth 9 (0.067%): deeper is narrower, because the pruning and the
+/// reductions remove the late-move subtrees the demotion was saving in
+/// proportion to how many there are. So a depth change cannot restore the
+/// window and the ceiling is re-based between the new exact points once
+/// more. What remains open is a position set chosen for losing captures
+/// that compete with killers, and that is a design task with its own
+/// measurement, not a constant: until it exists this gate separates the
+/// builds by 0.21% of exact counts and no more.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1135,8 +1155,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 14_574_000,
-        "{total} nodes against the 14,582,345 the same search took with every capture ahead of the killers"
+        total < 5_500_000,
+        "{total} nodes against the 5,506,625 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1181,11 +1201,24 @@ fn demoting_the_losing_captures_saves_nodes() {
 /// what moved is the pruning's window before concluding the sort dropped a
 /// move.
 ///
-/// The values before the extension were
-/// `[102, 230, 2, 532, 929, 620, -419, 0, 6, 34, 511, -18, 0, 117, 0, 0]`.
-/// Thirteen of the sixteen are within 11 centipawns of these; the one that
-/// moved is a deeper search of the same position, not a different answer to
-/// it.
+/// **Late move reductions ended the premise, and the gate is scoped to
+/// where it still holds by construction rather than by measurement.** The
+/// reduction reads the index the sort assigned a move, so the sorted and
+/// unsorted builds now search different trees by design and their scores
+/// are different answers, not a defect: measured when the reductions
+/// landed, the two builds disagreed on six of the sixteen scores at the
+/// old depth of six. The depth is now two, where no interior node reaches
+/// the reduction's depth-three threshold, so no reduction fires anywhere
+/// in the tree and the sort is once again only an ordering. That reason
+/// holds on any position, unlike the null-move paragraph above, whose
+/// agreement was a reading on this set; the null move does still run at
+/// this depth, and the two builds agree on all sixteen scores through it.
+/// What the scoping costs is depth: a sort bug that only shows past the
+/// reduction threshold is outside this gate now, and the counterfactual
+/// ceilings above are what still read the sort at depth.
+///
+/// The values at depth six, before the reductions, were
+/// `[108, 230, 2, 532, 930, 622, -419, 0, 6, 34, 520, -18, 0, 45, 0, 0]`.
 #[test]
 fn the_sort_changes_no_score() {
     let fens = deep_fens();
@@ -1209,12 +1242,12 @@ fn the_sort_changes_no_score() {
 }
 
 /// The depth `the_sort_changes_no_score` searches to.
-const SCORE_DEPTH: u32 = 6;
+const SCORE_DEPTH: u32 = 2;
 
 /// What `deep_fens()` scores at `SCORE_DEPTH` with no table, measured on a
 /// build with no ordering in `negamax` at all.
 const UNORDERED_SCORES: [Score; 16] = [
-    108, 230, 2, 532, 930, 622, -419, 0, 6, 34, 520, -18, 0, 45, 0, 0,
+    98, 206, 0, 525, 923, 615, -416, 0, 0, 52, 518, -30, 0, 125, 0, 0,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1597,6 +1630,14 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 /// the nodes a killer used to decide before the sort is consulted. The
 /// assertion becomes a plain ceiling between the two points, exact counts,
 /// about 5% either side.
+///
+/// **And when late move reductions landed**: the killerless build reads
+/// 366,183 against 281,531 with them, both under the old ceiling again.
+/// The killers grew back to 23% on this set, because the reductions read
+/// them twice: a killer is exempt from reduction, so a killerless build
+/// does not only order worse, it reduces moves the shipped build declines
+/// to. The ceiling sits between the new exact points, about 12% either
+/// side.
 #[test]
 fn the_killers_save_nodes() {
     let fens = deep_fens();
@@ -1607,8 +1648,8 @@ fn the_killers_save_nodes() {
     }
     println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
     assert!(
-        total < 630_000,
-        "{total} against the 663,124 the same search took with no killers in the main search"
+        total < 320_000,
+        "{total} against the 366,183 the same search took with no killers in the main search"
     );
 }
 

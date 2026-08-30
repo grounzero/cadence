@@ -618,6 +618,18 @@ fn clearing_empties_the_table_and_resets_the_generation() {
 /// table at all: measured over the bench positions it reproduces the
 /// previous engine's node count exactly, so the table is the only thing
 /// this change does.
+///
+/// **Per-position, since late move reductions landed, saving is the rule
+/// and not an invariant.** A table hit rotates its move to the head, every
+/// move behind it shifts down one index, and the reduction reads the
+/// index, so a hit now reshapes which moves are searched shallower as
+/// well as which are searched first, and on a position quiet enough that
+/// can cost more than the probe saves. Measured when the reductions
+/// landed: one of the sixteen, a DFRC start array, reads 11,748 nodes
+/// with the table against 8,512 without, and the other fifteen all save.
+/// So the assertion is fifteen of sixteen and the aggregate factor, not
+/// each position alone; if a second position ever crosses, that is a
+/// reading to take rather than a count to bump.
 #[test]
 fn the_table_saves_nodes() {
     let mut cheaper = 0;
@@ -626,10 +638,6 @@ fn the_table_saves_nodes() {
     for fen in &fens {
         let (_, _, without) = search_with(&mut board(fen), GATE_DEPTH, &no_table());
         let (_, _, with) = search_with(&mut board(fen), GATE_DEPTH, &table(tt::DEFAULT_HASH_MB));
-        assert!(
-            with <= without,
-            "{fen}: {with} nodes with the table, {without} without"
-        );
         total_with += with;
         total_without += without;
         if with < without {
@@ -641,9 +649,8 @@ fn the_table_saves_nodes() {
          {total_with} with, cheaper in {cheaper}",
         fens.len()
     );
-    assert_eq!(
-        cheaper,
-        fens.len(),
+    assert!(
+        cheaper >= fens.len() - 1,
         "the table saved nothing in {} of {} positions",
         fens.len() - cheaper,
         fens.len()
