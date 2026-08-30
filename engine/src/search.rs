@@ -169,8 +169,28 @@
 //! killers are; carrying it across the moves of a game needs an ageing
 //! step between them and is a change of its own.
 //!
+//! **Futility pruning.** Near the horizon, a quiet move is skipped
+//! without being searched where the node's static evaluation plus a
+//! margin ([`futility_margin`], a pawn and a half per ply of remaining
+//! depth, up to [`FUTILITY_DEPTH`]) still does not reach alpha: the move
+//! changes no material and the search left below it is too short to build
+//! a threat worth the gap. The node-level half is [`futile_node`], read
+//! once with the node's own alpha; the per-move half is
+//! [`futility_skips`], and its exemptions are a noisy move, whose whole
+//! point is the material it changes, and the node's first move, so that a
+//! node which skips everything else still has a score something searched.
+//! A move that gives check is exempt too, and that one is asked last,
+//! through [`Board::gives_check`] rather than by making the move, because
+//! it is the only expensive question here and only a move that would
+//! otherwise be skipped has to answer it. Being in check needs no
+//! exemption: `evals[ply]` is `None` there, so the rule has nothing to
+//! read. It composes with the reductions the way the null move does --
+//! a move this skips is a move that never reaches the reduction, so the
+//! two share the same pool of late quiet moves and the second gets what
+//! the first leaves.
+//!
 //! **What it is not, on purpose.** No extension on anything but a
-//! check, and no pruning beyond the null move above and the quiescence
+//! check, and no pruning beyond the two rules above and the quiescence
 //! exchange rule below: no delta pruning. That
 //! search extends nothing and has nothing to extend: it carries no depth,
 //! and in check it already answers with every legal evasion. Folded in
@@ -1166,28 +1186,11 @@ impl<'a> Search<'a> {
         }
 
         // The table, before the moves are generated: that saving is most of
-        // what it is for. The cutoff is withheld at the fifty-move limit,
-        // where this node is a draw or a mate by rule whatever any subtree
-        // found, because the key does not carry the halfmove clock.
+        // what it is for.
         let key = board.key();
-        let mut tt_move = Move::NULL;
-        if let Some(hit) = self.tt.probe(key) {
-            // The move is worth having whatever the depth says. A hit too
-            // shallow to answer the question still names the move that
-            // answered it before, and `verify` matched the whole key, so
-            // that move belongs to this position.
-            tt_move = hit.mv;
-            if u32::from(hit.depth) >= depth && board.halfmove_clock() < 100 {
-                let score = score::from_tt(hit.score, ply);
-                let cutoff = match hit.bound {
-                    Bound::Exact => true,
-                    Bound::Lower => score >= beta,
-                    Bound::Upper => score <= alpha,
-                };
-                if cutoff {
-                    return score;
-                }
-            }
+        let (tt_move, cutoff) = self.probe(board, key, depth, ply, alpha, beta);
+        if let Some(score) = cutoff {
+            return score;
         }
 
         // The static evaluation, written whether or not anything below
@@ -1232,10 +1235,23 @@ impl<'a> Search<'a> {
         let killers = self.killers[ply];
         picker::sort_from(board, &mut legal, ordered, killers, self.history.side(us));
 
+        // The margin, read once with the node's own alpha. The interior
+        // node's preamble runs the margin tests beside the static
+        // evaluation and above the null move, and this sits below it
+        // instead: nothing between the two writes what the test reads, and
+        // this rule returns no score of its own, so the sequence is
+        // unaffected and what the placement saves is the test at every
+        // node the null move cuts.
+        let futile = futile_node(self.evals[ply], depth, alpha);
+        self.futility_nodes += u64::from(futile);
+
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         for (i, m) in legal.iter().enumerate() {
+            if self.futile(board, futile, m, i) {
+                continue;
+            }
             board.make_move(m);
             // The check extension, on the child's own state: `make_move`
             // has just recomputed the checkers, so asking costs nothing
@@ -1330,6 +1346,49 @@ impl<'a> Search<'a> {
         best
     }
 
+    /// The transposition table at an interior node: the move a hit named,
+    /// and the score to return where the stored bound answers this node's
+    /// question outright.
+    ///
+    /// **The move is worth having whatever the depth says.** A hit too
+    /// shallow to answer the question still names the move that answered it
+    /// before, and `verify` matched the whole key, so that move belongs to
+    /// this position. That is why the two halves come back separately: the
+    /// ordering fires far more often than the cutoff does.
+    ///
+    /// **The cutoff is withheld at the fifty-move limit**, where this node
+    /// is a draw or a mate by rule whatever any subtree found, because the
+    /// key does not carry the halfmove clock.
+    ///
+    /// A method and not a free function: it reads the table the search was
+    /// handed. It was inline in `negamax` until futility pruning, which is
+    /// the change that made that function long enough for the split to be
+    /// worth taking; nothing about it moved, and the bench count either
+    /// side of the extraction is the same number.
+    fn probe(
+        &self,
+        board: &Board,
+        key: u64,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> (Move, Option<Score>) {
+        let Some(hit) = self.tt.probe(key) else {
+            return (Move::NULL, None);
+        };
+        if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
+            return (hit.mv, None);
+        }
+        let score = score::from_tt(hit.score, ply);
+        let cutoff = match hit.bound {
+            Bound::Exact => true,
+            Bound::Lower => score >= beta,
+            Bound::Upper => score <= alpha,
+        };
+        (hit.mv, cutoff.then_some(score))
+    }
+
     /// The null-window search of one move behind a node's first, reduced
     /// by as many plies as `base` and `history` between them call for: the
     /// late-move arm of the move loop, on the board with the move already
@@ -1377,6 +1436,32 @@ impl<'a> Search<'a> {
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
         }
         score
+    }
+
+    /// Whether the move at `index` of a node the margin admitted is skipped
+    /// without being made: [`futility_skips`] on everything the move and
+    /// its place in the list decide, and then the check exemption.
+    ///
+    /// **`gives_check` is asked last and only here.** It is the one
+    /// expensive question in the rule, two slider lookups against a board
+    /// nothing has moved, and only a move that would otherwise be skipped
+    /// ever has to answer it: a move that survives the cheap half is
+    /// searched without it being asked, and a move that is skipped paid for
+    /// the answer with a whole subtree. A move that gives check is forcing,
+    /// and [`extension`] deepens exactly what this would discard.
+    ///
+    /// A method rather than a free function, unlike the three above it,
+    /// because it is the half that writes the counters and reads the board.
+    fn futile(&mut self, board: &Board, futile: bool, m: Move, index: usize) -> bool {
+        if !futility_skips(futile, m, index) {
+            return false;
+        }
+        if board.gives_check(m) {
+            self.futility_kept_check += 1;
+            return false;
+        }
+        self.futility_skipped += 1;
+        true
     }
 
     /// Record what this node's cutoff says about its quiet moves: credit

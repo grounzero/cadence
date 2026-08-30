@@ -695,6 +695,17 @@ const WINDOW_DEPTH: u32 = 7;
 /// here is positions where the recursion has passed the window through
 /// several plies.
 ///
+/// **Four, unchanged when futility pruning landed, and the re-check is
+/// worth recording because a coverage constant nobody re-measures is the
+/// failure the counterfactual ceilings in `tests/ordering.rs` keep
+/// finding.** The rule reads alpha and skips quiet moves, so it is
+/// window-dependent like the two below and could have shortened the run
+/// again. Measured on the tree it landed on, both endgames, depths one to
+/// seven: the last unbroken run still ends at four, the second endgame
+/// still diverges first at five (453 against 454 below), and the first
+/// still diverges at seven. The constant stands on a new measurement
+/// rather than on the old one.
+///
 /// **Four, down from five when the history heuristic landed, and what
 /// shrank is the region rather than the property.** The pawn-endgame arm
 /// rested on the null move being the only rule whose answer depends on the
@@ -871,6 +882,15 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// `the_sort_changes_no_score`, and this is that consequence arriving in
 /// a second gate. The one move that moved (`e1d3` for `d1e3`) is a
 /// sibling at the root scoring within two points of it.
+///
+/// **Futility pruning moved two scores and one move, and it is the
+/// smallest re-baseline this fixture has had.** The rule reads alpha, so
+/// it is window-dependent in the way the null move is beta-dependent, and
+/// a node that skips a quiet move returns a value the full move list
+/// would not have: `d1c3` at 6 replaces `d1e3` at 8, again a root sibling
+/// within two points, and `e1d3` rose from 8 to 10 two positions later,
+/// which is the same effect one ply further up with the sign turned over.
+/// Eleven of the fourteen entries did not move at all.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 9),
     ("d5e6", -18),
@@ -879,8 +899,8 @@ const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("d7c8q", 504),
     ("c3d5", 12),
     ("b1c3", 9),
-    ("d1e3", 8),
-    ("e1d3", 8),
+    ("d1c3", 6),
+    ("e1d3", 10),
     ("e1d3", 4),
     ("h1h7", 539),
     ("f1h1", 525),

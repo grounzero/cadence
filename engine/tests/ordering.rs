@@ -1069,6 +1069,20 @@ const SORT_DEPTH: u32 = 7;
 /// sides of it. Re-based anyway, because the constant is meant to be a
 /// number this tree produces. The gate now discriminates by a factor of
 /// about eleven, the widest it has been since the check extension.
+///
+/// **And futility pruning survived it too, which is a pruning change and
+/// so was not supposed to.** 25,881,212 nodes with no ordering in the main
+/// search against 2,291,752 with it: the counterfactual fell 3.5% where the
+/// shipped tree fell 8.8%, so the gap widened and the old ceiling of nine
+/// tenths of 26,826,075 still sits below the counterfactual. **The
+/// discriminating property is not whether the change prunes, it is whether
+/// the counterfactual takes the change's own trigger away.** This rule
+/// fires where alpha stands a margin above the static evaluation, and alpha
+/// stands there because the ordering put a good move first; an unordered
+/// search raises alpha slowly and hands the rule far less to skip. So a
+/// build with no ordering loses most of the pruning as well as the
+/// ordering, and the two losses compound in the counterfactual's favour.
+/// Re-based anyway, on the same ground as last time.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1086,8 +1100,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 26_826_075,
-        "{total} nodes against the 26,826,075 the same search took with no ordering at all"
+        total * 10 < 9 * 25_881_212,
+        "{total} nodes against the 25,881,212 the same search took with no ordering at all"
     );
 }
 
@@ -1158,6 +1172,16 @@ fn the_capture_sort_saves_nodes() {
 /// was shrink the tree rather than take the demotion's work, which the
 /// killer gate below cannot say about itself. The open item is unchanged
 /// and is still a position set rather than a constant.
+///
+/// **Futility pruning re-based it once more and narrowed it again**:
+/// 2,301,352 nodes with every capture ahead of the killers against
+/// 2,291,752 with the losing ones behind them, a window of 0.42% against
+/// the 0.55% the history heuristic left. The old ceiling sat above both.
+/// The open item is still the position set and has now outlived four
+/// re-baselines, which is worth saying plainly: this gate has been
+/// separating exact counts by under one per cent since null-move pruning
+/// landed, and every item since has re-based a constant instead of
+/// building the set that would restore the window.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1175,8 +1199,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 2_521_000,
-        "{total} nodes against the 2,527,884 the same search took with every capture ahead of the killers"
+        total < 2_296_000,
+        "{total} nodes against the 2,301,352 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1236,6 +1260,21 @@ fn demoting_the_losing_captures_saves_nodes() {
 /// What the scoping costs is depth: a sort bug that only shows past the
 /// reduction threshold is outside this gate now, and the counterfactual
 /// ceilings above are what still read the sort at depth.
+///
+/// **Futility pruning ends the by-construction half of that, and there is
+/// no depth to retreat to.** The margin acts at every depth up to three, so
+/// it acts at this one: measured when it landed, these sixteen positions at
+/// this depth admit 3 nodes and skip 21 moves, and which moves are skipped
+/// depends on the alpha the parent reached, which depends on the order it
+/// tried its moves in. Depth one is the only depth the rule cannot reach
+/// and it is vacuous here, because `search_root` does its own ordering and
+/// `negamax`'s sort is never called at all. So this gate stands on the same
+/// footing as the null-move paragraph above rather than on the reductions
+/// one: the shipped build and the build with no sort in `negamax` were
+/// re-measured together and agree on all sixteen scores, and that is a
+/// reading on this set and not a property of the depth. If it ever fires
+/// after an ordering change, the first thing to check is whether an
+/// ordering difference moved a margin decision.
 ///
 /// The values at depth six, before the reductions, were
 /// `[108, 230, 2, 532, 930, 622, -419, 0, 6, 34, 520, -18, 0, 45, 0, 0]`.
@@ -1678,6 +1717,18 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 /// `demoting_the_losing_captures_saves_nodes` already sits, and the same
 /// answer applies: what this gate needs next is a position set where the
 /// two mechanisms disagree, not a tighter constant.
+///
+/// **Futility pruning re-based it and widened it, from 1.4% back to
+/// 3.2%**: the killerless build reads 169,664 against 164,419 with them,
+/// both under the old ceiling. The killers gained rather than lost, which
+/// is the first time this gate has moved that way, and the reason is that
+/// this rule reads the killers twice over: a killer is a quiet move, so it
+/// is a candidate to be skipped for the margin like any other, and what
+/// keeps it searched is that the sort put it near the head of the list
+/// where the first-move exemption reaches it. Take the slots out and those
+/// same moves fall into the band the margin skips. That is one more thing
+/// the history table does not cover, on top of the two above, and it is
+/// measured rather than argued. The set is still what this gate wants next.
 #[test]
 fn the_killers_save_nodes() {
     let fens = deep_fens();
@@ -1688,8 +1739,8 @@ fn the_killers_save_nodes() {
     }
     println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
     assert!(
-        total < 179_000,
-        "{total} against the 180,197 the same search took with no killers in the main search"
+        total < 167_000,
+        "{total} against the 169,664 the same search took with no killers in the main search"
     );
 }
 
