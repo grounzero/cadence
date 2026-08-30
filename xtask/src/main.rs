@@ -7,7 +7,6 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -63,7 +62,6 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("report-duplication") => report_duplication(),
         Some("install-hooks") => install_hooks(),
         Some("nps") => nps(&args.collect::<Vec<_>>()),
         Some(other) => {
@@ -85,8 +83,6 @@ fn usage() {
     eprintln!("  check-headers   verify every .rs file carries the GPL notice");
     eprintln!("  check-boundary  verify references resolve here, and punctuation and vocabulary");
     eprintln!("                  --staged: read the index rather than the working tree");
-    eprintln!("  report-duplication  list comment passages that repeat within one crate");
-    eprintln!("                      a report and never a gate: about one hit in six is real");
     eprintln!("  install-hooks   point git at .githooks/ for this clone");
     eprintln!("  nps             measure the bench's speed the way the SPRT harness measures it");
     eprintln!();
@@ -811,205 +807,6 @@ fn collect_all(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// report-duplication
-// ---------------------------------------------------------------------------
-//
-// The failure this looks for is a premise two items share, written out at
-// both of them because neither owns it. Every instance found so far has the
-// same signature: the second copy names the first ("for the same reason",
-// "like `futility_margin`") and then restates the reason anyway, so the
-// pointer that would have replaced it is already on the page.
-//
-// **This reports and never fails, and the reason is its hit rate, which is
-// measured rather than guessed.** At the commit that added this subcommand,
-// 28 passages: **nine rows carry seven findings worth acting on and the
-// other nineteen are correct as they stand.** The largest source of the
-// nineteen is a family documented in parallel, where the headings repeat
-// because the members are measured the same way and the figures under them
-// differ -- `FUTILITY_MARGIN` and `REVERSE_FUTILITY_MARGIN` supply four rows
-// between them and none is worth acting on. Attack-table docs that properly
-// match the item they re-export supply three, and the `# Panics` convention
-// one. Roughly one row in three, then, and one finding in four.
-//
-// A report at that rate is a two-minute read when the file is already open
-// and would be a daily obstruction as a gate. **A reader who sees the count
-// and not the rate will treat it as a gate**, which is why the rate is
-// written here and in the standing rule rather than left to be rediscovered.
-//
-// It measures what a condensation pass acts on: 46 passages before the two
-// passes of 2026-08-30, 35 after the first and 28 after the second.
-
-/// Words of comment that must repeat before a passage is reported.
-///
-/// Twelve. Shorter windows report ordinary phrasing -- at eight the count
-/// roughly triples without the extra hits being duplication -- and longer
-/// ones miss a premise that was reworded on its second outing, which is the
-/// common case rather than the rare one.
-const DUPLICATION_WINDOW: usize = 12;
-
-/// How far apart two occurrences must be, in lines, to count as two.
-///
-/// A passage longer than the window matches itself at every offset, so
-/// without this every long duplicate is reported once per word.
-const DUPLICATION_GAP: usize = 4;
-
-/// One passage and everywhere it was found.
-struct Passage {
-    text: String,
-    at: Vec<(String, usize)>,
-}
-
-fn report_duplication() -> ExitCode {
-    let root = repo_root();
-    let mut files = Vec::new();
-    for crate_dir in ["engine/src", "core/src", "nnue/src"] {
-        let dir = root.join(crate_dir);
-        let mut paths = Vec::new();
-        if let Err(e) = collect_rs(&dir, &mut paths) {
-            eprintln!("xtask report-duplication: {}: {e}", dir.display());
-            return ExitCode::FAILURE;
-        }
-        paths.sort();
-        for path in paths {
-            let name = path
-                .strip_prefix(&root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            match std::fs::read_to_string(&path) {
-                Ok(text) => files.push((name, text)),
-                Err(e) => {
-                    eprintln!("xtask report-duplication: {name}: {e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-    }
-
-    let found = repeated_passages(&files, DUPLICATION_WINDOW, DUPLICATION_GAP);
-    println!(
-        "report-duplication: {} passage(s) of {DUPLICATION_WINDOW} or more repeated words, \
-         within one crate.",
-        found.len()
-    );
-    for p in &found {
-        let places: Vec<String> = p.at.iter().map(|(f, l)| format!("{f}:{l}")).collect();
-        println!("\nx{} {}", p.at.len(), places.join("  "));
-        println!("   {}", p.text);
-    }
-    println!(
-        "\nAbout one in six is a premise that wants one home. Most of the rest are a \
-         family documented\nin parallel, whose figures differ under headings that do not. \
-         This reports and never fails."
-    );
-    ExitCode::SUCCESS
-}
-
-/// Every window of `window` comment words that appears at two or more places
-/// in one crate, each place at least `gap` lines from the last.
-///
-/// Comment text only: a line whose first non-space characters are `//`, with
-/// the marker and any `/` or `!` after it dropped, reduced to its lowercase
-/// alphabetic words so that a passage reflowed to a different line width
-/// still matches itself.
-fn repeated_passages(files: &[(String, String)], window: usize, gap: usize) -> Vec<Passage> {
-    let mut words: Vec<String> = Vec::new();
-    let mut at: Vec<(usize, usize)> = Vec::new();
-    for (i, (_, text)) in files.iter().enumerate() {
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim_start();
-            let Some(rest) = line.strip_prefix("//") else {
-                continue;
-            };
-            for word in rest
-                .split(|c: char| !c.is_ascii_alphabetic() && c != '\'')
-                .filter(|w| !w.is_empty())
-            {
-                words.push(word.to_ascii_lowercase());
-                at.push((i, n + 1));
-            }
-        }
-    }
-
-    let mut seen: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
-    for i in 0..words.len().saturating_sub(window) {
-        seen.entry(words[i..i + window].join(" "))
-            .or_default()
-            .push(at[i]);
-    }
-
-    // A location set is reported once. The longest passage sharing it is the
-    // one printed, so a duplicate spanning thirty words is one line of report
-    // and not nineteen.
-    let mut by_places: BTreeMap<Vec<(usize, usize)>, String> = BTreeMap::new();
-    for (text, places) in seen {
-        let mut distinct: Vec<(usize, usize)> = Vec::new();
-        for place in places {
-            match distinct.last() {
-                Some(last) if last.0 == place.0 && place.1.saturating_sub(last.1) <= gap => {}
-                _ => distinct.push(place),
-            }
-        }
-        if distinct.len() < 2 {
-            continue;
-        }
-        if distinct.iter().any(|p| p.0 != distinct[0].0) && !same_crate(files, &distinct) {
-            continue;
-        }
-        let entry = by_places.entry(distinct).or_default();
-        if text.len() > entry.len() {
-            *entry = text;
-        }
-    }
-
-    // One duplicate reported once, not once per word. A passage longer than
-    // the window matches at every offset, and each offset lands a line or two
-    // further down, so the sets differ by a line and would otherwise be
-    // reported as separate findings.
-    let mut merged: Vec<(Vec<(usize, usize)>, String)> = Vec::new();
-    for (places, text) in by_places {
-        match merged
-            .iter_mut()
-            .find(|(seen, _)| adjacent(seen, &places, gap))
-        {
-            Some((_, kept)) if kept.len() >= text.len() => {}
-            Some(entry) => entry.1 = text,
-            None => merged.push((places, text)),
-        }
-    }
-
-    merged
-        .into_iter()
-        .map(|(places, text)| Passage {
-            text,
-            at: places
-                .into_iter()
-                .map(|(f, l)| (files[f].0.clone(), l))
-                .collect(),
-        })
-        .collect()
-}
-
-/// Whether two location sets name the same duplicate: the same files in the
-/// same order, each line within `gap` of its counterpart.
-fn adjacent(a: &[(usize, usize)], b: &[(usize, usize)], gap: usize) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(x, y)| x.0 == y.0 && x.1.abs_diff(y.1) <= gap)
-}
-
-/// Whether every place is in one crate. A doc that properly matches the item
-/// it re-exports is not the failure this looks for, and those cross the
-/// crate boundary rather than sitting inside it.
-fn same_crate(files: &[(String, String)], places: &[(usize, usize)]) -> bool {
-    let crate_of =
-        |i: usize| -> String { files[i].0.split('/').next().unwrap_or_default().to_string() };
-    let first = crate_of(places[0].0);
-    places.iter().all(|p| crate_of(p.0) == first)
-}
-
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -1670,87 +1467,5 @@ mod tests {
         assert_eq!(planning_label(line, "engine/src/eval.rs"), None);
         // The exemption is per word, not per file: the file is still checked.
         assert!(planning_label("// item 8", "engine/src/eval.rs").is_some());
-    }
-
-    // -----------------------------------------------------------------------
-    // report-duplication
-    // -----------------------------------------------------------------------
-
-    /// Twelve words, so a premise has to be restated rather than merely
-    /// echoed before it is reported.
-    const PREMISE: &str = "// a gap this evaluation reports is worth less \
-                           than the same gap from a strong one";
-
-    fn files(entries: &[(&str, &str)]) -> Vec<(String, String)> {
-        entries
-            .iter()
-            .map(|(n, t)| ((*n).to_string(), (*t).to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn a_premise_written_at_two_items_of_one_crate_is_reported_once() {
-        let f = files(&[
-            (
-                "engine/src/a.rs",
-                &format!("{PREMISE}\nconst A: i32 = 1;\n"),
-            ),
-            (
-                "engine/src/b.rs",
-                &format!("{PREMISE}\nconst B: i32 = 2;\n"),
-            ),
-        ]);
-        let found = repeated_passages(&f, DUPLICATION_WINDOW, DUPLICATION_GAP);
-        assert_eq!(found.len(), 1, "one premise, one finding");
-        assert_eq!(
-            found[0].at,
-            vec![
-                ("engine/src/a.rs".to_string(), 1),
-                ("engine/src/b.rs".to_string(), 1)
-            ]
-        );
-    }
-
-    /// The window is what keeps ordinary phrasing out of the report. Two
-    /// items may share a sentence; a premise is longer than a sentence.
-    #[test]
-    fn repetition_shorter_than_the_window_is_not_reported() {
-        let f = files(&[
-            ("engine/src/a.rs", "// the side to move is not obliged\n"),
-            ("engine/src/b.rs", "// the side to move is not obliged\n"),
-        ]);
-        assert!(repeated_passages(&f, DUPLICATION_WINDOW, DUPLICATION_GAP).is_empty());
-    }
-
-    /// A doc that matches the item it re-exports is correct, and those pairs
-    /// sit either side of a crate boundary rather than inside one.
-    #[test]
-    fn a_passage_repeated_across_crates_is_not_reported() {
-        let f = files(&[("engine/src/a.rs", PREMISE), ("core/src/b.rs", PREMISE)]);
-        assert!(repeated_passages(&f, DUPLICATION_WINDOW, DUPLICATION_GAP).is_empty());
-    }
-
-    /// A duplicate longer than the window matches at every offset, and each
-    /// offset lands a line or so further down. Without the merge every long
-    /// duplicate is reported once per word.
-    #[test]
-    fn one_long_duplicate_is_one_finding_and_not_one_per_word() {
-        let long = format!("{PREMISE}\n// and the margin is what prices that\n");
-        let f = files(&[("engine/src/a.rs", &long), ("engine/src/b.rs", &long)]);
-        let found = repeated_passages(&f, DUPLICATION_WINDOW, DUPLICATION_GAP);
-        assert_eq!(found.len(), 1, "{found:?} sets", found = found.len());
-    }
-
-    /// The gap is what stops a passage being reported against itself where
-    /// it wraps onto the next line of the same file.
-    #[test]
-    fn two_occurrences_inside_the_gap_are_one_occurrence() {
-        assert!(adjacent(
-            &[(0, 10), (1, 4)],
-            &[(0, 11), (1, 5)],
-            DUPLICATION_GAP
-        ));
-        assert!(!adjacent(&[(0, 10)], &[(0, 40)], DUPLICATION_GAP));
-        assert!(!adjacent(&[(0, 10)], &[(1, 10)], DUPLICATION_GAP));
     }
 }

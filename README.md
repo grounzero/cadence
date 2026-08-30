@@ -94,21 +94,6 @@ Greek notation, and no numbered planning labels in code, comments or test
 names. Both rules, and what each cannot catch, are documented in
 `xtask/src/main.rs`.
 
-One further subcommand is not in the block above and is not run by CI, because
-it is a report rather than a check:
-
-```sh
-cargo xtask report-duplication
-```
-
-It lists passages of twelve or more words that appear at two places within one
-crate's comments, which is the shape a premise takes when two items need it and
-neither owns it. **It never fails**, and the reason is its hit rate: at the
-commit that added it, nine of twenty-eight reported rows were worth acting on
-and the other nineteen were correct as they stood, mostly constants documented
-in parallel whose headings match because they are measured the same way. The
-measurement and what it excludes are in `xtask/src/main.rs`.
-
 ## Install the hooks
 
 ```sh
