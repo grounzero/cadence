@@ -848,7 +848,7 @@ fn the_check_evasions_sort_noisy_first_and_keep_generation_order() {
         for &e in evasions {
             list.push(e);
         }
-        cadence_engine::picker::sort_from(b, &mut list, 0, [Move::NULL; 2]);
+        cadence_engine::picker::sort_from(b, &mut list, 0, [Move::NULL; 2], &[]);
         let sorted = list.as_slice().to_vec();
         let mut before = evasions.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
         let mut after = sorted.iter().map(|e| e.to_bits()).collect::<Vec<_>>();

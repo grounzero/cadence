@@ -11,9 +11,18 @@
 //! the legal list, which is mostly quiet, from behind whatever
 //! `search::order_first` left at its head: a quiet move ranks
 //! below every noisy one, and among the quiet moves the two that caused a
-//! beta cutoff at a sibling of this node come first. The rest rank alike,
-//! because what separates one of those from another is the history
-//! heuristic, and that is a separate, individually tested change.
+//! beta cutoff at a sibling of this node come first. The rest rank by
+//! their history score ([`crate::history`]), which is what a quiet move
+//! has been worth elsewhere in this search, and the ones with no score
+//! keep generation order among themselves.
+//!
+//! **Every rank here is a band, and only one band has anything inside
+//! it.** A score is not a constant and does not fit between two of them,
+//! so the ranks below are multiplied by [`BAND`] and the history score is
+//! added within the quiet one. `BAND` is wider than the score's whole
+//! range, so no history can carry a move out of the class its rank put it
+//! in: the stage order is a property of the ranks and the score only
+//! decides position inside the last stage.
 //!
 //! **Why this is part of the quiescence search rather than a refinement
 //! of it.** Measured before it existed: depth one from Kiwipete, noisy
@@ -32,6 +41,7 @@ use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{MAX_MOVES, Move, MoveList, Piece, PieceType, Square};
 
+use crate::history::HISTORY_MAX;
 use crate::see;
 
 /// A piece's rank in the order pawn, knight, bishop, rook, queen, king.
@@ -102,10 +112,27 @@ const NOISY_MIN: i32 = UNDERPROMOTION;
 /// The rank of a quiet move that is not a killer, and one rank for all of
 /// them. Below every other band there is.
 ///
-/// One rank rather than a scale, because what distinguishes one of these
-/// from another is the history heuristic, which is a later change. Until it
-/// lands they are a block that a stable sort leaves in generation order.
+/// One rank and a score inside it: the history heuristic is what
+/// distinguishes one of these from another, and a quiet move whose score is
+/// zero -- nothing has cut with it and nothing has refuted it -- keeps the
+/// place a stable sort gives it, which is generation order.
 const QUIET: i32 = -512;
+
+/// What one rank is worth on the scale [`move_key`] returns, and what makes
+/// the ranks bands rather than points.
+///
+/// Wider than the history score's whole range, which is the property the
+/// stage order rests on: a quiet move at the top of its band still sorts
+/// below the lowest losing capture, and one at the bottom still sorts above
+/// nothing at all, because there is nothing below it. Sixty-five thousand
+/// five hundred and thirty six, against a range of thirty-two thousand
+/// seven hundred and sixty nine, and the assertion below is what keeps the
+/// two in step if either moves.
+const BAND: i32 = 1 << 16;
+
+const _: () = assert!(BAND > 2 * HISTORY_MAX);
+const _: () = assert!(NOISY_MAX as i64 * BAND as i64 <= i32::MAX as i64);
+const _: () = assert!(QUIET as i64 * BAND as i64 - HISTORY_MAX as i64 >= i32::MIN as i64);
 
 /// The two killer ranks, one per slot: the quiet moves that caused a beta
 /// cutoff at a sibling of the node being sorted.
@@ -135,10 +162,21 @@ const _: () = assert!(KILLER[0] < NOISY_MIN);
 const _: () = assert!(NOISY_MAX - LOSING < KILLER[1]);
 const _: () = assert!(NOISY_MIN - LOSING > QUIET);
 
-/// The rank of any legal move: [`noisy_key`] for a noisy one whose exchange
-/// does not lose material, that key less [`LOSING`] for one that does,
-/// a [`KILLER`] rank for a quiet move held in one of the slots, [`QUIET`]
-/// for the rest.
+/// The key of any legal move: its rank times [`BAND`], plus its history
+/// score where it has one. The rank is [`noisy_key`] for a noisy move whose
+/// exchange does not lose material, that key less [`LOSING`] for one that
+/// does, a [`KILLER`] rank for a quiet move held in one of the slots, and
+/// [`QUIET`] for the rest.
+///
+/// **Only the quiet band carries a score.** A killer has two ranks of its
+/// own and mixing a score into them would blur what the killer stage
+/// means: the slots say "this move cut at a sibling of *this* node", which
+/// is a sharper claim than the table's and is the reason they sit above it.
+/// A noisy move is ranked by what it takes.
+///
+/// `history` is the side to move's row, or an empty slice for a caller with
+/// no table to offer, which reads a zero for every move and is the order
+/// this function returned before the table existed.
 ///
 /// **The order of the branches is the contract.** Nothing in the signature
 /// stops a slot holding a capture, and one ranked as a killer would sort
@@ -159,20 +197,26 @@ const _: () = assert!(NOISY_MIN - LOSING > QUIET);
 /// which is the rank of a king capturing a pawn and above every
 /// underpromotion, and that is harmless only because its own caller is
 /// handed a list with no quiet move in it.
-fn move_key(board: &Board, m: Move, killers: [Move; 2], demote_losing: bool) -> i32 {
+fn move_key(
+    board: &Board,
+    m: Move,
+    killers: [Move; 2],
+    demote_losing: bool,
+    history: &[i32],
+) -> i32 {
     if m.is_noisy() {
         let key = noisy_key(board, m);
         if demote_losing && see::see(board, m) < 0 {
-            key - LOSING
+            (key - LOSING) * BAND
         } else {
-            key
+            key * BAND
         }
     } else if m == killers[0] {
-        KILLER[0]
+        KILLER[0] * BAND
     } else if m == killers[1] {
-        KILLER[1]
+        KILLER[1] * BAND
     } else {
-        QUIET
+        QUIET * BAND + history.get(m.from_to()).copied().unwrap_or(0)
     }
 }
 
@@ -194,22 +238,26 @@ fn move_key(board: &Board, m: Move, killers: [Move; 2], demote_losing: bool) -> 
 /// search's legal list, and the in-check evasion list, where a losing
 /// capture is still a legal answer to the check.
 pub fn sort_noisy(board: &Board, list: &mut MoveList) {
-    sort_impl(board, list, 0, [Move::NULL; 2], false);
+    sort_impl(board, list, 0, [Move::NULL; 2], false, &[]);
 }
 
 /// Order `list` from `start` onward: the noisy moves by descending
-/// [`noisy_key`], then the two killers, then the remaining quiet moves in
-/// the order they were generated in. The moves before `start` are left
-/// where they are.
+/// [`noisy_key`], then the two killers, then the remaining quiet moves by
+/// their history score. The moves before `start` are left where they are.
 ///
 /// **Why it takes quiet moves at all.** The main search sorts the legal
 /// list, which is mostly quiet, and so does the quiescence search when the
 /// side to move is in check. A quiet move ranks below every noisy one, below
 /// an underpromotion, which is the lowest noisy rank there is. Every quiet
-/// move but the two in `killers` shares that one rank: what separates one
-/// of those from another is the history heuristic, and that is a later
-/// change, so a stable sort leaves them in the order the generator emitted
-/// them.
+/// move but the two in `killers` sits in that one band, ordered inside it by
+/// what `history` says the move has been worth, and moves the table says
+/// nothing about keep the order the generator emitted them in.
+///
+/// **What `history` is for.** The side to move's row of the search's
+/// [`crate::history::History`], or an empty slice from a caller with none:
+/// the quiescence search's in-check evasions pass one, on the same ground
+/// they pass no killers, since whether either ranks a quiet evasion
+/// usefully is unmeasured and is a change of its own.
 ///
 /// **What `start` is for.** It keeps the two ordering stages apart. The
 /// transposition table's move is rotated to the head by
@@ -228,8 +276,14 @@ pub fn sort_noisy(board: &Board, list: &mut MoveList) {
 /// which is what the quiescence search's lists have always used: the lists
 /// are short, ties keep generation order, and the whole order -- and with
 /// it the bench number -- stays a function of the position alone.
-pub fn sort_from(board: &Board, list: &mut MoveList, start: usize, killers: [Move; 2]) {
-    sort_impl(board, list, start, killers, true);
+pub fn sort_from(
+    board: &Board,
+    list: &mut MoveList,
+    start: usize,
+    killers: [Move; 2],
+    history: &[i32],
+) {
+    sort_impl(board, list, start, killers, true, history);
 }
 
 /// The sort both entry points above run, `demote_losing` deciding whether
@@ -242,6 +296,7 @@ fn sort_impl(
     start: usize,
     killers: [Move; 2],
     demote_losing: bool,
+    history: &[i32],
 ) {
     let all = list.as_mut_slice();
     if start >= all.len() {
@@ -250,7 +305,7 @@ fn sort_impl(
     let moves = &mut all[start..];
     let mut keys = [0i32; MAX_MOVES];
     for (key, &m) in keys.iter_mut().zip(moves.iter()) {
-        *key = move_key(board, m, killers, demote_losing);
+        *key = move_key(board, m, killers, demote_losing, history);
     }
     for i in 1..moves.len() {
         let (m, k) = (moves[i], keys[i]);

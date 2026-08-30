@@ -12,6 +12,7 @@
 
 pub mod bench;
 pub mod eval;
+pub mod history;
 pub mod perft;
 pub mod picker;
 pub mod score;

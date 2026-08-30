@@ -154,11 +154,14 @@
 //! which is fine because every conclusion above alpha climbs back through
 //! the re-search ladder at full depth before anything trusts it.
 //!
-//! **What it is not, on purpose.** No history, so the quiet moves the
-//! killers did not claim are not ranked against each other, and the
-//! reduction above reads the move's index rather than any per-move score:
-//! the history-modulated reduction is a separate change with its own
-//! SPRT, plugging into the same seam. No extension on anything but a
+//! **What it is not, on purpose.** No history *read*, yet: the table
+//! ([`history`]) is here, the sort takes a row and the reduction takes a
+//! score ([`history_reduction`]), and the search hands both the empty
+//! answer. The quiet moves the killers did not claim are still not ranked
+//! against each other and the reduction still reads the move's index
+//! alone. That is the seam the change plugs into and it is deliberately a
+//! separate commit, so that the gates written against it can be seen to
+//! fail. No extension on anything but a
 //! check, and no pruning beyond the null move above and the quiescence
 //! exchange rule below: no delta pruning. That
 //! search extends nothing and has nothing to extend: it carries no depth,
@@ -172,9 +175,9 @@
 //! replacement are integer functions of the key and the generation, and
 //! the clock is consulted only when there is a time budget -- under a
 //! depth or node limit `Instant::now()` is never read on a decision path.
-//! There is no hash map, no float, no thread. The killers are cleared when
-//! a search starts, so they are state within one search and never across
-//! two. `bench` supplies a table of a fixed size and clears it between
+//! There is no hash map, no float, no thread. The killers and the history
+//! table are cleared when a search starts, so both are state within one
+//! search and never across two. `bench` supplies a table of a fixed size and clears it between
 //! positions, which is what turns "and the state of the table" back into
 //! "the code alone". Quiescence nodes are nodes: they count, and they
 //! check the limits.
@@ -201,6 +204,7 @@ use cadence_core::{
 };
 
 use crate::eval;
+use crate::history::{self, History};
 use crate::picker;
 use crate::score::{self, DRAW, INFINITE, Score, mated_in};
 use crate::see;
@@ -542,6 +546,36 @@ pub fn reduction(
     lmr_reduction(depth, index)
 }
 
+/// How many plies a late move whose base reduction is `base` is actually
+/// reduced by, once its history score is read: [`history::shift`] plies
+/// fewer for a move the table thinks well of, and that many more for one it
+/// has refuted.
+///
+/// **It adjusts a reduction and never creates one.** A base of zero comes
+/// back zero, so every exemption [`reduction`] holds -- the first three
+/// moves, a node in check, a noisy move, a killer, a move that gives check
+/// -- survives whatever the table says, and so does the depth threshold. A
+/// history score is evidence about a move across the whole search; an
+/// exemption is a claim about this node, and this node is where the wrong
+/// answer would be.
+///
+/// **What it adds that the index cannot supply.** The index is a rank
+/// inside one node's list. A rank cannot tell a node whose twentieth quiet
+/// move is still decent from a node whose fourth is worthless, because both
+/// lists are ranked from one to however many, and after the ordering above
+/// reads the same table the rank is *derived* from the score and loses
+/// exactly the part that is absolute. This reads the score itself.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of two arguments, gateable without a search.
+#[must_use]
+pub fn history_reduction(base: u32, history: i32) -> u32 {
+    if base == 0 {
+        return 0;
+    }
+    base.saturating_add_signed(-history::shift(history))
+}
+
 /// Whether the side to move has any piece beside its pawns and king.
 ///
 /// The zugzwang guard. The null move reads "even giving up the move, I
@@ -623,6 +657,12 @@ pub struct Search<'a> {
     /// that have refuted nothing. Indexed by ply, cleared when a search
     /// starts, and a kibibyte inline like `PvTable`'s row lengths.
     killers: [[Move; 2]; MAX_PLY],
+    /// What each quiet move has been worth across this whole search: the
+    /// butterfly table `picker` ranks the quiet band by and the reduction
+    /// reads through [`history_reduction`]. Cleared beside the killers, so
+    /// the two have one lifetime; thirty-two kibibytes, on the heap for
+    /// `PvTable`'s reason rather than inline for `killers`'.
+    history: History,
     /// The depth of the iteration in progress, which is what the check
     /// extension's ply cap is a multiple of. Set at the head of each
     /// iteration; a field rather than a sixth argument to `negamax`
@@ -657,6 +697,14 @@ pub struct Search<'a> {
     /// second that a reduced fail-high was verified rather than trusted.
     lmr_reductions: u64,
     lmr_researches: u64,
+    /// How often a history score shortened a reduction the index had
+    /// already decided on, and how often it lengthened one. Written where
+    /// the rule runs and read on no decision path, like the counters above.
+    /// Two rather than one because the malus is the half that produces a
+    /// negative score, so a gate that sees only the first cannot tell a
+    /// table that credits from a table that also debits.
+    history_reduced_less: u64,
+    history_reduced_more: u64,
     /// Elapsed milliseconds at the end of each completed iteration, in
     /// order, and empty where there is no budget.
     ///
@@ -685,6 +733,7 @@ impl<'a> Search<'a> {
             pv: Vec::with_capacity(MAX_PLY),
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
+            history: History::new(),
             root_depth: 0,
             evals: [None; MAX_PLY],
             null_attempts: 0,
@@ -692,6 +741,8 @@ impl<'a> Search<'a> {
             null_refused_material: 0,
             lmr_reductions: 0,
             lmr_researches: 0,
+            history_reduced_less: 0,
+            history_reduced_more: 0,
             iterations: Vec::new(),
         }
     }
@@ -715,12 +766,15 @@ impl<'a> Search<'a> {
         self.best = Move::NULL;
         self.pv.clear();
         self.killers = [[Move::NULL; 2]; MAX_PLY];
+        self.history.clear();
         self.evals = [None; MAX_PLY];
         self.null_attempts = 0;
         self.null_cutoffs = 0;
         self.null_refused_material = 0;
         self.lmr_reductions = 0;
         self.lmr_researches = 0;
+        self.history_reduced_less = 0;
+        self.history_reduced_more = 0;
         self.iterations.clear();
         self.budget = if self.limits.infinite {
             None
@@ -991,9 +1045,11 @@ impl<'a> Search<'a> {
         // happened, so that the table's move keeps its place whatever it
         // ranks. A killer is a move that cut at a sibling and may not be
         // legal here, which needs no check: it matches nothing in the list.
+        // The history row the sort takes is empty here, which is the order
+        // it had before the table existed.
         let ordered = usize::from(order_first(&mut legal, tt_move));
         let killers = self.killers[ply];
-        picker::sort_from(board, &mut legal, ordered, killers);
+        picker::sort_from(board, &mut legal, ordered, killers, &[]);
 
         let original_alpha = alpha;
         let mut best = -INFINITE;
@@ -1026,8 +1082,8 @@ impl<'a> Search<'a> {
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
-                let r = reduction(in_check, gives_check, m, killers, depth, i);
-                self.late_move(board, child, r, ply, alpha)
+                let base = reduction(in_check, gives_check, m, killers, depth, i);
+                self.late_move(board, child, base, 0, ply, alpha)
             };
             // The re-search, and the two conditions it is not run under.
             // A score at or above beta needs none: fail-soft makes it a
@@ -1082,16 +1138,23 @@ impl<'a> Search<'a> {
     }
 
     /// The null-window search of one move behind a node's first, reduced
-    /// by `r` plies where `r` is not zero: the late-move arm of the move
-    /// loop, on the board with the move already made. The reduced search
-    /// asks the same question the null window always asks, over a smaller
-    /// tree; an answer at or below alpha is the expected one and stands,
-    /// and an answer above alpha is re-earned at the full child depth
-    /// before anything believes it, so no score a shallow search
-    /// concluded reaches the node unverified. The caller's full-window
-    /// re-search then follows its own rule on what this returns, which is
-    /// how a reduced move that turns out best still gets the window the
-    /// node was given.
+    /// by as many plies as `base` and `history` between them call for: the
+    /// late-move arm of the move loop, on the board with the move already
+    /// made. The reduced search asks the same question the null window
+    /// always asks, over a smaller tree; an answer at or below alpha is the
+    /// expected one and stands, and an answer above alpha is re-earned at
+    /// the full child depth before anything believes it, so no score a
+    /// shallow search concluded reaches the node unverified. The caller's
+    /// full-window re-search then follows its own rule on what this
+    /// returns, which is how a reduced move that turns out best still gets
+    /// the window the node was given.
+    ///
+    /// **The size arrives in two parts and they are combined here rather
+    /// than at the call site**, so that the counters below sit beside the
+    /// search they describe: `base` is what the move's index and the
+    /// exemptions decided ([`reduction`]), and `history` is the move's
+    /// score, which [`history_reduction`] turns into an adjustment of that
+    /// and never into a reduction of its own.
     ///
     /// The floor of one ply keeps the reduced search a main-search node
     /// with the quiescence search below it, where the null move's own
@@ -1102,10 +1165,14 @@ impl<'a> Search<'a> {
         &mut self,
         board: &mut Board,
         child: u32,
-        r: u32,
+        base: u32,
+        history: i32,
         ply: usize,
         alpha: Score,
     ) -> Score {
+        let r = history_reduction(base, history);
+        self.history_reduced_less += u64::from(r < base);
+        self.history_reduced_more += u64::from(r > base);
         if r == 0 {
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
         }
@@ -1251,9 +1318,9 @@ impl<'a> Search<'a> {
             }
             // Noisy evasions first, by victim; the quiet ones keep the
             // order the generator emitted them in, behind all of those.
-            // No killers: whether this ply's two rank the quiet evasions
-            // usefully is unmeasured, and a second change.
-            picker::sort_from(board, &mut evasions, 0, [Move::NULL; 2]);
+            // No killers and no history: whether either ranks the quiet
+            // evasions usefully is unmeasured, and a second change.
+            picker::sort_from(board, &mut evasions, 0, [Move::NULL; 2], &[]);
             (evasions, -INFINITE)
         } else {
             if board.halfmove_clock() >= 100 {
@@ -1405,6 +1472,25 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn lmr_researches(&self) -> u64 {
         self.lmr_researches
+    }
+
+    /// How often a history score shortened a reduction the index had
+    /// decided on, and how often it lengthened one.
+    #[must_use]
+    pub fn history_reduced_less(&self) -> u64 {
+        self.history_reduced_less
+    }
+
+    #[must_use]
+    pub fn history_reduced_more(&self) -> u64 {
+        self.history_reduced_more
+    }
+
+    /// The table the last search left behind, for a gate that wants to see
+    /// what the cutoffs wrote and what the ordering would do with it.
+    #[must_use]
+    pub fn history(&self) -> &History {
+        &self.history
     }
 
     /// The depth of the last completed iteration; zero before any.
