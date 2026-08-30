@@ -58,6 +58,14 @@ Every claim is independently verifiable: tests read the extracted
 [machine fixture](tests/fixtures/perft-corpus.txt), so every expected FEN,
 move list and node count needed to reproduce a failure is public.
 
+## What this repository does
+
+The code, the tests, the perft corpus and its machine fixture, and the bench
+contract. Between them they pin what the engine does: the corpus fixes move
+generation against an external authority, the suite fixes the search's rules
+against gates written per rule, and `bench.txt` fixes the node count at a
+compiled depth, so a change that alters any of the three is visible.
+
 ## Test
 
 The normal workspace suite needs no setup beyond the pinned Rust toolchain:

@@ -4,32 +4,16 @@
 //!
 //! `build.rs` asks git what commit this is and whether HEAD is at an
 //! annotated tag, and emits the two answers raw. The rule that turns them
-//! into a name lives here, in the crate, because it is the part that can be
-//! wrong in a way that matters and a build script has no tests.
-//!
-//! Two forms, and only two, where `<version>` is the package version:
-//!
-//! - `<version>` -- built at the annotated tag for this package version.
-//! - `<version>-dev-<short commit>` -- anything else, carrying the commit it
-//!   came from, or `<version>-dev-unknown` where there was no repository to
-//!   ask.
-//!
-//! Written as a placeholder rather than spelled out: a patch is cut at every
-//! promotion, so an example naming one version is an edit owed at each, and
-//! the one thing a stale example here would misdescribe is the subject of
-//! the file.
+//! into a name lives here, in the crate, because a build script has no
+//! tests. Two forms, and only two: `<version>` at the annotated tag, and
+//! `<version>-dev-<short commit>` for anything else.
 //!
 //! **The bare form is reachable only through a tag that matches the package
 //! version character for character.** Every way of not knowing arrives here
 //! as an empty tag, and an empty string does not match a version, so no
-//! failure inside `build.rs` can produce a build that reads as a release. The
-//! guarantee is structural rather than careful: it does not depend on the
-//! build script handling its errors correctly, only on it being unable to
-//! invent a tag name.
+//! failure inside `build.rs` can produce a build that reads as a release.
 //!
-//! Nothing here reaches a decision path. The bench node count is a function
-//! of the code alone, and a string constant that is printed once is not part
-//! of it.
+//! Nothing here reaches a decision path.
 
 /// The tag HEAD is exactly at, or empty. Set by `build.rs`.
 const TAG: &str = env!("CADENCE_TAG");

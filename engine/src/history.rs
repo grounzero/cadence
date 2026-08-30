@@ -4,43 +4,19 @@
 //!
 //! A butterfly table: one signed score per side per `from`-`to` pair, 4,096
 //! pairs and two sides, indexed by [`Move::from_to`]. It records nothing
-//! about the position a move was played in, only about the move, which is
-//! the whole of the claim it makes -- that a quiet move which has been
-//! refuting siblings elsewhere is worth trying earlier here, and one that
-//! has been refuted is worth trying later.
+//! about the position a move was played in, only about the move.
 //!
-//! **What writes it.** A beta cutoff by a quiet move credits that move and
-//! debits every quiet move tried ahead of it at the same node, both by
-//! [`bonus`] of the node's depth. The debit is the half that gives a move a
-//! *negative* score, and a negative score is what [`shift`] reads: without
-//! it the table would separate the moves that have cut from the moves that
-//! have not, which is what the killer slots already do two moves at a time.
-//!
-//! **What reads it.** Two things, and they are two different uses of one
-//! number. `picker` ranks the quiet moves by it, which turns the one rank
-//! every non-killer quiet move shared into a band. And the late-move
-//! reduction reads it through [`shift`], which moves the reduction by up to
-//! [`SHIFT_MAX`] plies either way: the move index the reduction is sized
-//! against is a *rank* within one node's list, and a rank cannot tell a
-//! node whose twentieth move is still decent from one whose fourth is
-//! worthless. The score is an absolute reading and can.
-//!
-//! **Ageing is a multiply toward zero, and it is integer.** [`apply`] has
-//! the update and the equilibrium it settles to. What the shape buys here
-//! is the bound at [`HISTORY_MAX`] without a saturating add's dead zone,
-//! and no float, which nothing that decides a move may: the bench's node
-//! count has to be a function of the code alone, and a float on this path
-//! would make it a function of the rounding as well.
+//! **Ageing is a multiply toward zero, and it is integer.** [`apply`] has the
+//! update and the equilibrium it settles to. It uses no float, which nothing
+//! that decides a move may: the bench's node count has to be a function of
+//! the code alone, and a float on this path would make it a function of the
+//! rounding as well.
 //!
 //! **Lifetime: one search.** [`Search::run`](crate::search::Search::run)
 //! clears it where it clears the killers, so the table carries across the
-//! iterations of one `go` command and never across two. Keeping it across
-//! the moves of a game is a different change: it needs an ageing step
-//! between moves that this one does not have, and the fixed-position bench
-//! cannot tell the two apart, because it builds a fresh search per
-//! position. So the variant is settled here rather than left to whichever
-//! reader arrives next, and what is tested is the one the bench can at
-//! least reproduce.
+//! iterations of one `go` command and never across two. Carrying it across
+//! the moves of a game needs an ageing step between them that this does not
+//! have, and the fixed-position bench cannot tell the two apart.
 
 use cadence_core::{Colour, Move};
 
@@ -59,18 +35,9 @@ pub const HISTORY_MAX: i32 = 16_384;
 pub const SPAN: usize = 1 << 12;
 
 /// What a squared depth is multiplied by, and the reason the cap above is
-/// not decoration.
-///
-/// Sixteen. **Measured, not assumed**: at a scale of one the whole table
-/// stays inside plus or minus 3,686 over the bench positions at depth
-/// nine, so the subtraction in [`apply`] is under one per cent of the bonus
-/// almost everywhere and the update is a running sum with a bound it never
-/// approaches. At sixteen the same run reaches 15,125 of the 16,384 the cap
-/// allows, so the ageing term carries most of a bonus away at the top of
-/// the range and the equilibrium below is the behaviour rather than the
-/// intention. The scale changes nothing about the *order* the sort reads --
-/// it multiplies every entry alike -- so what it is chosen for is entirely
-/// the reader that divides.
+/// not decoration: the scale is what makes the ageing term in [`apply`] carry
+/// most of a bonus away at the top of the range. It changes nothing about the
+/// order the sort reads, because it multiplies every entry alike.
 const BONUS_SCALE: i64 = 16;
 
 /// The deepest node whose bonus is not capped, which is where the scaled
@@ -81,22 +48,6 @@ const _: () =
     assert!(BONUS_SCALE * MAX_BONUS_DEPTH as i64 * MAX_BONUS_DEPTH as i64 == HISTORY_MAX as i64);
 
 /// How much history moves a reduction by one ply. A sixteenth of the cap.
-///
-/// **Chosen against the distribution the reader actually sees, measured
-/// before it was set**: over the bench positions at depth nine, the scores
-/// read at the 653,935 sites where a reduction was taken have a median of
-/// -96 and quartiles at -288 and -16, with the outer reaches at -2,902 and
-/// +15,125. So the bulk of what this divides is noise around zero, and
-/// 1,024 is where the tails start: it moves about five per cent of sites a
-/// ply longer, one per cent a ply shorter, and under a per cent by two
-/// either way.
-///
-/// **That the bulk is left alone is the decision and not a side effect.**
-/// The index the base reduction reads is the reading with a landed test
-/// behind it; a score in the middle of that distribution is a move nothing
-/// much has happened to, and overriding a measured rule on no evidence is
-/// how a refinement loses what it was refining. The tails are where the
-/// table knows something the rank cannot express.
 const HISTORY_PLY: i32 = HISTORY_MAX / 16;
 
 /// The most plies history may move a reduction, either way.

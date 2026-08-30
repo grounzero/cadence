@@ -2,29 +2,11 @@
 
 //! Static evaluation: material and piece-square tables, tapered.
 //!
-//! **Tapered**, with a middlegame and an endgame value for every term,
-//! blended by the phase of the game. Not because this evaluation is
-//! serious -- it is the seed for the first self-play net and will be
-//! rewritten before then -- but because a single table is actively wrong
-//! for two of the six pieces: a king wants the corner while queens are on
-//! the board and the centre once they are gone, and a pawn's advance is
-//! worth little until it is. One table forces a compromise that either
-//! walks the king out early or never brings it in, and the blend costs
-//! three integer operations per evaluation.
-//!
-//! Everything is integer so evaluation remains deterministic. The blend is
-//! `(mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX` with Rust's
-//! truncating division, which is symmetric under negation -- so the
-//! evaluation of a position and of its colour-mirror are exact negatives,
-//! which `tests/eval.rs` asserts. A flooring division would be off by one
-//! between them.
-//!
-//! The tables are built at compile time from a handful of named terms --
-//! distance from the centre, rank, file, the long diagonals -- rather than
-//! written out as 64 numbers each. The numbers are derived here rather than
-//! copied from another engine; they are the shape of the idea, which is
-//! all this stage needs. Tables are from White's point of view with A1 = 0,
-//! and Black's squares are looked up through `flip_vertical`.
+//! Integer throughout and symmetric by construction: the tables are written
+//! from White's side and read through a vertical flip for Black, so the
+//! evaluation of a position and of its mirror differ only in sign. Nothing
+//! here reads the clock or allocates, and no float reaches a decision
+//! path.
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, PieceType, Square};

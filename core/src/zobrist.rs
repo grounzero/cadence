@@ -2,23 +2,11 @@
 
 //! Zobrist keys: const splitmix64 tables and typed key operations.
 //!
-//! What is in the hash, and when:
-//!
-//! | Table            | Mixed in when                                    |
-//! |------------------|--------------------------------------------------|
-//! | piece-square     | a piece occupies a square                        |
-//! | side to move     | Black to move                                    |
-//! | castling rights  | always, indexed by the whole 4-bit set           |
-//! | en-passant file  | **only when an en-passant capture is available** |
-//!
-//! The ep condition is the one that is invisible to perft and surfaces later
-//! as a merely-poor transposition-table hit rate. It lives here as a named
-//! function so the incremental update and the from-scratch recomputation read
-//! the same rule.
-//!
-//! The tables are const-evaluated from a fixed seed by splitmix64, so the keys
-//! are a function of the crate, not of the process. There is no `rand`
-//! dependency and no runtime initialisation.
+//! Every table is built at compile time from a fixed seed, so the keys are a
+//! function of the code alone and two builds agree. **The key is maintained
+//! incrementally by `make_move` and `unmake_move` and recomputed nowhere on
+//! a decision path**; `Board::recomputed_key` exists for the gates, which
+//! assert the incremental value against it after every move.
 
 use crate::castling::CastlingRights;
 use crate::types::{File, Piece, Square};

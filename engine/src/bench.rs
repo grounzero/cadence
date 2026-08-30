@@ -2,33 +2,13 @@
 
 //! `cadence bench`: the deterministic regression detector.
 //!
-//! A fixed-depth search over a fixed, checked-in position set, single
-//! thread, printing one line per position and a summary whose last line is
-//! `<nodes> nodes <nps> nps`. The node count is a function of the code
-//! alone, and every part of that is deliberate:
+//! A fixed-depth search over a checked-in position list whose node count
+//! must be a function of the code alone: single thread, fixed depth, a fixed
+//! table cleared between positions, the list and the depth compiled in
+//! rather than passed on a command line, and no clock on any decision path.
 //!
-//! - The position list (`bench_positions.txt`, compiled in) and the depth
-//!   are in the repository, not on the command line. There are no
-//!   arguments.
-//! - One thread: the search runs on the thread that calls it.
-//! - Fresh search state per position, and **the transposition table is
-//!   cleared between positions**. Nothing carries from one position to the
-//!   next, so the total does not depend on the order the positions are
-//!   run in or on what ran before them.
-//! - A fixed table size, [`HASH_MB`], compiled in rather than passed on
-//!   the command line: the node count is a function of it, so it is
-//!   recorded in the repository like the depth and the position list.
-//! - No time budget: the limits are a depth and nothing else, so the
-//!   search never reads the clock on a decision path (`time::budget` is
-//!   `None` for a depth limit, and `tests/time.rs` pins that). The clock
-//!   is read once, around the whole run, for the nps figure, which is
-//!   reported and decides nothing.
-//! - No hash map, no float, anywhere on the path (the search's contract).
-//!
-//! `bench.txt` at the repository root holds the expected count. The
-//! `Bench: <n>` trailer on any commit that changes it is enforced by
-//! `.githooks/commit-msg`, CI diffs the last line against the file, and
-//! `tests/bench.rs` does the same locally.
+//! **A commit that changes the count declares it**, and the declared figure
+//! and `bench.txt` are diffed against each other on both architectures.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -53,90 +33,18 @@ pub const HASH_MB: usize = 16;
 
 /// The fixed depth every position is searched to.
 ///
-/// Twelve, raised six times, and **the last three raises have the opposite
-/// cause from the three before them**: not the search getting cheaper per
-/// ply, but a pruning rule cutting the tree out from under the depth in
-/// force. The depth goes up again whenever the run leaves the scale the
-/// reading below needs, whichever direction the tree moved, each time with
-/// a `Bench:` trailer.
+/// **What sets it is not a property of the search.** The SPRT harness scales
+/// every workload's time control by the speed it measures from this run, so
+/// this depth chooses the length of the window that speed is read over, and
+/// a short window does not only read noisily, it reads low: the run ends
+/// before the machine has settled, and a side that reads low is handed a
+/// longer clock. Under a couple of seconds the reading is not usable, and
+/// lowering this to make a test suite faster would bias every clock the
+/// harness delivers with nothing saying so.
 ///
-/// | to | what raised it | the depth below, after that change | at the depth taken |
-/// |---|---|---|---|
-/// | 3 | the new quiescence search | | |
-/// | 5 | capture ordering | depth 3 too short to time | |
-/// | 6 | ordering the check evasions | depth 5 about 200 ms | |
-/// | 7 | refusing losing captures | depth 6, 7,691,290 nodes, about 690 ms | 33,848,419 nodes, about 2,400 ms |
-/// | 9 | null-move pruning | depth 7 cut to a fifth, 7,072,634 nodes, about 0.6 s | 43,121,255 nodes, 3.49 to 3.57 s |
-/// | 11 | late move reductions | depth 9 cut to a quarter, 10,874,489 nodes, 0.93 to 0.99 s | 32,455,264 nodes, 2.72 to 2.81 s |
-/// | 12 | reverse futility | depth 11, 16,024,935 nodes, 1.57 to 1.67 s | 29,658,388 nodes, 3.08 to 3.09 s |
-///
-/// The depths passed over, each read at the raise that passed them:
-///
-/// | depth | reading | why not |
-/// |---|---|---|
-/// | 8 | 19,065,351 nodes, 1.56 to 1.65 s | short of the couple of seconds the scaling needs |
-/// | 10 | 18,903,696 nodes, about 1.6 s | the same short window depth 8 was refused for |
-/// | 13 | 50,225,574 nodes, 5.17 to 5.20 s | past that scale in the other direction |
-///
-/// **The sub-second column is the one that decides**: it is the window
-/// where the reading comes back low even when its run-to-run band is
-/// narrow, which is what the criterion below is about. Depth nine also had
-/// the tightest speed band of the three readings taken at its raise. The
-/// champion each of the last three raises was measured beside, at its own
-/// compiled depth: 2.4 to 2.5 s at seven, 3.5 s at nine, 2.43 to 2.48 s at
-/// eleven.
-///
-/// **Measured on the M5 Max, otherwise idle**, and three release runs per
-/// depth from the raise to nine onward, which is where the ranges above
-/// come from; the figures before it are single readings and are written as
-/// approximations for that reason.
-///
-/// **Every count in this comment is a reading at the commit that made the
-/// change it describes, and none of them is the count today**, which is
-/// whatever `bench.txt` holds: each promotion since has moved it, which is
-/// what the detector is for. They are kept because what they justify is the
-/// choice of depth, and that argument is about the readings that were in
-/// hand when the choice was made. The table below is the same kind of
-/// figure and is read the same way.
-///
-/// **What decides it is a measurement, and it is not a measurement of the
-/// search.** The SPRT harness scales the time control by the speed it
-/// measures from this run, so the
-/// depth chooses the length of the window that speed is read over, and a
-/// short window does not only read noisily, it reads low: the run ends
-/// before the machine has settled. This binary, three runs at each depth,
-/// on an otherwise idle M5 Max, against the binary it was match-tested
-/// against, which is the previously promoted version at its own
-/// compiled-in depth of six:
-///
-/// | binary | depth | wall clock | reported |
-/// |---|---|---|---|
-/// | this | 6 | 680-696 ms | 11.05 to 11.31 Mnps |
-/// | this | 7 | 2,344-2,386 ms | 14.19 to 14.44 Mnps |
-/// | previous | 6 | 1,105-1,116 ms | 13.81 to 13.95 Mnps |
-/// | previous | 7 | 3,247-3,270 ms | 15.58 to 15.69 Mnps |
-///
-/// **The lower two rows are not a reading of this tree**, which is worth
-/// saying beside them: they are the other binary's, kept as a binary, and
-/// nothing built from this source reproduces them. The upper two are this
-/// tree's own. The four are quoted together because the comparison is the
-/// argument and neither pair makes it alone.
-///
-/// Read at depth six this binary is 20% slower than the previous one; read
-/// at depth seven, like for like, it is 8.4% slower, and the rest of the
-/// 20% is the length of the run. Under `scale_method = BOTH` each side's
-/// clock is the nominal one scaled by the reference over its own reading,
-/// so a side that reads low is handed a longer clock: at six this side
-/// would have played about a quarter longer for a difference that is
-/// mostly the window. At seven the two readings are within 4%.
-/// That is why seven, and why the mismatch in run length that six would
-/// have avoided (2.4 s against 1.1 s) is the lesser evil: `BOTH` accounts
-/// for a length mismatch, while nothing corrects a biased reading.
-///
-/// The gate in `tests/bench.rs` runs this six times and pays for the depth
-/// as well: about 4.6 s at six, about 9 s at seven in the test profile,
-/// about 14 s at nine on the pruned tree, up from about 2.5 s at that
-/// tree's depth seven, and about 11 s at eleven on the reduced tree.
+/// **Changing it is changing the detector.** Allowed, and never a side
+/// effect of retuning something else; the commit that changes it declares a
+/// new `Bench:` count like any other.
 pub const DEPTH: u32 = 12;
 
 /// The checked-in position list, one FEN per line, `#` for comments.
@@ -169,14 +77,12 @@ pub fn positions() -> Vec<&'static str> {
 }
 
 /// Run the bench: every position in [`POSITIONS`] to [`DEPTH`], single
-/// thread, fresh search state per position, `info` output discarded.
+/// thread, from a table of [`HASH_MB`] cleared between positions.
 ///
 /// # Panics
 ///
-/// If a position in the checked-in list does not parse, which
-/// `tests/bench.rs` rules out before this can be reached; or if a table of
-/// [`HASH_MB`] mebibytes cannot be allocated, which is sixteen mebibytes
-/// and a machine that cannot find them cannot run the engine either.
+/// If a checked-in position does not parse, or if a table of [`HASH_MB`]
+/// mebibytes cannot be allocated.
 #[must_use]
 pub fn bench() -> Report {
     let start = Instant::now();

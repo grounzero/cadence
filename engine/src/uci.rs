@@ -2,16 +2,14 @@
 
 //! The UCI command loop.
 //!
-//! One `Session` per process. The main thread reads stdin a line at a time
-//! and hands each to `Session::handle_line`; a `go` starts the search on a
-//! thread of its own with a duplicate of the board and a stop flag, and that
-//! thread prints `bestmove` when it is done. `stop` raises the flag and waits
-//! for the thread, so by the time `stop` has been handled the `bestmove` is
-//! out. `isready` is answered by the main thread whether or not a search is
+//! One `Session` per process. A `go` starts the search on a thread of its
+//! own with a duplicate of the board and a stop flag; `stop` raises the flag
+//! and waits, so by the time `stop` has been handled the `bestmove` is out.
+//! `isready` is answered by the main thread whether or not a search is
 //! running, which is what the protocol asks for.
 //!
-//! Output goes to stdout a whole line at a time and the lock is never held
-//! across a read: the search thread writes to the same stdout, and a main
+//! **Output goes to stdout a whole line at a time and the lock is never held
+//! across a read**: the search thread writes to the same stdout, and a main
 //! thread holding the lock for the life of the session would block it.
 
 use std::io::{BufRead, Write};
@@ -26,14 +24,10 @@ use cadence_core::{START_FEN, generate_legal, parse_uci, to_uci};
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
 
-/// The public identity. This is what appears on rating lists and in the
-/// header of every game a GUI records, so it is the repository name, what
-/// the build calls itself, and nothing else.
-///
-/// The version half is [`crate::version::VERSION`] rather than the package
-/// version directly: a build that is not at a release tag says so and names
-/// the commit it came from, which is what makes two builds of two different
-/// commits two different names here.
+/// The public identity: what appears on rating lists and in the header of
+/// every game a GUI records. The version half is [`crate::version::VERSION`]
+/// rather than the package version, so a build that is not at a release tag
+/// says so and names the commit it came from.
 const ENGINE_NAME: &str = "Cadence";
 const ENGINE_VERSION: &str = crate::version::VERSION;
 const ENGINE_AUTHOR: &str = "Michael Grounds";

@@ -2,33 +2,16 @@
 
 //! FEN, X-FEN and Shredder-FEN.
 //!
-//! Two castling-field notations, and they are different.
-//! **Shredder-FEN** always names the castling rook's file: `HAha`. **X-FEN**
-//! uses `KQkq`, where each letter denotes the *outermost* rook on that side
-//! of the king (not the a- and h-file rooks), and falls back to the file
-//! letter only when another rook of the same colour stands outside the
-//! castling rook on the same side. `from_fen` accepts both without being
-//! told which, because they are distinguishable; only emission takes a style.
+//! **Both castling spellings are accepted on input and the position records
+//! which it was given**, because a GUI may send either and a position that
+//! round-trips through the wrong one is a different position. `KQkq` is read
+//! as the outermost rook on that side, which is X-FEN's rule and is what
+//! makes standard chess a case of Chess960 rather than a separate parser.
 //!
-//! The parser validates what move generation later depends on without
-//! checking: exactly one king each, and every castling right naming a rook
-//! that is there and a king that is on its back rank. A FEN that grants a
-//! right for a rook that is not there is `FenError::Castling` here, not a
-//! panic in `can_castle`.
-//!
-//! **What it validates is that a position is representable, not that it is
-//! legal, and the line is deliberate.** Both checks above are
-//! representational: without them a lookup has no answer. "The side not to
-//! move is in check" is a rule of chess instead, and everything `core`
-//! computes about such a position -- attackers, blockers, pinners, checkers,
-//! both keys -- is perfectly well defined; `tests/attackers_and_pins.rs`
-//! feeds thousands of them through here on purpose to gate exactly that. So
-//! they are accepted, and `movegen` is written to survive them: a king is
-//! never a target, so no move can take one. A caller that wants to *decide*
-//! about such a position asks `Board::opponent_in_check` and applies its own
-//! policy, which is what `engine`'s UCI and perft front ends do. Rejecting
-//! here instead would need a second, unvalidating constructor for the
-//! property tests, and that constructor is the hole reopened.
+//! Parsing validates: a position this accepts has one king a side, no pawn
+//! on a back rank, and castling rights whose rooks exist. What it does not
+//! check is reachability by legal play, which is why `movegen` and
+//! `position` carry the rules that hold for positions no game can produce.
 
 use alloc::string::String;
 use core::fmt::Write as _;

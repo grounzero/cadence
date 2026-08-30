@@ -7,62 +7,24 @@
 //! result: the depth it was searched to, its score, whether that score is
 //! exact or a bound, and the move that produced it.
 //!
-//! **Lockless integrity.** A slot stores
-//! `key ^ data` beside `data`, and a read is accepted only when the two
-//! words XOR back to the key being looked up. The search is single
-//! threaded and will be for a long time, but this is the hottest data
-//! structure in the engine and the scheme is not something to retrofit
-//! under pressure. Two words cannot be read atomically as a pair, so a
-//! reader racing a writer can see one word of each: the check turns that
-//! into a miss instead of a plausible-looking entry belonging to another
-//! position, which the search would act on. The words are `AtomicU64` and
-//! every access is `Relaxed`: the correctness argument is the XOR check,
-//! not an ordering, and a relaxed load or store of an aligned word is a
-//! plain load or store on every target the engine builds for.
+//! **Lockless integrity.** A slot stores `key ^ data` beside `data`, and a
+//! read is accepted only when the two words XOR back to the key being looked
+//! up. Two words cannot be read atomically as a pair, so a reader racing a
+//! writer can see one word of each: the check turns that into a miss instead
+//! of a plausible-looking entry belonging to another position, which the
+//! search would act on. A truncated key stored directly cannot express this,
+//! and is why it is not what is stored. The words are `AtomicU64` and every
+//! access is `Relaxed`: the correctness argument is the XOR check and not an
+//! ordering. The search is single threaded and will be for a long time; this
+//! is not a scheme to retrofit under pressure.
 //!
-//! **Why the key is not stored directly.** A truncated key beside the data
-//! would be smaller, and is what an engine that locks (or that accepts
-//! torn reads) would use. It cannot express this check: `key ^ data`
-//! validates the pair, so the failure mode of a race is a miss rather than
-//! a wrong answer.
-//!
-//! **Replacement: depth-preferred within the bucket, with aging.** The
-//! four slots of a bucket share one cache line, so a probe that scans all
-//! four costs the same memory traffic as a probe that scans one. On a
-//! store, a slot already holding this key is reused, unless what is there
-//! is deeper and the new result is not exact; otherwise the least valuable
-//! slot is taken, value being the depth less eight per generation of age.
-//! The two halves answer different failures. Depth preference alone lets a
-//! deep entry hold a slot for the rest of the game, and the leaves, which
-//! are almost all of the tree, then have nowhere to go; aging alone throws
-//! away the deep results that cost the most to compute. The penalty of
-//! eight makes one generation of age worth eight ply of depth, so an entry
-//! from the previous search loses to anything from this one that is within
-//! eight ply of it.
-//!
-//! **Aging is per search, not per iteration.** [`Table::new_search`] bumps
-//! a six-bit generation counter, and every store during that search
-//! carries it. Iterative deepening therefore shares a generation, which is
-//! what makes a deeper iteration able to displace its own shallower
-//! entries by depth rather than by age.
-//!
-//! **A probe does not refresh what it hits**, and the cost of that is
-//! written here rather than left to be discovered. Rewriting an entry's
-//! generation on a hit is what a mature table does: it protects a result
-//! that is still being used from the aging above. It is not in this
-//! version because it puts a store on the hottest read path in the engine,
-//! and because its value is not separable from the table's own in one
-//! SPRT. What it costs is that an entry hit on every search but never
-//! re-stored (a hit that cuts does not store) ages out as though nothing
-//! had ever wanted it.
-//!
-//! **Determinism.** The index is a function of the key
-//! and the bucket count; the bucket scan runs in slot order and the
-//! replacement tie-break keeps the first minimum; the generation is a
-//! function of how many searches have run since the last [`Table::clear`],
-//! and `clear` resets it. So a cleared table of a fixed size gives a node
-//! count that is a function of the code alone, which is what `bench`
-//! rests on: it clears at every position seam. No hash map, no float.
+//! **Determinism.** The index is a function of the key and the bucket count;
+//! the bucket scan runs in slot order and the replacement tie-break keeps
+//! the first minimum; the generation is a function of how many searches have
+//! run since the last [`Table::clear`], and `clear` resets it. So a cleared
+//! table of a fixed size gives a node count that is a function of the code
+//! alone, which is what `bench` rests on: it clears at every position seam.
+//! No hash map, no float.
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 

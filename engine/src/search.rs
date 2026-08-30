@@ -7,101 +7,13 @@
 //! calls it. The UCI layer gives it a board of its own and a stop flag, and
 //! prints whatever it returns.
 //!
-//! **What the search is.** Negamax with alpha-beta, fail-soft, over the
-//! legal move list, to a fixed depth; iterative deepening from depth one,
-//! the previous iteration's best move searched first at the root; the
-//! first move at a node searched with the window the node was given and
-//! every move behind it with a null one; a
-//! triangular table for the principal variation. At
-//! the horizon, a quiescence search: the captures, en-passant captures and
-//! promotions are resolved, and a side in check gets out of it, before the
-//! static evaluation is consulted, so that what is evaluated is a position
-//! nobody is about to win material in. Draws are scored as draws: a
-//! repetition (twofold inside the tree, threefold against the game history
-//! -- `Board::is_repetition`), the fifty-move rule, stalemate. Mate is
-//! `MATE - ply`, so the shorter mate wins.
-//!
-//! **The transposition table** (`tt`) is probed at every interior node of
-//! the main search, before the moves are generated, and stored at every
-//! one the search completes. A hit searched at least as deep returns at
-//! once when its bound allows: an exact score always, a lower bound at or
-//! above beta, an upper bound at or below alpha. Mate scores are stored
-//! relative to the node rather than to the root (`score::to_tt`), so an
-//! entry read from another ply still names the right distance. The
-//! quiescence search neither probes nor stores.
-//!
-//! **The ordering.** At an interior node, three stages and one sort. The
-//! move a table hit named is tried first (`order_first`): a hit supplies a
-//! move whatever its depth says, so the ordering fires far more often than
-//! the cutoff above it does, and a move the position does not have is
-//! refused rather than played. Behind it the rest of the list, in one pass
-//! of `picker::sort_from`. What the bands are, what each is worth and why
-//! a history score sits inside a band rather than between two of them is
-//! `picker`'s own header. At the root the previous iteration's best move
-//! goes first, and that is unchanged. The quiescence search orders its
-//! moves through the same sort and has no killers to give it.
-//!
-//! **The one thing the quiescence search refuses.** Out of check, a noisy
-//! move whose static exchange value is negative (`see::see`) is skipped
-//! without being searched; in check nothing is skipped, because every
-//! entry in that list is an answer to the check. `Search::quiesce` holds
-//! the rest of the rule and `see`'s own header holds what the exchange
-//! is.
-//!
-//! **The check extension.** A move that gives check is searched one ply
-//! deeper: the child's depth is its parent's rather than one less. The
-//! predicate is the child's `Board::in_check`, read after the move is made,
-//! because `make_move` recomputes the checkers whatever the caller wants
-//! and that read is already paid for. It applies at the root's moves for
-//! the same reason it applies at every other node's.
-//!
-//! **What bounds it.** On a line where every move gives check the depth
-//! never falls, so the arithmetic the search used to rest on -- depth is at
-//! most the root's and loses one per ply -- stops holding, and a rule
-//! conditioned on depth would never stop being true. Four things bound it,
-//! and only the third is this change's own. A repetition is a draw wherever
-//! it is met, so a true perpetual is scored at the second visit rather than
-//! searched. The fifty-move rule ends any check sequence that neither
-//! captures nor moves a pawn. **The ply cap** refuses the extension to any
-//! child past `EXTEND_WITHIN` times the root depth, which is what holds
-//! the tree to a multiple of its nominal depth rather than merely finite.
-//! And the ply bound below is what holds the arrays when the cap is above
-//! `MAX_PLY`, which it is for a root depth over 85.
-//!
-//! **The null window.** The first move at a node is searched with the
-//! window the node was given. Every move behind it is asked a narrower
-//! question first -- not what it is worth, but whether it is worth more
-//! than the move already in hand -- which is the window `(alpha, alpha+1)`
-//! and holds no room for an answer to the first. Nearly all of them are
-//! not, and a move that is not better is refuted inside that window over a
-//! smaller tree than the full one would take to refute it. A move that is
-//! better fails high in it, and what comes back then is a bound and not a
-//! value, so that move is searched again with the full window to find out
-//! what it is worth. Nothing is discarded on the window's account and
-//! nothing is trusted that was not searched. **Two searches of one
-//! position agree only where their windows do**, because null-move pruning
-//! below reads beta, so what a node returns depends on the window it was
-//! asked in. The machinery stands anyway, because every score that comes
-//! back is a fail-soft bound and every consumer treats it as one; what a
-//! window-dependent return costs is the guarantee that a re-search walks
-//! to the value the narrow window found, and the window gates in
-//! `tests/search.rs` are scoped around exactly that.
-//! Two conditions the re-search is not run under: a score at or above beta
-//! is already the bound this node returns, and at a node whose own window
-//! is a null one there is no room between alpha and beta for a score to
-//! ask for one, so the re-searches happen along the principal variation
-//! rather than through the tree hanging off it.
-//!
-//! What it is paid for is the ordering above it. When the first move
-//! searched is the best one, every move behind it is refuted cheaply; when
-//! it is not, the re-search is work the full window would have done once.
-//! The root is where the first move is likeliest to be best, because it is
-//! the move the previous iteration chose, and the root window is the full
-//! one and stays that way: narrowing it is a separate change against a
-//! different mechanism, and both narrow the window a search runs in, so
-//! whichever lands first takes the overlap and the second is measured
-//! against a search that already has it. Revisit this paragraph when
-//! something narrows the root window.
+//! **What bounds a line of checks.** Where every move gives check the
+//! depth never falls, so nothing conditioned on depth ends the line. Four
+//! things do: a repetition is a draw wherever it is met; the fifty-move
+//! rule ends any sequence that neither captures nor moves a pawn;
+//! [`EXTEND_WITHIN`] refuses the extension past a multiple of the root
+//! depth; and the ply bound below holds the arrays when that cap is above
+//! `MAX_PLY`.
 //!
 //! **The ply bound.** Both searches stop at `MAX_PLY` whatever depth is
 //! left and answer with the static evaluation: the per-ply arrays end
@@ -109,70 +21,6 @@
 //! than the assertion a debug build gets. It landed before anything
 //! extended, when no search could reach it, and the extension above is what
 //! makes it reachable: it is the floor the cap does not stand on.
-//!
-//! **Null-move pruning.** At an interior node of the main search, out of
-//! check and inside a null window, where the static evaluation already
-//! stands at or above beta, the side to move hands the opponent the move
-//! and a reduced search asks whether it still stands there
-//! ([`null_reduction`] plies past the one the move would have cost). If it
-//! does, the node is cut without its move list being generated. Every
-//! condition that refuses it is named at the rule in `negamax` with the
-//! wrong answer it exists to avoid; the one that is a chess claim rather
-//! than a search claim is the zugzwang guard, [`has_non_pawn_material`].
-//!
-//! **Late move reductions.** A quiet move far down the sorted list of an
-//! interior node is first searched shallower than its siblings, by
-//! [`lmr_reduction`] plies, inside the null window the move behind the
-//! first is asked anyway; a reduced search that beats alpha is re-run at
-//! the full child depth before its answer is believed, and only then may
-//! the full-window re-search above follow. The size of the reduction is at
-//! [`lmr_reduction`] and the exemptions at [`reduction`], each with the
-//! wrong answer it exists to avoid. The null-move rule above and this one
-//! compose vertically, never on the same search: that one cuts a whole
-//! node before its move list exists, this one shortens one real move's
-//! subtree, and a reduced child may itself null -- its verification then
-//! reads the already-reduced depth, which is fine because every conclusion
-//! above alpha climbs back through the re-search ladder at full depth
-//! before anything trusts it.
-//!
-//! **The history heuristic.** A beta cutoff by a quiet move credits that
-//! move in a butterfly table ([`history`]) and debits every quiet move
-//! tried ahead of it at the same node. Two things read it, the sort and a
-//! late move's reduction ([`history_reduction`]), and `history`'s own
-//! header is why those are two uses of one number rather than two
-//! mechanisms. The table lives for one search and is cleared where the
-//! killers are.
-//!
-//! **Futility pruning.** Near the horizon, a quiet move is skipped
-//! without being searched where the node's static evaluation plus a
-//! margin ([`futility_margin`], a pawn and a half per ply of remaining
-//! depth, up to [`FUTILITY_DEPTH`]) still does not reach alpha: the move
-//! changes no material and the search left below it is too short to build
-//! a threat worth the gap. The node-level half is [`futile_node`], read
-//! once with the node's own alpha; the per-move half is
-//! [`futility_skips`], which holds the exemptions and the one question
-//! asked last because it is the only expensive one
-//! ([`Board::gives_check`]). Being in check needs no exemption:
-//! `evals[ply]` is `None` there, so the rule has nothing to read. It
-//! composes with the reductions the way the null move does -- a move this
-//! skips is a move that never reaches the reduction, so the two share the
-//! same pool of late quiet moves and the second gets what the first
-//! leaves.
-//!
-//! **Reverse futility.** The same margin read from the other side of the
-//! window, and the one rule here that returns a node rather than a move.
-//! At an interior node out of check, inside a null window, where the
-//! static evaluation stands [`reverse_futility_margin`] *above* beta, the
-//! node answers with `eval - margin` and generates no moves at all: a side
-//! that far ahead is not going to fail low, and the margin is what the
-//! search left below it would have to take away for that to be wrong. It
-//! and futility pruning cannot both fire, and nothing arranges that.
-//! [`reverse_futile`] holds the arithmetic, that argument, and the
-//! measurement behind the one place this rule departs from every
-//! formulation of it elsewhere: it carries no depth limit, because the
-//! margin already is one. [`Search::reverse_futility`] is the half that
-//! reads the board and the window, and holds why it sits above the null
-//! move.
 //!
 //! **What it is not, on purpose.** No extension on anything but a
 //! check, and no pruning beyond the two rules above and the quiescence
@@ -195,16 +43,11 @@
 //! "the code alone". Quiescence nodes are nodes: they count, and they
 //! check the limits.
 //!
-//! **Stopping.** The stop flag, a node limit and the hard time budget end
-//! the search mid-iteration, at any node from the first; the iteration's
-//! partial result is discarded and the last completed one stands. Stopped
-//! inside its first iteration, the search returns the best root move it
-//! has fully searched -- the first root move, if not even one -- so there
-//! is always a move. The soft budget only prevents starting another
-//! iteration, and so does a prediction that the next one cannot finish
-//! inside the hard budget ([`crate::time::another_iteration_fits`]). Under
-//! `infinite` the search returns only when `stop` is raised, as the
-//! protocol requires.
+//! **Stopping.** The stop flag, a node limit and the hard budget end the
+//! search mid-iteration, and the last completed iteration stands. Stopped
+//! inside the first, the search returns the best root move it has fully
+//! searched, or the first root move if not even one, so there is always a
+//! move to print. Under `infinite` it returns only when `stop` is raised.
 
 use std::io::Write;
 use std::iter::Peekable;
@@ -304,20 +147,10 @@ impl Limits {
         self.time[us.index()].map(|t| (t, self.inc[us.index()].unwrap_or(0)))
     }
 
-    /// Whether this `go` named a clock at all, for either side.
-    ///
-    /// The distinction [`clock`](Limits::clock) cannot make. A `go` that
-    /// named no clock is unbounded *by design* -- `bench`, `go depth`, `go
-    /// nodes`, `go infinite` -- and the search must never read the time,
-    /// which is what keeps the node count a function of the code alone. A
-    /// `go` that named a clock for the other side and
-    /// not for ours is not unbounded, it is a `go` we know nothing about our
-    /// own time from, and treating the two alike is how `go wtime 1000 winc
-    /// 10` with Black to move came to search until `stop`.
-    ///
-    /// An increment or a `movestogo` on its own counts. A GUI does not send
-    /// one without a clock, and if one did, the same reasoning applies: it
-    /// spoke about the clock and did not tell us ours.
+    /// Whether this `go` named a clock at all, for either side. A `go` that
+    /// named the other side's clock and not ours is clocked: nothing is
+    /// known about our own time, and the safe reading of that is zero rather
+    /// than unlimited.
     #[must_use]
     pub fn is_clocked(&self) -> bool {
         self.time.iter().chain(self.inc.iter()).any(Option::is_some) || self.movestogo.is_some()
@@ -351,25 +184,11 @@ const _: () = assert!(MAX_DEPTH as usize == MAX_PLY);
 /// Move `first` to the head of `list`, keeping the rest in the order they
 /// were generated in. Returns whether `list` held it at all.
 ///
-/// This is the whole of the interior nodes' move ordering: the move a
-/// transposition-table hit named, tried before anything else. It is a free
-/// function rather than a method for the same reason [`tt::verify`] is: the
-/// thing worth testing is a total function of a list and a move, and a gate
-/// that can call it directly does not have to reach it through a search.
-///
-/// **It rotates rather than swaps.** A swap would put whatever was at the
-/// head into the middle of the list, and generation order is the only order
-/// the rest of the list has. Rotating keeps it, which is what the root
-/// already does with the previous iteration's best move, and what a later
-/// stable sort over the remainder would rest on.
-///
 /// **It validates, and the validation costs nothing**, because finding the
 /// move is the operation: a move the list does not hold has no index to
-/// rotate to the front, and "not found" is the same answer as "not legal
-/// here". A stale or colliding table entry therefore cannot make the search
-/// play a move absent from the freshly generated legal list.
-/// `Move::NULL` is `a1a1` quiet, which no generator emits, so the scan
-/// would refuse it too; the early return says so without walking the list.
+/// rotate to the front. A stale or colliding table entry therefore cannot
+/// make the search play a move absent from the freshly generated legal
+/// list.
 #[must_use]
 pub fn order_first(list: &mut MoveList, first: Move) -> bool {
     if first.is_null() {
@@ -384,22 +203,8 @@ pub fn order_first(list: &mut MoveList, first: Move) -> bool {
 }
 
 /// Remember `m` as a killer of the ply `killers` belongs to: the quiet move
-/// that caused a beta cutoff there, to be tried at that ply's other nodes
-/// ahead of the quiet moves that have refuted nothing.
-///
-/// A free function rather than a method for the same reason [`order_first`]
-/// is: the thing worth testing is a total function of two slots and a move,
-/// and a gate that can call it directly does not have to reach it through a
-/// search.
-///
-/// **Only a quiet move is remembered.** A noisy move is already ordered by
-/// what it captures, and a slot spent on one is a slot not spent on the move
-/// the stage exists for.
-///
-/// **Slot zero shifts into slot one**, unless `m` is already slot zero,
-/// where the shift would fill both slots with one move and leave the stage
-/// one move wide. A move already in slot one is promoted, which swaps the
-/// two.
+/// that caused a beta cutoff at a sibling of this node, newest first, with
+/// no duplicates.
 pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
     if m.is_noisy() || killers[0] == m {
         return;
@@ -410,53 +215,24 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
 
 /// How many times the root depth a check extension is granted within.
 ///
-/// Two. One is the variant this change named and did not take: it would
-/// hold the deepest interior node to twice the root depth rather than
-/// three times it, and it is a cheaper search and a separately testable
-/// one, not a tidier version of this. Deciding between them is deciding
-/// what the extension is worth, which is what its match test measures, so
-/// the alternative is named here and left where a later test can reach it.
-///
-/// **The bench cannot choose between the two, and that is measured rather
-/// than assumed.** Built at each cap, over the same list, the counts are
-/// within 1.6% of each other at every depth tried -- 1.3% at five, 0.8% at
-/// six, 0.9% at seven, 1.6% at nine, each read as the ratio against the
-/// same list before any extension. At these depths the cap almost never
-/// binds: what ends an extended line is depth running out, not ply. So the
-/// cap is doing the job the module doc gives it, which is bounding the
-/// pathological line, and it is not shaping the ordinary tree -- this is
-/// not a tuning decision wearing a safety decision's clothes, and a node
-/// count is the wrong instrument for it either way.
+/// The cap is doing the job [`extension`] gives it, which is bounding the
+/// pathological line, and it is not shaping the ordinary tree: at the depths
+/// the bench reaches, what ends an extended line is depth running out rather
+/// than ply.
 const EXTEND_WITHIN: usize = 2;
 
 /// How much deeper the child of `m` is searched, in plies: one when the
-/// move gave check, none otherwise.
+/// move gave check, none otherwise. `check` is the child's
+/// `Board::in_check`, read after the move is made.
 ///
-/// `check` is the child's `Board::in_check`, read after the move is made.
-/// `make_move` recomputes the checkers whether or not anyone asks, so that
-/// read is already paid for. `Board::gives_check` answers the same question
-/// before the move is made, at two slider lookups, and what wants it is a
-/// decision taken instead of making the move rather than after it, so it
-/// goes on waiting for its first caller.
-///
-/// **The cap is on ply, and a cap on depth would not be a cap.** Where
-/// every move gives check the depth never falls, so a rule of the form
-/// "extend while at least so much depth is left" stays true for as long as
-/// the checks do, and what would stop the recursion is the fifty-move rule
-/// and a repetition, hundreds of plies down. A ply cap stops it where it is
-/// asked to. `ply` is the child's, and past `EXTEND_WITHIN` times the root
-/// depth no child is granted one, so from there depth falls by one per ply
-/// and the deepest interior node an iteration can produce is at ply
-/// `(EXTEND_WITHIN + 1) * root_depth - 2`.
-///
-/// **That bounds the tree and not the arrays.** It is above `MAX_PLY` for
-/// a root depth over 85, and what holds there is the ply bound in
-/// [`Search::negamax`], which is why that bound was established before
-/// anything extended rather than beside it.
-///
-/// A free function for the same reason [`order_first`] is: the thing worth
-/// gating is a total function of three arguments, and a gate that can call
-/// it directly does not have to find a position that reaches every case.
+/// **The cap is on ply, and a cap on depth would not be a cap.** Where every
+/// move gives check the depth never falls, so a rule of the form "extend
+/// while at least so much depth is left" stays true for as long as the
+/// checks do. Past [`EXTEND_WITHIN`] times the root depth no child is
+/// granted one, so the deepest interior node an iteration can produce is at
+/// ply `(EXTEND_WITHIN + 1) * root_depth - 2`. That is above `MAX_PLY` for a
+/// root depth over 85, and what holds there is the ply bound in
+/// [`Search::negamax`].
 #[must_use]
 pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
@@ -466,15 +242,6 @@ pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
 /// verification is shortened by: the reduced search runs at
 /// `depth - 1 - null_reduction(depth)`, floored at zero, where the floor
 /// hands the question to the quiescence search.
-///
-/// Three plus a third of the depth, and the depth term is why. The
-/// verification is not trying to value the position, it is asking whether
-/// a side that stands above beta *after giving up the move* can be pushed
-/// back under it, and the deeper the node the more depth the answer keeps
-/// even after a large reduction. A constant sized for the shallow nodes
-/// wastes most of the saving at the deep ones, which is where the subtrees
-/// are. Scaling by how far the evaluation clears beta is a separate
-/// mechanism with its own test, refused here, not folded in.
 #[must_use]
 pub fn null_reduction(depth: u32) -> u32 {
     3 + depth / 3
@@ -483,35 +250,8 @@ pub fn null_reduction(depth: u32) -> u32 {
 /// How many plies a late move's first search is shortened by: zero for the
 /// first three moves of a node, zero below depth three, and otherwise one
 /// plus a quarter of the product of the two integer logarithms. The caller
-/// holds the exemptions (what is never reduced is its decision, not this
-/// function's); this is only the size of the reduction where one applies.
-///
-/// Logarithmic in both arguments, because that is the shape of the claim
-/// being made. The move index measures how far down a sorted list the move
-/// sits, and the ordering's confidence falls off multiplicatively rather
-/// than linearly: the difference between the fourth move and the eighth is
-/// worth about as much as the difference between the eighth and the
-/// sixteenth. The depth measures how much tree hangs below the node, which
-/// grows exponentially, so equal plies of reduction buy exponentially more
-/// saving at equal risk. `ilog2` is the integer logarithm the determinism
-/// contract allows; the floats the textbook formula uses have no place on
-/// a decision path.
-///
-/// The table this produces, reduction by depth band and move index band:
-///
-/// | depth \ index | 3 | 4-7 | 8-15 | 16-31 | 32+ |
-/// |---|---|---|---|---|---|
-/// | 3 | 1 | 1 | 1 | 2 | 2 |
-/// | 4-7 | 1 | 2 | 2 | 3 | 3 |
-/// | 8-15 | 1 | 2 | 3 | 4 | 4 |
-/// | 16-31 | 2 | 3 | 4 | 5 | 6 |
-///
-/// Below depth three the child search is at most one ply from the
-/// quiescence search already, so there is nothing left to shorten that a
-/// reduction would not hand straight to it. Below index three the moves
-/// are the ones the ordering placed deliberately, and three is cheap
-/// insurance besides: a list short enough that its tail starts earlier is
-/// a list too small for reductions to pay on.
+/// holds the exemptions. `ilog2` because the determinism contract admits no
+/// float on a path that decides a move.
 #[must_use]
 pub fn lmr_reduction(depth: u32, index: usize) -> u32 {
     if depth < 3 || index < 3 {
@@ -521,23 +261,9 @@ pub fn lmr_reduction(depth: u32, index: usize) -> u32 {
 }
 
 /// How many plies the first search of move `m`, at `index` in its node's
-/// sorted list, is reduced by: [`lmr_reduction`]'s size where a reduction
-/// applies, and zero for every move on the exempt list. Each exemption is
-/// a wrong answer somewhere: a move while the node is in check (`in_check`
-/// -- every move answers the check and the line is forcing); a move that
-/// gives check (`gives_check` -- forcing whether or not the extension's
-/// ply cap still grants the ply back, and otherwise the extension deepens
-/// what this would undo); a noisy move, whose point is a tactic a
-/// shallower search is built to miss; and a killer, the one class of
-/// quiet move with evidence behind its placement. What is left is the
-/// quiet moves the sort ranked behind everything with no evidence to
-/// their name, which is what makes them safe to reduce: the ones the
-/// ordering misjudged fail high in the reduced search and are re-searched
-/// at full depth before anything believes them.
-///
-/// A free function for the same reason [`extension`] is: a total function
-/// of its arguments, so a gate can pin every exemption without finding a
-/// position that reaches it.
+/// sorted list, is shortened by. Zero at a node in check, for a move that
+/// gives check, for a noisy move and for a killer; otherwise
+/// [`lmr_reduction`].
 #[must_use]
 pub fn reduction(
     in_check: bool,
@@ -554,24 +280,11 @@ pub fn reduction(
 }
 
 /// How many plies a late move whose base reduction is `base` is actually
-/// reduced by, once its history score is read: [`history::shift`] plies
-/// fewer for a move the table thinks well of, and that many more for one it
-/// has refuted.
+/// reduced by, once its history score is read.
 ///
 /// **It adjusts a reduction and never creates one.** A base of zero comes
-/// back zero, so every exemption [`reduction`] holds -- the first three
-/// moves, a node in check, a noisy move, a killer, a move that gives check
-/// -- survives whatever the table says, and so does the depth threshold. A
-/// history score is evidence about a move across the whole search; an
-/// exemption is a claim about this node, and this node is where the wrong
-/// answer would be.
-///
-/// **What it adds that the index cannot supply.** The index is a rank
-/// inside one node's list. A rank cannot tell a node whose twentieth quiet
-/// move is still decent from a node whose fourth is worthless, because both
-/// lists are ranked from one to however many, and after the ordering above
-/// reads the same table the rank is *derived* from the score and loses
-/// exactly the part that is absolute. This reads the score itself.
+/// back zero, so every exemption [`reduction`] holds survives whatever the
+/// table says, and so does the depth threshold.
 #[must_use]
 pub fn history_reduction(base: u32, history: i32) -> u32 {
     if base == 0 {
@@ -582,20 +295,10 @@ pub fn history_reduction(base: u32, history: i32) -> u32 {
 
 /// Whether the side to move has any piece beside its pawns and king.
 ///
-/// The zugzwang guard. The null move reads "even giving up the move, I
-/// stand above beta" as strength, and in a pawn-and-king position that
-/// reading inverts: the obligation to move is often the losing condition,
-/// so passing is exactly the move the side wants and cannot have, and a
-/// cutoff taken on it prunes the one class of position where the
-/// conclusion is systematically wrong. With a piece on the board a waiting
-/// move nearly always exists and the reading holds. Zugzwang with pieces
-/// exists and is not checked for; what makes that survivable is that it is
-/// rare, that the damage is one wrong bound at a node the evaluation
-/// already called winning, and that nothing is stored in the table on the
-/// way out.
-///
-/// The side checked is the side to move, and only that side: the guard is
-/// about who is asking to pass, not about what is left on the board.
+/// The null move's zugzwang guard, and the one condition there that is a
+/// chess claim rather than a search claim: passing is what a side in
+/// zugzwang wants and may not have, so the evidence a null move collects is
+/// inverted exactly there.
 #[must_use]
 pub fn has_non_pawn_material(board: &Board) -> bool {
     let us = board.side_to_move();
@@ -603,16 +306,9 @@ pub fn has_non_pawn_material(board: &Board) -> bool {
 }
 
 /// Whether the side to move's position is improving: the static evaluation
-/// written at `ply` exceeds the one written two plies above it, where both
-/// exist. `false` wherever either reading is missing -- the ply is inside
-/// the first two, or either node was in check -- because a rule reading
-/// this flag wants "known to be getting better", and an unknown is not
-/// that.
-///
-/// Read by nothing yet, deliberately: the rules that consult it each carry
-/// their own test, and a flag folded into the first of them would be two
-/// changes in one. It exists now because the evaluation stack it reads
-/// exists now, and the definition is settled once rather than per reader.
+/// written at this ply against the one two plies back. `false` wherever
+/// either reading is missing, because a rule reading this flag wants "known
+/// to be getting better", and an unknown is not that.
 #[must_use]
 pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
     let now = evals.get(ply).copied().flatten();
@@ -629,72 +325,17 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
 
 /// The deepest node at which a quiet move may be skipped for the margin.
 ///
-/// **Three, chosen where the saving stops paying for the risk, and both
-/// halves of that are measured.** The margin is a claim that the remaining
-/// search cannot recover the gap, and the deeper the node the less the
-/// claim is worth: at depth three the child still has two plies of real
-/// search under it, which is enough to play a quiet move, be answered, and
-/// cash a tactic. What the depths past it buy, on the bench positions at
-/// depth eleven against 32,872,578: one 30,201,879, two 25,691,630, three
-/// 24,519,578, four 23,660,924, five 23,333,146. In doublings saved that
-/// is 0.122, 0.356, 0.423, 0.474, 0.494, so the third ply is worth 0.067
-/// and the fourth 0.051 and the fifth 0.020. **The curve flattens where
-/// the claim gets weaker, which is the argument**: a fourth ply would add
-/// about a tenth of the saving already taken and would stake it on a
-/// margin covering three plies of real search rather than two.
-///
-/// **Below the limit the rule is off, not weaker.** A node outside the
-/// band searches every move it generates, so the exemptions below are the
-/// only thing that has to be right about the nodes inside it.
-///
-/// The band being a constant is also why the fixed-depth node ratio this
-/// change produces is the same at every depth, where a rule that fires at
-/// every node compounds: the tree this removes sits in the last three
-/// plies, and the share of a tree that sits in its last three plies does
-/// not grow with the root depth.
+/// **Below the limit the rule is off, not weaker.** A node outside the band
+/// searches every move it generates, so the exemptions at [`futility_skips`]
+/// are the only thing that has to be right about the nodes inside it.
 const FUTILITY_DEPTH: u32 = 3;
 
 /// What the margin grows by per ply of remaining depth, in centipawns.
 ///
-/// A hundred and fifty, which is a pawn and a half on this evaluation's
-/// own scale, where a pawn is a hundred.
-///
-/// **Measured against the distribution the rule reads, over the bench
-/// positions at depth nine.** At the sites the rule can act on -- a quiet
-/// move behind a node's first, out of check, not giving check -- the gap
-/// between alpha and the static evaluation has a median of 300 at depths
-/// one to three, with quartiles at 0 and between 700 and 800, and **about
-/// a fifth of all sites sit within fifty centipawns of zero**, which is
-/// where the evaluation is saying nothing at all. The margin has to clear
-/// that mass and this one does; past it the distribution is flat, so at
-/// depth one a margin of 100 skips 61% of the sites, 300 skips 48% and 600
-/// skips 28%.
-///
-/// **What the choice is worth on the tree**, same positions at depth
-/// eleven against 32,872,578: a margin of 100 leaves 21,521,020, 150
-/// leaves 24,519,578, 200 leaves 26,190,374 and 300 leaves 27,881,084.
-/// The lever is much sharper than the depth limit above, which is the
-/// reason to set it against the distribution rather than against the
-/// saving.
-///
-/// **Why not a pawn, which the saving argues for.** This evaluation is
-/// material and piece-square tables and is the seed for the first trained
-/// net rather than a serious reading, so a gap it reports is worth less
-/// than the same gap from a strong evaluation, and the margin is what
-/// prices that. Half a pawn of slack per ply is the price paid for it, and
-/// it is deliberately paid: the constant is the first thing to hand a
-/// parameter tune once there is an evaluation worth trusting.
-///
-/// **What the slope is for.** A quiet move at depth one is answered by the
-/// quiescence search, which resolves captures and nothing else, so what it
-/// can swing is the move's own placement plus one exchange. At depth three
-/// there are two plies of real search below it and a piece can be won, so
-/// the margin has to grow with the depth or the deepest band of the rule
-/// is the reckless one. Linear rather than squared because the evidence is
-/// linear: the material a search can win grows with the moves it has, not
-/// with their square. A constant term beside the slope is the obvious
-/// second parameter and is left out on purpose, so that this rule arrives
-/// with one number to tune rather than two.
+/// **Linear rather than squared because the evidence is linear**: the
+/// material a search can win grows with the moves it has, not with their
+/// square. A constant term beside the slope is the obvious second parameter
+/// and is left out on purpose, so this rule has one number to tune.
 const FUTILITY_MARGIN: Score = 150;
 
 /// How far below alpha a node's static evaluation may sit and still have
@@ -710,26 +351,10 @@ pub fn futility_margin(depth: u32) -> Score {
 }
 
 /// Whether a node may skip quiet moves for the margin: its static
-/// evaluation plus [`futility_margin`] still does not reach `alpha`.
-///
-/// **The in-check exemption is the missing evaluation and not a condition.**
-/// `evals[ply]` is `None` wherever the side to move is in check, because a
-/// position under attack has no quiet reading worth comparing, and a rule
-/// that cannot read the evaluation cannot claim anything about it. So the
-/// exemption that would otherwise have to be written and remembered falls
-/// out of the shape of the data.
-///
-/// **Alpha on the mate scale refuses it**, which is the same refusal the
-/// null move takes on beta and for the same reason: a mate score is not a
-/// quantity a margin is commensurable with, and an alpha that already
-/// names a mate would make every quiet move futile at a node that may hold
-/// a shorter one.
-///
-/// It reads the node's own alpha, once, before the move loop. Alpha only
-/// rises inside the loop, so a node the test admitted stays admitted, and
-/// one it refused is never re-admitted by a move beating alpha -- which is
-/// the conservative direction: a node whose alpha rises is a node that is
-/// no longer failing low.
+/// evaluation plus [`futility_margin`] still does not reach `alpha`. Alpha
+/// on the mate scale refuses it, and in check `evals[ply]` is `None`, so the
+/// rule cannot read anything and cannot fire. Read once, before the move
+/// loop, and alpha only rises inside it.
 #[must_use]
 pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
     let Some(eval) = eval else {
@@ -741,31 +366,9 @@ pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
 }
 
 /// Whether the move at `index` of a node [`futile_node`] admitted is a
-/// candidate to be skipped without being searched, on everything that can
-/// be decided from the move and its place in the list.
-///
-/// Two exemptions, and neither is about the ordering:
-///
-/// - **A noisy move**, whose whole point is the material it changes. The
-///   margin is a claim about what a *quiet* move can do to the score, and a
-///   capture answers it by taking a queen.
-/// - **The node's first move**, so that a node that skips everything else
-///   still returns a score something searched and a move to store. It is
-///   not the reduction's index threshold arriving again: that one is a
-///   claim about how far the sort can be trusted, and this one is a claim
-///   about the node having an answer at all.
-///
-/// **A killer is not exempt, deliberately.** [`reduction`] exempts one
-/// because a reduction is a bet on the sort and a killer is the one quiet
-/// move with evidence behind its placement. This rule is not a bet on the
-/// sort: it says the evaluation is too far below alpha for any quiet move
-/// to matter, which is a claim about the node and not about the move's
-/// rank. A move that cut at a sibling is still a quiet move, and a quiet
-/// move still cannot make up a minor piece.
-///
-/// **The check exemption is not here**, because it is the one question that
-/// costs something ([`Board::gives_check`], two slider lookups) and only a
-/// move this returns `true` for ever has to answer it.
+/// candidate to be skipped without being searched: never the node's first
+/// move, and never a noisy one. The check exemption is the caller's, because
+/// it is the one question here that costs anything.
 #[must_use]
 pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
     futile && index > 0 && !m.is_noisy()
@@ -774,46 +377,8 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
 /// What the margin a node is returned on grows by per ply of remaining
 /// depth, in centipawns.
 ///
-/// A hundred and fifty, a pawn and a half on this evaluation's own scale,
-/// and the same slope [`FUTILITY_MARGIN`] carries for the reason written
-/// there, which prices this constant and that one alike.
-///
-/// **It is the only thing bounding this rule, so it is chosen where it
-/// bounds as well as where it sizes.** There is no depth limit here and
-/// [`reverse_futile`] is where that absence is argued and measured.
-///
-/// **Measured against the distribution the rule reads**, over the bench
-/// positions at depth eleven, at every site the rule can look at: an
-/// interior node of the main search, out of check, inside a null window.
-/// The gap between the static evaluation and beta has a median of 100 at
-/// depth one and of zero from depth five, an upper quartile between 100 and
-/// 400 at every depth, and **about a third of all sites within fifty
-/// centipawns of zero**, where the evaluation is saying nothing at all. The
-/// margin has to clear that mass at every depth and this one does. What it
-/// then takes is concentrated near the horizon without a limit saying so:
-/// of the 1,251,848 sites it admits, **81.5% are at depth one, 92.8% within
-/// two plies and 97.6% within three.**
-///
-/// **What the choice is worth on the tree**, the same positions at depth
-/// eleven against 24,519,578: a margin of 75 leaves 11,873,561, 100 leaves
-/// 13,961,452, 125 leaves 15,573,296, 150 leaves 16,024,935, 175 leaves
-/// 17,402,325 and 200 leaves 17,861,062.
-///
-/// **Why not a pawn, which the saving argues for, and the instrument that
-/// decides it.** [`futility_margin`] had only the distribution to set
-/// itself against. This rule has a second reading, because the rule below
-/// it in the node's preamble checks the same claim by searching: at a node
-/// this returns, the null move would otherwise have handed the opponent the
-/// move and asked a reduced search whether the evaluation's reading
-/// survives. Measured over the bench positions at depth eleven, of the
-/// sites this slope takes, **91.3% are nodes the null move independently
-/// cut**; the other 8.7% are nodes whose verification came back refusing,
-/// where this rule overrules a search that disagreed with it. That share is
-/// 11.4% at a slope of 100 and 12.9% at 50, and each twenty-five centipawns
-/// taken off buys a band of sites of which about **one in five** overrules
-/// the verification, against about one in eleven across the whole rule. The
-/// slope sits at the conservative end of that trade deliberately, and this
-/// is the reading to re-take before moving it.
+/// **It is the only thing bounding this rule**, because there is no depth
+/// limit here, so it is chosen where it bounds as well as where it sizes.
 const REVERSE_FUTILITY_MARGIN: Score = 150;
 
 /// How far above `beta` a node's static evaluation must stand before the
@@ -829,58 +394,21 @@ pub fn reverse_futility_margin(depth: u32) -> Score {
 /// static evaluation less [`reverse_futility_margin`], where that still
 /// stands at or above `beta`. `None` is a node that has to be searched.
 ///
-/// The claim is the mirror of [`futile_node`]'s and, like it, it is a claim
-/// about the node and not about any move: a side whose static evaluation
-/// clears beta by more than the search left below it can plausibly take
-/// away is not going to fail low here, so the node answers with the bound
-/// its own arithmetic established and never generates a move. **The two
-/// members of the family cannot both fire and nothing has to arrange
-/// that**: inside a null window beta is `alpha + 1`, so a node this admits
-/// has its evaluation above alpha and a node [`futile_node`] admits has it
-/// a margin below, which is the other side of the same window.
-///
 /// **What it returns is the quantity the condition established, not the
-/// evaluation.** `eval - margin` is the least this rule can claim: the test
-/// is that this number stands at or above beta, so returning it returns
-/// exactly what was shown, where returning `eval` would claim back the
-/// margin that was there to discount it. Everywhere else in this search
-/// fail-soft means the bound follows the value the search found; nothing is
-/// searched here, so it follows the condition instead, and it is the
-/// smallest bound that satisfies it.
+/// evaluation.** `eval - margin` is the least this rule can claim, and
+/// returning `eval` would claim back the margin that was there to discount
+/// it. Everywhere else here fail-soft means the bound follows the value the
+/// search found; nothing is searched here, so it follows the condition.
 ///
-/// **There is no depth limit, and the absence is measured rather than
-/// assumed.** The rule elsewhere carries one; on this tree it decides
-/// almost nothing, because the trigger already falls away with depth on its
-/// own. It demands `margin * depth` more of the evaluation at every further
-/// ply while the spread of what the evaluation reports does not grow with
-/// depth, so the requirement outruns the distribution without being told
-/// to. Over the bench positions at depth eleven against a shipped count of
-/// 16,024,935: a limit of eight gives the same count to the node, a limit
-/// of six gives 16,027,675 (0.017% more), and a limit of three -- tighter
-/// than the band the margin already produces -- gives 16,505,225, 3.0%
-/// more. **And a limit does less the deeper the search runs, which is the
-/// direction that matters**: at bench depth thirteen the whole span from a
-/// limit of three to no limit is 0.84% where at eleven it is 3.0%, because
-/// a deeper search spends proportionally more of its tree near the horizon,
-/// which is where this rule acts.
-///
-/// What a limit would be for is the belief that the claim gets worse with
-/// depth faster than a linear slope prices it. That belief is reasonable
-/// and it is an argument for curvature in the margin, not for a cliff in
-/// the depth: a linear slope with a cliff on the end is the worse half of
-/// each, and nothing measured here places either. So the rule arrives with
-/// one number and the number is the bound. Revisit it against a curved
-/// margin, not against a limit, and re-take the depth-share reading at
-/// [`REVERSE_FUTILITY_MARGIN`] first.
+/// **There is no depth limit**, and that is the one place this rule departs
+/// from every formulation of it elsewhere: the margin already is one.
 ///
 /// **In check needs no exemption**, for [`futile_node`]'s reason: `evals`
-/// holds `None` wherever the side to move is in check, so a rule that
-/// cannot read the evaluation cannot claim anything about it.
+/// holds `None` wherever the side to move is in check. **A beta on the mate
+/// scale refuses it**, because a mate score is not a quantity a centipawn
+/// margin is commensurable with.
 ///
-/// **A beta on the mate scale refuses it**, which is the refusal the null
-/// move takes for the same reason: a mate score is not a quantity a
-/// centipawn margin is commensurable with, and a reduced claim about a
-/// forced mate has proved nothing about one.
+/// A free function for the same reason [`extension`] is.
 #[must_use]
 pub fn reverse_futile(eval: Option<Score>, depth: u32, beta: Score) -> Option<Score> {
     let bound = eval?.saturating_sub(reverse_futility_margin(depth));
@@ -1179,17 +707,6 @@ impl<'a> Search<'a> {
 
     /// One interior node of the main search, at the `ply` and `depth`
     /// given, searched with the full window.
-    ///
-    /// Public for the same reason [`order_first`] is a free function: the
-    /// thing worth gating is reached directly rather than through a search.
-    /// What needs it here is the ply bound in `negamax`. That bound was
-    /// unreachable through [`Search::run`] when it landed, because depth
-    /// fell by one per ply and the root's was capped at `MAX_PLY`, so a
-    /// gate driven through `run` would have passed without reaching the
-    /// guard it names. The check extension gives a ply back and makes the
-    /// boundary reachable in principle, at a root depth over 85; a gate
-    /// through `run` would still not reach it, because no search of that
-    /// depth finishes.
     #[must_use]
     pub fn node(&mut self, board: &mut Board, depth: u32, ply: usize) -> Score {
         self.node_window(board, depth, ply, -INFINITE, INFINITE)
@@ -1251,28 +768,8 @@ impl<'a> Search<'a> {
         }
 
         // The ply bound, above the sort because that is where the first
-        // read past the arrays is. `killers` is `MAX_PLY` long and
-        // `self.killers[ply]` is an argument to `sort_from` below, taken
-        // before any move is made; `make_move`'s push of `states[ply + 1]`
-        // is the failure behind it, and a guard placed at the make would
-        // look right and never be reached. Both are slice bounds checks,
-        // which release keeps and which end the process under
-        // `panic = "abort"`.
-        //
-        // A `debug_assert!(ply < MAX_PLY)` stood here instead, over a
-        // comment arguing that depth is at most `MAX_DEPTH` at ply zero and
-        // falls by one per ply, so an interior node is always inside the
-        // state stack. The argument was sound and the assertion was inert
-        // in release, which is where the games are played; and the argument
-        // held only while nothing gave a ply back. The check extension
-        // below gives one back, so what stands here is a bound and not an
-        // assertion, and it was established before the extension rather
-        // than beside it.
-        //
-        // The answer is the one `quiesce` gives at the same boundary: the
-        // static evaluation, whether or not the side to move is in check.
-        // Handing the node to `quiesce` instead would reach the same value
-        // by way of its own bound and count a second node for it.
+        // read past the arrays would be. In release a read past their end is
+        // a bounds check rather than the assertion a debug build gets.
         if ply >= MAX_PLY {
             return eval::evaluate(board);
         }
@@ -1377,18 +874,9 @@ impl<'a> Search<'a> {
                 let base = reduction(in_check, gives_check, m, killers, depth, i);
                 self.late_move(board, child, base, self.history.get(us, m), ply, alpha)
             };
-            // The re-search, and the two conditions it is not run under.
-            // A score at or above beta needs none: fail-soft makes it a
-            // lower bound, this node is cutting on it, and what the parent
-            // is told is a bound either way. And where this node is itself
-            // inside a null window, `beta` is `alpha + 1` and no score can
-            // sit between them, so a node searched by the rule above never
-            // re-searches its own children under it: the re-searches
-            // happen on the principal variation and not through the tree
-            // hanging off it. The abort is checked here rather than after
-            // the unmake because a search that stopped mid-way returns a
-            // value that means nothing, and re-searching it would only
-            // spend the time twice.
+            // No re-search at or above beta, which is already the bound
+            // this node returns, and none at a node whose own window is a
+            // null one, where there is no room for a score to ask for one.
             if i > 0 && !self.aborted && score > alpha && score < beta {
                 score = -self.negamax(board, child, ply + 1, -beta, -alpha);
             }
@@ -1436,23 +924,8 @@ impl<'a> Search<'a> {
 
     /// The transposition table at an interior node: the move a hit named,
     /// and the score to return where the stored bound answers this node's
-    /// question outright.
-    ///
-    /// **The move is worth having whatever the depth says**, which is
-    /// [`tt::Hit::mv`]'s own claim, and `verify` matched the whole key, so
-    /// that move belongs to this position. That is why the two halves come
-    /// back separately: the ordering fires far more often than the cutoff
-    /// does.
-    ///
-    /// **The cutoff is withheld at the fifty-move limit**, where this node
-    /// is a draw or a mate by rule whatever any subtree found, because the
-    /// key does not carry the halfmove clock.
-    ///
-    /// A method and not a free function: it reads the table the search was
-    /// handed. It was inline in `negamax` until futility pruning, which is
-    /// the change that made that function long enough for the split to be
-    /// worth taking; nothing about it moved, and the bench count either
-    /// side of the extraction is the same number.
+    /// question outright. The move comes back whatever the depth says, which
+    /// is why the two halves come back separately.
     fn probe(
         &self,
         board: &Board,
@@ -1477,30 +950,10 @@ impl<'a> Search<'a> {
         (hit.mv, cutoff.then_some(score))
     }
 
-    /// The null-window search of one move behind a node's first, reduced
-    /// by as many plies as `base` and `history` between them call for: the
-    /// late-move arm of the move loop, on the board with the move already
-    /// made. The reduced search asks the same question the null window
-    /// always asks, over a smaller tree; an answer at or below alpha is the
-    /// expected one and stands, and an answer above alpha is re-earned at
-    /// the full child depth before anything believes it, so no score a
-    /// shallow search concluded reaches the node unverified. The caller's
-    /// full-window re-search then follows its own rule on what this
-    /// returns, which is how a reduced move that turns out best still gets
-    /// the window the node was given.
-    ///
-    /// **The size arrives in two parts and they are combined here rather
-    /// than at the call site**, so that the counters below sit beside the
-    /// search they describe: `base` is what the move's index and the
-    /// exemptions decided ([`reduction`]), and `history` is the move's
-    /// score, which [`history_reduction`] turns into an adjustment of that
-    /// and never into a reduction of its own.
-    ///
-    /// The floor of one ply keeps the reduced search a main-search node
-    /// with the quiescence search below it, where the null move's own
-    /// reduction may saturate to the quiescence search directly: that
-    /// verification starts from a position already above beta, while this
-    /// is the first look at a real move.
+    /// The null-window search of one move behind a node's first, reduced by
+    /// as many plies as [`reduction`] and [`history_reduction`] allow. A
+    /// reduced search that beats alpha is re-run at the full child depth
+    /// before its answer is believed.
     fn late_move(
         &mut self,
         board: &mut Board,
@@ -1527,19 +980,9 @@ impl<'a> Search<'a> {
     }
 
     /// Whether the move at `index` of a node the margin admitted is skipped
-    /// without being made: [`futility_skips`] on everything the move and
-    /// its place in the list decide, and then the check exemption.
-    ///
-    /// **`gives_check` is asked last and only here.** It is the one
-    /// expensive question in the rule, two slider lookups against a board
-    /// nothing has moved, and only a move that would otherwise be skipped
-    /// ever has to answer it: a move that survives the cheap half is
-    /// searched without it being asked, and a move that is skipped paid for
-    /// the answer with a whole subtree. A move that gives check is forcing,
-    /// and [`extension`] deepens exactly what this would discard.
-    ///
-    /// A method rather than a free function, unlike the three above it,
-    /// because it is the half that writes the counters and reads the board.
+    /// without being searched. `gives_check` is asked last, because it is
+    /// the only expensive question here and only a move that would otherwise
+    /// be skipped has to answer it.
     fn futile(&mut self, board: &Board, futile: bool, m: Move, index: usize) -> bool {
         if !futility_skips(futile, m, index) {
             return false;
@@ -1553,24 +996,7 @@ impl<'a> Search<'a> {
     }
 
     /// Record what this node's cutoff says about its quiet moves: credit
-    /// `cut`, the move that caused it, and debit every quiet move in
-    /// `tried`, the moves the node searched ahead of it. Both by
-    /// [`history::bonus`] of the node's depth, through the ageing update
-    /// that bounds the table.
-    ///
-    /// **The debit is not an optional half.** It is what gives a move a
-    /// negative score, and a negative score is the whole of what
-    /// [`history_reduction`] reads on the downside. A table that only
-    /// credited would separate the moves that have cut from the moves that
-    /// have not, which is what the two killer slots already do at this ply,
-    /// and the reduction would have nothing to lengthen.
-    ///
-    /// **Only a quiet cutoff writes.** When a capture cuts, the quiet moves
-    /// behind it were never asked anything this table can learn from: the
-    /// sort puts every noisy move that keeps material ahead of every quiet
-    /// one, so they were not competing with it. A capture's own ordering is
-    /// what it takes, and a slot here spent on one would be a slot spent on
-    /// a move the sort already ranks.
+    /// `cut`, and debit every quiet move tried ahead of it at this node.
     fn remember_history(&mut self, us: Colour, tried: &[Move], cut: Move, depth: u32) {
         if cut.is_noisy() {
             return;
@@ -1588,62 +1014,26 @@ impl<'a> Search<'a> {
     /// `Some` is that bound; `None` means search the node.
     ///
     /// [`reverse_futile`] holds the arithmetic and the refusals that follow
-    /// from it. Two more are here, because both read the board or the
-    /// window rather than the margin:
+    /// from it. Two more are here, because both read the board or the window
+    /// rather than the margin: **a full-window node is refused**, because
+    /// what this returns is a bound and no move and no line; and **a
+    /// halfmove clock at the limit is refused**, where the node is a draw by
+    /// rule and `negamax` has not run its draw check yet.
     ///
-    /// - **A full-window node is refused**, which is the refusal the null
-    ///   move takes and for the same reason: what this returns is a bound
-    ///   and no move and no line, which is the answer a null-window
-    ///   question wants and not the answer the principal variation wants.
-    ///   Where [`futile_node`] declined a window condition, it could: that
-    ///   rule returns no score of its own and the node still searches its
-    ///   first move. This one returns the node, so the argument that
-    ///   excused it there is exactly what does not carry here.
-    /// - **A halfmove clock at the limit is refused**, where the node is a
-    ///   draw by rule whatever the evaluation reads and `negamax` has not
-    ///   run its draw check yet. The same guard the null move carries, one
-    ///   line above it, for the same reason.
+    /// **The zugzwang guard is deliberately not taken**, and that is where
+    /// this rule and the null move part company: this one collects no
+    /// evidence by passing, so the guard would be guarding against nothing.
+    /// `tests/reverse_futility.rs` gates the difference as a difference, so
+    /// adding it for symmetry fails a test rather than passing quietly.
     ///
-    /// **What it shares with the null move and does not guard against.** A
-    /// stalemated side is not in check, so it has an evaluation, and a node
-    /// that clears beta on it is returned rather than scored as the draw it
-    /// is. That exposure is already the null move's and is accepted on the
-    /// same ground: the move list is what would settle it, and generating
-    /// one is the whole of what both rules save.
+    /// **A stalemated side is not in check, so it has an evaluation**, and a
+    /// node that clears beta on it is returned rather than scored as the
+    /// draw it is. That exposure is the null move's too and is accepted on
+    /// the same ground: the move list is what would settle it, and
+    /// generating one is the whole of what both rules save.
     ///
-    /// **The zugzwang guard is deliberately not taken**, and that is the
-    /// one place these two rules part company. The null move refuses a side
-    /// with nothing but pawns beside its king because its mechanism is
-    /// passing, and passing is precisely what a side in zugzwang wants and
-    /// may not have, so the evidence it collects is inverted there. This
-    /// rule collects no such evidence: it compares a reading against a
-    /// bound, and its exposure to a position the evaluation misreads is the
-    /// one every member of the margin family carries rather than the one
-    /// the null move's mechanism creates. `tests/reverse_futility.rs` gates
-    /// the difference as a difference, so adding the guard for symmetry
-    /// fails a test rather than passing quietly.
-    ///
-    /// **Why it sits above the null move, which is a measurement and not
-    /// only the preamble's order.** The two triggers are nested: this rule
-    /// fires where the evaluation clears beta by a margin, the null move
-    /// where it merely reaches beta, so every node this returns is a node
-    /// the null move would also have taken up. Measured over the bench
-    /// positions at depth eleven, of the nodes this rule returns, 91.3% are
-    /// nodes whose null-move verification would have cut anyway, at the
-    /// cost of a reduced search each, and 8.7% are nodes whose verification
-    /// would have come back refusing. **Below the null move, only that
-    /// second group would ever reach this rule** -- the first would already
-    /// have been cut -- so the whole of what it did would be overruling a
-    /// search that had just disagreed with it. The ordering is what makes
-    /// the ratio 91 to 9 instead of 0 to 100.
-    ///
-    /// Nothing is stored in the table. The null move withholds a store
-    /// because its entry would carry a reduced depth as if it were `depth`;
-    /// here no search happened at all, so the entry would offer a later
-    /// probe a cutoff at a depth nothing ever paid for.
-    ///
-    /// A method rather than a free function, like [`Search::futile`],
-    /// because it is the half that reads the board and writes the counters.
+    /// Nothing is stored in the table: no search happened, so the entry
+    /// would offer a later probe a cutoff at a depth nothing ever paid for.
     fn reverse_futility(
         &mut self,
         board: &Board,
@@ -1664,39 +1054,13 @@ impl<'a> Search<'a> {
         Some(bound)
     }
 
-    /// Null-move pruning at one node: where the side to move can hand the
-    /// opponent the move and still stand at or above beta at reduced
-    /// depth, the node is cut without its move list being generated.
-    /// `Some` is the cutoff (or the meaningless post-abort value every
-    /// caller discards); `None` means search the node. Standing above beta
-    /// after conceding a whole tempo is the strongest cheap evidence a
-    /// node can offer that it will not fail low, and the reduced search
-    /// ([`null_reduction`] plies past the one the move would have cost) is
-    /// what checks the evidence rather than trusting the evaluation alone.
-    ///
-    /// What refuses it, and each condition is a wrong answer somewhere: a
-    /// node in check (`evals[ply]` is `None` there: passing is not
-    /// available, in rule or in spirit); a full-window node, because the
-    /// consumer of a bound is a null-window question and the principal
-    /// variation wants a value and a line; a beta on the mate scale,
-    /// because a reduced search asserting or denying a forced mate has not
-    /// proved one, and refusing here is what keeps mate proofs searched in
-    /// full; an evaluation below beta, where the evidence is not there to
-    /// check; a position reached by the null move itself
-    /// (`plies_from_null` of zero), because two passes in a row search the
-    /// same position two reductions shallower and answer nothing; a
-    /// halfmove clock at the limit, where the node is a draw by rule and
-    /// `negamax` has not run its draw check yet; and a side to move with
-    /// nothing but pawns beside the king, which is the zugzwang guard
-    /// ([`has_non_pawn_material`]).
-    ///
-    /// A cutoff returns the reduced search's score, fail-soft like every
-    /// other bound here, except that a score on the mate scale comes back
-    /// as `beta`: the reduction means no mate was proved at this node's
-    /// depth, and an unproved mate distance poisons the scale in the way
-    /// `score::to_tt` documents. Nothing is stored in the table: the entry
-    /// would carry a reduced depth as if it were `depth`, and the saving a
-    /// probe hit buys is the saving this rule already took.
+    /// Null-move pruning at one node: `Some` is the cutoff, `None` means
+    /// search the node. Refused in check, at a full window, on a mate-scale
+    /// beta, below beta, at a position the null move itself reached, on a
+    /// halfmove clock at the limit, and where the side to move has nothing
+    /// but pawns beside the king ([`has_non_pawn_material`]). A mate-scale
+    /// result comes back as `beta`, and nothing is stored: the entry would
+    /// carry a reduced depth as if it were `depth`.
     fn null_move(
         &mut self,
         board: &mut Board,
@@ -1732,44 +1096,13 @@ impl<'a> Search<'a> {
         None
     }
 
-    /// The quiescence search: the horizon, made quiet before it is
-    /// evaluated.
-    ///
-    /// Out of check the side to move may **stand pat**: the static
-    /// evaluation is a lower bound on what it can get, because it is never
-    /// obliged to capture, so it is the score to beat and a cutoff on its
-    /// own when it is at or above beta. Then every noisy move -- capture,
-    /// en passant, promotion -- is tried, most valuable victim first
-    /// (`picker::sort_noisy`), each followed by this search again, **except
-    /// the ones that lose material**: a move whose static exchange value
-    /// is negative (`see::see`) is refused without being searched. The
-    /// side to move was never obliged to make it, and its result could not
-    /// beat standing pat by the material it gives up. The value is computed
-    /// as each move comes up, not for the whole list at sort time, so the
-    /// captures behind a cutoff cost nothing, and it is why this list is
-    /// the one `picker` does not sort by the exchange: the moves a lower
-    /// band would move are the moves this rule has already removed. The
-    /// ordering is not a refinement: in generated order, depth one from
-    /// Kiwipete is 159 million nodes. In check there is no standing pat and every
-    /// evasion is tried, quiet ones included and losing ones included: a
-    /// side that cannot get out
-    /// of check is mated, and a check is answered, not ignored. Those
-    /// evasions go through the same sort (`picker::sort_from`, no
-    /// killers), which puts the capture of the checking piece ahead of the
-    /// king retreats the generator emits first and puts an evasion whose
-    /// exchange loses material behind the ones that do not; each retreat is
-    /// another position to answer a check in, so the order is worth as much
-    /// here as it is among the captures. The search ends where the noisy moves
-    /// run out, which material bounds, or at `MAX_PLY`, where the state
-    /// stack ends and the evaluation stands whether or not the side to
-    /// move is in check. Fail-soft, like the
-    /// main search; it writes no principal variation, so the pv ends at the
-    /// horizon.
-    ///
-    /// Draws as in the main search: a repetition wherever it is met; the
-    /// fifty-move rule after the mate check in check, before the evaluation
-    /// out of it. Stalemate is not seen here -- quiet moves are not
-    /// generated -- which is the horizon effect this search accepts.
+    /// The quiescence search. Out of check the side to move may stand pat,
+    /// then every noisy move is tried most valuable victim first, except
+    /// those whose static exchange loses material. In check there is no
+    /// standing pat and every evasion is tried, the quiet and the losing
+    /// ones included. It ends where the noisy moves run out or at `MAX_PLY`,
+    /// where the state stack ends. Fail-soft; it writes no principal
+    /// variation, so the pv ends at the horizon.
     fn quiesce(&mut self, board: &mut Board, ply: usize, mut alpha: Score, beta: Score) -> Score {
         self.nodes += 1;
         self.table.clear(ply);

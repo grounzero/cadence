@@ -3,10 +3,6 @@
 //! Position state: `Board`, `StateInfo`, make/unmake. The mutation choke
 //! point.
 //!
-//! **Copy-make.** Irreversible state is snapshotted into `states[ply]`;
-//! everything else is derived from the `Move` on the way back out, so
-//! `unmake_move` decrements a cursor and does no Zobrist work of its own.
-//!
 //! **The single mutation choke point.** All board mutation goes through the
 //! private `put_piece` / `remove_piece` / `move_piece` helpers, which update
 //! `by_type`, `by_colour`, `mailbox` and the running Zobrist key *together*.

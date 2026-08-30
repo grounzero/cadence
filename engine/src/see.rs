@@ -3,62 +3,32 @@
 //! The static exchange evaluation: what a move wins or loses on the square
 //! it lands on, once every recapture has been answered.
 //!
-//! **The definition.** The side to move plays `m`. From then on the two
-//! sides take turns, and each turn the side to move either stops or
-//! captures whatever now stands on `m`'s destination with its least
-//! valuable piece that can legally do so, a pawn promoting to a queen when
-//! that capture reaches its last rank. Material is counted by [`value`],
-//! nothing else is counted, and the result is the minimax of that game for
-//! the side that played `m`: the material it is up, or down, once neither
-//! side wants to capture again. A castle is not an exchange and evaluates
+//! The side to move plays `m`; from then on each side either stops or
+//! captures with its least valuable piece that can legally do so, a pawn
+//! promoting to a queen where that capture reaches the last rank. Material
+//! is counted by [`VALUES`] and nothing else is counted. A castle evaluates
 //! to zero. `m` must be legal in `board`.
 //!
-//! "Legally" is most of what there is to get wrong, and it is not
-//! approximated. A piece pinned to its king under the occupancy **at that
-//! point in the exchange** may capture only along the pin, which is what
-//! the rules say and more than the usual pin mask taken from the root
-//! position says: the piece that recaptured first may have been the second
-//! blocker on a line, and its departure pins the piece behind it. A
-//! capture that uncovers a check on the other king, from the capturer's
-//! origin or from the square an en-passant victim stood on, stops every
-//! recapture but the king's. And a king recaptures only onto a square no
+//! **"Legally" is most of what there is to get wrong, and it is not
+//! approximated.** A piece pinned under the occupancy *at that point in the
+//! exchange* may capture only along the pin, which is more than a pin mask
+//! taken from the root position says. A capture that uncovers a check stops
+//! every recapture but the king's. A king recaptures only onto a square no
 //! enemy piece attacks once it has moved, x-rays through its own origin
 //! included. The function is gated against a second implementation that
-//! plays the exchange out on the board with the legal generator, so the
-//! answer is the generator's and the two agree to the integer
-//! (`tests/see.rs`).
+//! plays the exchange out with the legal generator (`tests/see.rs`).
 //!
-//! **Least valuable** is by [`value`], then by the order of `PieceType`,
-//! then by square. That tie-break is part of the definition, not a detail
-//! of one implementation: two pieces of one value can reveal different
-//! x-rays, and the function and its oracle have to pick the same one. The
-//! king is worth zero in the table and so is tried **first**, which is the
-//! opposite of the usual convention and is the better rule: a king may
-//! take only where nothing can answer it, so its capture ends the exchange
-//! at the full value of what stands on the square, which no other piece
-//! can improve on and a slider's recapture can fall short of by uncovering
-//! an enemy x-ray behind itself.
+//! **Least valuable** is by [`VALUES`], then `PieceType` order, then square.
+//! That tie-break is part of the definition and not a detail of one
+//! implementation: two pieces of one value can reveal different x-rays, and
+//! the function and its oracle have to pick the same one. The king is worth
+//! zero and so is tried first; its entry orders it and is never read into a
+//! result.
 //!
-//! **The values are this module's own.** The evaluation's material tables
-//! are tapered by game phase, and an exchange whose sign depended on the
+//! **The values are this module's own**, deliberately not the evaluation's:
+//! those are tapered by phase, and an exchange whose sign depended on the
 //! phase would prune a capture in one position and search it in a
-//! structurally identical one; beyond that, a knight and a bishop are
-//! worth the same here so that a minor for a minor comes out level, which
-//! the evaluation's 320 and 330 would make a loss for whichever side
-//! captured first. The king's entry orders it and is never read into a
-//! result: a king on the square ends the exchange, because it got there
-//! legally and nothing may take it.
-//!
-//! **Determinism and cost.** Integers, no allocation, no table beyond the
-//! attack tables `core` already holds; the result is a function of the
-//! board and the move alone. Each recapture costs one
-//! slider lookup for the x-ray it reveals and, when the capturer stands on
-//! a line with either king, one more for the pin or the discovered check.
-//! Two readers, both in `engine`. The quiescence search refuses a noisy
-//! move whose exchange is negative before searching it, out of check only
-//! (`Search::quiesce`), and the sort ranks the same moves below the
-//! killers rather than above every quiet move (`picker::move_key`, under
-//! `demote_losing`).
+//! structurally identical one.
 
 use cadence_core::attacks;
 use cadence_core::position::Board;
@@ -195,15 +165,9 @@ pub fn see(board: &Board, m: Move) -> i32 {
     taken[0] - reply
 }
 
-/// The least valuable piece of `side` that attacks `to` and may legally
-/// take on it, with its type, or `None` when nothing may. By value, then
-/// `PieceType` order, then square, as the module doc defines it: the king
-/// first, since it is worth zero, and it takes only onto a square no enemy
-/// attacks once it has moved.
-///
-/// Under a discovered check (`discovered`: `side`'s king is attacked by a
-/// piece not on `to`) nothing but the king can take, because nothing else
-/// answers the check.
+/// The least valuable piece of `side` that attacks `to` and may legally take
+/// on it, with its type, or `None` when nothing may. Under a discovered
+/// check nothing but the king can take, because nothing else answers it.
 fn cheapest_legal(
     board: &Board,
     side: Colour,
