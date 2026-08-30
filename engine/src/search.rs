@@ -39,9 +39,10 @@
 //! by most valuable victim; then this ply's two killers, the quiet moves
 //! that caused a beta cutoff at a sibling of this node (`remember_killer`);
 //! then the noisy moves whose exchange loses material, which keep their
-//! victim order among themselves; then the quiet moves that have refuted
-//! nothing, which all rank alike and so keep the order they were generated
-//! in. A capture that gives material away is worth less than a quiet move
+//! victim order among themselves; then the remaining quiet moves by their
+//! history score (`history`), what each has been worth across this search,
+//! with the ones the table says nothing about keeping the order they were
+//! generated in. A capture that gives material away is worth less than a quiet move
 //! that has already caused a cutoff, and until the losing band existed
 //! every capture was tried before every killer. At the root the previous
 //! iteration's best move goes first, and that is unchanged. The quiescence
@@ -154,14 +155,21 @@
 //! which is fine because every conclusion above alpha climbs back through
 //! the re-search ladder at full depth before anything trusts it.
 //!
-//! **What it is not, on purpose.** No history *read*, yet: the table
-//! ([`history`]) is here, the sort takes a row and the reduction takes a
-//! score ([`history_reduction`]), and the search hands both the empty
-//! answer. The quiet moves the killers did not claim are still not ranked
-//! against each other and the reduction still reads the move's index
-//! alone. That is the seam the change plugs into and it is deliberately a
-//! separate commit, so that the gates written against it can be seen to
-//! fail. No extension on anything but a
+//! **The history heuristic.** A beta cutoff by a quiet move credits that
+//! move in a butterfly table ([`history`]) and debits every quiet move
+//! tried ahead of it at the same node, by the square of the node's depth
+//! through an ageing update that bounds the table. Two things read it, and
+//! they are two uses of one number rather than two mechanisms: the sort
+//! ranks the quiet band by it, and a late move's reduction is shortened or
+//! lengthened by up to two plies according to it
+//! ([`history_reduction`]). The second is what the first cannot do -- a
+//! move's index is a rank inside one node's list, and a rank cannot tell a
+//! node whose twentieth quiet move is still decent from one whose fourth
+//! is worthless. The table lives for one search and is cleared where the
+//! killers are; carrying it across the moves of a game needs an ageing
+//! step between them and is a change of its own.
+//!
+//! **What it is not, on purpose.** No extension on anything but a
 //! check, and no pruning beyond the null move above and the quiescence
 //! exchange rule below: no delta pruning. That
 //! search extends nothing and has nothing to extend: it carries no depth,
@@ -1040,16 +1048,17 @@ impl<'a> Search<'a> {
         // The ordering, in three stages and one sort. The table's move
         // first, refused here rather than played if the list does not hold
         // it; then the noisy moves by MVV-LVA; then this ply's killers, and
-        // behind them the quiet moves that have refuted nothing, in
-        // generation order. The sort starts one move in when the rotation
-        // happened, so that the table's move keeps its place whatever it
-        // ranks. A killer is a move that cut at a sibling and may not be
-        // legal here, which needs no check: it matches nothing in the list.
-        // The history row the sort takes is empty here, which is the order
-        // it had before the table existed.
+        // behind them the remaining quiet moves by history score. The sort
+        // starts one move in when the rotation happened, so that the
+        // table's move keeps its place whatever it ranks. A killer is a
+        // move that cut at a sibling and may not be legal here, which needs
+        // no check: it matches nothing in the list. The history row is the
+        // side to move's, read here and again per move below, so `us` is
+        // taken once at the node rather than after a move has changed it.
+        let us = board.side_to_move();
         let ordered = usize::from(order_first(&mut legal, tt_move));
         let killers = self.killers[ply];
-        picker::sort_from(board, &mut legal, ordered, killers, &[]);
+        picker::sort_from(board, &mut legal, ordered, killers, self.history.side(us));
 
         let original_alpha = alpha;
         let mut best = -INFINITE;
@@ -1082,8 +1091,15 @@ impl<'a> Search<'a> {
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
+                // The index decides whether this move is reduced at all,
+                // and the history score decides by how much. The two
+                // readings are not the same reading: the index is a rank
+                // inside this node's list, so it says where the move came
+                // in the sort, and after that sort reads the same table the
+                // rank is derived from the score and has lost the part of
+                // it that is absolute.
                 let base = reduction(in_check, gives_check, m, killers, depth, i);
-                self.late_move(board, child, base, 0, ply, alpha)
+                self.late_move(board, child, base, self.history.get(us, m), ply, alpha)
             };
             // The re-search, and the two conditions it is not run under.
             // A score at or above beta needs none: fail-soft makes it a
@@ -1112,6 +1128,11 @@ impl<'a> Search<'a> {
                     self.table.update(ply, m);
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
+                        // The moves it beat are the ones before it in the
+                        // sorted list, which the list already holds: this
+                        // loop skips no move, so nothing has to be
+                        // remembered as it runs.
+                        self.remember_history(us, &legal.as_slice()[..i], m, depth);
                         break;
                     }
                 }
@@ -1184,6 +1205,36 @@ impl<'a> Search<'a> {
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
         }
         score
+    }
+
+    /// Record what this node's cutoff says about its quiet moves: credit
+    /// `cut`, the move that caused it, and debit every quiet move in
+    /// `tried`, the moves the node searched ahead of it. Both by
+    /// [`history::bonus`] of the node's depth, through the ageing update
+    /// that bounds the table.
+    ///
+    /// **The debit is not an optional half.** It is what gives a move a
+    /// negative score, and a negative score is the whole of what
+    /// [`history_reduction`] reads on the downside. A table that only
+    /// credited would separate the moves that have cut from the moves that
+    /// have not, which is what the two killer slots already do at this ply,
+    /// and the reduction would have nothing to lengthen.
+    ///
+    /// **Only a quiet cutoff writes.** When a capture cuts, the quiet moves
+    /// behind it were never asked anything this table can learn from: the
+    /// sort puts every noisy move that keeps material ahead of every quiet
+    /// one, so they were not competing with it. A capture's own ordering is
+    /// what it takes, and a slot here spent on one would be a slot spent on
+    /// a move the sort already ranks.
+    fn remember_history(&mut self, us: Colour, tried: &[Move], cut: Move, depth: u32) {
+        if cut.is_noisy() {
+            return;
+        }
+        let bonus = history::bonus(depth);
+        self.history.update(us, cut, bonus);
+        for &beaten in tried.iter().filter(|q| !q.is_noisy()) {
+            self.history.update(us, beaten, -bonus);
+        }
     }
 
     /// Null-move pruning at one node: where the side to move can hand the

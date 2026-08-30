@@ -1058,6 +1058,17 @@ const SORT_DEPTH: u32 = 7;
 /// or reduction change cuts the counterfactual as fast as the shipped
 /// tree, so this re-measurement is due at each of them, not once. The
 /// gate discriminates by a factor of about four.
+///
+/// **And when the history heuristic landed, where for the first time the
+/// old ceiling would still have failed the build it exists to fail**:
+/// 26,826,075 nodes with no ordering in the main search against 2,514,122
+/// with it. The counterfactual **grew** by 15% while the shipped tree more
+/// than halved, which is the opposite of the four re-measurements above
+/// and is what an ordering change does rather than what a pruning change
+/// does: it widens the gap it is measured across instead of cutting both
+/// sides of it. Re-based anyway, because the constant is meant to be a
+/// number this tree produces. The gate now discriminates by a factor of
+/// about eleven, the widest it has been since the check extension.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1075,8 +1086,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 23_395_608,
-        "{total} nodes against the 23,395,608 the same search took with no ordering at all"
+        total * 10 < 9 * 26_826_075,
+        "{total} nodes against the 26,826,075 the same search took with no ordering at all"
     );
 }
 
@@ -1138,6 +1149,15 @@ fn the_capture_sort_saves_nodes() {
 /// that compete with killers, and that is a design task with its own
 /// measurement, not a constant: until it exists this gate separates the
 /// builds by 0.21% of exact counts and no more.
+///
+/// **The history heuristic re-based it again and did not narrow it**:
+/// 2,527,884 nodes with every capture ahead of the killers against
+/// 2,514,122 with the losing ones behind them, a window of 0.55%, which is
+/// wider than the 0.21% the reductions left. Both points more than halved
+/// and the ratio between them barely moved, so what the ordering did here
+/// was shrink the tree rather than take the demotion's work, which the
+/// killer gate below cannot say about itself. The open item is unchanged
+/// and is still a position set rather than a constant.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1155,8 +1175,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 5_500_000,
-        "{total} nodes against the 5,506,625 the same search took with every capture ahead of the killers"
+        total < 2_521_000,
+        "{total} nodes against the 2,527,884 the same search took with every capture ahead of the killers"
     );
 }
 
@@ -1638,6 +1658,26 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 /// does not only order worse, it reduces moves the shipped build declines
 /// to. The ceiling sits between the new exact points, about 12% either
 /// side.
+///
+/// **And when the history heuristic landed, where what moved is not the
+/// tree but what the killers are still doing in it**: the killerless build
+/// reads 180,197 against 177,765 with them. The killers are worth **1.4%**
+/// on this set where they were worth 23%, and the reason is that the two
+/// mechanisms rank the same moves. A killer is a quiet move that cut at a
+/// sibling; a history score is what a quiet move has been worth across the
+/// whole search, so nearly every move the slots would have promoted is a
+/// move the table promotes anyway. Take the slots out now and the sort
+/// mostly puts the same moves in the same places.
+///
+/// **The gate is re-based rather than retired, and the reason it is worth
+/// keeping is the part history does not cover.** The slots say the move cut
+/// at a sibling of *this* node, which is sharper and more local than any
+/// score, and the reduction exempts a killer outright where it only adjusts
+/// on a score. Neither of those is subsumed. But the window here is now
+/// 1.4% of exact counts, which is where
+/// `demoting_the_losing_captures_saves_nodes` already sits, and the same
+/// answer applies: what this gate needs next is a position set where the
+/// two mechanisms disagree, not a tighter constant.
 #[test]
 fn the_killers_save_nodes() {
     let fens = deep_fens();
@@ -1648,8 +1688,8 @@ fn the_killers_save_nodes() {
     }
     println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
     assert!(
-        total < 320_000,
-        "{total} against the 366,183 the same search took with no killers in the main search"
+        total < 179_000,
+        "{total} against the 180,197 the same search took with no killers in the main search"
     );
 }
 

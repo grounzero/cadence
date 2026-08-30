@@ -25,10 +25,29 @@ use cadence_core::{Move, START_FEN, generate_legal};
 use cadence_engine::search::{Limits, Search, lmr_reduction, reduction};
 use support::table;
 
-/// The depth the gates search to. Six, like the null-move gates: deep
-/// enough that nodes with long sorted lists are plentiful, so both the
-/// reduction and the re-search have somewhere real to fire.
-const GATE_DEPTH: u32 = 6;
+/// The depth the gates search to.
+///
+/// **Eight, re-based when the history heuristic landed, and the reason is
+/// the mechanism rather than the arithmetic.** It was six over the start
+/// position and Kiwipete, which between them re-searched a handful of
+/// reduced fail-highs. Once the sort ranks the quiet band by history the
+/// re-search becomes rarer still, because that is the whole point of the
+/// ordering: a late quiet move that turns out to beat alpha is a move the
+/// sort misjudged, and the table is what stops it misjudging. Measured on
+/// the tree this landed on, both positions read zero re-searches at depth
+/// six, so the gate's rare half had stopped being exercised at all.
+///
+/// At eight, over the set below, the three positions re-search 10, 1 and
+/// 45 times. **A ceiling was not what died here and a ceiling is not what
+/// replaced it**: the assertion is still that the path is taken, and what
+/// moved is the depth and the set that take it.
+const GATE_DEPTH: u32 = 8;
+
+/// A quiet middlegame, added with the depth raise above. The start position
+/// and Kiwipete are both sharp enough that the ordering rarely misjudges a
+/// quiet move at all, and this is the shape of position where a late quiet
+/// move beating alpha is an ordinary event rather than a curiosity.
+const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
@@ -48,12 +67,16 @@ fn board(fen: &str) -> Board {
 /// answer passes only the first. The re-search is asserted over the set
 /// rather than per position, because it is the rare path by construction:
 /// the ordering exists so that a late quiet move almost never beats
-/// alpha, and Kiwipete at this depth reduces thousands of moves without
-/// one doing so, while the start position re-searches a handful.
+/// alpha, and Kiwipete at this depth reduces tens of thousands of moves
+/// while re-searching one.
 #[test]
 fn a_middlegame_search_reduces_late_moves_and_verifies_fail_highs() {
     let mut researches = 0;
-    for fen in [START_FEN.to_string(), support::standard_fen("kiwipete")] {
+    for fen in [
+        START_FEN.to_string(),
+        support::standard_fen("kiwipete"),
+        MIDDLEGAME.to_string(),
+    ] {
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut b = board(&fen);

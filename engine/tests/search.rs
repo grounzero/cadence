@@ -687,15 +687,33 @@ fn the_deepest_ply_a_search_reaches_is_still_searched() {
 /// and the depth alone.
 const WINDOW_DEPTH: u32 = 7;
 
-/// The depth the property gate runs to.
+/// The depth the property gate runs to on the pawn endgames.
 ///
-/// Five, and it is a different constant because it is answering a
-/// different question. The property does not depend on the depth -- a
-/// window that brackets the value returns the value at depth one -- so
-/// what depth buys here is positions where the recursion has passed the
-/// window through several plies, and five is enough of that to cost a
-/// tenth of a second rather than three seconds.
-const BRACKET_DEPTH: u32 = 5;
+/// It is a different constant because it is answering a different
+/// question. The property does not depend on the depth -- a window that
+/// brackets the value returns the value at depth one -- so what depth buys
+/// here is positions where the recursion has passed the window through
+/// several plies.
+///
+/// **Four, down from five when the history heuristic landed, and what
+/// shrank is the region rather than the property.** The pawn-endgame arm
+/// rested on the null move being the only rule whose answer depends on the
+/// window, so a position where the zugzwang guard refuses it at every node
+/// was window-independent in full. That is no longer true and the history
+/// table is why: it is written from beta cutoffs, which cutoff happens
+/// depends on the window, the sort ranks quiet moves by what was written,
+/// and the reduction reads both the rank and the score. So a narrow window
+/// and a wide one now build different tables, order their quiet moves
+/// differently and reduce differently, on a board the null move never
+/// touches.
+///
+/// Measured on the tree this landed on, both endgames, depths one to
+/// seven: they agree through four, the second diverges at five (454
+/// against 452 below), both agree again at six, and both diverge at seven.
+/// Four is where the last unbroken run ends. **A failure below four is
+/// still window arithmetic**, which is the whole of what this gate is for
+/// and is what the depth-one arm over the whole sample asserts anyway.
+const BRACKET_DEPTH: u32 = 4;
 
 fn no_table() -> Table {
     Table::with_buckets(0).expect("a table of no buckets")
@@ -721,18 +739,22 @@ fn no_table() -> Table {
 /// **which** window a search chooses to ask: that is the coverage gate at
 /// the end of this section.
 ///
-/// **Null-move pruning shrank where this holds, and the gate is scoped to
-/// where it does rather than retired.** The pruning reads beta, so past
-/// depth one a node's value depends on the window it was asked in and the
-/// two sides of this assertion legitimately diverge (the first divergence
-/// observed was two points, at depth four, on a quiet middlegame). What
+/// **Two rules have shrunk where this holds, and the gate is scoped to
+/// where it does rather than retired.** Null-move pruning reads beta, so
+/// past depth one a node's value depends on the window it was asked in
+/// and the two sides of this assertion legitimately diverge (the first
+/// divergence observed was two points, at depth four, on a quiet
+/// middlegame). The history heuristic then took the exemption that
+/// survived that: a table written from cutoffs is written differently
+/// under a different window, the sort reads it and the reduction reads
+/// both the sort's rank and the score, so a pawn endgame the null move
+/// never touches is window-dependent through the ordering instead. What
 /// is left exact is exactly what is asserted: every position at depth
-/// one, where no node below the root exists for the pruning to fire at,
+/// one, where no node below the root exists for either rule to fire at,
 /// which is the depth the arithmetic faults break at anyway; and the
-/// pawn-and-king positions at every depth, where the zugzwang guard
-/// refuses the null move at every node and the search is
-/// window-independent in full. A failure here is window arithmetic, not
-/// pruning.
+/// pawn-and-king positions to [`BRACKET_DEPTH`], which is where the last
+/// unbroken run ends and which that constant records. A failure here is
+/// window arithmetic, not pruning and not ordering.
 ///
 /// With no table, deliberately. An entry stored by one of these searches
 /// and read by the next would let a narrow window answer from a wide one's
@@ -830,29 +852,39 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 }
 
 /// What `sample()` answers at `WINDOW_DEPTH` with no table, measured on
-/// the tree late move reductions left. Against the full-window-everywhere
+/// the tree the history heuristic left. Against the full-window-everywhere
 /// tree it was first measured on, the null-move landing moved two scores
 /// by two points with every move unchanged; the reductions moved five
 /// scores by two to nine points and three moves, which is what a rule
 /// that searches parts of the tree shallower does to the value the tree
 /// has -- the extension's re-baseline in `tests/ordering.rs` is the same
 /// event in the other direction. The root's own moves are never reduced,
-/// so the move that changed did so because a subtree's value moved, not
+/// so a move that changed did so because a subtree's value moved, not
 /// because it was searched at less than its depth.
+///
+/// **The history heuristic moved four scores by two to twelve points and
+/// one move, and it is the first re-baseline here caused by an ordering
+/// change.** Ordering used to be the thing this fixture was safe against:
+/// a different order over the same tree finds the same value. It stopped
+/// being safe when the reduction started reading the index the sort
+/// assigns, which is what `tests/ordering.rs` records at
+/// `the_sort_changes_no_score`, and this is that consequence arriving in
+/// a second gate. The one move that moved (`e1d3` for `d1e3`) is a
+/// sibling at the root scoring within two points of it.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 9),
     ("d5e6", -18),
-    ("b4f4", 35),
+    ("b4f4", 37),
     ("c4c5", -504),
-    ("d7c8q", 516),
-    ("c3d5", 8),
+    ("d7c8q", 504),
+    ("c3d5", 12),
     ("b1c3", 9),
-    ("d1e3", 10),
-    ("d1e3", 6),
     ("d1e3", 8),
+    ("e1d3", 8),
+    ("e1d3", 4),
     ("h1h7", 539),
     ("f1h1", 525),
-    ("g1g7", 535),
+    ("g1g7", 536),
     ("a1a7", 539),
 ];
 
