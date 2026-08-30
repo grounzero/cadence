@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "cadence-core"
-version = "0.4.5"
+version = "0.4.6"
 
 [[package]]
 name = "cadence-engine"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "cadence-core",
  "cadence-nnue",
@@ -16,14 +16,14 @@ dependencies = [
 
 [[package]]
 name = "cadence-nnue"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "cadence-core",
 ]
 
 [[package]]
 name = "cadence-tools"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "cadence-core",
  "cadence-nnue",
