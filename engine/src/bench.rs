@@ -53,36 +53,43 @@ pub const HASH_MB: usize = 16;
 
 /// The fixed depth every position is searched to.
 ///
-/// Seven. It was three under the new quiescence search, five once the
-/// capture ordering made three too short to time, six once the ordering of
-/// the check evasions had taken depth five to about 200 ms on the M5 Max,
-/// and seven when refusing losing captures took depth six to 7,691,290
-/// nodes and about 690 ms, the same list at seven reading 33,848,419 and
-/// about 2,400 ms. **Nine when null-move pruning landed, and this raise
-/// has the opposite cause from every one before it**: not the search
-/// getting cheaper per ply, but a pruning rule cutting the depth-seven
-/// tree to a fifth, 7,072,634 nodes in about 0.6 s, which is the
-/// sub-second window where the reading comes back low even when its
-/// run-to-run band is narrow. Measured on the M5 Max, otherwise idle,
-/// three release runs per depth: depth eight reads 19,065,351 nodes in
-/// 1.56 to 1.65 s, still short of the couple of seconds the scaling
-/// needs; depth nine reads 43,121,255 nodes in 3.49 to 3.57 s, beside
-/// the previous champion's 2.4 to 2.5 s at its own compiled depth of
-/// seven, and with the tightest speed band of the three. **Eleven when
-/// late move reductions landed, the same cause again**: the reductions
-/// cut the depth-nine tree to a quarter, 10,874,489 nodes in 0.93 to
-/// 0.99 s; depth ten reads 18,903,696 nodes in about 1.6 s, the same
-/// short window the raise before this one refused at depth eight; depth
-/// eleven reads 32,455,264 nodes in 2.72 to 2.81 s, beside the previous
-/// champion's 3.5 s at its own compiled depth of nine. **Twelve when
-/// reverse futility landed, the same cause a third time**: that rule took
-/// the depth-eleven tree to 16,024,935 nodes in 1.57 to 1.67 s, back
-/// inside the short window. Depth twelve reads 29,658,388 nodes in 3.08
-/// to 3.09 s beside the champion's 2.43 to 2.48 s at eleven; depth
-/// thirteen reads 50,225,574 in 5.17 to 5.20 s and was refused. The depth
-/// goes
-/// up again whenever the run leaves that scale, whichever direction the
-/// tree moved, each time with a `Bench:` trailer.
+/// Twelve, raised six times, and **the last three raises have the opposite
+/// cause from the three before them**: not the search getting cheaper per
+/// ply, but a pruning rule cutting the tree out from under the depth in
+/// force. The depth goes up again whenever the run leaves the scale the
+/// reading below needs, whichever direction the tree moved, each time with
+/// a `Bench:` trailer.
+///
+/// | to | what raised it | the depth below, after that change | at the depth taken |
+/// |---|---|---|---|
+/// | 3 | the new quiescence search | | |
+/// | 5 | capture ordering | depth 3 too short to time | |
+/// | 6 | ordering the check evasions | depth 5 about 200 ms | |
+/// | 7 | refusing losing captures | depth 6, 7,691,290 nodes, about 690 ms | 33,848,419 nodes, about 2,400 ms |
+/// | 9 | null-move pruning | depth 7 cut to a fifth, 7,072,634 nodes, about 0.6 s | 43,121,255 nodes, 3.49 to 3.57 s |
+/// | 11 | late move reductions | depth 9 cut to a quarter, 10,874,489 nodes, 0.93 to 0.99 s | 32,455,264 nodes, 2.72 to 2.81 s |
+/// | 12 | reverse futility | depth 11, 16,024,935 nodes, 1.57 to 1.67 s | 29,658,388 nodes, 3.08 to 3.09 s |
+///
+/// The depths passed over, each read at the raise that passed them:
+///
+/// | depth | reading | why not |
+/// |---|---|---|
+/// | 8 | 19,065,351 nodes, 1.56 to 1.65 s | short of the couple of seconds the scaling needs |
+/// | 10 | 18,903,696 nodes, about 1.6 s | the same short window depth 8 was refused for |
+/// | 13 | 50,225,574 nodes, 5.17 to 5.20 s | past that scale in the other direction |
+///
+/// **The sub-second column is the one that decides**: it is the window
+/// where the reading comes back low even when its run-to-run band is
+/// narrow, which is what the criterion below is about. Depth nine also had
+/// the tightest speed band of the three readings taken at its raise. The
+/// champion each of the last three raises was measured beside, at its own
+/// compiled depth: 2.4 to 2.5 s at seven, 3.5 s at nine, 2.43 to 2.48 s at
+/// eleven.
+///
+/// **Measured on the M5 Max, otherwise idle**, and three release runs per
+/// depth from the raise to nine onward, which is where the ranges above
+/// come from; the figures before it are single readings and are written as
+/// approximations for that reason.
 ///
 /// **Every count in this comment is a reading at the commit that made the
 /// change it describes, and none of them is the count today**, which is
