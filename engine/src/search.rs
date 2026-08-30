@@ -807,6 +807,134 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
     futile && index > 0 && !m.is_noisy()
 }
 
+/// What the margin a node is returned on grows by per ply of remaining
+/// depth, in centipawns.
+///
+/// A hundred and fifty, a pawn and a half on this evaluation's own scale,
+/// and the same slope [`FUTILITY_MARGIN`] carries for the same reason: this
+/// evaluation is material and piece-square tables and is the seed for the
+/// first trained net rather than a serious reading, so a gap it reports is
+/// worth less than the same gap from a strong evaluation, and half a pawn
+/// of slack per ply is what prices that. It is the first thing to hand a
+/// parameter tune once there is an evaluation worth trusting.
+///
+/// **It is the only thing bounding this rule, so it is chosen where it
+/// bounds as well as where it sizes.** There is no depth limit here and
+/// [`reverse_futile`] is where that absence is argued and measured.
+///
+/// **Measured against the distribution the rule reads**, over the bench
+/// positions at depth eleven, at every site the rule can look at: an
+/// interior node of the main search, out of check, inside a null window.
+/// The gap between the static evaluation and beta has a median of 100 at
+/// depth one and of zero from depth five, an upper quartile between 100 and
+/// 400 at every depth, and **about a third of all sites within fifty
+/// centipawns of zero**, where the evaluation is saying nothing at all. The
+/// margin has to clear that mass at every depth and this one does. What it
+/// then takes is concentrated near the horizon without a limit saying so:
+/// of the 1,251,848 sites it admits, **81.5% are at depth one, 92.8% within
+/// two plies and 97.6% within three.**
+///
+/// **What the choice is worth on the tree**, the same positions at depth
+/// eleven against 24,519,578: a margin of 75 leaves 11,873,561, 100 leaves
+/// 13,961,452, 125 leaves 15,573,296, 150 leaves 16,024,935, 175 leaves
+/// 17,402,325 and 200 leaves 17,861,062.
+///
+/// **Why not a pawn, which the saving argues for, and the instrument that
+/// decides it.** [`futility_margin`] had only the distribution to set
+/// itself against. This rule has a second reading, because the rule below
+/// it in the node's preamble checks the same claim by searching: at a node
+/// this returns, the null move would otherwise have handed the opponent the
+/// move and asked a reduced search whether the evaluation's reading
+/// survives. Measured over the bench positions at depth eleven, of the
+/// sites this slope takes, **91.3% are nodes the null move independently
+/// cut**; the other 8.7% are nodes whose verification came back refusing,
+/// where this rule overrules a search that disagreed with it. That share is
+/// 11.4% at a slope of 100 and 12.9% at 50, and each twenty-five centipawns
+/// taken off buys a band of sites of which about **one in five** overrules
+/// the verification, against about one in eleven across the whole rule. The
+/// slope sits at the conservative end of that trade deliberately, and this
+/// is the reading to re-take before moving it.
+const REVERSE_FUTILITY_MARGIN: Score = 150;
+
+/// How far above `beta` a node's static evaluation must stand before the
+/// node is returned without being searched: [`REVERSE_FUTILITY_MARGIN`] per
+/// ply of `depth`.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of one argument, gateable without a search.
+#[must_use]
+pub fn reverse_futility_margin(depth: u32) -> Score {
+    // Saturating, and total for that reason, like [`futility_margin`]: a
+    // function that is only right for the arguments something happens to
+    // hand it is one a gate cannot pin.
+    REVERSE_FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
+}
+
+/// The bound a node may be returned at without being searched at all: its
+/// static evaluation less [`reverse_futility_margin`], where that still
+/// stands at or above `beta`. `None` is a node that has to be searched.
+///
+/// The claim is the mirror of [`futile_node`]'s and, like it, it is a claim
+/// about the node and not about any move: a side whose static evaluation
+/// clears beta by more than the search left below it can plausibly take
+/// away is not going to fail low here, so the node answers with the bound
+/// its own arithmetic established and never generates a move. **The two
+/// members of the family cannot both fire and nothing has to arrange
+/// that**: inside a null window beta is `alpha + 1`, so a node this admits
+/// has its evaluation above alpha and a node [`futile_node`] admits has it
+/// a margin below, which is the other side of the same window.
+///
+/// **What it returns is the quantity the condition established, not the
+/// evaluation.** `eval - margin` is the least this rule can claim: the test
+/// is that this number stands at or above beta, so returning it returns
+/// exactly what was shown, where returning `eval` would claim back the
+/// margin that was there to discount it. Everywhere else in this search
+/// fail-soft means the bound follows the value the search found; nothing is
+/// searched here, so it follows the condition instead, and it is the
+/// smallest bound that satisfies it.
+///
+/// **There is no depth limit, and the absence is measured rather than
+/// assumed.** The rule elsewhere carries one; on this tree it decides
+/// almost nothing, because the trigger already falls away with depth on its
+/// own. It demands `margin * depth` more of the evaluation at every further
+/// ply while the spread of what the evaluation reports does not grow with
+/// depth, so the requirement outruns the distribution without being told
+/// to. Over the bench positions at depth eleven against a shipped count of
+/// 16,024,935: a limit of eight gives the same count to the node, a limit
+/// of six gives 16,027,675 (0.017% more), and a limit of three -- tighter
+/// than the band the margin already produces -- gives 16,505,225, 3.0%
+/// more. **And a limit does less the deeper the search runs, which is the
+/// direction that matters**: at bench depth thirteen the whole span from a
+/// limit of three to no limit is 0.84% where at eleven it is 3.0%, because
+/// a deeper search spends proportionally more of its tree near the horizon,
+/// which is where this rule acts.
+///
+/// What a limit would be for is the belief that the claim gets worse with
+/// depth faster than a linear slope prices it. That belief is reasonable
+/// and it is an argument for curvature in the margin, not for a cliff in
+/// the depth: a linear slope with a cliff on the end is the worse half of
+/// each, and nothing measured here places either. So the rule arrives with
+/// one number and the number is the bound. Revisit it against a curved
+/// margin, not against a limit, and re-take the depth-share reading at
+/// [`REVERSE_FUTILITY_MARGIN`] first.
+///
+/// **In check needs no exemption**, for [`futile_node`]'s reason: `evals`
+/// holds `None` wherever the side to move is in check, so a rule that
+/// cannot read the evaluation cannot claim anything about it.
+///
+/// **A beta on the mate scale refuses it**, which is the refusal the null
+/// move takes for the same reason: a mate score is not a quantity a
+/// centipawn margin is commensurable with, and a reduced claim about a
+/// forced mate has proved nothing about one.
+///
+/// A free function for the same reason [`extension`] is: a total function
+/// of its arguments, gateable without a search.
+#[must_use]
+pub fn reverse_futile(eval: Option<Score>, depth: u32, beta: Score) -> Option<Score> {
+    let bound = eval?.saturating_sub(reverse_futility_margin(depth));
+    (!score::is_mate(beta) && bound >= beta).then_some(bound)
+}
+
 /// One search. All state is here, per thread; nothing is global.
 pub struct Search<'a> {
     limits: Limits,
@@ -899,6 +1027,18 @@ pub struct Search<'a> {
     futility_nodes: u64,
     futility_skipped: u64,
     futility_kept_check: u64,
+    /// How often the margin returned a node without searching it, and how
+    /// often it would have and did not because the node had the full
+    /// window. Written where the rule runs and read on no decision path,
+    /// like the counters above.
+    ///
+    /// The second is the shape [`Search::null_refused_by_material`] has and
+    /// it is here for the same reason: a gate asserting that a full-window
+    /// node was searched needs to see the refusal *decide*, and a tree in
+    /// which no full-window node ever cleared the margin would pass a gate
+    /// written the other way.
+    reverse_futility_cutoffs: u64,
+    reverse_futility_refused_window: u64,
     /// Elapsed milliseconds at the end of each completed iteration, in
     /// order, and empty where there is no budget.
     ///
@@ -940,6 +1080,8 @@ impl<'a> Search<'a> {
             futility_nodes: 0,
             futility_skipped: 0,
             futility_kept_check: 0,
+            reverse_futility_cutoffs: 0,
+            reverse_futility_refused_window: 0,
             iterations: Vec::new(),
         }
     }
@@ -975,6 +1117,8 @@ impl<'a> Search<'a> {
         self.futility_nodes = 0;
         self.futility_skipped = 0;
         self.futility_kept_check = 0;
+        self.reverse_futility_cutoffs = 0;
+        self.reverse_futility_refused_window = 0;
         self.iterations.clear();
         self.budget = if self.limits.infinite {
             None
@@ -1810,6 +1954,19 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn futility_kept_check(&self) -> u64 {
         self.futility_kept_check
+    }
+
+    /// How many nodes the margin returned without searching, and how many
+    /// it would have returned and did not because the node had the full
+    /// window.
+    #[must_use]
+    pub fn reverse_futility_cutoffs(&self) -> u64 {
+        self.reverse_futility_cutoffs
+    }
+
+    #[must_use]
+    pub fn reverse_futility_refused_by_window(&self) -> u64 {
+        self.reverse_futility_refused_window
     }
 
     /// The table the last search left behind, for a gate that wants to see
