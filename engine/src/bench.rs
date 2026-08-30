@@ -68,7 +68,13 @@ pub const HASH_MB: usize = 16;
 /// 1.56 to 1.65 s, still short of the couple of seconds the scaling
 /// needs; depth nine reads 43,121,255 nodes in 3.49 to 3.57 s, beside
 /// the previous champion's 2.4 to 2.5 s at its own compiled depth of
-/// seven, and with the tightest speed band of the three. The depth goes
+/// seven, and with the tightest speed band of the three. **Eleven when
+/// late move reductions landed, the same cause again**: the reductions
+/// cut the depth-nine tree to a quarter, 10,874,489 nodes in 0.93 to
+/// 0.99 s; depth ten reads 18,903,696 nodes in about 1.6 s, the same
+/// short window the raise before this one refused at depth eight; depth
+/// eleven reads 32,455,264 nodes in 2.72 to 2.81 s, beside the previous
+/// champion's 3.5 s at its own compiled depth of nine. The depth goes
 /// up again whenever the run leaves that scale, whichever direction the
 /// tree moved, each time with a `Bench:` trailer.
 ///
@@ -116,9 +122,9 @@ pub const HASH_MB: usize = 16;
 ///
 /// The gate in `tests/bench.rs` runs this six times and pays for the depth
 /// as well: about 4.6 s at six, about 9 s at seven in the test profile,
-/// and about 14 s at nine on the pruned tree, up from about 2.5 s at that
-/// tree's depth seven.
-pub const DEPTH: u32 = 9;
+/// about 14 s at nine on the pruned tree, up from about 2.5 s at that
+/// tree's depth seven, and about 11 s at eleven on the reduced tree.
+pub const DEPTH: u32 = 11;
 
 /// The checked-in position list, one FEN per line, `#` for comments.
 pub const POSITIONS: &str = include_str!("../bench_positions.txt");
