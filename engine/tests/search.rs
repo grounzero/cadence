@@ -836,17 +836,35 @@ fn a_window_that_brackets_the_value_returns_the_value() {
 ///
 /// The fixture was measured over the positions of `sample()` at
 /// `WINDOW_DEPTH` with a table of no buckets, first on the tree that
-/// searched every move with the full window, and re-measured when
-/// null-move pruning landed, and again when late move reductions did.
-/// **It is not re-baselined by a windowing change.** An extension changes
-/// the tree the value is of and may move a score (`tests/ordering.rs`
-/// records the one time that was the right answer); a pruning rule that
-/// reads beta does the same, which is what moved two scores here by two
-/// points each with every move unchanged; a reduction searches parts of
-/// the tree shallower and moved scores and moves both; a window changes
-/// which parts of a fixed tree have to be visited to establish the same
-/// value, and nothing else. If this array has to move, what moved is not
-/// a window.
+/// searched every move with the full window, and re-measured at every
+/// landing since. An extension changes the tree the value is of and may
+/// move a score (`tests/ordering.rs` records the one time that was the
+/// right answer); a pruning rule that reads beta does the same, which is
+/// what moved two scores here by two points each with every move
+/// unchanged; a reduction searches parts of the tree shallower and moved
+/// scores and moves both.
+///
+/// **This paragraph used to end "it is not re-baselined by a windowing
+/// change", and that is now measured and false.** The argument was that a
+/// window changes which parts of a fixed tree have to be visited to
+/// establish the same value and nothing else. It was true when it was
+/// written and it stopped being true one change later: null-move pruning
+/// reads beta and reverse futility reads beta, so what a node returns
+/// depends on the window it was asked in, and a narrowed window at the
+/// root is a different window at every node of the principal variation
+/// below it. Nothing noticed for six landings, because a claim about
+/// windows is only tested by a windowing change and none landed in
+/// between.
+///
+/// **What tested it is the seam and not the rule, which is what makes it
+/// a property of the tree rather than of the narrowing.** Handed a window
+/// that brackets its own full-window answer -- this set, this depth, no
+/// table, and no window chosen by a search anywhere --
+/// `Search::root_window` comes back with a different score at four of
+/// these fourteen positions and a different move at two. So a move
+/// changing here is not evidence against the thing that narrowed the
+/// window, and this gate's value is now that the array is exact and
+/// re-measured, rather than that it is invariant under a class of change.
 #[test]
 fn a_narrower_window_returns_the_same_move_and_the_same_score() {
     let tt = no_table();
@@ -920,17 +938,25 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// The other entry is `e1d3` falling from 10 back to 8, which is the value
 /// it carried before futility pruning raised it, in the same position.
 /// Twelve of the fourteen entries did not move.
+///
+/// **The root window moved two scores and one move, and twelve of the
+/// fourteen entries did not move.** `c3d5` falls from 12 to 8, and
+/// `e1d3` at 4 gives way to `e1f3` at 6 -- a root sibling within two
+/// points of it, which is the shape the last three re-baselines here have
+/// all had. The paragraph above the gate is where the reasoning is,
+/// because this is the first of these re-baselines that had to correct a
+/// claim rather than add to one.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 9),
     ("d5e6", -18),
     ("b4f4", 37),
     ("c4c5", -504),
     ("d7c8r", 516),
-    ("c3d5", 12),
+    ("c3d5", 8),
     ("b1c3", 9),
     ("d1c3", 6),
     ("e1d3", 8),
-    ("e1d3", 4),
+    ("e1f3", 6),
     ("h1h7", 539),
     ("f1h1", 525),
     ("g1g7", 536),

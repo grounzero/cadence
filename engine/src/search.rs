@@ -740,9 +740,14 @@ impl<'a> Search<'a> {
         let mut root_moves: Vec<Move> = legal.iter().collect();
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
+        // The score the next window is centred on, held here rather than
+        // read back off `self.score`: that field survives a `run` and this
+        // must not, or the first window of a search would be opened around
+        // the last position's answer.
+        let mut previous: Option<Score> = None;
         for depth in 1..=max_depth {
             self.root_depth = depth;
-            let (best, score) = self.search_root(board, &root_moves, depth, -INFINITE, INFINITE);
+            let (best, score) = self.aspirate(board, &root_moves, depth, previous);
             if self.aborted {
                 // The last completed iteration stands. If there is none,
                 // the best root move fully searched so far does -- the
@@ -759,6 +764,7 @@ impl<'a> Search<'a> {
                 break;
             }
             self.completed_depth = depth;
+            previous = Some(score);
             self.best = best;
             self.score = score;
             self.pv.clear();
@@ -785,6 +791,62 @@ impl<'a> Search<'a> {
         }
         self.wait_if_infinite();
         self.best
+    }
+
+    /// One iteration: the root searched in the window
+    /// [`aspiration_window`] opens around `previous`, and searched again in
+    /// a wider one wherever the answer falls outside it.
+    ///
+    /// **The saving and the cost are the same window.** Inside it the
+    /// search below the root carries a beta a real distance from the score
+    /// instead of `INFINITE`, so a node on the principal variation can cut
+    /// where the full window gave it nothing to cut against; and the root
+    /// itself can stop once a move has answered the question. When the
+    /// answer is outside, the iteration is searched again and the first
+    /// search bought nothing.
+    ///
+    /// **Nothing is trusted that was not searched in a window with room for
+    /// it.** A score outside the window is a fail-soft bound and is handed
+    /// straight to [`aspiration_rewiden`]; only a score the window contains
+    /// is returned as a value.
+    ///
+    /// An abort returns whatever the search in progress had. The value is
+    /// meaningless after one, as everywhere else here, and `run` discards
+    /// it.
+    fn aspirate(
+        &mut self,
+        board: &mut Board,
+        moves: &[Move],
+        depth: u32,
+        previous: Option<Score>,
+    ) -> (Move, Score) {
+        let Some(mut window) = aspiration_window(depth, previous) else {
+            // The refusal is counted only where a window was otherwise
+            // available, so the counter reads the mate scale deciding
+            // rather than the depths below the floor.
+            if depth >= ASPIRATION_DEPTH && previous.is_some() {
+                self.aspiration_refused_mate += 1;
+            }
+            return self.search_root(board, moves, depth, -INFINITE, INFINITE);
+        };
+        self.aspiration_windows += 1;
+        let mut delta = ASPIRATION_DELTA;
+        loop {
+            let (best, score) = self.search_root(board, moves, depth, window.0, window.1);
+            if self.aborted {
+                return (best, score);
+            }
+            let Some((wider, next)) = aspiration_rewiden(window, score, delta) else {
+                return (best, score);
+            };
+            if score <= window.0 {
+                self.aspiration_fail_low += 1;
+            } else {
+                self.aspiration_fail_high += 1;
+            }
+            window = wider;
+            delta = next;
+        }
     }
 
     /// The root searched in the window given, for a gate that wants to ask

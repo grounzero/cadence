@@ -1208,6 +1208,18 @@ fn the_capture_sort_saves_nodes() {
 /// static evaluation of material and piece-square tables is at its least
 /// informative and the margin rule above costs nodes instead of saving
 /// them. The open item is unchanged and is still the position set.
+///
+/// **The root window re-based it a sixth time and it is now where the
+/// killer ceiling was one change before that one inverted**: 2,293,410
+/// nodes with every capture ahead of the killers against 2,288,705 with
+/// the losing ones behind them, a window of 0.205% against the 0.27%
+/// reverse futility left. The old ceiling sat above both, so the gate
+/// would have passed with the demotion removed, which is the failure the
+/// procedure exists to find and the third consecutive change to find it.
+/// The killer ceiling retired above ran 0.146% before its two points
+/// crossed, and this one is a fifth wider. **Read that as the schedule
+/// rather than as a comparison**: the set is what both gates have been
+/// asking for, one of them has now run out, and this one is next.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1225,8 +1237,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 2_316_000,
-        "{total} nodes against the 2,319,727 the same search took with every capture ahead of the killers"
+        total < 2_291_000,
+        "{total} nodes against the 2,293,410 the same search took with every capture ahead of the killers"
     );
 }
 
