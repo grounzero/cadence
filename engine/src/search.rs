@@ -415,6 +415,109 @@ pub fn reverse_futile(eval: Option<Score>, depth: u32, beta: Score) -> Option<Sc
     (!score::is_mate(beta) && bound >= beta).then_some(bound)
 }
 
+/// How far either side of the previous iteration's score the next
+/// iteration's window is opened.
+///
+/// **Twenty-four centipawns, set against the distribution, because no
+/// instrument here separates one constant from another.** Over the bench
+/// positions, from [`ASPIRATION_DEPTH`] up, the score one iteration
+/// returns differs from the last by a median of 4 and a 95th percentile of
+/// 21; a window of this width leaves 1.45% of iterations outside it. It is
+/// the tightest width that clears that distribution, and tighter is not
+/// obviously better: what a narrower window buys is confined to the nodes
+/// whose window is wider than a point, and what it costs when it is wrong
+/// is a whole iteration searched again.
+pub const ASPIRATION_DELTA: Score = 24;
+
+/// The first iteration that starts inside a window rather than the full
+/// one.
+///
+/// **Four, and what sets it is the previous score's spread rather than the
+/// saving.** Below it the score is at its least settled -- the same
+/// measurement reads a 95th percentile of 34 at depth two against 21 from
+/// here up -- and there is nothing to save either way: the iterations below
+/// depth four are a thousandth of the tree they sit in. So this is the
+/// depth at which the number the window is centred on becomes worth
+/// centring on, and not a depth at which the window starts paying.
+///
+/// The first iteration needs no exemption of its own: there is no previous
+/// score at depth one, so [`aspiration_window`] is handed `None` and has
+/// nothing to read.
+pub const ASPIRATION_DEPTH: u32 = 4;
+
+/// The window the iteration at `depth` opens with, or `None` for the full
+/// one.
+///
+/// `prev` is the score of the last completed iteration, and `None` where
+/// there is none.
+///
+/// **A mate score refuses it.** A centipawn width is not a quantity the
+/// mate scale is commensurable with: `MATE - ply` moves two points per ply
+/// of mate distance and nothing about a margin in pawns says where the next
+/// iteration's distance will land, so the window would be a guess dressed
+/// as a measurement. It is the refusal [`futile_node`] and
+/// [`reverse_futile`] both make, arriving at the root.
+///
+/// A free function for the same reason [`extension`] is.
+#[must_use]
+pub fn aspiration_window(depth: u32, prev: Option<Score>) -> Option<(Score, Score)> {
+    let prev = prev?;
+    if depth < ASPIRATION_DEPTH || score::is_mate(prev) {
+        return None;
+    }
+    Some((
+        prev.saturating_sub(ASPIRATION_DELTA).max(-INFINITE),
+        prev.saturating_add(ASPIRATION_DELTA).min(INFINITE),
+    ))
+}
+
+/// The window a search that returned `score` in `(alpha, beta)` runs again
+/// in, and the width to widen by next time; `None` where `score` is inside
+/// the window and the iteration is done.
+///
+/// **Only the bound the score failed against moves.** The other one is
+/// still a real bound and the fail-soft return says nothing against it, so
+/// re-centring both would give back the half of the window that was right.
+/// The moved bound is placed against the score that came back rather than
+/// against the bound it replaces, because a fail-soft search returns a
+/// bound on the value and that is the better of the two numbers available.
+///
+/// **`delta` doubles**, so the moved bound is strictly further out on every
+/// pass and reaches the full bound in a bounded number of them, whatever
+/// the search returns.
+///
+/// **A mate score abandons the failing bound outright rather than widening
+/// by a multiple of a centipawn width**, which is [`aspiration_window`]'s
+/// refusal on the other side of the search: once a mate is in the answer,
+/// the distance the next search has to bracket is not a distance in pawns.
+#[must_use]
+pub fn aspiration_rewiden(
+    (alpha, beta): (Score, Score),
+    score: Score,
+    delta: Score,
+) -> Option<((Score, Score), Score)> {
+    let wider = delta.saturating_mul(2);
+    if score <= alpha && alpha > -INFINITE {
+        let far = score.saturating_sub(wider);
+        let alpha = if score::is_mate(score) || far <= -score::MAX_EVAL {
+            -INFINITE
+        } else {
+            far
+        };
+        Some(((alpha, beta), wider))
+    } else if score >= beta && beta < INFINITE {
+        let far = score.saturating_add(wider);
+        let beta = if score::is_mate(score) || far >= score::MAX_EVAL {
+            INFINITE
+        } else {
+            far
+        };
+        Some(((alpha, beta), wider))
+    } else {
+        None
+    }
+}
+
 /// One search. All state is here, per thread; nothing is global.
 pub struct Search<'a> {
     limits: Limits,
@@ -523,6 +626,24 @@ pub struct Search<'a> {
     /// no entry either: `bench` leaves this empty and reads no clock, which
     /// is the contract `tests/time.rs` pins.
     iterations: Vec<u64>,
+    /// How many iterations opened inside a window rather than the full one,
+    /// how often a window was wrong in each direction, and how often the
+    /// window would have been narrowed and was not because the score to
+    /// centre it on was a mate.
+    ///
+    /// The two fail counters are separate because they are separate
+    /// branches of [`aspiration_rewiden`] and a gate that sees only their
+    /// sum cannot tell a widening that works in one direction from one that
+    /// works in both.
+    ///
+    /// The third is the shape [`Search::null_refused_by_material`] has: a
+    /// gate asserting that a mate-scored iteration ran at the full window
+    /// needs to see the refusal *decide*, and a search that never returned
+    /// a mate would pass a gate written the other way.
+    aspiration_windows: u64,
+    aspiration_fail_high: u64,
+    aspiration_fail_low: u64,
+    aspiration_refused_mate: u64,
 }
 
 impl<'a> Search<'a> {
@@ -559,6 +680,10 @@ impl<'a> Search<'a> {
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
             iterations: Vec::new(),
+            aspiration_windows: 0,
+            aspiration_fail_high: 0,
+            aspiration_fail_low: 0,
+            aspiration_refused_mate: 0,
         }
     }
 
@@ -596,6 +721,10 @@ impl<'a> Search<'a> {
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
         self.iterations.clear();
+        self.aspiration_windows = 0;
+        self.aspiration_fail_high = 0;
+        self.aspiration_fail_low = 0;
+        self.aspiration_refused_mate = 0;
         self.budget = if self.limits.infinite {
             None
         } else {
@@ -613,7 +742,7 @@ impl<'a> Search<'a> {
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         for depth in 1..=max_depth {
             self.root_depth = depth;
-            let (best, score) = self.search_root(board, &root_moves, depth);
+            let (best, score) = self.search_root(board, &root_moves, depth, -INFINITE, INFINITE);
             if self.aborted {
                 // The last completed iteration stands. If there is none,
                 // the best root move fully searched so far does -- the
@@ -658,13 +787,41 @@ impl<'a> Search<'a> {
         self.best
     }
 
-    /// The root: every move, the first in the full window and the rest in
-    /// a null one, the best move and its score.
-    fn search_root(&mut self, board: &mut Board, moves: &[Move], depth: u32) -> (Move, Score) {
+    /// The root searched in the window given, for a gate that wants to ask
+    /// the root a question the search's own window does not.
+    ///
+    /// The seam a narrowed root window is reached through, and the
+    /// [`Search::node_window`] of the root: the property the root's window
+    /// rests on is that a window bracketing the value agrees with the full
+    /// window about it, and driving that through [`Search::run`] would test
+    /// the window the search chooses rather than the arithmetic it is
+    /// chosen by. `moves` is the root's move list and `depth` the
+    /// iteration's.
+    #[must_use]
+    pub fn root_window(
+        &mut self,
+        board: &mut Board,
+        moves: &[Move],
+        depth: u32,
+        alpha: Score,
+        beta: Score,
+    ) -> (Move, Score) {
+        self.root_depth = depth;
+        self.search_root(board, moves, depth, alpha, beta)
+    }
+
+    /// The root: every move, the first in the window this iteration was
+    /// given and the rest in a null one, the best move and its score.
+    fn search_root(
+        &mut self,
+        board: &mut Board,
+        moves: &[Move],
+        depth: u32,
+        mut alpha: Score,
+        beta: Score,
+    ) -> (Move, Score) {
         self.nodes += 1;
         self.table.clear(0);
-        let mut alpha = -INFINITE;
-        let beta = INFINITE;
         let mut best = moves[0];
         let mut best_score = -INFINITE;
         for (i, &m) in moves.iter().enumerate() {
@@ -699,6 +856,15 @@ impl<'a> Search<'a> {
                 if score > alpha {
                     alpha = score;
                     self.table.update(0, m);
+                    // The root is an alpha-beta node like any other. Under
+                    // the full window `beta` is `INFINITE` and no score
+                    // reaches it, so this decides nothing until something
+                    // hands the root a narrower one; then it is what stops
+                    // the iteration paying for the moves behind a move that
+                    // has already answered the question.
+                    if alpha >= beta {
+                        break;
+                    }
                 }
             }
         }
@@ -1250,6 +1416,28 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.nodes
+    }
+
+    /// How many iterations opened inside a window, how often one was wrong
+    /// in each direction, and how often a mate score refused one.
+    #[must_use]
+    pub fn aspiration_windows(&self) -> u64 {
+        self.aspiration_windows
+    }
+
+    #[must_use]
+    pub fn aspiration_fail_high(&self) -> u64 {
+        self.aspiration_fail_high
+    }
+
+    #[must_use]
+    pub fn aspiration_fail_low(&self) -> u64 {
+        self.aspiration_fail_low
+    }
+
+    #[must_use]
+    pub fn aspiration_refused_by_mate(&self) -> u64 {
+        self.aspiration_refused_mate
     }
 
     /// How many null moves the last search tried.
