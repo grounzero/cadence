@@ -15,8 +15,9 @@
 //! search would act on. A truncated key stored directly cannot express this,
 //! and is why it is not what is stored. The words are `AtomicU64` and every
 //! access is `Relaxed`: the correctness argument is the XOR check and not an
-//! ordering. The search is single threaded and will be for a long time; this
-//! is not a scheme to retrofit under pressure.
+//! ordering. Lazy SMP searches use this property directly: workers may race
+//! on a bucket, and a mixed pair is a miss rather than a result for the wrong
+//! position.
 //!
 //! **Determinism.** The index is a function of the key and the bucket count;
 //! the bucket scan runs in slot order and the replacement tie-break keeps

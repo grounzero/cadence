@@ -42,7 +42,10 @@ use cadence_core::{Move, Square, generate_legal};
 use cadence_engine::score::{self, MAX_EVAL, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::tt::{self, Bound, Entry, Table};
-use cadence_engine::{bench, uci::Session};
+use cadence_engine::{
+    bench,
+    uci::{DEFAULT_THREADS, MAX_THREADS, Session},
+};
 use support::Rng;
 
 // ---------------------------------------------------------------------------
@@ -362,7 +365,7 @@ fn uci_declares_hash_and_threads() {
             tt::MIN_HASH_MB,
             tt::MAX_HASH_MB
         ),
-        "option name Threads type spin default 1 min 1 max 1".to_string(),
+        format!("option name Threads type spin default {DEFAULT_THREADS} min 1 max {MAX_THREADS}"),
     ];
     let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
     for line in &expected {
@@ -379,6 +382,25 @@ fn uci_declares_hash_and_threads() {
         ));
         assert!(out.contains("readyok"), "{out:?}");
     }
+}
+
+#[test]
+fn threads_is_stored_clamped_and_case_insensitive() {
+    let mut s = Session::new();
+    assert_eq!(s.threads(), DEFAULT_THREADS);
+
+    s.handle_line("setoption name Threads value 4");
+    assert_eq!(s.threads(), 4);
+    s.handle_line("setoption name Threads value 0");
+    assert_eq!(s.threads(), 1);
+    s.handle_line(&format!("setoption name Threads value {}", MAX_THREADS + 1));
+    assert_eq!(s.threads(), MAX_THREADS);
+
+    s.handle_line("setoption name Threads value 7");
+    s.handle_line("setoption name Threads value banana");
+    assert_eq!(s.threads(), 7);
+    s.handle_line("setoption name threads value 2");
+    assert_eq!(s.threads(), 2);
 }
 
 // ---------------------------------------------------------------------------

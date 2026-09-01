@@ -15,7 +15,7 @@
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use cadence_core::position::Board;
@@ -37,6 +37,11 @@ const ENGINE_AUTHOR: &str = "Michael Grounds";
 /// 16 MiB is far above that in any profile.
 const SEARCH_STACK_BYTES: usize = 16 << 20;
 
+/// The UCI thread range. One preserves the deterministic search and bench
+/// path; larger values run Lazy SMP helpers beside the primary search.
+pub const DEFAULT_THREADS: usize = 1;
+pub const MAX_THREADS: usize = 64;
+
 /// The state one UCI session carries between commands.
 pub struct Session {
     /// The current position, at ply zero, with the game history the
@@ -48,6 +53,8 @@ pub struct Session {
     /// The transposition table, kept across the whole game and shared with
     /// the search thread. `Hash` replaces it; `ucinewgame` clears it.
     tt: Arc<Table>,
+    /// Searches per `go`: one primary and `threads - 1` Lazy SMP helpers.
+    threads: usize,
     /// The search thread started by the last `go`, until `stop`, the next
     /// `go`, or shutdown joins it. It may already have finished.
     search: Option<Running>,
@@ -82,6 +89,7 @@ impl Session {
             board: start_position(),
             chess960: false,
             tt: Arc::new(tt),
+            threads: DEFAULT_THREADS,
             search: None,
         }
     }
@@ -102,6 +110,12 @@ impl Session {
     #[must_use]
     pub fn tt(&self) -> &Table {
         &self.tt
+    }
+
+    /// The number of searches the next `go` will run.
+    #[must_use]
+    pub fn threads(&self) -> usize {
+        self.threads
     }
 
     /// Handle one line of input. Returns `false` when the session is over
@@ -137,13 +151,8 @@ impl Session {
                     tt::MIN_HASH_MB,
                     tt::MAX_HASH_MB
                 ));
-                // `Threads` is declared with a maximum of one, which is the
-                // truthful declaration: the search is single-threaded and
-                // does not implement Lazy SMP. Declaring it stops runners
-                // warning that the engine lacks an option they were told to
-                // set.
                 say(format_args!(
-                    "option name Threads type spin default 1 min 1 max 1"
+                    "option name Threads type spin default {DEFAULT_THREADS} min 1 max {MAX_THREADS}"
                 ));
                 say(format_args!("uciok"));
             }
@@ -203,10 +212,10 @@ impl Session {
             }
         } else if name.eq_ignore_ascii_case("Hash") {
             self.set_hash(&value);
+        } else if name.eq_ignore_ascii_case("Threads") {
+            self.set_threads(&value);
         }
-        // `Threads` is declared with a maximum of one and there is nothing
-        // to set: the value is accepted and ignored. Unknown options are
-        // ignored too; a GUI sends whatever it was told to.
+        // Unknown options are ignored; a GUI sends whatever it was told to.
     }
 
     /// `setoption name Hash value <mebibytes>`: a new table of that size.
@@ -230,6 +239,17 @@ impl Session {
                 self.tt.bytes() >> 20
             )),
         }
+    }
+
+    /// `setoption name Threads value <count>` for the next search.
+    fn set_threads(&mut self, value: &str) {
+        let Ok(asked) = value.trim().parse::<usize>() else {
+            say(format_args!(
+                "info string setoption Threads: `{value}` is not a number, ignoring it"
+            ));
+            return;
+        };
+        self.threads = asked.clamp(1, MAX_THREADS);
     }
 
     // --- position -----------------------------------------------------------
@@ -325,6 +345,7 @@ impl Session {
         let stop = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
         let chess960 = self.chess960;
+        let threads = self.threads;
         let thread = {
             let stop = Arc::clone(&stop);
             // A handle of its own, so that a `setoption name Hash` during
@@ -340,10 +361,14 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
-                    let mut out = std::io::stdout();
-                    let mut search = Search::new(limits, &stop, &tt);
-                    search.set_chess960(chess960);
-                    let best = search.run(&mut board, &mut out);
+                    let best = if threads == 1 {
+                        let mut out = std::io::stdout();
+                        let mut search = Search::new(limits, &stop, &tt);
+                        search.set_chess960(chess960);
+                        search.run(&mut board, &mut out)
+                    } else {
+                        parallel_search(&mut board, limits, &stop, &tt, chess960, threads)
+                    };
                     say(format_args!("bestmove {}", to_uci(best, &legal, chess960)));
                 })
         };
@@ -365,6 +390,61 @@ impl Session {
             let _ = running.thread.join();
         }
     }
+}
+
+/// Lazy SMP for one UCI `go`. The primary search alone reports and chooses
+/// the move. Helpers carry independent history, killers and PV state, begin
+/// with different root orders, and communicate useful work through the
+/// lockless transposition table. The shared node count keeps UCI `nodes` and
+/// reported nps about the whole search rather than one worker.
+fn parallel_search(
+    board: &mut Board,
+    limits: Limits,
+    stop: &Arc<AtomicBool>,
+    tt: &Arc<Table>,
+    chess960: bool,
+    threads: usize,
+) -> cadence_core::Move {
+    tt.new_search();
+    let nodes: Arc<[AtomicU64]> = (0..threads)
+        .map(|_| AtomicU64::new(0))
+        .collect::<Vec<_>>()
+        .into();
+    let mut helpers = Vec::with_capacity(threads - 1);
+    for worker_index in 1..threads {
+        let mut helper_board = board.duplicate();
+        let helper_stop = Arc::clone(stop);
+        let helper_tt = Arc::clone(tt);
+        let helper_nodes = Arc::clone(&nodes);
+        let result = std::thread::Builder::new()
+            .name(format!("search-helper-{worker_index}"))
+            .stack_size(SEARCH_STACK_BYTES)
+            .spawn(move || {
+                let mut sink = std::io::sink();
+                let mut search = Search::new(limits, &helper_stop, &helper_tt);
+                search.set_chess960(chess960);
+                search.set_parallel(worker_index, &helper_nodes);
+                search.run_in_current_generation(&mut helper_board, &mut sink)
+            });
+        match result {
+            Ok(helper) => helpers.push(helper),
+            Err(e) => say(format_args!(
+                "info string go: could not start helper {worker_index}: {e}"
+            )),
+        }
+    }
+
+    let mut out = std::io::stdout();
+    let mut search = Search::new(limits, stop, tt);
+    search.set_chess960(chess960);
+    search.set_parallel(0, &nodes);
+    let best = search.run_in_current_generation(board, &mut out);
+
+    stop.store(true, Ordering::Relaxed);
+    for helper in helpers {
+        let _ = helper.join();
+    }
+    best
 }
 
 /// The start position. `START_FEN` is a constant the corpus pins, so this

@@ -36,9 +36,11 @@
 //! replacement are integer functions of the key and the generation, and
 //! the clock is consulted only when there is a time budget -- under a
 //! depth or node limit `Instant::now()` is never read on a decision path.
-//! There is no hash map, no float, no thread. The killers and the history
-//! table are cleared when a search starts, so both are state within one
-//! search and never across two. `bench` supplies a table of a fixed size and clears it between
+//! There is no hash map, no float, and no internal thread in one `Search`.
+//! UCI `Threads` runs several of these per-thread searches together; that
+//! path is deliberately outside this determinism contract. The killers and
+//! the history table are cleared when a search starts, so both are state
+//! within one search and never across two. `bench` supplies a table of a fixed size and clears it between
 //! positions, which is what turns "and the state of the table" back into
 //! "the code alone". Quiescence nodes are nodes: they count, and they
 //! check the limits.
@@ -51,7 +53,7 @@
 
 use std::io::Write;
 use std::iter::Peekable;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
@@ -172,6 +174,12 @@ fn small<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u32> {
 
 /// How often the clock is read, in nodes. A power of two.
 const CLOCK_INTERVAL: u64 = 1024;
+
+/// How often a parallel worker publishes its local node count. Each worker
+/// owns one atomic slot, so publication is a store rather than a contended
+/// increment on every node. A parallel `go nodes` may overshoot by fewer
+/// than this many nodes per other worker.
+const NODE_PUBLISH_INTERVAL: u64 = 64;
 
 /// The deepest iteration: `MAX_PLY`, which is the state stack's bound. It
 /// is no longer the deepest ply either search reaches -- a check extension
@@ -426,6 +434,14 @@ pub struct Search<'a> {
     /// Spells castling moves in `info` lines the way the GUI expects.
     chess960: bool,
     nodes: u64,
+    /// All workers' nodes during a parallel UCI search. Absent on the
+    /// single-thread path, including `bench`, so the atomic has no cost and
+    /// cannot disturb its exact node-count contract.
+    shared_nodes: Option<(&'a [AtomicU64], usize)>,
+    /// Zero for the primary search. Helpers rotate their first root list by
+    /// this amount, which makes them explore useful alternative subtrees
+    /// instead of following the primary search step for step.
+    worker_index: usize,
     start: Instant,
     /// The time budget, when anything in `limits` constrains the time.
     /// `None` means the clock is never read.
@@ -534,6 +550,8 @@ impl<'a> Search<'a> {
             tt,
             chess960: false,
             nodes: 0,
+            shared_nodes: None,
+            worker_index: 0,
             start: Instant::now(),
             budget: None,
             aborted: false,
@@ -567,6 +585,13 @@ impl<'a> Search<'a> {
         self.chess960 = on;
     }
 
+    /// Join a parallel UCI search. Each worker keeps its own search state;
+    /// only the node counter, stop flag and transposition table are shared.
+    pub(crate) fn set_parallel(&mut self, worker_index: usize, nodes: &'a [AtomicU64]) {
+        self.worker_index = worker_index;
+        self.shared_nodes = Some((nodes, worker_index));
+    }
+
     /// The best move in `board`, or `Move::NULL` when there is none.
     ///
     /// Returns when the limits are met or `stop` is raised; under
@@ -574,6 +599,16 @@ impl<'a> Search<'a> {
     /// `board` comes back at the ply it went in.
     pub fn run(&mut self, board: &mut Board, out: &mut dyn Write) -> Move {
         self.tt.new_search();
+        self.run_in_current_generation(board, out)
+    }
+
+    /// Run after the caller has advanced the shared table generation once
+    /// for the whole group of workers.
+    pub(crate) fn run_in_current_generation(
+        &mut self,
+        board: &mut Board,
+        out: &mut dyn Write,
+    ) -> Move {
         self.start = Instant::now();
         self.nodes = 0;
         self.aborted = false;
@@ -606,9 +641,12 @@ impl<'a> Search<'a> {
         if legal.is_empty() {
             self.score = if board.in_check() { mated_in(0) } else { DRAW };
             self.wait_if_infinite();
+            self.publish_nodes();
             return Move::NULL;
         }
         let mut root_moves: Vec<Move> = legal.iter().collect();
+        let root_count = root_moves.len();
+        root_moves.rotate_left(self.worker_index % root_count);
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         for depth in 1..=max_depth {
@@ -655,13 +693,14 @@ impl<'a> Search<'a> {
             }
         }
         self.wait_if_infinite();
+        self.publish_nodes();
         self.best
     }
 
     /// The root: every move, the first in the full window and the rest in
     /// a null one, the best move and its score.
     fn search_root(&mut self, board: &mut Board, moves: &[Move], depth: u32) -> (Move, Score) {
-        self.nodes += 1;
+        self.count_node();
         self.table.clear(0);
         let mut alpha = -INFINITE;
         let beta = INFINITE;
@@ -753,7 +792,7 @@ impl<'a> Search<'a> {
         if depth == 0 {
             return self.quiesce(board, ply, alpha, beta);
         }
-        self.nodes += 1;
+        self.count_node();
         self.table.clear(ply);
         // At every node, so that `nodes N` stops at N and not at N plus a
         // subtree.
@@ -1104,7 +1143,7 @@ impl<'a> Search<'a> {
     /// where the state stack ends. Fail-soft; it writes no principal
     /// variation, so the pv ends at the horizon.
     fn quiesce(&mut self, board: &mut Board, ply: usize, mut alpha: Score, beta: Score) -> Score {
-        self.nodes += 1;
+        self.count_node();
         self.table.clear(ply);
         if self.out_of_time() {
             return DRAW;
@@ -1189,7 +1228,7 @@ impl<'a> Search<'a> {
             return false;
         }
         if let Some(n) = self.limits.nodes
-            && self.nodes >= n
+            && self.reported_nodes() >= n
         {
             self.aborted = true;
             return true;
@@ -1217,16 +1256,46 @@ impl<'a> Search<'a> {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    #[inline]
+    fn count_node(&mut self) {
+        self.nodes += 1;
+        if self.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
+            self.publish_nodes();
+        }
+    }
+
+    #[inline]
+    fn reported_nodes(&self) -> u64 {
+        let Some((nodes, worker_index)) = self.shared_nodes else {
+            return self.nodes;
+        };
+        nodes.iter().enumerate().fold(0, |total, (index, nodes)| {
+            total.saturating_add(if index == worker_index {
+                self.nodes
+            } else {
+                nodes.load(Ordering::Relaxed)
+            })
+        })
+    }
+
+    #[inline]
+    fn publish_nodes(&self) {
+        if let Some((nodes, worker_index)) = self.shared_nodes {
+            nodes[worker_index].store(self.nodes, Ordering::Relaxed);
+        }
+    }
+
     /// One `info` line for the iteration just completed. The pv is spelled
     /// by walking it on the board, so castling reads per the option.
     fn report(&self, board: &mut Board, out: &mut dyn Write) {
         let ms = self.elapsed_ms();
-        let nps = self.nodes * 1000 / ms.max(1);
+        let nodes = self.reported_nodes();
+        let nps = nodes * 1000 / ms.max(1);
         let mut line = format!(
             "info depth {} score {} nodes {} nps {nps} time {ms} pv",
             self.completed_depth,
             score::uci(self.score),
-            self.nodes
+            nodes
         );
         let mut made = 0;
         for &m in &self.pv {
