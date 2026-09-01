@@ -357,7 +357,18 @@ const LMP_DEPTH: u32 = 8;
 /// count does; the base is [`REDUCTION_INDEX`] and is not a parameter, so
 /// the shape arrives with a single number to tune, as
 /// [`FUTILITY_MARGIN`]'s slope does.
-const LMP_DIVISOR: u32 = 3;
+///
+/// **Two, which is timider than the counts published elsewhere, and it was
+/// chosen against this tree rather than against them.** Six shapes of this
+/// rule were measured on move agreement against a consensus of all of them,
+/// and the four that give up more than this one all came back net negative
+/// while this one did not. What the field fits its counts on is a tree whose
+/// late quiet moves are ranked by continuation histories; ours ranks them by
+/// one butterfly table with a lifetime of one search, and a rule that
+/// deletes a move on its rank is worth what that rank is worth. So a timid
+/// count is the right answer to a weaker signal rather than to a weaker
+/// search, which is the reduction's own reading arriving at a second rule.
+const LMP_DIVISOR: u32 = 2;
 
 /// How many moves a node at `depth` searches before the quiet moves behind
 /// them are given up.

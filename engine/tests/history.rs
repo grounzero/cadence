@@ -49,21 +49,20 @@ const ORDER_DEPTH: u32 = 6;
 /// A gate on a rule that fires on the outer few per cent has to search
 /// deep enough to have an outer few per cent.
 ///
-/// **Late move pruning moved it from eight to eleven, and what moved is
-/// the malus's reader rather than the table.** The direction only the
-/// debit can produce -- a reduction the score *lengthens* -- falls from
-/// 949,732 to 134,406 over the bench positions at depth twelve, an 86%
-/// fall, while the direction a credit produces rises from 110,829 to
-/// 175,652. The ratio between the two inverts: the champion lengthens 8.6
-/// times as often as it shortens, and this tree shortens 1.3 times as
-/// often as it lengthens. The mechanism is that a move carrying negative
-/// history is a late quiet move that has been refuted, and that is
-/// precisely the population the rule gives up before a reduction site is
-/// reached. Measured on this position: no reduction is lengthened at depth
-/// eight or nine, and five are at depth ten. Eleven is taken, one past the
-/// first depth that works, for `GATE_DEPTH`'s reason in
+/// **Late move pruning moved it from eight to ten, and what moved is the
+/// malus's reader rather than the table.** The direction only the debit can
+/// produce -- a reduction the score *lengthens* -- falls from 949,732 to
+/// 293,638 over the bench positions at depth twelve, a 69% fall, while the
+/// direction a credit produces rises from 110,829 to 166,213. The ratio
+/// between the two narrows from 8.6 to 1 down to 1.8 to 1. The mechanism is
+/// that a move carrying negative history is a late quiet move that has been
+/// refuted, and that is precisely the population this rule gives up before
+/// a reduction site is reached, so the malus keeps its writer and loses
+/// most of its reader. Measured on this position: no reduction is
+/// lengthened at depth eight, and some are at nine. Ten is taken, one past
+/// the first depth that works, for `GATE_DEPTH`'s reason in
 /// `tests/futility.rs`.
-const MODULATION_DEPTH: u32 = 11;
+const MODULATION_DEPTH: u32 = 10;
 
 /// A quiet middlegame with both sides developed and no capture worth
 /// making, which is where a history table has something to learn: the same

@@ -747,9 +747,9 @@ const WINDOW_DEPTH: u32 = 7;
 /// killer is written from a cutoff.
 ///
 /// Measured on the tree this landed on, both endgames, depths one to
-/// eight: they agree through two, the first diverges at three (444 against
-/// 448 full) and at every depth above it, and the second agrees through
-/// four and diverges at five. Two is where the last unbroken run ends.
+/// eight: they agree through two, and both diverge at three and at almost
+/// every depth above it, the second agreeing again at six alone. Two is
+/// where the last unbroken run ends.
 /// **The region has now gone five, four, two over three changes**, and what
 /// is left is one ply above the depth-one arm that holds by construction.
 /// The next rule to read the sort's rank closes it, and the honest reading
@@ -943,38 +943,38 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// it carried before futility pruning raised it, in the same position.
 /// Twelve of the fourteen entries did not move.
 ///
-/// **Late move pruning moved every one of the fourteen scores and five of
+/// **Late move pruning moved twelve of the fourteen scores and five of
 /// the moves, which is by far the largest re-baseline this fixture has
 /// had** -- against the reductions' five scores and three moves, and the
 /// three re-baselines since that moved two entries each. It is the right
 /// size for what the rule is: the reduction searched a late quiet move at
-/// less than its depth and this one does not search it at all, so the
-/// value of nearly every subtree in the sample changes rather than a few.
-/// A fixture that moved a little would be the thing to look at here.
+/// less than its depth and this one does not search it at all, so the value
+/// of nearly every subtree in the sample changes rather than a few. A
+/// fixture that moved a little would be the thing to look at here.
 ///
 /// **The scores move away from zero as often as toward it and by a great
-/// deal more than before**: `d5e6` from -18 to -109, `c4c5` from -504 to
-/// -613, `b4f4` from 37 to 116. Those are not tie-breaks and no claim is
-/// made that they are better answers; they are the values a smaller tree
-/// has, and whether a smaller tree is worth its lost accuracy is the SPRT's
-/// question and not this gate's. What this gate still refuses is a *window*
-/// moving them, which is unchanged: the array is re-measured on the shipped
-/// full-window build, as every re-baseline above was.
+/// deal more than before**: `d5e6` from -18 to -109 and `c4c5` from -504 to
+/// -613, against `b1c3` rising from 9 to 13. Those are not tie-breaks and
+/// no claim is made that they are better answers; they are the values a
+/// smaller tree has, and whether a smaller tree is worth its lost accuracy
+/// is the SPRT's question and not this gate's. What this gate still refuses
+/// is a *window* moving them, which is unchanged: the array is re-measured
+/// on the shipped full-window build, as every re-baseline above was.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("d2d4", 10),
+    ("b1c3", 13),
     ("d5e6", -109),
-    ("b4f4", 116),
+    ("b4f4", 40),
     ("c4c5", -613),
     ("d7c8r", 491),
     ("g5f6", 108),
-    ("d2d4", 10),
-    ("e1d3", 10),
-    ("e1f3", 0),
-    ("e1d3", 10),
-    ("h1h7", 527),
+    ("b1c3", 13),
+    ("d1e3", 4),
+    ("d2d4", 8),
+    ("d1e3", 2),
+    ("g1f2", 532),
     ("f1h1", 522),
-    ("f1e2", 527),
-    ("a1a7", 529),
+    ("g1g7", 536),
+    ("a1a7", 532),
 ];
 
 /// End to end: the narrower window has to be worth nodes.

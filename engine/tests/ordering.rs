@@ -1113,7 +1113,8 @@ const SORT_DEPTH: u32 = 7;
 /// as from one where they are not. Futility's counterfactual kept a trigger
 /// it could not raise alpha to reach; this one keeps a trigger that needs
 /// no evidence at all. The gate is re-based and it discriminates by a
-/// factor of about six.
+/// factor of about five: 5,782,741 nodes with no ordering in the main
+/// search against 1,150,740 with it.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1131,8 +1132,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 8_511_242,
-        "{total} nodes against the 8,511,242 the same search took with no ordering at all"
+        total * 10 < 9 * 5_782_741,
+        "{total} nodes against the 5,782,741 the same search took with no ordering at all"
     );
 }
 
@@ -1233,8 +1234,36 @@ fn the_capture_sort_saves_nodes() {
 /// further down the list, and one place further down is nearer the count
 /// this rule gives up at, so promoting the losing captures now costs
 /// searched quiet moves as well as order. That is the demotion being read
-/// by something new rather than the gate's set improving, and the open
-/// item is unchanged and is still the position set.
+/// by something new rather than the gate's set improving.
+///
+/// **And the window then collapsed to 259 nodes, 0.023%, the narrowest it
+/// has ever been**: 1,150,999 with every capture ahead of the killers
+/// against 1,150,740 with the losing ones behind them. Re-based on exact
+/// counts, which still separate the two builds, and the sign was checked
+/// rather than assumed before doing so, which is the standard the killer
+/// ceiling was retired against: it is stable, and the shipped build is
+/// smaller at every depth from five to eight.
+///
+/// **And the exit this gate has wanted since null-move pruning is not the
+/// position set. It is a shallower depth, and the reason nobody found it is
+/// that the search for it only went one way.** Measured here, shipped
+/// against promoted over the same sixteen positions:
+///
+/// | depth | shipped | promoted | window |
+/// | ---: | ---: | ---: | ---: |
+/// | 5 | 54,539 | 55,064 | 0.96% |
+/// | 6 | 246,292 | 248,029 | 0.71% |
+/// | 7 | 1,150,740 | 1,150,999 | 0.023% |
+/// | 8 | 6,179,198 | 6,187,346 | 0.13% |
+///
+/// The reductions-era pass concluded that "a depth change cannot restore
+/// the window" from readings at seven, eight and nine: deeper is narrower,
+/// and it is, but nobody tried shallower. **Depth six dominates depth seven
+/// on both gates in this file** -- 0.71% against 0.023% here, and a factor
+/// of 5.20 against 5.03 for the capture sort above, on the same set and at
+/// a fifth of the nodes. Recorded rather than taken, because changing what
+/// a gate covers is not a pruning item's change; the next item that has to
+/// touch `SORT_DEPTH` should take it, and this table is the argument.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1252,8 +1281,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 1_314_000,
-        "{total} nodes against the 1,316,775 the same search took with every capture ahead of the killers"
+        total < 1_150_900,
+        "{total} nodes against the 1,150,999 the same search took with every capture ahead of the killers"
     );
 }
 
