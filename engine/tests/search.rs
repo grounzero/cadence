@@ -506,12 +506,12 @@ fn a_check_extends_by_one_ply_and_nothing_does_past_the_cap() {
         let cap = EXTEND_WITHIN * root_depth as usize;
         for ply in 0..cap + 4 {
             assert_eq!(
-                extension(false, ply, root_depth),
+                extension(false, false, ply, root_depth),
                 0,
                 "root depth {root_depth}, ply {ply}: a move that gave no check extended"
             );
             assert_eq!(
-                extension(true, ply, root_depth),
+                extension(true, false, ply, root_depth),
                 u32::from(ply < cap),
                 "root depth {root_depth}, ply {ply}: the cap is {cap}"
             );
