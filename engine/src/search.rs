@@ -418,27 +418,20 @@ pub fn reverse_futile(eval: Option<Score>, depth: u32, beta: Score) -> Option<Sc
 /// How far either side of the previous iteration's score the next
 /// iteration's window is opened.
 ///
-/// **Twenty-four centipawns, set against the distribution, because no
-/// instrument here separates one constant from another.** Over the bench
-/// positions, from [`ASPIRATION_DEPTH`] up, the score one iteration
-/// returns differs from the last by a median of 4 and a 95th percentile of
-/// 21; a window of this width leaves 1.45% of iterations outside it. It is
-/// the tightest width that clears that distribution, and tighter is not
-/// obviously better: what a narrower window buys is confined to the nodes
-/// whose window is wider than a point, and what it costs when it is wrong
-/// is a whole iteration searched again.
+/// **Set against the spread of the score between iterations, not against
+/// the saving**: the fixed-depth node count does not read this change at
+/// all, so there is no lever to set it by. What a narrower window buys is
+/// confined to the nodes whose window is wider than a point; what it costs
+/// when it is wrong is a whole iteration searched again.
 pub const ASPIRATION_DELTA: Score = 24;
 
 /// The first iteration that starts inside a window rather than the full
 /// one.
 ///
-/// **Four, and what sets it is the previous score's spread rather than the
-/// saving.** Below it the score is at its least settled -- the same
-/// measurement reads a 95th percentile of 34 at depth two against 21 from
-/// here up -- and there is nothing to save either way: the iterations below
-/// depth four are a thousandth of the tree they sit in. So this is the
-/// depth at which the number the window is centred on becomes worth
-/// centring on, and not a depth at which the window starts paying.
+/// **What sets it is the previous score's spread, not the saving**: below
+/// it the score is at its least settled, and the iterations there are a
+/// thousandth of the tree they sit in either way. So it is the depth at
+/// which the number the window is centred on becomes worth centring on.
 ///
 /// The first iteration needs no exemption of its own: there is no previous
 /// score at depth one, so [`aspiration_window`] is handed `None` and has
@@ -486,10 +479,10 @@ pub fn aspiration_window(depth: u32, prev: Option<Score>) -> Option<(Score, Scor
 /// pass and reaches the full bound in a bounded number of them, whatever
 /// the search returns.
 ///
-/// **A mate score abandons the failing bound outright rather than widening
-/// by a multiple of a centipawn width**, which is [`aspiration_window`]'s
-/// refusal on the other side of the search: once a mate is in the answer,
-/// the distance the next search has to bracket is not a distance in pawns.
+/// **A mate score abandons the failing bound outright**, which is
+/// [`aspiration_window`]'s refusal on the other side of the search: once a
+/// mate is in the answer, the distance the next search has to bracket is
+/// not a distance in pawns.
 #[must_use]
 pub fn aspiration_rewiden(
     (alpha, beta): (Score, Score),
@@ -796,14 +789,6 @@ impl<'a> Search<'a> {
     /// One iteration: the root searched in the window
     /// [`aspiration_window`] opens around `previous`, and searched again in
     /// a wider one wherever the answer falls outside it.
-    ///
-    /// **The saving and the cost are the same window.** Inside it the
-    /// search below the root carries a beta a real distance from the score
-    /// instead of `INFINITE`, so a node on the principal variation can cut
-    /// where the full window gave it nothing to cut against; and the root
-    /// itself can stop once a move has answered the question. When the
-    /// answer is outside, the iteration is searched again and the first
-    /// search bought nothing.
     ///
     /// **Nothing is trusted that was not searched in a window with room for
     /// it.** A score outside the window is a fail-soft bound and is handed
