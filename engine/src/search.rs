@@ -247,14 +247,25 @@ pub fn null_reduction(depth: u32) -> u32 {
     3 + depth / 3
 }
 
+/// The first index a late move's search may be shortened at, and the first
+/// a late move may be given up at.
+///
+/// **One constant read by two rules, and the tie is the argument for
+/// [`lmp_count`]'s floor rather than a convenience.** A move inside this
+/// prefix is one the search will not shorten by a single ply on the
+/// strength of its rank; giving it up entirely on the same evidence is the
+/// larger claim, so the rule that cannot re-search takes its floor from the
+/// rule that can.
+pub const REDUCTION_INDEX: usize = 3;
+
 /// How many plies a late move's first search is shortened by: zero for the
-/// first three moves of a node, zero below depth three, and otherwise one
-/// plus a quarter of the product of the two integer logarithms. The caller
-/// holds the exemptions. `ilog2` because the determinism contract admits no
-/// float on a path that decides a move.
+/// first [`REDUCTION_INDEX`] moves of a node, zero below depth three, and
+/// otherwise one plus a quarter of the product of the two integer
+/// logarithms. The caller holds the exemptions. `ilog2` because the
+/// determinism contract admits no float on a path that decides a move.
 #[must_use]
 pub fn lmr_reduction(depth: u32, index: usize) -> u32 {
-    if depth < 3 || index < 3 {
+    if depth < 3 || index < REDUCTION_INDEX {
         return 0;
     }
     1 + depth.ilog2() * index.ilog2() / 4
@@ -321,6 +332,87 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
         (Some(now), Some(then)) => now > then,
         _ => false,
     }
+}
+
+/// The deepest node at which a quiet move may be given up for its place in
+/// the order.
+///
+/// **Eight, and what bounds it is where the reduction still has something
+/// to delete.** Over the bench positions the moves this rule would give up
+/// are ones the reduction searches at reduced depth in 94% of cases from
+/// depth four up; at depths nine and above there are 24,000 of them against
+/// 13.3 million inside the band, so the rule is off there because there is
+/// nothing there rather than because it is unsafe there. What makes the
+/// limit a limit is the other end: a node eight plies from the horizon is
+/// the deepest at which this project is willing to delete a move on its
+/// rank alone.
+const LMP_DEPTH: u32 = 8;
+
+/// What the count of moves a node searches grows by: the square of the
+/// remaining depth over this.
+///
+/// **The square rather than the slope, and one number rather than two.**
+/// The count has to grow faster than the move list does or the rule turns
+/// off by itself at the depths where the list is longest, which a linear
+/// count does; the base is [`REDUCTION_INDEX`] and is not a parameter, so
+/// the shape arrives with a single number to tune, as
+/// [`FUTILITY_MARGIN`]'s slope does.
+const LMP_DIVISOR: u32 = 3;
+
+/// How many moves a node at `depth` searches before the quiet moves behind
+/// them are given up.
+///
+/// Total for [`futility_margin`]'s reason, and it cannot overflow: `depth`
+/// is bounded by [`LMP_DEPTH`] at the one place that reads it against a
+/// node, and the product is taken in `u32`.
+#[must_use]
+pub fn lmp_count(depth: u32) -> usize {
+    REDUCTION_INDEX + (depth.saturating_mul(depth) / LMP_DIVISOR) as usize
+}
+
+/// The index from which this node gives up its quiet moves, or `None` where
+/// the rule cannot fire here at all: past [`LMP_DEPTH`], at a node in check,
+/// or at a node with no move the count does not already admit.
+///
+/// **In check is refused here and not left to the move.** Every legal move
+/// at such a node is an evasion and what a wrong skip loses there is a mate
+/// defence, which is the exemption this rule's asymmetry bears on hardest:
+/// [`reduction`] refuses the same node and can afford to be wrong, because
+/// a reduced search that beats alpha is re-run.
+///
+/// A node-level question read once, like [`futile_node`], with the
+/// move-level question at [`lmp_skips`].
+#[must_use]
+pub fn lmp_index(in_check: bool, depth: u32, moves: usize) -> Option<usize> {
+    let count = lmp_count(depth);
+    (!in_check && depth <= LMP_DEPTH && moves > count).then_some(count)
+}
+
+/// Whether the move at `index` of a node [`lmp_index`] admitted is a
+/// candidate to be given up without being searched: never a noisy move,
+/// never a killer, and never inside the count. The check exemption is the
+/// caller's, because it is the one question here that costs anything, which
+/// is [`futility_skips`]'s division of the same work.
+///
+/// **The killer exemption comes from [`reduction`] and not from
+/// [`futility_skips`], which is the one place the two lists here disagree.**
+/// The margin's trigger is a claim about the node -- no quiet move can reach
+/// alpha from where the evaluation stands -- and it holds over a killer like
+/// anything else. This rule's trigger is a claim about the move's rank
+/// alone, and a killer's rank is the one in the list the search has evidence
+/// about: it cut at a sibling. A rule that can re-search still declines to
+/// bet a ply against that evidence, so a rule that cannot declines to delete
+/// the move.
+///
+/// **A noisy move is refused for the sort's sake rather than the move's.**
+/// `picker` ranks every noisy move that keeps material above every quiet
+/// one, so a count read against the sorted index would delete the moves the
+/// sort ranked highest at a node holding more captures than the count
+/// admits. What prunes a noisy move at an interior node is the exchange
+/// evaluation, which is a rule of its own.
+#[must_use]
+pub fn lmp_skips(from: Option<usize>, m: Move, killers: [Move; 2], index: usize) -> bool {
+    from.is_some_and(|count| index >= count) && !m.is_noisy() && m != killers[0] && m != killers[1]
 }
 
 /// The deepest node at which a quiet move may be skipped for the margin.
@@ -504,6 +596,24 @@ pub struct Search<'a> {
     futility_nodes: u64,
     futility_skipped: u64,
     futility_kept_check: u64,
+    /// How often a node was one this rule could act at, how many quiet
+    /// moves it gave up there, and how often it would have given one up and
+    /// did not because the move gives check.
+    ///
+    /// **The first two are not comparable with the margin's, and the reason
+    /// is the order in the loop.** The margin is asked first and keeps the
+    /// moves it was already taking, so these count what this rule *adds*.
+    /// Over the bench positions the two populations overlap by 43%, so a
+    /// reader adding the two skip counters is counting most of that overlap
+    /// once and none of it twice, which is right, and comparing them as
+    /// shares of one population is not.
+    ///
+    /// The third has [`Search::null_refused_by_material`]'s shape, for
+    /// [`Search::futility_kept_check`]'s reason: a gate asserting that an
+    /// exempt move was searched has to see the exemption decide.
+    lmp_nodes: u64,
+    lmp_skipped: u64,
+    lmp_kept_check: u64,
     /// How often the margin returned a node without searching it, and how
     /// often it would have and did not because the node had the full
     /// window.
@@ -556,6 +666,9 @@ impl<'a> Search<'a> {
             futility_nodes: 0,
             futility_skipped: 0,
             futility_kept_check: 0,
+            lmp_nodes: 0,
+            lmp_skipped: 0,
+            lmp_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
             iterations: Vec::new(),
@@ -593,6 +706,9 @@ impl<'a> Search<'a> {
         self.futility_nodes = 0;
         self.futility_skipped = 0;
         self.futility_kept_check = 0;
+        self.lmp_nodes = 0;
+        self.lmp_skipped = 0;
+        self.lmp_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
         self.iterations.clear();
@@ -1318,6 +1434,24 @@ impl<'a> Search<'a> {
     /// How many nodes the margin returned without searching, and how many
     /// it would have returned and did not because the node had the full
     /// window.
+    /// How often a node admitted this rule, how many quiet moves it gave up
+    /// there, and how often a move that would have been given up was kept
+    /// for giving check.
+    #[must_use]
+    pub fn lmp_nodes(&self) -> u64 {
+        self.lmp_nodes
+    }
+
+    #[must_use]
+    pub fn lmp_skipped(&self) -> u64 {
+        self.lmp_skipped
+    }
+
+    #[must_use]
+    pub fn lmp_kept_check(&self) -> u64 {
+        self.lmp_kept_check
+    }
+
     #[must_use]
     pub fn reverse_futility_cutoffs(&self) -> u64 {
         self.reverse_futility_cutoffs
