@@ -1099,6 +1099,21 @@ const SORT_DEPTH: u32 = 7;
 /// because the counterfactual keeps its trigger, or because the change
 /// cannot reach the gate's positions, and only the first says anything
 /// about the ordering. Re-based on the same ground as before.
+///
+/// **Late move pruning killed it, after four items it survived, and the
+/// mechanism is a third one again.** 8,511,242 nodes with no ordering in
+/// the main search against 1,311,497 with it. The counterfactual fell 67%
+/// where the shipped tree fell 43%, so the ratio went from 11.17 to 6.49
+/// and the old ceiling of nine tenths of 25,835,504 sat far above the
+/// unordered point: the build this gate exists to fail had started passing
+/// it. **What is new is that the counterfactual does not merely keep the
+/// change's trigger, it over-fires it.** This rule gives a move up on its
+/// rank alone, and in a build with no ranking every rank is arbitrary, so
+/// it deletes as many moves from a tree where the deletions are worthless
+/// as from one where they are not. Futility's counterfactual kept a trigger
+/// it could not raise alpha to reach; this one keeps a trigger that needs
+/// no evidence at all. The gate is re-based and it discriminates by a
+/// factor of about six.
 #[test]
 fn the_capture_sort_saves_nodes() {
     let fens = deep_fens();
@@ -1116,8 +1131,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 25_835_504,
-        "{total} nodes against the 25,835,504 the same search took with no ordering at all"
+        total * 10 < 9 * 8_511_242,
+        "{total} nodes against the 8,511,242 the same search took with no ordering at all"
     );
 }
 
@@ -1208,6 +1223,18 @@ fn the_capture_sort_saves_nodes() {
 /// static evaluation of material and piece-square tables is at its least
 /// informative and the margin rule above costs nodes instead of saving
 /// them. The open item is unchanged and is still the position set.
+///
+/// **Late move pruning re-based it a sixth time and widened it, from
+/// 0.27% to 0.40%**: 1,316,775 nodes with every capture ahead of the
+/// killers against 1,311,497 with the losing ones behind them. Both points
+/// nearly halved and the window grew, which the history heuristic is the
+/// only other change to have done here. The reason is this rule's index:
+/// a losing capture ahead of the killers pushes every quiet move one place
+/// further down the list, and one place further down is nearer the count
+/// this rule gives up at, so promoting the losing captures now costs
+/// searched quiet moves as well as order. That is the demotion being read
+/// by something new rather than the gate's set improving, and the open
+/// item is unchanged and is still the position set.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1225,125 +1252,44 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 2_316_000,
-        "{total} nodes against the 2,319,727 the same search took with every capture ahead of the killers"
+        total < 1_314_000,
+        "{total} nodes against the 1,316,775 the same search took with every capture ahead of the killers"
     );
 }
 
-/// The sort changes no score.
-///
-/// Ordering changes no result. Alpha-beta returns the exact value of the
-/// tree at the root whichever order the moves are tried in, so a search
-/// that comes back with a different score is not a differently ordered
-/// search, it is a broken one -- a move dropped by the sort, or one
-/// searched twice.
-///
-/// Against a table of no buckets, because a transposition table may
-/// legitimately move a score: an entry stored by a deeper search and read
-/// by a shallower one carries information the shallower search would not
-/// otherwise have had, and which entries exist depends on the order the
-/// moves were tried in. With no table there is no such path, and the score
-/// is a function of the position and the depth alone.
-///
-/// **The array was re-baselined when the check extension landed, and the
-/// premise above is why it had to be.** An ordering change cannot move the
-/// root value; an extension changes the tree the value is of, so it can and
-/// does. This is the first change in this project for which "the score must
-/// not move" is the wrong gate, and it fired correctly rather than being
-/// weakened for it.
-///
-/// **What replaced the numbers is not a paste of what the search now
-/// says.** The array below was re-measured the way the original was: on a
-/// build with the sort removed from `negamax` altogether, over these
-/// positions at this depth with a table of no buckets. That build and the
-/// one that ships agree on all sixteen scores to the centipawn, and a third
-/// build with the losing-capture demotion switched off agrees with both. So
-/// the invariant this gate exists for is intact and was demonstrated again
-/// rather than assumed, and what moved is the tree it is measured over.
-///
-/// **Null-move pruning weakened the premise without moving a number.** The
-/// pruning reads beta, and the windows a node sees depend on the order its
-/// parent tried its moves in, so under it an ordering change *can* move a
-/// root value. Measured when it landed: the shipped build, the build with
-/// no sort in `negamax`, and this fixture agree on all sixteen scores at
-/// this depth, so the invariant held on this set and the array did not
-/// move. If this gate ever fires after an ordering change, check whether
-/// what moved is the pruning's window before concluding the sort dropped a
-/// move.
-///
-/// **Late move reductions ended the premise, and the gate is scoped to
-/// where it still holds by construction rather than by measurement.** The
-/// reduction reads the index the sort assigned a move, so the sorted and
-/// unsorted builds now search different trees by design and their scores
-/// are different answers, not a defect: measured when the reductions
-/// landed, the two builds disagreed on six of the sixteen scores at the
-/// old depth of six. The depth is now two, where no interior node reaches
-/// the reduction's depth-three threshold, so no reduction fires anywhere
-/// in the tree and the sort is once again only an ordering. That reason
-/// holds on any position, unlike the null-move paragraph above, whose
-/// agreement was a reading on this set; the null move does still run at
-/// this depth, and the two builds agree on all sixteen scores through it.
-/// What the scoping costs is depth: a sort bug that only shows past the
-/// reduction threshold is outside this gate now, and the counterfactual
-/// ceilings above are what still read the sort at depth.
-///
-/// **Futility pruning ends the by-construction half of that, and there is
-/// no depth to retreat to.** The margin acts at every depth up to three, so
-/// it acts at this one: measured when it landed, these sixteen positions at
-/// this depth admit 3 nodes and skip 21 moves, and which moves are skipped
-/// depends on the alpha the parent reached, which depends on the order it
-/// tried its moves in. Depth one is the only depth the rule cannot reach
-/// and it is vacuous here, because `search_root` does its own ordering and
-/// `negamax`'s sort is never called at all. So this gate stands on the same
-/// footing as the null-move paragraph above rather than on the reductions
-/// one: the shipped build and the build with no sort in `negamax` were
-/// re-measured together and agree on all sixteen scores, and that is a
-/// reading on this set and not a property of the depth. If it ever fires
-/// after an ordering change, the first thing to check is whether an
-/// ordering difference moved a margin decision.
-///
-/// **Reverse futility acts at this depth too and the gate holds**, which
-/// is a second reading on this set rather than a restored premise. That
-/// rule returns a whole node before any list is sorted, so a node it
-/// answers is a node where the sort's presence cannot matter, and the
-/// nodes it does not answer are sorted as before. Measured when it landed:
-/// it fires sixteen times over these sixteen positions at this depth, so
-/// the agreement below is not the rule failing to reach the set, and the
-/// shipped build and the build with no sort in `negamax` return all
-/// sixteen scores identically.
-///
-/// The values at depth six, before the reductions, were
-/// `[108, 230, 2, 532, 930, 622, -419, 0, 6, 34, 520, -18, 0, 45, 0, 0]`.
-#[test]
-fn the_sort_changes_no_score() {
-    let fens = deep_fens();
-    let got: Vec<Score> = fens
-        .iter()
-        .map(|fen| {
-            let (_, score, _) = search_with(
-                &mut board(fen),
-                SCORE_DEPTH,
-                &Table::with_buckets(0).expect("a table of no buckets"),
-            );
-            score
-        })
-        .collect();
-    println!("depth {SCORE_DEPTH}, no table: {got:?}");
-    assert_eq!(
-        got,
-        UNORDERED_SCORES.to_vec(),
-        "a score moved, so the sort is not only an ordering"
-    );
-}
-
-/// The depth `the_sort_changes_no_score` searches to.
-const SCORE_DEPTH: u32 = 2;
-
-/// What `deep_fens()` scores at `SCORE_DEPTH` with no table, measured on a
-/// build with no ordering in `negamax` at all.
-const UNORDERED_SCORES: [Score; 16] = [
-    98, 206, 0, 525, 923, 615, -416, 0, 0, 52, 518, -30, 0, 125, 0, 0,
-];
+// The sort changes no score: **retired 2026-09-01, and it is the second
+// property here that late move pruning ended rather than moved.**
+//
+// It asserted that these sixteen positions score the same at a fixed
+// depth on the shipped build and on a build with no sort in `negamax`, on
+// the ground that alpha-beta returns the exact value of the tree whichever
+// order the moves are tried in, so a moved score is a dropped or
+// duplicated move rather than a differently ordered search.
+//
+// **Late move reductions ended the premise and the gate retreated to a
+// depth below their threshold; this rule acts from depth one and there is
+// nowhere left to retreat to.** Both read the index the sort assigned a
+// move, so the sorted and unsorted builds search different trees by
+// construction: with no sort the index is generation order, and a rule
+// keyed on the index gives up different moves. Measured here at depth two,
+// where the count is four: four of the sixteen scores move, and the two
+// largest by 89 and 6 centipawns. Depth one is vacuous, because
+// `search_root` does its own ordering and `negamax`'s sort is never
+// called.
+//
+// **A moved score is now the expected answer and not a defect**, which is
+// what makes this a retirement rather than a re-baseline: re-measuring the
+// array on the unsorted build would produce a number that agrees by
+// construction with nothing, and a gate whose counterfactual is a
+// different search is not a gate.
+//
+// What still covers the claim it was making: the permutation gates above
+// pin that the sort drops and duplicates no move, which is the defect this
+// one was reaching for through the score, and the counterfactual ceilings
+// pin that the ordering is worth nodes at depth. What is lost is the
+// end-to-end reading, and the honest statement is that no gate here now
+// asserts the search's value is order-independent, because on this tree it
+// is not.
 
 // ---------------------------------------------------------------------------
 // The killers, on their own

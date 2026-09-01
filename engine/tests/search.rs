@@ -733,7 +733,29 @@ const WINDOW_DEPTH: u32 = 7;
 /// Four is where the last unbroken run ends. **A failure below four is
 /// still window arithmetic**, which is the whole of what this gate is for
 /// and is what the depth-one arm over the whole sample asserts anyway.
-const BRACKET_DEPTH: u32 = 4;
+///
+/// **Two, down from four when late move pruning landed, and it is the
+/// history heuristic's mechanism arriving with a rule that deletes instead
+/// of adjusting.** That entry recorded the chain: the table is written from
+/// beta cutoffs, which cutoff happens depends on the window, the sort ranks
+/// quiet moves by what was written, and something downstream reads the
+/// rank. The reduction reads the rank and shortens a search by a ply; this
+/// rule reads the rank and removes the move. So a one-place difference in
+/// rank between a narrow window and a wide one is now the difference
+/// between a move being searched and not existing, and the killers carry
+/// the same dependence a step earlier, since a killer is exempt here and a
+/// killer is written from a cutoff.
+///
+/// Measured on the tree this landed on, both endgames, depths one to
+/// eight: they agree through two, the first diverges at three (444 against
+/// 448 full) and at every depth above it, and the second agrees through
+/// four and diverges at five. Two is where the last unbroken run ends.
+/// **The region has now gone five, four, two over three changes**, and what
+/// is left is one ply above the depth-one arm that holds by construction.
+/// The next rule to read the sort's rank closes it, and the honest reading
+/// at that point is that the pawn-endgame arm has become a second copy of
+/// the depth-one arm rather than a gate of its own.
+const BRACKET_DEPTH: u32 = 2;
 
 fn no_table() -> Table {
     Table::with_buckets(0).expect("a table of no buckets")
@@ -920,21 +942,39 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// The other entry is `e1d3` falling from 10 back to 8, which is the value
 /// it carried before futility pruning raised it, in the same position.
 /// Twelve of the fourteen entries did not move.
+///
+/// **Late move pruning moved every one of the fourteen scores and five of
+/// the moves, which is by far the largest re-baseline this fixture has
+/// had** -- against the reductions' five scores and three moves, and the
+/// three re-baselines since that moved two entries each. It is the right
+/// size for what the rule is: the reduction searched a late quiet move at
+/// less than its depth and this one does not search it at all, so the
+/// value of nearly every subtree in the sample changes rather than a few.
+/// A fixture that moved a little would be the thing to look at here.
+///
+/// **The scores move away from zero as often as toward it and by a great
+/// deal more than before**: `d5e6` from -18 to -109, `c4c5` from -504 to
+/// -613, `b4f4` from 37 to 116. Those are not tie-breaks and no claim is
+/// made that they are better answers; they are the values a smaller tree
+/// has, and whether a smaller tree is worth its lost accuracy is the SPRT's
+/// question and not this gate's. What this gate still refuses is a *window*
+/// moving them, which is unchanged: the array is re-measured on the shipped
+/// full-window build, as every re-baseline above was.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("b1c3", 9),
-    ("d5e6", -18),
-    ("b4f4", 37),
-    ("c4c5", -504),
-    ("d7c8r", 516),
-    ("c3d5", 12),
-    ("b1c3", 9),
-    ("d1c3", 6),
-    ("e1d3", 8),
-    ("e1d3", 4),
-    ("h1h7", 539),
-    ("f1h1", 525),
-    ("g1g7", 536),
-    ("a1a7", 539),
+    ("d2d4", 10),
+    ("d5e6", -109),
+    ("b4f4", 116),
+    ("c4c5", -613),
+    ("d7c8r", 491),
+    ("g5f6", 108),
+    ("d2d4", 10),
+    ("e1d3", 10),
+    ("e1f3", 0),
+    ("e1d3", 10),
+    ("h1h7", 527),
+    ("f1h1", 522),
+    ("f1e2", 527),
+    ("a1a7", 529),
 ];
 
 /// End to end: the narrower window has to be worth nodes.

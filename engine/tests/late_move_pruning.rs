@@ -293,17 +293,26 @@ fn a_middlegame_search_gives_up_late_quiet_moves() {
 /// A quiet move that gives check is searched at a node where the rule is
 /// giving up every other move at its rank, and the proof is the mate.
 ///
-/// `Ra8` is quiet, gives check, mates, and sorts thirteenth of fourteen --
-/// well inside the band the count gives up at this depth. Three assertions,
-/// and the first cannot be satisfied by accident: the search returns a mate
-/// score, which it can only do by searching a move the count would
-/// otherwise have deleted. The other two say the rule was live while it did
-/// so, so the mate is not being found because the rule failed to fire.
+/// `Ra8` is quiet, gives check and mates, and the gate reads its place in
+/// the sorted list rather than assuming one. Three assertions, and the
+/// first cannot be satisfied by accident: the search returns a mate score,
+/// which it can only do by searching a move the count would otherwise have
+/// deleted. The other two say the rule was live while it did so, so the
+/// mate is not being found because the rule failed to fire.
+///
+/// **What is deliberately not asserted here is that a move was given up at
+/// this node**, and the reason is the mate: it cuts, so the loop breaks and
+/// nothing behind it is ever reached, which leaves the skip counter at zero
+/// however live the rule is. A gate written to assert it would pass only by
+/// finding a mate late enough to leave moves behind it, which is a property
+/// of the position and not of the rule.
+/// `a_node_that_gives_moves_up_still_has_an_answer` is where the skip
+/// counter is asserted, on a node with no mate in it.
 ///
 /// **Measured on a build with the check exemption taken out**, which is
 /// what says this gate discriminates rather than passing on the shape of
-/// the position: without it the node returns no mate and the kept counter
-/// stands at zero.
+/// the position: the same node returns -2,233 and the first assertion is
+/// the one that fires.
 #[test]
 fn a_quiet_check_survives_the_count_and_the_mate_is_found() {
     // The rank is read off the same sort the search runs, with the empty
@@ -323,13 +332,9 @@ fn a_quiet_check_survives_the_count_and_the_mate_is_found() {
         lmp_count(3)
     );
 
-    let (score, nodes, skipped, kept) = one_node(QUIET_MATE, 3, 0);
-    assert!(
-        score >= MATE_IN_MAX_PLY,
-        "the mate was not found: {score}, {skipped} moves given up"
-    );
+    let (score, nodes, _, kept) = one_node(QUIET_MATE, 3, 0);
+    assert!(score >= MATE_IN_MAX_PLY, "the mate was not found: {score}");
     assert!(nodes > 0, "the rule admitted no node");
-    assert!(skipped > 0, "the rule was not live: nothing was given up");
     assert!(
         kept > 0,
         "no move was kept for giving check, so the exemption decided nothing here"

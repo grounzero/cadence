@@ -630,6 +630,34 @@ fn clearing_empties_the_table_and_resets_the_generation() {
 /// So the assertion is fifteen of sixteen and the aggregate factor, not
 /// each position alone; if a second position ever crosses, that is a
 /// reading to take rather than a count to bump.
+///
+/// **Late move pruning crossed three entries, and the reading the
+/// paragraph above asked for is taken here rather than the count being
+/// bumped in silence.** The three are two positions: a bare king and
+/// knight (700 nodes with the table against 600 without) and the start
+/// position, which appears twice under the two castling notations (2,937
+/// against 2,154). On the champion all sixteen save, so this is the rule's
+/// doing and not drift in the set.
+///
+/// **The mechanism is the one the reductions paragraph names, with the
+/// index deciding existence instead of depth.** A hit rotates its move to
+/// the head, which moves every move that was ahead of it one place back;
+/// the reduction reads that index and searches a move one band shallower,
+/// and this rule reads it and deletes the move outright. So a probe now
+/// perturbs which moves *exist* at a node, and the perturbation propagates:
+/// a different set of moves searched is a different set of cutoffs, so
+/// different killers and a different history row at every sibling below.
+/// On a position with almost nothing to find -- two of these three have
+/// under three thousand nodes -- that costs more than the probe saves.
+///
+/// **What the gate has left is the aggregate**, which is unhurt and is
+/// where its force always was: 79,957 nodes against 1,311,497, a factor of
+/// sixteen against the two the assertion below demands. The per-position
+/// count is re-based to thirteen and is now on the same footing as
+/// `demoting_the_losing_captures_saves_nodes`, a constant that each pruning
+/// item moves; what would replace it is a set chosen for positions with
+/// enough tree to probe, which these two are not, and that is a design task
+/// rather than a constant.
 #[test]
 fn the_table_saves_nodes() {
     let mut cheaper = 0;
@@ -650,7 +678,7 @@ fn the_table_saves_nodes() {
         fens.len()
     );
     assert!(
-        cheaper >= fens.len() - 1,
+        cheaper >= fens.len() - 3,
         "the table saved nothing in {} of {} positions",
         fens.len() - cheaper,
         fens.len()

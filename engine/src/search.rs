@@ -932,20 +932,11 @@ impl<'a> Search<'a> {
         if board.halfmove_clock() >= 100 {
             return DRAW;
         }
-        // The ordering, in three stages and one sort. The table's move
-        // first, refused here rather than played if the list does not hold
-        // it; then the noisy moves by MVV-LVA; then this ply's killers, and
-        // behind them the remaining quiet moves by history score. The sort
-        // starts one move in when the rotation happened, so that the
-        // table's move keeps its place whatever it ranks. A killer is a
-        // move that cut at a sibling and may not be legal here, which needs
-        // no check: it matches nothing in the list. The history row is the
-        // side to move's, read here and again per move below, so `us` is
-        // taken once at the node rather than after a move has changed it.
+        // The history row is the side to move's, read here and again per
+        // move below, so `us` is taken once at the node rather than after a
+        // move has changed it.
         let us = board.side_to_move();
-        let ordered = usize::from(order_first(&mut legal, tt_move));
-        let killers = self.killers[ply];
-        picker::sort_from(board, &mut legal, ordered, killers, self.history.side(us));
+        let killers = self.order(board, &mut legal, tt_move, us, ply);
 
         // The margin, read once with the node's own alpha. The interior
         // node's preamble runs the margin tests beside the static
@@ -957,11 +948,30 @@ impl<'a> Search<'a> {
         let futile = futile_node(self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
 
+        // The count, read once against the list this node actually holds,
+        // because the rule is off at a node the count already admits
+        // whole. It sits beside the margin and not above it: the two act on
+        // one population and overlap over 43% of it, and whichever is asked
+        // first keeps the moves it takes. The margin is asked first so its
+        // own counters keep counting the population they were calibrated
+        // against, and this rule's report what it adds.
+        let give_up = lmp_index(in_check, depth, legal.len());
+        self.lmp_nodes += u64::from(give_up.is_some());
+
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         for (i, m) in legal.iter().enumerate() {
             if self.futile(board, futile, m, i) {
+                continue;
+            }
+            // Before the move is made, which is the whole of what the rule
+            // buys: a move given up here costs the node its exemption tests
+            // and nothing else. It is also above the reduction rather than
+            // beside it, and the two are not alternatives at a node where
+            // both would fire -- the move is gone and [`reduction`] never
+            // sees it.
+            if self.given_up(board, give_up, m, killers, i) {
                 continue;
             }
             board.make_move(m);
@@ -1009,9 +1019,21 @@ impl<'a> Search<'a> {
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
                         // The moves it beat are the ones before it in the
-                        // sorted list, which the list already holds: this
-                        // loop skips no move, so nothing has to be
-                        // remembered as it runs.
+                        // sorted list, which the list already holds, so
+                        // nothing has to be remembered as it runs.
+                        //
+                        // **Some of them were never searched**, and that is
+                        // stated rather than left for a reader to find: the
+                        // margin above and this rule both skip moves inside
+                        // this slice, so a quiet cutoff debits moves that
+                        // failed to cut and moves that were given up alike.
+                        // Over the bench positions that is 31% of the
+                        // debits against the margin's 2% before this rule.
+                        // It is left as it is because separating the two
+                        // changes what the table holds, which is a change
+                        // with its own test; what a reader would otherwise
+                        // get wrong is that the slice is the moves the node
+                        // tried, and it is the moves the node passed.
                         self.remember_history(us, &legal.as_slice()[..i], m, depth);
                         break;
                     }
@@ -1036,6 +1058,35 @@ impl<'a> Search<'a> {
             bound,
         );
         best
+    }
+
+    /// Put the node's move list in the order it will be searched, and hand
+    /// back the killers the caller needs again below.
+    ///
+    /// Three stages and one sort. The table's move first, refused here
+    /// rather than played if the list does not hold it; then the noisy
+    /// moves by MVV-LVA; then this ply's killers, and behind them the
+    /// remaining quiet moves by history score. The sort starts one move in
+    /// when the rotation happened, so that the table's move keeps its place
+    /// whatever it ranks. A killer is a move that cut at a sibling and may
+    /// not be legal here, which needs no check: it matches nothing in the
+    /// list.
+    ///
+    /// A method rather than four lines in [`Search::negamax`] for the
+    /// reason [`Search::probe`] is one, which is the line-count gate and
+    /// not a claim that the work belongs apart.
+    fn order(
+        &self,
+        board: &Board,
+        legal: &mut MoveList,
+        tt_move: Move,
+        us: Colour,
+        ply: usize,
+    ) -> [Move; 2] {
+        let ordered = usize::from(order_first(legal, tt_move));
+        let killers = self.killers[ply];
+        picker::sort_from(board, legal, ordered, killers, self.history.side(us));
+        killers
     }
 
     /// The transposition table at an interior node: the move a hit named,
@@ -1108,6 +1159,35 @@ impl<'a> Search<'a> {
             return false;
         }
         self.futility_skipped += 1;
+        true
+    }
+
+    /// Whether the move at `index` of a node [`lmp_index`] admitted is
+    /// given up without being searched. `gives_check` is asked last, for
+    /// [`Search::futile`]'s reason, and it is the whole cost of the rule at
+    /// a move it does give up.
+    ///
+    /// **Nothing verifies this the way a reduction is verified**, which is
+    /// what the exemptions at [`lmp_skips`] and [`lmp_index`] are sized
+    /// against: a reduced search that beats alpha is re-run at full depth,
+    /// and a move that is never searched produces no evidence the search
+    /// could act on if giving it up was wrong.
+    fn given_up(
+        &mut self,
+        board: &Board,
+        from: Option<usize>,
+        m: Move,
+        killers: [Move; 2],
+        index: usize,
+    ) -> bool {
+        if !lmp_skips(from, m, killers, index) {
+            return false;
+        }
+        if board.gives_check(m) {
+            self.lmp_kept_check += 1;
+            return false;
+        }
+        self.lmp_skipped += 1;
         true
     }
 
