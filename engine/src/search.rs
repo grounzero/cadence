@@ -65,7 +65,7 @@ use crate::picker;
 use crate::score::{self, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 use crate::time::{self, Budget};
-use crate::tt::{Bound, Table};
+use crate::tt::{Bound, Hit, Table};
 
 /// What a `go` command asked for. A field that is `None` did not appear and
 /// must not influence the search.
@@ -1061,9 +1061,15 @@ impl<'a> Search<'a> {
         }
 
         // The table, before the moves are generated: that saving is most of
-        // what it is for.
+        // what it is for. **A node with a move excluded does not read it**,
+        // and the entry it would read is the one naming the move it was
+        // told to leave out: a cutoff from it answers the question the
+        // verification search was asked with the move the question is
+        // about, and the move it names is the one move this node may not
+        // try, so nothing is lost by not asking.
         let key = board.key();
-        let (tt_move, cutoff) = self.probe(board, key, depth, ply, alpha, beta);
+        let excluded = self.excluded[ply];
+        let (hit, cutoff) = self.probe(board, key, depth, ply, alpha, beta, excluded);
         if let Some(score) = cutoff {
             return score;
         }
@@ -1089,7 +1095,7 @@ impl<'a> Search<'a> {
             return bound;
         }
 
-        if let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
+        if let Some(score) = self.null_move(board, excluded, depth, ply, alpha, beta) {
             return score;
         }
 
@@ -1106,7 +1112,11 @@ impl<'a> Search<'a> {
         // move below, so `us` is taken once at the node rather than after a
         // move has changed it.
         let us = board.side_to_move();
-        let killers = self.order(board, &mut legal, tt_move, us, ply);
+        let (killers, held) = self.order(board, &mut legal, hit, us, ply);
+
+        // Above the two rules below because it is the only one of the three
+        // that runs a search, and after the sort because it needs `held`.
+        let singular = self.singular_move(board, hit, held, excluded, depth, ply);
 
         // The margin, read once with the node's own alpha. The interior
         // node's preamble runs the margin tests beside the static
@@ -1132,7 +1142,9 @@ impl<'a> Search<'a> {
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         for (i, m) in legal.iter().enumerate() {
-            if self.futile(board, futile, m, i) {
+            // The exclusion is first, because every rule behind it prices a
+            // move this node is allowed to search.
+            if m == excluded || self.futile(board, futile, m, i) {
                 continue;
             }
             // Before the move is made, which is the whole of what the rule
@@ -1150,7 +1162,9 @@ impl<'a> Search<'a> {
             // that was not already spent. The same read is the reduction's
             // check exemption below, so it is taken once and named.
             let gives_check = board.in_check();
-            let ext = extension(gives_check, false, ply + 1, self.root_depth);
+            // At index zero, because that is where the table's move is: the
+            // verdict is about that move and `order_first` rotated it there.
+            let ext = self.extend(gives_check, singular && i == 0, ply);
             let child = depth - 1 + ext;
             // The first move gets the window this node was given and
             // every move behind it the narrower question. The module doc
@@ -1210,22 +1224,15 @@ impl<'a> Search<'a> {
                 }
             }
         }
-        // Fail-soft, so the bound follows the value and not the window it
-        // was found in. Nothing an aborted search computed is stored: the
-        // loop above returns before this line.
-        let bound = if best >= beta {
-            Bound::Lower
-        } else if best > original_alpha {
-            Bound::Exact
-        } else {
-            Bound::Upper
-        };
-        self.tt.store(
+        self.remember(
+            excluded,
             key,
+            best,
             best_move,
-            score::to_tt(best, ply),
-            depth.min(u32::from(u8::MAX)) as u8,
-            bound,
+            original_alpha,
+            beta,
+            depth,
+            ply,
         );
         best
     }
@@ -1245,24 +1252,42 @@ impl<'a> Search<'a> {
     /// A method rather than four lines in [`Search::negamax`] for the
     /// reason [`Search::probe`] is one, which is the line-count gate and
     /// not a claim that the work belongs apart.
+    ///
+    /// It also hands back whether the list held the table's move at all,
+    /// which [`order_first`] establishes by finding it and which
+    /// [`Search::singular`] needs before it can take it away.
     fn order(
         &self,
         board: &Board,
         legal: &mut MoveList,
-        tt_move: Move,
+        hit: Option<Hit>,
         us: Colour,
         ply: usize,
-    ) -> [Move; 2] {
-        let ordered = usize::from(order_first(legal, tt_move));
+    ) -> ([Move; 2], bool) {
+        let held = order_first(legal, hit.map_or(Move::NULL, |h| h.mv));
         let killers = self.killers[ply];
-        picker::sort_from(board, legal, ordered, killers, self.history.side(us));
-        killers
+        picker::sort_from(
+            board,
+            legal,
+            usize::from(held),
+            killers,
+            self.history.side(us),
+        );
+        (killers, held)
     }
 
     /// The transposition table at an interior node: the move a hit named,
     /// and the score to return where the stored bound answers this node's
     /// question outright. The move comes back whatever the depth says, which
     /// is why the two halves come back separately.
+    ///
+    /// **A node with a move excluded does not read the table at all.** The
+    /// entry it would read is the one naming the move it was told to leave
+    /// out, so a cutoff from it answers the verification search's question
+    /// with the move that question is about; and the move it names is the
+    /// one move that node may not try, so refusing the whole hit costs the
+    /// ordering nothing.
+    #[expect(clippy::too_many_arguments, reason = "a node's question, unpacked")]
     fn probe(
         &self,
         board: &Board,
@@ -1271,12 +1296,16 @@ impl<'a> Search<'a> {
         ply: usize,
         alpha: Score,
         beta: Score,
-    ) -> (Move, Option<Score>) {
+        excluded: Move,
+    ) -> (Option<Hit>, Option<Score>) {
+        if !excluded.is_null() {
+            return (None, None);
+        }
         let Some(hit) = self.tt.probe(key) else {
-            return (Move::NULL, None);
+            return (None, None);
         };
         if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
-            return (hit.mv, None);
+            return (Some(hit), None);
         }
         let score = score::from_tt(hit.score, ply);
         let cutoff = match hit.bound {
@@ -1284,7 +1313,7 @@ impl<'a> Search<'a> {
             Bound::Lower => score >= beta,
             Bound::Upper => score <= alpha,
         };
-        (hit.mv, cutoff.then_some(score))
+        (Some(hit), cutoff.then_some(score))
     }
 
     /// The null-window search of one move behind a node's first, reduced by
@@ -1314,6 +1343,158 @@ impl<'a> Search<'a> {
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
         }
         score
+    }
+
+    /// Store what this node established, unless it was not this node's
+    /// question.
+    ///
+    /// Fail-soft, so the bound follows the value and not the window it was
+    /// found in. Nothing an aborted search computed reaches here: the move
+    /// loop returns before its caller calls this.
+    ///
+    /// **A node with a move excluded stores nothing.** What it established
+    /// is a bound on a different question -- this position less one move --
+    /// and once it is in the table under this key nothing distinguishes the
+    /// two.
+    #[expect(clippy::too_many_arguments, reason = "one node's result, unpacked")]
+    fn remember(
+        &self,
+        excluded: Move,
+        key: u64,
+        best: Score,
+        best_move: Move,
+        original_alpha: Score,
+        beta: Score,
+        depth: u32,
+        ply: usize,
+    ) {
+        if !excluded.is_null() {
+            return;
+        }
+        let bound = if best >= beta {
+            Bound::Lower
+        } else if best > original_alpha {
+            Bound::Exact
+        } else {
+            Bound::Upper
+        };
+        self.tt.store(
+            key,
+            best_move,
+            score::to_tt(best, ply),
+            depth.min(u32::from(u8::MAX)) as u8,
+            bound,
+        );
+    }
+
+    /// How much deeper this child is searched, and the counters that say
+    /// which reason paid for it.
+    ///
+    /// **The counters are written here rather than where the verdict was
+    /// reached**, so that a counter which has moved is the extension having
+    /// reached the depth the move was searched at, and not only the rule
+    /// having decided something. Nothing else in this file can assert that
+    /// wiring: [`extension`] is a pure function and a gate on it sees the
+    /// arithmetic and never the use.
+    fn extend(&mut self, gives_check: bool, single: bool, ply: usize) -> u32 {
+        let ext = extension(gives_check, single, ply + 1, self.root_depth);
+        if single {
+            if ext == 1 {
+                self.singular_extensions += 1;
+            } else {
+                self.singular_refused_by_ply += 1;
+            }
+        }
+        ext
+    }
+
+    /// Whether this node's table move earns a ply, which is the entry
+    /// condition and then [`Search::singular`]'s search.
+    ///
+    /// `held` is what makes the question answerable: a move the list does
+    /// not hold cannot be taken away from it, and a verification search that
+    /// excluded nothing would search every move, come back short of the
+    /// margin, and call the move singular on that.
+    ///
+    /// A method rather than six lines in [`Search::negamax`] for
+    /// [`Search::probe`]'s reason, which is the line-count gate.
+    fn singular_move(
+        &mut self,
+        board: &mut Board,
+        hit: Option<Hit>,
+        held: bool,
+        excluded: Move,
+        depth: u32,
+        ply: usize,
+    ) -> bool {
+        let Some(hit) = hit else {
+            return false;
+        };
+        if !held || !excluded.is_null() {
+            return false;
+        }
+        let stored = score::from_tt(hit.score, ply);
+        singular_candidate(depth, hit.depth, hit.bound, stored)
+            && self.singular(board, hit.mv, stored, depth, ply)
+    }
+
+    /// Whether `tt_move` is singular at this node: every other move,
+    /// searched to [`singular_depth`] against a bound [`singular_margin`]
+    /// below what the table says this one is worth, falls short of it.
+    ///
+    /// **The verification search is this node again, at this ply, with one
+    /// move taken away.** Not the child of a move: what is being asked is
+    /// what the node is worth without this move in it, and the position
+    /// that answers that is the node's own. So the board is not moved, the
+    /// ply does not rise, and the row of `excluded` this rule writes is the
+    /// row the asking node is using, which is why it is put back
+    /// immediately.
+    ///
+    /// **The other per-ply rows are shared with it and none of them needs
+    /// putting back.** `evals[ply]` is rewritten with the same number,
+    /// because the position is the same one; the principal variation's row
+    /// is cleared and the asking node has not written it yet, since it
+    /// writes only inside its move loop; and a killer this search finds at
+    /// this ply is a quiet move that cut here, which is what that slot is
+    /// for. The asking node's own `killers` were read before this ran and
+    /// are deliberately not re-read: the sort has already happened, and the
+    /// reduction and the count are entitled to the list they were sorted
+    /// against.
+    ///
+    /// **The window is a null one about the target and the depth is half**,
+    /// because the question is a bound and not a value: whether anything
+    /// reaches the target, not what the best of the rest is worth. A search
+    /// asked for the value would cost the node its own depth twice over to
+    /// learn something the extension does not read.
+    ///
+    /// **An aborted search is not a verdict.** [`Search::negamax`] returns a
+    /// meaningless value once `aborted` is set, so the answer is refused
+    /// there rather than read as a move that failed short.
+    ///
+    /// **What it costs is a node count and the counter is here**, because
+    /// this is the only rule in the tree whose question is itself a search:
+    /// the extension enlarges the tree below the move, and this is the tree
+    /// spent deciding to.
+    fn singular(
+        &mut self,
+        board: &mut Board,
+        tt_move: Move,
+        stored: Score,
+        depth: u32,
+        ply: usize,
+    ) -> bool {
+        // Saturating: `stored` is off the mate scale, so it is inside
+        // `MAX_EVAL` and the target cannot reach the bounds the window is
+        // spelled in, but the arithmetic is written total for
+        // [`singular_margin`]'s reason.
+        let target = stored.saturating_sub(singular_margin(depth));
+        self.singular_tests += 1;
+        let before = self.nodes;
+        self.excluded[ply] = tt_move;
+        let score = self.negamax(board, singular_depth(depth), ply, target - 1, target);
+        self.excluded[ply] = Move::NULL;
+        self.singular_nodes += self.nodes - before;
+        !self.aborted && score < target
     }
 
     /// Whether the move at `index` of a node the margin admitted is skipped
@@ -1424,18 +1605,26 @@ impl<'a> Search<'a> {
     /// search the node. Refused in check, at a full window, on a mate-scale
     /// beta, below beta, at a position the null move itself reached, on a
     /// halfmove clock at the limit, and where the side to move has nothing
-    /// but pawns beside the king ([`has_non_pawn_material`]). A mate-scale
+    /// but pawns beside the king ([`has_non_pawn_material`]).
+    ///
+    /// **And refused where a move is excluded**, which is the one refusal
+    /// here that is about the caller rather than the position: a null-move
+    /// cutoff says no move is needed, and what a verification search is
+    /// asking is whether some *other* move is good enough. An answer that
+    /// names no move is not an answer to that. A mate-scale
     /// result comes back as `beta`, and nothing is stored: the entry would
     /// carry a reduced depth as if it were `depth`.
     fn null_move(
         &mut self,
         board: &mut Board,
+        excluded: Move,
         depth: u32,
         ply: usize,
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let admitted = self.evals[ply].is_some_and(|eval| eval >= beta)
+        let admitted = excluded.is_null()
+            && self.evals[ply].is_some_and(|eval| eval >= beta)
             && beta == alpha + 1
             && !score::is_mate(beta)
             && board.plies_from_null() != 0

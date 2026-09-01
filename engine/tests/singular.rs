@@ -327,9 +327,9 @@ fn an_excluded_node_refuses_the_tables_cutoff() {
 /// so what matters is that it is below every margin rather than what it is.
 #[test]
 fn a_node_whose_only_move_is_excluded_falls_short_of_everything() {
-    // White is in check from the queen on d2 and taking it is the only
-    // legal reply.
-    const ONE_MOVE: &str = "4k3/8/8/8/8/8/3q4/4K3 w - - 0 1";
+    // White is in check from the queen on e2, which covers every square
+    // the king could step to, so taking it is the only legal reply.
+    const ONE_MOVE: &str = "4k3/8/8/8/8/8/4q3/4K3 w - - 0 1";
     let legal = generate_legal(&board(ONE_MOVE));
     assert_eq!(legal.len(), 1, "the position is meant to have one move");
     let only = legal.iter().next().expect("the one move");
