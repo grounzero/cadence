@@ -1695,108 +1695,49 @@ fn remembering_the_first_slot_again_leaves_the_second_alone() {
 // The seam: what the search does with the killers
 // ---------------------------------------------------------------------------
 
-/// End to end: the killers are worth nodes.
-///
-/// The same sixteen positions, the same depth and the same table as
-/// `the_tables_move_saves_nodes`, whose own `println!` is where the
-/// constant below comes from: one commit earlier this search took
-/// 1,754,505 nodes over them. The table stays on rather than being switched
-/// off as it is for the capture sort, because there is nothing to isolate:
-/// the killers read nothing the table wrote and the table stores nothing
-/// they produce, so the difference is theirs either way, and with the table
-/// on it is measured on the tree the engine actually searches.
-///
-/// This is the coverage gate for the change. Killers remembered and never
-/// read, or read and never remembered, pass every unit gate above and fail
-/// this one.
-///
-/// **The reference was re-measured when the null window landed**, because
-/// 1,754,505 was a count of a tree two changes ago. The same build with the
-/// killers taken out of the main search's sort and `remember_killer`
-/// removed reads 1,674,084 against the 1,090,926 this search takes with
-/// them, so the gate still discriminates by a third, and the constant is
-/// again a number this tree produces rather than one it used to.
-///
-/// **And re-measured when null-move pruning landed, which is when the old
-/// reference stopped discriminating**: the killerless build reads 663,124
-/// against 598,617 with them, both under the old ceiling, so a build with
-/// no killers had started passing. The killers are worth 11% on this set
-/// where they were worth a third, because the pruning now decides many of
-/// the nodes a killer used to decide before the sort is consulted. The
-/// assertion becomes a plain ceiling between the two points, exact counts,
-/// about 5% either side.
-///
-/// **And when late move reductions landed**: the killerless build reads
-/// 366,183 against 281,531 with them, both under the old ceiling again.
-/// The killers grew back to 23% on this set, because the reductions read
-/// them twice: a killer is exempt from reduction, so a killerless build
-/// does not only order worse, it reduces moves the shipped build declines
-/// to. The ceiling sits between the new exact points, about 12% either
-/// side.
-///
-/// **And when the history heuristic landed, where what moved is not the
-/// tree but what the killers are still doing in it**: the killerless build
-/// reads 180,197 against 177,765 with them. The killers are worth **1.4%**
-/// on this set where they were worth 23%, and the reason is that the two
-/// mechanisms rank the same moves. A killer is a quiet move that cut at a
-/// sibling; a history score is what a quiet move has been worth across the
-/// whole search, so nearly every move the slots would have promoted is a
-/// move the table promotes anyway. Take the slots out now and the sort
-/// mostly puts the same moves in the same places.
-///
-/// **The gate is re-based rather than retired, and the reason it is worth
-/// keeping is the part history does not cover.** The slots say the move cut
-/// at a sibling of *this* node, which is sharper and more local than any
-/// score, and the reduction exempts a killer outright where it only adjusts
-/// on a score. Neither of those is subsumed. But the window here is now
-/// 1.4% of exact counts, which is where
-/// `demoting_the_losing_captures_saves_nodes` already sits, and the same
-/// answer applies: what this gate needs next is a position set where the
-/// two mechanisms disagree, not a tighter constant.
-///
-/// **Futility pruning re-based it and widened it, from 1.4% back to
-/// 3.2%**: the killerless build reads 169,664 against 164,419 with them,
-/// both under the old ceiling. The killers gained rather than lost, which
-/// is the first time this gate has moved that way, and the reason is that
-/// this rule reads the killers twice over: a killer is a quiet move, so it
-/// is a candidate to be skipped for the margin like any other, and what
-/// keeps it searched is that the sort put it near the head of the list
-/// where the first-move exemption reaches it. Take the slots out and those
-/// same moves fall into the band the margin skips. That is one more thing
-/// the history table does not cover, on top of the two above, and it is
-/// measured rather than argued. The set is still what this gate wants next.
-///
-/// **Reverse futility took it back to the narrowest it has ever been,
-/// 0.146%**: the killerless build reads 167,673 against 167,429 with them,
-/// a gap of 244 nodes. The mechanism is the rule returning **whole nodes
-/// before a move list is generated at all**: a killer's entire value is
-/// the ordering of a generated list, so at every node this rule answers
-/// there is nothing for the slots to do, and what is left for them to
-/// decide shrinks with the tree. The counts are exact, so a ceiling
-/// between the two points still separates the builds, and it is re-based
-/// once more on that ground alone.
-///
-/// **The set this gate has been asking for since null-move pruning is now
-/// the only thing that would restore it.** Six re-baselines have each
-/// moved a constant instead, the window has run 18%, 3.2%, 1.3%, 0.12%,
-/// 23%, 1.4%, 3.2% and now 0.146%, and a gate separating exact counts by
-/// 244 nodes is one the next change is as likely to invert as to widen.
-/// Read a failure here as the set having run out before reading it as the
-/// killers having stopped paying.
-#[test]
-fn the_killers_save_nodes() {
-    let fens = deep_fens();
-    let mut total = 0u64;
-    for fen in &fens {
-        let (_, _, n) = search_with(&mut board(fen), DEEP, &table());
-        total += n;
-    }
-    println!("depth {DEEP}, {} positions: {total} nodes", fens.len());
-    assert!(
-        total < 167_550,
-        "{total} against the 167,673 the same search took with no killers in the main search"
-    );
-}
+// **End to end: the ceiling that said the killers are worth nodes is
+// retired, and what retired it is a measurement rather than a failure.**
+//
+// This was `the_killers_save_nodes`: the same sixteen positions, the same
+// depth and the same table as `the_tables_move_saves_nodes`, asserting the
+// shipped total below a count measured on a build with `remember_killer`
+// emptied. It was re-based eight times and its window ran 18%, 3.2%,
+// 1.3%, 0.12%, 23%, 1.4%, 3.2% and 0.146%, and its own comment said to
+// read a failure here as the set having run out rather than as the killers
+// having stopped paying.
+//
+// **The measurement was taken on the champion as well, which is what
+// says this is not the change that landed beside it.** Eighteen
+// configurations -- these positions, the standard suite and twelve bench
+// positions, at depths seven, eight and nine, with and without a table --
+// were run against the killerless build on the tree that retired this and
+// on the tree before it. The window has no stable sign in either: it runs
+// `-10.4%` to `+10.9%` on the champion and `-18.3%` to `+7.5%` here, and
+// it changes sign inside every one of the three sets as the depth or the
+// table moves. In this gate's own configuration the champion's window was
+// 244 nodes out of 167,673, which is what it had been passing on.
+//
+// **What that retires is the ceiling and not the coverage.** A ceiling
+// needs the counterfactual on one side of the shipped count, and the
+// quantity here does not stay on a side. What the killers do is still
+// gated exactly, above: they take the ranks the picker gives them, they
+// sit ahead of every other quiet move and behind the losing captures, a
+// new one shifts the slots, and none of them crosses a search boundary.
+// What is lost is the end-to-end claim that they are worth nodes, and no
+// test in this file can carry it: the claim compares two builds and a
+// test runs one.
+//
+// **And none of this is a reading about Elo.** The killers measured
+// `+56.48` by SPRT, and they are the row both of this project's
+// node-based summaries already fail on. A change that costs nodes on a
+// set and gains strength in games is what that row has always said, and
+// this measurement is more of it rather than a contradiction of it.
+//
+// **What would restore a ceiling is the position set, which is what this
+// gate has been asking for since null-move pruning.** It is not written
+// here, because a set chosen from eighteen readings by taking the one
+// where the sign came out right is the instrument being fitted, and that
+// is the failure this whole family of gates keeps finding.
 
 /// The depth `a_reused_search_remembers_no_killers` searches to.
 const REUSE_DEPTH: u32 = 5;
