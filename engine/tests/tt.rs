@@ -974,8 +974,19 @@ fn the_bench_clears_the_table_between_positions() {
     // first time round, because no two bench positions transpose into each
     // other at depth three. What carries across a seam is what the table
     // learned about the position just searched, so the demonstration is a
-    // second pass: it is cheaper, and a bench that did not clear would be
-    // reporting that number for some of its positions.
+    // second pass: it costs something different, and a bench that did not
+    // clear would be reporting that number for some of its positions.
+    //
+    // **The direction is deliberately not asserted, and it has inverted.**
+    // Until singular extensions landed a warm table was cheaper, and the
+    // assertion said so. It is now dearer -- 21,736,035 against 21,098,896
+    // -- and the mechanism is that rule's entry condition: it begins at a
+    // table hit, so a warmer table names a move at more nodes, runs more
+    // verification searches and grants more extensions. A table that knows
+    // more makes this search larger. What this gate needs is that the table
+    // carries state across a seam, and a total that moved in either
+    // direction is that; a total that did not move at all would mean the
+    // half above is testing nothing.
     let shared = table(bench::HASH_MB);
     let pass = |shared: &Table| -> u64 {
         fens.iter()
@@ -984,9 +995,9 @@ fn the_bench_clears_the_table_between_positions() {
     };
     let first = pass(&shared);
     let second = pass(&shared);
-    assert!(
-        second < first,
-        "a second pass over the same table cost {second} against {first}, so nothing \
+    assert_ne!(
+        second, first,
+        "a second pass over the same table cost exactly what the first did, so nothing \
          carries across a seam and this gate proves nothing"
     );
 }
