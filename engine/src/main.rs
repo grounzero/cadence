@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence`: the UCI binary.
-//!
-//! Argument handling is a `match` on `args().nth(1)` and will stay one. The
-//! engine's whole command surface is a handful of verbs, none of them
-//! flag-heavy, and a parser crate would buy nothing for a dependency that
-//! ends up linked into the binary that plays the games.
+//! `cadence`: the UCI binary. Argument handling is a `match` on `args().nth(1)` and will stay
+//! one.
 
 #![forbid(unsafe_code)]
 
@@ -13,10 +9,7 @@ use std::process::ExitCode;
 
 use cadence_engine::{bench, perft, uci};
 
-/// The subcommand table.
-///
-/// `cadence` with no subcommand speaks UCI on stdin. `perft` and `bench` are
-/// the whole of the rest of it: one row here and one arm below for each.
+/// The subcommand table. `cadence` with no subcommand speaks UCI on stdin.
 const SUBCOMMANDS: &[(&str, &str)] = &[
     (
         "perft",
