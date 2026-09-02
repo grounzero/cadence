@@ -45,7 +45,7 @@ pub const HASH_MB: usize = 16;
 /// **Changing it is changing the detector.** Allowed, and never a side
 /// effect of retuning something else; the commit that changes it declares a
 /// new `Bench:` count like any other.
-pub const DEPTH: u32 = 12;
+pub const DEPTH: u32 = 13;
 
 /// The checked-in position list, one FEN per line, `#` for comments.
 pub const POSITIONS: &str = include_str!("../bench_positions.txt");
