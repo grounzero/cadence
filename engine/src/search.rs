@@ -477,6 +477,47 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
     futile && index > 0 && !m.is_noisy()
 }
 
+/// The deepest node at which a capture may be refused for the exchange it loses. **Five,
+/// because a node further from the horizon has the depth under a losing capture to find
+/// what the material bought, and refusing it there deletes a move on the weakest evidence
+/// this rule has.**
+const SEE_PRUNE_DEPTH: u32 = 5;
+
+/// How much material a capture may lose to the exchange, per ply of remaining depth, in
+/// centipawns. **Linear rather than squared and one number rather than two for
+/// [`FUTILITY_MARGIN`]'s reason: a constant term beside the slope is the obvious second
+/// parameter and is left out on purpose, so a tuner has one number to move.**
+const SEE_CAPTURE_MARGIN: i32 = 100;
+
+/// How far below zero a capture's exchange may stand at `depth` and still be searched:
+/// [`SEE_CAPTURE_MARGIN`] per ply of remaining depth, as a negative bound. Saturating and
+/// total for [`futility_margin`]'s reason, so no depth any caller holds can overflow it.
+#[must_use]
+pub fn see_capture_bound(depth: u32) -> i32 {
+    SEE_CAPTURE_MARGIN
+        .saturating_mul(i32::try_from(depth).unwrap_or(i32::MAX))
+        .saturating_neg()
+}
+
+/// Whether a node may refuse captures for their exchange: inside the depth band, and not in
+/// check. Read once before the move loop like [`futile_node`], and the band's lower end is
+/// the caller's rather than this function's, because a node at depth zero never reaches the
+/// move loop at all.
+#[must_use]
+pub fn see_prune_node(in_check: bool, depth: u32) -> bool {
+    !in_check && depth <= SEE_PRUNE_DEPTH
+}
+
+/// Whether the move at `index` of a node [`see_prune_node`] admitted is a candidate to be
+/// refused: never the node's first move, and only a capture. **A quiet promotion is noisy
+/// and is not a candidate**, which is where this rule's population parts company with
+/// `picker`'s noisy band, and the exchange itself is the caller's because it is the one
+/// question here that costs anything.
+#[must_use]
+pub fn see_skips(pruning: bool, m: Move, index: usize) -> bool {
+    pruning && index > 0 && m.is_capture()
+}
+
 /// What the margin a node is returned on grows by per ply of remaining
 /// depth, in centipawns.
 ///
@@ -625,6 +666,20 @@ pub struct Search<'a> {
     lmp_nodes: u64,
     lmp_skipped: u64,
     lmp_kept_check: u64,
+    /// How often a node was one this rule could act at, how many captures it refused there,
+    /// and how often it would have refused one and did not because the move gives check.
+    ///
+    /// **These are comparable with neither the margin's nor the count's, and the reason is
+    /// not the order in the loop.** Those two refuse every noisy move and this one takes
+    /// nothing else, so the three populations are disjoint and the order among them cannot
+    /// move a single count; `tests/see_pruning.rs` gates that rather than asserting it here.
+    ///
+    /// The third has [`Search::null_refused_by_material`]'s shape, for
+    /// [`Search::futility_kept_check`]'s reason: a gate asserting that an exempt move was
+    /// searched has to see the exemption decide.
+    see_nodes: u64,
+    see_skipped: u64,
+    see_kept_check: u64,
     /// How often the margin returned a node without searching it, and how
     /// often it would have and did not because the node had the full
     /// window.
@@ -680,6 +735,9 @@ impl<'a> Search<'a> {
             lmp_nodes: 0,
             lmp_skipped: 0,
             lmp_kept_check: 0,
+            see_nodes: 0,
+            see_skipped: 0,
+            see_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
             iterations: Vec::new(),
@@ -720,6 +778,9 @@ impl<'a> Search<'a> {
         self.lmp_nodes = 0;
         self.lmp_skipped = 0;
         self.lmp_kept_check = 0;
+        self.see_nodes = 0;
+        self.see_skipped = 0;
+        self.see_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
         self.iterations.clear();
@@ -1541,6 +1602,24 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn lmp_kept_check(&self) -> u64 {
         self.lmp_kept_check
+    }
+
+    /// How often a node admitted this rule, how many captures it refused, and how often the
+    /// check exemption kept one. Written wherever the rule runs and read on no decision
+    /// path, so a gate reading them adds nothing to the tree.
+    #[must_use]
+    pub fn see_nodes(&self) -> u64 {
+        self.see_nodes
+    }
+
+    #[must_use]
+    pub fn see_skipped(&self) -> u64 {
+        self.see_skipped
+    }
+
+    #[must_use]
+    pub fn see_kept_check(&self) -> u64 {
+        self.see_kept_check
     }
 
     #[must_use]
