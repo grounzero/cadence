@@ -4,32 +4,26 @@
 //! other move falls short of it by a margin, that move is searched a ply
 //! deeper.
 //!
-//! **What these gates demonstrate is that the extension is bounded and that
-//! the question it rests on is asked honestly.** Those are different claims
-//! and the second is the one this rule needs and the check extension's does
-//! not. A check is a fact about the position, read off the board in one
-//! call; singularity is the verdict of a search, and a search that was
-//! answered by the entry it is testing, or that searched the move it was
-//! told to leave out, would return the same verdict on nothing.
+//! **Two claims, and the second is the one this rule needs and the check
+//! extension's does not.** A check is a fact about the position, read off
+//! the board in one call; singularity is the verdict of a search, and a
+//! search answered by the entry it is testing, or one that searched the move
+//! it was told to leave out, would return the same verdict on nothing.
 //!
 //! So the exclusion is gated as three separate properties of a node --
 //! **the move is not searched, the table is not believed, and the table is
-//! not written** -- through [`Search::node_excluding`], one at a time, and
+//! not written** -- through [`Search::node_excluding`], one at a time and
 //! not through the rule that asks for one. A gate driven through the rule
 //! tests whichever exclusions this tree's table happens to produce.
 //!
 //! **The bound is gated as arithmetic, because it is the only thing between
 //! this rule and a line that never ends.** Where every node's table move is
 //! singular the depth never falls, exactly as it never falls in a line of
-//! checks, and [`extension`]'s ply cap is what both rules stand on. One ply
-//! whatever grants it, nothing past the cap, and the two reasons do not
-//! add.
+//! checks, and [`extension`]'s ply cap is what both rules stand on.
 //!
-//! **And the counters are the wiring.** [`Search::singular_extensions`] is
+//! **And the counters are the wiring**: [`Search::singular_extensions`] is
 //! incremented where the child's depth is computed and only where the value
-//! computed there was one, so a counter that has moved is the extension
-//! having reached the depth a move was searched at, which no assertion about
-//! [`extension`] alone can say.
+//! computed there was one, which no assertion about [`extension`] can say.
 //!
 //! The counters are written wherever the rule runs and read on no decision
 //! path, so a depth-limited search here reads no clock and the assertions
@@ -51,18 +45,13 @@ use support::table;
 /// The depth the set gate below searches to.
 ///
 /// **Eleven, and it is measured rather than chosen**, the way the margin's
-/// `GATE_DEPTH` and late move pruning's are. This rule needs three things at
-/// one node -- a depth of at least seven left, an entry in the table within
-/// three plies of that depth, and a move in it -- and the second is what
-/// takes the depth up: at a node seven plies from the horizon the entry has
-/// to have been written by an earlier iteration, so nothing fires until the
-/// search has run enough iterations to have written one. Over the four
+/// `GATE_DEPTH` and late move pruning's are. The rule needs an entry within
+/// three plies of a node seven plies from the horizon, so nothing fires
+/// until enough iterations have run to have written one: over the four
 /// positions below the first verification search runs at depth nine and the
-/// first extension is granted at ten.
-///
-/// Eleven is taken, one ply past the first depth at which both counters
-/// move, because a coverage assertion standing exactly on the first depth
-/// that works is one the next tree change empties in silence.
+/// first extension is granted at ten. Eleven is one ply past that, because a
+/// coverage assertion standing on the first depth that works is one the next
+/// tree change empties in silence.
 const GATE_DEPTH: u32 = 11;
 
 /// A quiet middlegame, the same position the reduction, margin and
@@ -70,10 +59,9 @@ const GATE_DEPTH: u32 = 11;
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 /// White is three queens down and has one thing on the board: a rook that
-/// reaches a8 along an empty file, where it mates. Late move pruning's gates
-/// stand on it for the check exemption; here it is the position that makes
-/// an exclusion visible without reading a node count, because taking `Ra8`
-/// away turns a mate into a position white is losing.
+/// reaches a8 along an empty file, where it mates. Taking `Ra8` away turns a
+/// mate into a position white is losing, which makes an exclusion visible
+/// without reading a node count.
 const QUIET_MATE: &str = "6k1/5ppp/8/8/8/8/1qqq4/R5K1 w - - 0 1";
 
 /// How many times the root depth an extension is granted within.
@@ -103,11 +91,10 @@ fn move_named(fen: &str, uci: &str) -> Move {
 
 /// One ply whatever grants it, and the two reasons do not add.
 ///
-/// A move that gives check and was found singular is extended by one, not
-/// two. That is the whole of what keeps `search.rs`'s stated bound on the
-/// deepest interior node an iteration can reach true with a second extension
-/// in the tree, and a formulation that summed the two would pass every other
-/// gate here.
+/// A checking singular move is extended by one, not two. That is what keeps
+/// `search.rs`'s bound on the deepest interior node an iteration can reach
+/// true with a second extension in the tree, and a formulation that summed
+/// the two would pass every other gate here.
 #[test]
 fn the_extension_is_one_ply_whatever_grants_it() {
     let root_depth = 8;
@@ -125,10 +112,9 @@ fn the_extension_is_one_ply_whatever_grants_it() {
 /// Nothing is extended past the cap, for either reason.
 ///
 /// The check extension's own gate walks every case either side of the
-/// boundary and this walks the same cases for the other reason, because the
-/// cap is the bound on a line of singular extensions in exactly the sense it
-/// is the bound on a line of checks: where the reason keeps arriving the
-/// depth never falls.
+/// boundary and this walks them for the other reason: where the reason keeps
+/// arriving the depth never falls, so the cap is the bound on a line of
+/// singular extensions in the sense it is the bound on a line of checks.
 #[test]
 fn the_ply_cap_refuses_a_singular_extension() {
     for root_depth in [0u32, 1, 2, 7, 20] {
@@ -146,10 +132,9 @@ fn the_ply_cap_refuses_a_singular_extension() {
 /// The verification search is always shallower than the node that asks for
 /// it, and never below one ply of real search.
 ///
-/// The first half is what stops the question costing more than the answer
-/// can be worth; the second is what stops it being handed to the quiescence
-/// search, which would answer a question about a move ordering with a
-/// standing pat.
+/// The first stops the question costing more than the answer can be worth;
+/// the second stops it being handed to the quiescence search, which would
+/// answer a question about a move ordering with a standing pat.
 #[test]
 fn the_verification_search_is_shallower_than_the_node() {
     for depth in 7..=64u32 {
@@ -178,10 +163,9 @@ fn the_margin_grows_with_the_depth() {
 
 /// Each refusal decides on its own, with everything else held admitting.
 ///
-/// One function asked twice with one field moved, the way the count's own
-/// gate is made: a rule that refused on the wrong field, or that refused on
-/// none of them, answers the same on both sides of every pair below and
-/// fails here.
+/// One function asked twice with one field moved: a rule refusing on the
+/// wrong field, or on none of them, answers the same on both sides of every
+/// pair below and fails here.
 #[test]
 fn each_refusal_decides_on_its_own() {
     let depth = 9;
@@ -243,11 +227,10 @@ fn excluding(fen: &str, depth: u32, excluded: Move, tt: &Table) -> Score {
 
 /// The excluded move is not searched, and a mate is how the gate sees it.
 ///
-/// `Ra8` mates in [`QUIET_MATE`] and every other move loses to three
-/// queens, so a search that keeps the move returns a mate score for the side
-/// to move and a search that has genuinely dropped it cannot. No node count
-/// is read: a rule that searched the move at some reduced depth, or searched
-/// it and discarded its score, would still find the mate.
+/// A search keeping `Ra8` returns a mate score and one that has genuinely
+/// dropped it cannot. No node count is read, because a rule that searched
+/// the move at some reduced depth, or searched it and discarded its score,
+/// would still find the mate.
 #[test]
 fn an_excluded_move_is_not_searched() {
     let mate = move_named(QUIET_MATE, "a1a8");
@@ -271,11 +254,10 @@ fn an_excluded_move_is_not_searched() {
 
 /// An excluded node writes nothing to the table.
 ///
-/// What it establishes is a bound on a different question -- this position
-/// less one move -- and a later probe of this key would read it as a bound
-/// on the position. Nothing distinguishes the two once it is stored, so the
-/// gate is that the key is absent afterwards rather than that its contents
-/// are right.
+/// What it establishes is a bound on this position less one move, and a
+/// later probe of this key would read it as a bound on the position.
+/// Nothing distinguishes the two once stored, so the gate is that the key is
+/// absent afterwards rather than that its contents are right.
 #[test]
 fn an_excluded_node_stores_nothing() {
     let tt = table();
@@ -293,10 +275,10 @@ fn an_excluded_node_stores_nothing() {
 
 /// An excluded node does not take the table's cutoff.
 ///
-/// The entry it would take is the entry naming the move it was told to leave
-/// out, so a node that believed it would answer the question with the move
-/// the question is about. The stored score is one no evaluation of this
-/// position produces, so the gate reads the score and needs no counter.
+/// The entry it would take names the move it was told to leave out, so a
+/// node believing it answers the question with the move the question is
+/// about. The stored score is one no evaluation produces, so the gate reads
+/// the score and needs no counter.
 #[test]
 fn an_excluded_node_refuses_the_tables_cutoff() {
     const IMPOSSIBLE: Score = 12_345;
@@ -320,11 +302,10 @@ fn an_excluded_node_refuses_the_tables_cutoff() {
 /// A node whose only move is excluded has nothing left to search, and what
 /// it returns says so.
 ///
-/// This is the degenerate end of the rule and it is the case that decides
-/// correctly by construction: no other move can reach the margin because
-/// there is no other move. The value never leaves the verification search --
-/// an excluded node stores nothing and only [`Search::singular`] reads one --
-/// so what matters is that it is below every margin rather than what it is.
+/// The degenerate end of the rule, and the case that decides correctly by
+/// construction: no other move reaches the margin because there is no other
+/// move. The value never leaves the verification search, so what matters is
+/// that it is below every margin rather than what it is.
 #[test]
 fn a_node_whose_only_move_is_excluded_falls_short_of_everything() {
     // White is in check from the queen on e2, which covers every square
@@ -342,10 +323,10 @@ fn a_node_whose_only_move_is_excluded_falls_short_of_everything() {
 
 /// The row the verification search borrows is put back.
 ///
-/// It is indexed by ply and the verification search runs at the ply it was
-/// asked at, so the rule writes into the row the asking node is using. A
-/// search that failed to clear it would leave a move unsearchable at a node
-/// with no rule running, which nothing else here would notice.
+/// It runs at the ply it was asked at, so the rule writes into the row the
+/// asking node is using. A search failing to clear it would leave a move
+/// unsearchable at a node with no rule running, which nothing else here
+/// would notice.
 #[test]
 fn the_excluded_row_is_put_back() {
     let stop = AtomicBool::new(false);
@@ -367,8 +348,8 @@ fn the_excluded_row_is_put_back() {
 // ---------------------------------------------------------------------------
 
 /// The positions the set gate below searches. Four, chosen for having a
-/// table worth reading: two middlegames where the ordering is informative
-/// and two endgames where it is not.
+/// table worth reading: two middlegames where the ordering is informative,
+/// two endgames where it is not.
 fn gate_fens() -> [&'static str; 4] {
     [
         MIDDLEGAME,
@@ -380,11 +361,10 @@ fn gate_fens() -> [&'static str; 4] {
 
 /// The rule fires, extends, and does not extend everything it asks about.
 ///
-/// Three assertions and the third is the one worth having: a rule that
-/// extended every move it tested would pass a gate reading only the first
-/// two, and would be an unconditional extension of the table's move wearing
-/// this rule's name. The counters are exact, so the gate is an inequality
-/// between two counts and not a threshold.
+/// The third assertion is the one worth having: a rule extending every move
+/// it tested would pass a gate reading only the first two, and would be an
+/// unconditional extension of the table's move wearing this rule's name. The
+/// counters are exact, so this is an inequality and not a threshold.
 #[test]
 fn the_rule_asks_and_answers_both_ways() {
     let stop = AtomicBool::new(false);
@@ -412,10 +392,9 @@ fn the_rule_asks_and_answers_both_ways() {
 /// The verification search is a search, and what it costs is a node count.
 ///
 /// The rule's price is not a term in any other counter here: an extension
-/// enlarges the tree below the move it extends, and this is the other half,
-/// the tree spent deciding. A gate that saw only the extensions would report
-/// a rule that had spent a fifth of the search on questions as working
-/// perfectly.
+/// enlarges the tree below the move, and this is the tree spent deciding to.
+/// A gate seeing only the extensions would report a rule that had spent a
+/// fifth of the search on questions as working perfectly.
 #[test]
 fn the_verification_searches_are_counted() {
     let stop = AtomicBool::new(false);

@@ -226,11 +226,9 @@ const EXTEND_WITHIN: usize = 2;
 /// child's `Board::in_check`, read after the move is made; `singular` is
 /// [`Search::singular`]'s verdict about the table's move, read before it.
 ///
-/// **One ply, whatever grants it, and the two reasons do not add.** Both
-/// are reasons to believe this move is the line worth spending on, and a
-/// move that is both is not twice as worth it; what a second ply would cost
-/// is the bound below, which is the only thing keeping either rule from
-/// running away.
+/// **One ply, whatever grants it, and the two reasons do not add.** Both say
+/// this move is the line worth spending on, and a move that is both is not
+/// twice as worth it; what a second ply would cost is the bound below.
 ///
 /// **The cap is on ply, and a cap on depth would not be a cap.** Where every
 /// move gives check the depth never falls, so a rule of the form "extend
@@ -248,36 +246,21 @@ pub fn extension(check: bool, singular: bool, ply: usize, root_depth: u32) -> u3
 }
 
 /// The shallowest depth at which a node asks whether the table's move is
-/// singular.
-///
-/// **Seven, and what puts it there is the cost of asking rather than the
-/// value of the answer.** The question is a search, so a node that asks it
-/// pays before it learns anything, and the shallower the node the larger
-/// that payment is as a share of what the node was going to cost anyway.
-/// Measured on the champion over the bench positions at depth twelve: at
-/// this threshold 27,967 nodes ask, and at six it is 54,216 and at five
-/// 102,756, for a question whose own depth is [`singular_depth`] and falls
-/// with it.
+/// singular. Seven: the question is a search, so a node pays it before it
+/// learns anything, and 27,967 nodes ask at this threshold against 102,756
+/// at five. Measured.
 const SINGULAR_DEPTH: u32 = 7;
 
 /// How many plies shallower than this node the table's entry may have been
-/// searched and still be evidence about it.
-///
-/// The entry is being read for a score rather than for a cutoff, so the
-/// depth that would license a cutoff is not the depth wanted here: at the
-/// threshold above, an entry searched to this node's own depth is 4.7% of
-/// what the rule finds, and the rule with that condition would act on a
-/// twentieth of its population.
+/// searched and still be evidence about it. The entry is read for a score
+/// and not for a cutoff, so the depth licensing a cutoff is not the depth
+/// wanted: demanding one costs 19 of every 20 nodes the rule acts on.
+/// Measured.
 const SINGULAR_TT_MARGIN: u32 = 3;
 
 /// What the margin below the stored score grows by per ply of remaining
-/// depth, in centipawns.
-///
-/// **Linear in depth and one number, for [`FUTILITY_MARGIN`]'s reason**: a
-/// deeper node's stored score is a claim about more search, so the distance
-/// another move has to fall short by before this one is called singular
-/// grows with it. A constant term beside the slope is the obvious second
-/// parameter and is left out on purpose.
+/// depth, in centipawns. Linear in depth and one number, the shape
+/// [`FUTILITY_MARGIN`] carries and for the reason recorded there.
 const SINGULAR_MARGIN: Score = 2;
 
 /// How far below the table's stored score every other move has to fall
@@ -291,13 +274,9 @@ pub fn singular_margin(depth: u32) -> Score {
 }
 
 /// The depth the verification search runs at: half the depth below this
-/// node, rounded down.
-///
-/// **It is a fraction of the depth and not a subtraction of one**, because
-/// what the search has to establish is a bound and not a value, and the
-/// deeper the node the more of its depth can be given up before the bound
-/// stops being credible. Total for [`singular_margin`]'s reason, though no
-/// caller passes a depth below [`SINGULAR_DEPTH`].
+/// node, rounded down. A fraction and not a subtraction, because what it
+/// establishes is a bound and not a value. Total for [`singular_margin`]'s
+/// reason, though no caller passes a depth below [`SINGULAR_DEPTH`].
 #[must_use]
 pub fn singular_depth(depth: u32) -> u32 {
     depth.saturating_sub(1) / 2
@@ -305,18 +284,13 @@ pub fn singular_depth(depth: u32) -> u32 {
 
 /// Whether the table's entry at a node of `depth` is evidence this rule may
 /// act on: deep enough a node, an entry within [`SINGULAR_TT_MARGIN`] of it,
-/// a score that is a lower bound on the move's worth rather than an upper
-/// one, and a score a centipawn margin is commensurable with.
+/// a score that bounds the move's worth from below, and a score a centipawn
+/// margin is commensurable with.
 ///
 /// **`Upper` is the refusal that carries the rule's whole claim.** An upper
-/// bound says the move is worth no more than the score, and the question
-/// here is whether every other move is worth much less than it is; a
-/// ceiling is no evidence of a floor. `Lower` and `Exact` both give one, and
-/// `Lower` is 95.9% of what the rule finds.
-///
-/// **A mate score refuses it** for [`reverse_futile`]'s reason: a mate score
-/// is not a quantity a centipawn margin is commensurable with, and
-/// subtracting one from the other produces a bound with no meaning.
+/// bound says the move is worth no more than the score, and the question is
+/// whether every other move is worth much less; a ceiling is no evidence of
+/// a floor. A mate score is refused for [`reverse_futile`]'s reason.
 #[must_use]
 pub fn singular_candidate(depth: u32, entry_depth: u8, bound: Bound, score: Score) -> bool {
     depth >= SINGULAR_DEPTH
@@ -725,21 +699,17 @@ pub struct Search<'a> {
     reverse_futility_refused_window: u64,
     /// The move this node may not search, written by [`Search::singular`]
     /// immediately above the verification search and cleared immediately
-    /// below it. Indexed by ply and not by depth, because the verification
-    /// search is this node again at this ply with one move taken away, so
-    /// the two searches share the row and only one of them is ever running.
-    /// Two kibibytes inline, like `killers`.
+    /// below it. Indexed by ply, which that method's doc is why. Two
+    /// kibibytes inline, like `killers`.
     excluded: [Move; MAX_PLY],
     /// How often the rule asked whether the table's move was singular, how
     /// often it extended, how often the answer was yes and the ply cap
     /// refused it anyway, and what the asking cost in nodes.
     ///
     /// The third has [`Search::null_refused_by_material`]'s shape and is
-    /// here for its reason: a gate asserting that the cap bounds this rule
-    /// needs to see the cap *decide*. The fourth is the rule's price and
-    /// the only one of the four that is not a decision: the verification
-    /// search is a search, so what it costs is a node count and nothing
-    /// else in this list can stand in for it.
+    /// here for its reason. The fourth is the only one that is not a
+    /// decision: the question is itself a search, so nothing else in this
+    /// list can stand in for what it costs.
     singular_tests: u64,
     singular_extensions: u64,
     singular_refused_by_ply: u64,
@@ -1061,12 +1031,8 @@ impl<'a> Search<'a> {
         }
 
         // The table, before the moves are generated: that saving is most of
-        // what it is for. **A node with a move excluded does not read it**,
-        // and the entry it would read is the one naming the move it was
-        // told to leave out: a cutoff from it answers the question the
-        // verification search was asked with the move the question is
-        // about, and the move it names is the one move this node may not
-        // try, so nothing is lost by not asking.
+        // what it is for. A node with a move excluded does not read it at
+        // all, for the reason [`Search::probe`] gives.
         let key = board.key();
         let excluded = self.excluded[ply];
         let (hit, cutoff) = self.probe(board, key, depth, ply, alpha, beta, excluded);
@@ -1282,11 +1248,10 @@ impl<'a> Search<'a> {
     /// is why the two halves come back separately.
     ///
     /// **A node with a move excluded does not read the table at all.** The
-    /// entry it would read is the one naming the move it was told to leave
-    /// out, so a cutoff from it answers the verification search's question
-    /// with the move that question is about; and the move it names is the
-    /// one move that node may not try, so refusing the whole hit costs the
-    /// ordering nothing.
+    /// entry it would read names the move it was told to leave out, so a
+    /// cutoff from it answers the question with the move that question is
+    /// about -- and since that move is the one the node may not try,
+    /// refusing the whole hit costs the ordering nothing.
     #[expect(clippy::too_many_arguments, reason = "a node's question, unpacked")]
     fn probe(
         &self,
@@ -1353,9 +1318,8 @@ impl<'a> Search<'a> {
     /// loop returns before its caller calls this.
     ///
     /// **A node with a move excluded stores nothing.** What it established
-    /// is a bound on a different question -- this position less one move --
-    /// and once it is in the table under this key nothing distinguishes the
-    /// two.
+    /// is a bound on a different position -- this one less a move -- and
+    /// under this key nothing distinguishes the two.
     #[expect(clippy::too_many_arguments, reason = "one node's result, unpacked")]
     fn remember(
         &self,
@@ -1392,10 +1356,8 @@ impl<'a> Search<'a> {
     ///
     /// **The counters are written here rather than where the verdict was
     /// reached**, so that a counter which has moved is the extension having
-    /// reached the depth the move was searched at, and not only the rule
-    /// having decided something. Nothing else in this file can assert that
-    /// wiring: [`extension`] is a pure function and a gate on it sees the
-    /// arithmetic and never the use.
+    /// reached the depth the move was searched at. [`extension`] is a pure
+    /// function and no gate on it can see the use.
     fn extend(&mut self, gives_check: bool, single: bool, ply: usize) -> u32 {
         let ext = extension(gives_check, single, ply + 1, self.root_depth);
         if single {
@@ -1411,10 +1373,9 @@ impl<'a> Search<'a> {
     /// Whether this node's table move earns a ply, which is the entry
     /// condition and then [`Search::singular`]'s search.
     ///
-    /// `held` is what makes the question answerable: a move the list does
-    /// not hold cannot be taken away from it, and a verification search that
-    /// excluded nothing would search every move, come back short of the
-    /// margin, and call the move singular on that.
+    /// `held` is what makes the question answerable: a verification search
+    /// that excluded nothing would search every move, come back short of
+    /// the margin, and call the move singular on that.
     ///
     /// A method rather than six lines in [`Search::negamax`] for
     /// [`Search::probe`]'s reason, which is the line-count gate.
@@ -1607,11 +1568,10 @@ impl<'a> Search<'a> {
     /// halfmove clock at the limit, and where the side to move has nothing
     /// but pawns beside the king ([`has_non_pawn_material`]).
     ///
-    /// **And refused where a move is excluded**, which is the one refusal
-    /// here that is about the caller rather than the position: a null-move
-    /// cutoff says no move is needed, and what a verification search is
-    /// asking is whether some *other* move is good enough. An answer that
-    /// names no move is not an answer to that. A mate-scale
+    /// **And refused where a move is excluded**, the one refusal here about
+    /// the caller rather than the position: a null-move cutoff says no move
+    /// is needed, and the question is whether some *other* move is good
+    /// enough. An answer naming no move is not an answer to that. A mate-scale
     /// result comes back as `beta`, and nothing is stored: the entry would
     /// carry a reduced depth as if it were `depth`.
     fn null_move(
