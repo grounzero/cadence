@@ -960,13 +960,34 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// is the SPRT's question and not this gate's. What this gate still refuses
 /// is a *window* moving them, which is unchanged: the array is re-measured
 /// on the shipped full-window build, as every re-baseline above was.
+///
+/// **Main-search SEE pruning moved two of the fourteen entries, and
+/// neither of them is a move it refuses.** `d5e6` falls from -109 to -200,
+/// carrying on in the direction late move pruning moved it from -18, and
+/// `g5f6` at 108 becomes `c3d5` at 20. Both `d5e6` and `g5f6` have an
+/// exchange of exactly zero, so this rule never deletes either; the root
+/// searches every move it generates in any case, and what moved is the
+/// value of a subtree underneath them. Two entries is the right size for a
+/// rule whose population is losing captures at depth five and below,
+/// against late move pruning's twelve for one that deletes late quiet
+/// moves at every node with a long enough list.
+///
+/// **The moved move is not a tie-break and is not claimed as one.** The
+/// two are 88 points apart, where every earlier re-baseline here that
+/// moved a move moved it between root siblings within two points of each
+/// other, and the underpromotion above is a tie the paragraph had to argue
+/// for. This one is not: it is the value a smaller tree has, and whether
+/// the smaller tree is worth its lost accuracy is the SPRT's question and
+/// not this gate's. What is different this time is that the question was
+/// also measured before the test rather than left entirely to it, on 280
+/// book positions at three node budgets, and read in the rule's favour.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 13),
-    ("d5e6", -109),
+    ("d5e6", -200),
     ("b4f4", 40),
     ("c4c5", -613),
     ("d7c8r", 491),
-    ("g5f6", 108),
+    ("c3d5", 20),
     ("b1c3", 13),
     ("d1e3", 4),
     ("d2d4", 8),

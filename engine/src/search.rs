@@ -477,6 +477,15 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
     futile && index > 0 && !m.is_noisy()
 }
 
+/// The three node-level questions the move loop's skip rules ask, read once each before the
+/// loop starts. Held together because they are read together and passed together, and not
+/// because the three rules are one rule.
+pub struct Bands {
+    futile: bool,
+    give_up: Option<usize>,
+    losing: bool,
+}
+
 /// The deepest node at which a capture may be refused for the exchange it loses. **Five,
 /// because a node further from the horizon has the depth under a losing capture to find
 /// what the material bought, and refusing it there deletes a move on the weakest evidence
@@ -1017,33 +1026,13 @@ impl<'a> Search<'a> {
         // this rule returns no score of its own, so the sequence is
         // unaffected and what the placement saves is the test at every
         // node the null move cuts.
-        let futile = futile_node(self.evals[ply], depth, alpha);
-        self.futility_nodes += u64::from(futile);
-
-        // The count, read once against the list this node actually holds,
-        // because the rule is off at a node the count already admits
-        // whole. It sits beside the margin and not above it: the two act on
-        // one population and overlap over 43% of it, and whichever is asked
-        // first keeps the moves it takes. The margin is asked first so its
-        // own counters keep counting the population they were calibrated
-        // against, and this rule's report what it adds.
-        let give_up = lmp_index(in_check, depth, legal.len());
-        self.lmp_nodes += u64::from(give_up.is_some());
+        let bands = self.bands(in_check, depth, ply, alpha, legal.len());
 
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         for (i, m) in legal.iter().enumerate() {
-            if self.futile(board, futile, m, i) {
-                continue;
-            }
-            // Before the move is made, which is the whole of what the rule
-            // buys: a move given up here costs the node its exemption tests
-            // and nothing else. It is also above the reduction rather than
-            // beside it, and the two are not alternatives at a node where
-            // both would fire -- the move is gone and [`reduction`] never
-            // sees it.
-            if self.given_up(board, give_up, m, killers, i) {
+            if self.skipped(board, &bands, depth, m, killers, i) {
                 continue;
             }
             board.make_move(m);
@@ -1260,6 +1249,73 @@ impl<'a> Search<'a> {
             return false;
         }
         self.lmp_skipped += 1;
+        true
+    }
+
+    /// The three node-level reads, and the counters recording which nodes each rule could act
+    /// at. Read here rather than in [`Search::negamax`] for the reason [`Search::probe`] is a
+    /// method, which is the line-count gate and not a claim that the work belongs apart.
+    fn bands(
+        &mut self,
+        in_check: bool,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        moves: usize,
+    ) -> Bands {
+        let futile = futile_node(self.evals[ply], depth, alpha);
+        self.futility_nodes += u64::from(futile);
+        // The count sits beside the margin and not above it: the two act on one population
+        // and overlap over 43% of it, and whichever is asked first keeps the moves it takes.
+        // The margin is asked first so its own counters keep counting the population they
+        // were calibrated against, and the count's report what it adds.
+        let give_up = lmp_index(in_check, depth, moves);
+        self.lmp_nodes += u64::from(give_up.is_some());
+        // The exchange's band needs no such argument. Its population is disjoint from the
+        // other two, so where it is asked cannot move a single count, and
+        // `tests/see_pruning.rs` gates that rather than this comment asserting it.
+        let losing = see_prune_node(in_check, depth);
+        self.see_nodes += u64::from(losing);
+        Bands {
+            futile,
+            give_up,
+            losing,
+        }
+    }
+
+    /// Whether the move at `index` is skipped before it is made, by the margin, the count or
+    /// the exchange. Before the move is made is the whole of what these rules buy: a move
+    /// skipped here costs the node its exemption tests and nothing else, and it is above the
+    /// reduction rather than beside it, so the move is gone and [`reduction`] never sees it.
+    fn skipped(
+        &mut self,
+        board: &Board,
+        bands: &Bands,
+        depth: u32,
+        m: Move,
+        killers: [Move; 2],
+        index: usize,
+    ) -> bool {
+        self.futile(board, bands.futile, m, index)
+            || self.given_up(board, bands.give_up, m, killers, index)
+            || self.refused(board, bands.losing, depth, m, index)
+    }
+
+    /// Whether the move at `index` is refused for the exchange it loses, and the counters
+    /// that say so. `gives_check` is asked before the exchange because it is the cheaper of
+    /// the two, which reverses [`Search::futile`]'s order for the reason that produced it.
+    fn refused(&mut self, board: &Board, losing: bool, depth: u32, m: Move, index: usize) -> bool {
+        if !see_skips(losing, m, index) {
+            return false;
+        }
+        if board.gives_check(m) {
+            self.see_kept_check += 1;
+            return false;
+        }
+        if see::see(board, m) >= see_capture_bound(depth) {
+            return false;
+        }
+        self.see_skipped += 1;
         true
     }
 
