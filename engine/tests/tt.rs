@@ -22,8 +22,8 @@
 //! change most likely to break it, because it is the first thing that
 //! makes the same position return a different answer depending on what was
 //! searched before it. A gate for it is only worth having if it can fail,
-//! so it carries its own coverage assertion: the repeated search must
-//! actually be cheaper than the first, or the table was not warm and the
+//! so it carries its own coverage assertion: the repeated search must be
+//! cheaper than the first by a factor, or the table was not warm and the
 //! stability being observed is nothing.
 //!
 //! **`bench` must clear between positions.** Otherwise the total depends
@@ -946,6 +946,18 @@ fn setting_hash_makes_the_next_search_cold() {
 // The bench seam
 // ---------------------------------------------------------------------------
 
+/// The depth the coverage half below runs its shared-table passes at.
+///
+/// **Nine, and it is deliberately not [`bench::DEPTH`], because that constant
+/// moves and this demonstration dies when it does.** A 16 MB table holds the
+/// whole 39-position run to depth eleven and saturates above it, so a second
+/// pass costs 4.5% to 10% of the first at depths seven to eleven, 78% at
+/// twelve, and 1.067 and 0.993 at thirteen and fourteen, where the sign is
+/// arbitrary and a third pass at thirteen reads 0.963. Nine sits three plies
+/// below where that starts to go, so a later depth raise cannot empty this
+/// gate with nothing saying so.
+const SEAM_DEPTH: u32 = 9;
+
 /// The TT is cleared between positions. Without this the total depends on
 /// position order and on whatever `go` ran before it.
 ///
@@ -969,25 +981,22 @@ fn the_bench_clears_the_table_between_positions() {
         assert_eq!(best, line.best, "{}", line.fen);
     }
 
-    // The coverage assertion, and it is not the obvious one. Running the
-    // list twice on one table without clearing gives the *same* total the
-    // first time round, because no two bench positions transpose into each
-    // other at depth three. What carries across a seam is what the table
-    // learned about the position just searched, so the demonstration is a
-    // second pass: it is cheaper, and a bench that did not clear would be
-    // reporting that number for some of its positions.
+    // The coverage assertion, at [`SEAM_DEPTH`] rather than the bench's own
+    // and asserting a factor rather than a direction. A table that no longer
+    // holds the run makes the second pass neither cheaper nor dearer
+    // reliably, so a gate reading only the sign passes on a wobble.
     let shared = table(bench::HASH_MB);
     let pass = |shared: &Table| -> u64 {
         fens.iter()
-            .map(|fen| search_with(&mut board(fen), bench::DEPTH, shared).2)
+            .map(|fen| search_with(&mut board(fen), SEAM_DEPTH, shared).2)
             .sum()
     };
     let first = pass(&shared);
     let second = pass(&shared);
     assert!(
-        second < first,
-        "a second pass over the same table cost {second} against {first}, so nothing \
-         carries across a seam and this gate proves nothing"
+        second * 4 < first,
+        "a second pass over the same table cost {second} against {first}, inside the \
+         factor of four this gate needs to be discriminating at all"
     );
 }
 
