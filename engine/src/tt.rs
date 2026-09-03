@@ -46,6 +46,10 @@ pub const MAX_HASH_MB: usize = 4096;
 /// a probe that scans the whole bucket costs one cache miss.
 const SLOTS: usize = 4;
 
+/// Buckets [`Table::hashfull`] looks at. Four slots each, so the sample is
+/// the thousand a permill is a count of.
+const SAMPLE_BUCKETS: usize = 250;
+
 /// Depth, in ply, that one generation of age is worth when the least
 /// valuable slot of a full bucket is chosen.
 const AGE_PENALTY: i32 = 8;
@@ -280,6 +284,31 @@ impl Table {
     #[must_use]
     pub fn bytes(&self) -> usize {
         self.buckets.len() * size_of::<Bucket>()
+    }
+
+    /// How full the table is, in permill of the slots sampled: the first
+    /// [`SAMPLE_BUCKETS`] buckets, or every bucket in a table smaller than
+    /// that.
+    ///
+    /// It counts a slot that has ever been written rather than one this
+    /// search wrote, so within a game it rises and never falls until
+    /// [`Table::clear`].
+    #[must_use]
+    pub fn hashfull(&self) -> u32 {
+        let sampled = SAMPLE_BUCKETS.min(self.buckets.len());
+        if sampled == 0 {
+            return 0;
+        }
+        let mut used = 0;
+        for bucket in &self.buckets[..sampled] {
+            for slot in &bucket.slots {
+                // The data word alone: what is being asked is whether the
+                // slot was ever written, which no key makes truer.
+                let (_, data) = slot.read();
+                used += usize::from(Entry::from_bits(data).decode().is_some());
+            }
+        }
+        (used * 1000 / (sampled * SLOTS)) as u32
     }
 
     /// Empty every slot and put the generation back to zero.

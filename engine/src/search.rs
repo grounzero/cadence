@@ -550,6 +550,13 @@ pub struct Search<'a> {
     score: Score,
     /// The principal variation of the last completed iteration.
     pv: Vec<Move>,
+    /// The deepest ply either search reached in the iteration in progress,
+    /// which is what `seldepth` reports.
+    ///
+    /// Written at every node and read by nothing that decides anything, so
+    /// two searches that differ only in this field visit the same nodes in
+    /// the same order.
+    seldepth: usize,
     /// The triangular table the iteration in progress writes.
     table: PvTable,
     /// Two quiet moves per ply: the ones that caused a beta cutoff at a
@@ -670,6 +677,7 @@ impl<'a> Search<'a> {
             best: Move::NULL,
             score: DRAW,
             pv: Vec::with_capacity(MAX_PLY),
+            seldepth: 0,
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             history: History::new(),
@@ -712,6 +720,7 @@ impl<'a> Search<'a> {
         self.completed_depth = 0;
         self.best = Move::NULL;
         self.pv.clear();
+        self.seldepth = 0;
         self.killers = [[Move::NULL; 2]; MAX_PLY];
         self.history.clear();
         self.evals = [None; MAX_PLY];
@@ -748,7 +757,11 @@ impl<'a> Search<'a> {
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         for depth in 1..=max_depth {
             self.root_depth = depth;
-            let (best, score) = self.search_root(board, &root_moves, depth);
+            // Per iteration, so that the figure printed beside a depth
+            // belongs to it rather than to the deepest line of any
+            // iteration before it.
+            self.seldepth = 0;
+            let (best, score) = self.search_root(board, &legal, &root_moves, depth, out);
             if self.aborted {
                 // The last completed iteration stands. If there is none,
                 // the best root move fully searched so far does -- the
@@ -793,16 +806,35 @@ impl<'a> Search<'a> {
         self.best
     }
 
+    /// Count a node, at the ply it sits at.
+    ///
+    /// The deepest ply is what `seldepth` reports and nothing here reads it,
+    /// so a search that keeps it visits the same nodes in the same order as
+    /// one that does not.
+    #[inline]
+    fn visit(&mut self, ply: usize) {
+        self.nodes += 1;
+        self.seldepth = self.seldepth.max(ply);
+    }
+
     /// The root: every move, the first in the full window and the rest in
     /// a null one, the best move and its score.
-    fn search_root(&mut self, board: &mut Board, moves: &[Move], depth: u32) -> (Move, Score) {
-        self.nodes += 1;
+    fn search_root(
+        &mut self,
+        board: &mut Board,
+        legal: &MoveList,
+        moves: &[Move],
+        depth: u32,
+        out: &mut dyn Write,
+    ) -> (Move, Score) {
+        self.visit(0);
         self.table.clear(0);
         let mut alpha = -INFINITE;
         let beta = INFINITE;
         let mut best = moves[0];
         let mut best_score = -INFINITE;
         for (i, &m) in moves.iter().enumerate() {
+            self.name_current(m, i + 1, legal, out);
             board.make_move(m);
             // A root move that gives check is extended like any other: the
             // rule is about the move, and the root has no claim on being
@@ -888,7 +920,7 @@ impl<'a> Search<'a> {
         if depth == 0 {
             return self.quiesce(board, ply, alpha, beta);
         }
-        self.nodes += 1;
+        self.visit(ply);
         self.table.clear(ply);
         // At every node, so that `nodes N` stops at N and not at N plus a
         // subtree.
@@ -1319,7 +1351,7 @@ impl<'a> Search<'a> {
     /// where the state stack ends. Fail-soft; it writes no principal
     /// variation, so the pv ends at the horizon.
     fn quiesce(&mut self, board: &mut Board, ply: usize, mut alpha: Score, beta: Score) -> Score {
-        self.nodes += 1;
+        self.visit(ply);
         self.table.clear(ply);
         if self.out_of_time() {
             return DRAW;
@@ -1432,16 +1464,42 @@ impl<'a> Search<'a> {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    /// Name the root move about to be searched, and its place in the root
+    /// list, once the search has been running for [`CURRMOVE_AFTER_MS`].
+    ///
+    /// Nothing is written and no clock is read under a depth or node
+    /// limit, which is the shape `bench` runs in: the first test is what
+    /// keeps this off that path entirely.
+    fn name_current(&self, m: Move, number: usize, legal: &MoveList, out: &mut dyn Write) {
+        if self.budget.is_none() && !self.limits.infinite {
+            return;
+        }
+        if self.elapsed_ms() < CURRMOVE_AFTER_MS {
+            return;
+        }
+        // No `depth` on this line, deliberately. A harness that picks
+        // iteration lines out of the stream by their `info depth ` prefix
+        // would otherwise collect one of these per root move.
+        let _ = writeln!(
+            out,
+            "info currmove {} currmovenumber {number}",
+            to_uci(m, legal, self.chess960)
+        );
+        let _ = out.flush();
+    }
+
     /// One `info` line for the iteration just completed. The pv is spelled
     /// by walking it on the board, so castling reads per the option.
     fn report(&self, board: &mut Board, out: &mut dyn Write) {
         let ms = self.elapsed_ms();
         let nps = self.nodes * 1000 / ms.max(1);
         let mut line = format!(
-            "info depth {} score {} nodes {} nps {nps} time {ms} pv",
+            "info depth {} seldepth {} score {} nodes {} nps {nps} hashfull {} time {ms} pv",
             self.completed_depth,
+            self.seldepth,
             score::uci(self.score),
-            self.nodes
+            self.nodes,
+            self.tt.hashfull()
         );
         let mut made = 0;
         for &m in &self.pv {
