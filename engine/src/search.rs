@@ -59,6 +59,7 @@ use cadence_core::{
     Colour, MAX_PLY, Move, MoveList, PieceType, generate_legal, generate_noisy, to_uci,
 };
 
+use crate::corrhist::{self, Probe, Shadow};
 use crate::eval;
 use crate::history::{self, History};
 use crate::picker;
@@ -555,6 +556,10 @@ pub struct Search<'a> {
     /// the two have one lifetime; thirty-two kibibytes, on the heap for
     /// `PvTable`'s reason rather than inline for `killers`'.
     history: History,
+    /// The correction table that learns and decides nothing, when a caller
+    /// has one to lend. `None` everywhere the instrument is not being run,
+    /// which is every path the bench takes.
+    shadow: Option<&'a Shadow>,
     /// The depth of the iteration in progress, which is what the check
     /// extension's ply cap is a multiple of. Set at the head of each
     /// iteration; a field rather than a sixth argument to `negamax`
@@ -665,6 +670,7 @@ impl<'a> Search<'a> {
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             history: History::new(),
+            shadow: None,
             root_depth: 0,
             evals: [None; MAX_PLY],
             null_attempts: 0,
@@ -684,6 +690,13 @@ impl<'a> Search<'a> {
             reverse_futility_refused_window: 0,
             iterations: Vec::new(),
         }
+    }
+
+    /// Lend the search a correction table to fill in. Nothing it holds is
+    /// read by any rule here, so a search with one and a search without one
+    /// visit the same nodes in the same order.
+    pub fn set_shadow(&mut self, shadow: &'a Shadow) {
+        self.shadow = Some(shadow);
     }
 
     /// Spell castling moves in `info` lines per `UCI_Chess960`.
@@ -868,6 +881,10 @@ impl<'a> Search<'a> {
 
     /// Negamax with alpha-beta, fail-soft. The value returned after an abort
     /// is meaningless and is discarded by every caller.
+    // Over the line limit by the instrument's ten lines and by nothing else,
+    // which is why the allow sits here rather than on a smaller seam. It
+    // comes off with the instrument.
+    #[allow(clippy::too_many_lines)]
     fn negamax(
         &mut self,
         board: &mut Board,
@@ -923,6 +940,17 @@ impl<'a> Search<'a> {
             Some(eval::evaluate(board))
         };
 
+        // The correction table's reading for this node, taken before the
+        // node contributes anything of its own so that nothing it offers has
+        // seen the score it will be scored against. It decides nothing here
+        // and every use of it below is a counter.
+        let probe = self
+            .shadow
+            .map(|s| s.probe(board.pawn_key(), board.side_to_move()));
+        self.shadow_margin(corrhist::REVERSE, probe.as_ref(), ply, |eval| {
+            reverse_futile(eval, depth, beta).is_some()
+        });
+
         // The margin, above the null move because the node's preamble runs
         // the margin tests there and because below it the rule would be
         // nothing but its own error case: see [`Search::reverse_futility`].
@@ -958,6 +986,9 @@ impl<'a> Search<'a> {
         // node the null move cuts.
         let futile = futile_node(self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
+        self.shadow_margin(corrhist::FUTILITY, probe.as_ref(), ply, |eval| {
+            futile_node(eval, depth, alpha)
+        });
 
         // The count, read once against the list this node actually holds,
         // because the rule is off at a node the count already admits
@@ -1068,7 +1099,63 @@ impl<'a> Search<'a> {
             depth.min(u32::from(u8::MAX)) as u8,
             bound,
         );
+        self.shadow_update(probe.as_ref(), ply, best, best_move, bound, depth);
         best
+    }
+
+    /// Record what one margin rule would have decided had the correction
+    /// been added to the static evaluation, beside what it did decide.
+    ///
+    /// A closure rather than the rule's own arguments, because the two rules
+    /// take different ones and neither may be re-asked with a different
+    /// answer reaching the search.
+    fn shadow_margin(
+        &self,
+        rule: usize,
+        probe: Option<&Probe>,
+        ply: usize,
+        decide: impl Fn(Option<Score>) -> bool,
+    ) {
+        let (Some(shadow), Some(probe), Some(eval)) = (self.shadow, probe, self.evals[ply]) else {
+            return;
+        };
+        let raw = decide(Some(eval));
+        let corrected = probe
+            .corrections
+            .map(|c| decide(Some(eval.saturating_add(c))));
+        shadow.rule(rule, raw, corrected);
+    }
+
+    /// Fold a node's returned score into the correction table, where the
+    /// score is one the technique counts as usable.
+    ///
+    /// The conditions are the ones the technique is defined with: an
+    /// evaluation exists, the score is off the mate scale, the move that
+    /// produced it is quiet, and the bound runs in the direction the
+    /// correction would.
+    fn shadow_update(
+        &self,
+        probe: Option<&Probe>,
+        ply: usize,
+        best: Score,
+        best_move: Move,
+        bound: Bound,
+        depth: u32,
+    ) {
+        let (Some(shadow), Some(probe), Some(eval)) = (self.shadow, probe, self.evals[ply]) else {
+            return;
+        };
+        if score::is_mate(best) || best_move == Move::NULL || best_move.is_noisy() {
+            return;
+        }
+        let usable = match bound {
+            Bound::Exact => true,
+            Bound::Lower => best > eval,
+            Bound::Upper => best < eval,
+        };
+        if usable {
+            shadow.update(probe, best - eval, depth);
+        }
     }
 
     /// Put the node's move list in the order it will be searched, and hand

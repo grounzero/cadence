@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 use cadence_core::position::Board;
 use cadence_core::{START_FEN, generate_legal, parse_uci, to_uci};
 
+use crate::corrhist::Shadow;
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
 
@@ -51,6 +52,10 @@ pub struct Session {
     /// The search thread started by the last `go`, until `stop`, the next
     /// `go`, or shutdown joins it. It may already have finished.
     search: Option<Running>,
+    /// The correction table the instrument fills in, kept across the whole
+    /// session so that an entry can outlive the move that wrote it. It is
+    /// read by nothing that decides anything and is reported by `shadow`.
+    shadow: Arc<Shadow>,
 }
 
 /// A search in flight: the flag that ends it and the thread to wait for.
@@ -83,6 +88,7 @@ impl Session {
             chess960: false,
             tt: Arc::new(tt),
             search: None,
+            shadow: Arc::new(Shadow::new()),
         }
     }
 
@@ -160,6 +166,14 @@ impl Session {
             "ucinewgame" => {
                 self.stop_search();
                 self.tt.clear();
+            }
+            // The instrument's counters, on stdout and outside the
+            // protocol. A GUI never sends this and an unknown command is
+            // ignored, so nothing that speaks UCI can reach it by accident.
+            "shadow" => {
+                let mut out = std::io::stdout().lock();
+                let _ = self.shadow.report(&mut out);
+                let _ = out.flush();
             }
             "quit" => return false,
             // `debug`, `register`, `ponderhit` and anything unknown are
@@ -331,6 +345,11 @@ impl Session {
             // the search replaces the session's table without pulling this
             // one out from under the thread reading it.
             let tt = Arc::clone(&self.tt);
+            // The instrument, lent to the search for the length of one `go`
+            // and advanced first so that a probe can tell an entry this
+            // search wrote from one an earlier move left.
+            let shadow = Arc::clone(&self.shadow);
+            shadow.advance();
             // An explicit stack: the search recurses to MAX_PLY at most, with
             // a move list in every frame, and the default for a spawned
             // thread is not something to rely on across platforms and
@@ -343,6 +362,7 @@ impl Session {
                     let mut out = std::io::stdout();
                     let mut search = Search::new(limits, &stop, &tt);
                     search.set_chess960(chess960);
+                    search.set_shadow(&shadow);
                     let best = search.run(&mut board, &mut out);
                     say(format_args!("bestmove {}", to_uci(best, &legal, chess960)));
                 })

@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bench;
+pub mod corrhist;
 pub mod eval;
 pub mod history;
 pub mod perft;
