@@ -173,6 +173,14 @@ fn small<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u32> {
 /// How often the clock is read, in nodes. A power of two.
 const CLOCK_INTERVAL: u64 = 1024;
 
+/// How long a search runs before it starts naming the root move it is on,
+/// in milliseconds.
+///
+/// The conventional second: below it a game at any club control finishes
+/// the move without ever saying `currmove`, so nothing is written down a
+/// pipe that a watcher could not have read anyway.
+pub const CURRMOVE_AFTER_MS: u64 = 1000;
+
 /// The deepest iteration: `MAX_PLY`, which is the state stack's bound. It
 /// is no longer the deepest ply either search reaches -- a check extension
 /// gives a ply back, and [`extension`] states the bound that replaces it --

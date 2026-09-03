@@ -359,3 +359,183 @@ fn go_on_a_position_with_the_side_not_to_move_in_check_returns_a_move() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The info fields a watcher reads
+// ---------------------------------------------------------------------------
+
+/// The value `name` carries on a UCI `info` line, parsed.
+///
+/// Token position and not a byte offset, because that is how a GUI reads one
+/// and it is what lets a field be inserted without moving the others.
+fn field<T: std::str::FromStr>(line: &str, name: &str) -> Option<T> {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    let at = toks.iter().position(|t| *t == name)?;
+    toks.get(at + 1)?.parse().ok()
+}
+
+/// Every iteration line carries a `seldepth`, and it is never below the
+/// `depth` beside it.
+///
+/// The second assertion is what stops the field being `depth` under another
+/// name: quiescence searches past the horizon, so a real reading is strictly
+/// deeper on most iterations and this one demands it on at least one.
+#[test]
+fn iteration_lines_carry_a_seldepth_the_quiescence_search_pushes_past_the_depth() {
+    let out = Engine::go(&["position startpos"], "go depth 10").join("\n");
+    let lines: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("info depth "))
+        .collect();
+    assert_eq!(lines.len(), 10, "{out}");
+    let mut deeper = 0;
+    for line in &lines {
+        let depth: usize = field(line, "depth").unwrap_or_else(|| panic!("no depth on {line}"));
+        let seldepth: usize =
+            field(line, "seldepth").unwrap_or_else(|| panic!("no seldepth on {line}"));
+        assert!(
+            seldepth >= depth,
+            "seldepth {seldepth} is above the horizon of a depth {depth} iteration: {line}"
+        );
+        assert!(seldepth <= cadence_core::MAX_PLY, "{line}");
+        if seldepth > depth {
+            deeper += 1;
+        }
+    }
+    assert!(
+        deeper > 0,
+        "no iteration reached past its own depth, so `seldepth` is spelling `depth`: {out}"
+    );
+}
+
+/// `hashfull` is a permill, it never falls inside one search, and
+/// `ucinewgame` puts it back.
+///
+/// Rising and falling are both asserted because either alone passes against
+/// a constant: a field wired to zero never falls, and one wired to the depth
+/// never returns.
+#[test]
+fn hashfull_rises_within_a_search_and_ucinewgame_puts_it_back() {
+    let permills = |lines: &[String]| -> Vec<u32> {
+        lines
+            .iter()
+            .filter(|l| l.starts_with("info depth "))
+            .map(|l| field(l, "hashfull").unwrap_or_else(|| panic!("no hashfull on {l}")))
+            .collect()
+    };
+    let mut engine = Engine::spawn();
+    engine.sync();
+    engine.send("position startpos");
+    engine.send("go depth 16");
+    let filling = permills(&engine.read_until("bestmove "));
+    assert_eq!(filling.len(), 16, "{filling:?}");
+    for pair in filling.windows(2) {
+        assert!(
+            pair[1] >= pair[0],
+            "hashfull fell from {} to {} inside one search: {filling:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    for &permill in &filling {
+        assert!(permill <= 1000, "hashfull {permill} is not a permill");
+    }
+    let filled = *filling.last().expect("an iteration");
+    assert!(
+        filled > 0,
+        "a depth 16 search left the table reading empty: {filling:?}"
+    );
+    engine.send("ucinewgame");
+    engine.send("position startpos");
+    engine.send("go depth 1");
+    let emptied = permills(&engine.read_until("bestmove "));
+    assert!(
+        emptied.first().is_some_and(|&p| p < filled),
+        "ucinewgame emptied the table and hashfull went from {filled} to {emptied:?}"
+    );
+    engine.quit();
+}
+
+/// A clocked search past [`cadence_engine::search::CURRMOVE_AFTER_MS`] names
+/// the root move it is on; a node-limited search over the same tree names
+/// none.
+///
+/// The pair is one test because the second half is only worth anything
+/// against a first half that fired: the node limit is taken from the clocked
+/// run, so the two searches cost the same and the difference between them is
+/// the limit rather than the machine.
+#[test]
+fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
+    let watched = cadence_engine::search::CURRMOVE_AFTER_MS * 2;
+    let (elapsed, clocked) = Engine::go_within(
+        &["position startpos"],
+        &format!("go movetime {watched}"),
+        std::time::Duration::from_secs(60),
+    );
+    // The one thing `bench` cannot say anything about: these lines are
+    // written down a live pipe while the clock runs, and a search that
+    // overshoots its movetime writing them loses games rather than nodes.
+    assert!(
+        elapsed < std::time::Duration::from_millis(watched * 2),
+        "a {watched} ms search took {elapsed:?} while naming its root moves"
+    );
+    let named: Vec<&String> = clocked
+        .iter()
+        .filter(|l| l.starts_with("info currmove "))
+        .collect();
+    assert!(
+        !named.is_empty(),
+        "a {watched} ms search named no root move: {clocked:?}"
+    );
+
+    let board = Board::from_fen(START_FEN).expect("the start position");
+    let legal = generate_legal(&board);
+    let mut numbers = Vec::new();
+    for line in &named {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(
+            toks.len(),
+            5,
+            "a currmove line is `info currmove <move> currmovenumber <n>`: {line}"
+        );
+        assert_eq!(toks[3], "currmovenumber", "{line}");
+        assert!(
+            parse_uci(&legal, toks[2]).is_some(),
+            "`{}` is not a legal move at the root: {line}",
+            toks[2]
+        );
+        let number: usize = toks[4].parse().unwrap_or_else(|_| panic!("{line}"));
+        assert!(
+            (1..=legal.len()).contains(&number),
+            "currmovenumber {number} is outside the {} root moves: {line}",
+            legal.len()
+        );
+        numbers.push(number);
+    }
+    // The number is a place in the root list, so it climbs through an
+    // iteration and the only value it may fall to is the next iteration's
+    // first.
+    for pair in numbers.windows(2) {
+        assert!(
+            pair[1] > pair[0] || pair[1] == 1,
+            "currmovenumber went {} then {}: {numbers:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+
+    let nodes: u64 = clocked
+        .iter()
+        .rfind(|l| l.starts_with("info depth "))
+        .and_then(|l| field(l, "nodes"))
+        .expect("a completed iteration");
+    let (_, counted) = Engine::go_within(
+        &["position startpos"],
+        &format!("go nodes {nodes}"),
+        std::time::Duration::from_secs(60),
+    );
+    assert!(
+        !counted.iter().any(|l| l.contains("currmove")),
+        "a node-limited search of {nodes} nodes named a root move: {counted:?}"
+    );
+}
