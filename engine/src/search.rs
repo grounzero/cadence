@@ -973,11 +973,9 @@ impl<'a> Search<'a> {
         // measures is a position nobody is about to win material in, and a
         // check is exactly that claim being contested.
         let in_check = board.in_check();
-        self.evals[ply] = if in_check {
-            None
-        } else {
-            Some(eval::evaluate(board))
-        };
+        let pawn_key = board.pawn_key();
+        let us_eval = board.side_to_move();
+        self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // The margin, above the null move because the node's preamble runs
         // the margin tests there and because below it the rule would be
@@ -1124,7 +1122,66 @@ impl<'a> Search<'a> {
             depth.min(u32::from(u8::MAX)) as u8,
             bound,
         );
+        self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
+    }
+
+    /// The static evaluation this node's rules read, corrected by what the
+    /// evaluation has been wrong by on this pawn structure.
+    ///
+    /// The correction is read before the node folds anything in, so nothing
+    /// it offers has seen the score it will be scored against. It is added
+    /// here rather than inside any one rule's margin, because every rule
+    /// below reads this stack.
+    fn corrected_eval(
+        &mut self,
+        board: &Board,
+        in_check: bool,
+        pawn_key: u64,
+        side: Colour,
+    ) -> Option<Score> {
+        if in_check {
+            return None;
+        }
+        let correction = self.corrhist.correction(pawn_key, side);
+        self.corrhist_applied += u64::from(correction != 0);
+        Some(eval::evaluate(board) + correction)
+    }
+
+    /// Fold this node's disagreement between the static evaluation and the
+    /// score it returned into the correction table.
+    ///
+    /// Four things disqualify a node: no static reading, a mate score, a
+    /// best move that is noisy or absent, and a bound pointing the other
+    /// way from the difference. The first three are positions the
+    /// evaluation was never making a claim about; the fourth is a bound
+    /// that has not established the difference it appears to show.
+    #[allow(clippy::too_many_arguments)]
+    fn remember_correction(
+        &mut self,
+        pawn_key: u64,
+        side: Colour,
+        ply: usize,
+        best: Score,
+        best_move: Move,
+        bound: Bound,
+        depth: u32,
+    ) {
+        let Some(eval) = self.evals[ply] else {
+            return;
+        };
+        if score::is_mate(best) || best_move == Move::NULL || best_move.is_noisy() {
+            return;
+        }
+        let usable = match bound {
+            Bound::Exact => true,
+            Bound::Lower => best > eval,
+            Bound::Upper => best < eval,
+        };
+        if usable {
+            self.corrhist.update(pawn_key, side, best - eval, depth);
+            self.corrhist_updates += 1;
+        }
     }
 
     /// Put the node's move list in the order it will be searched, and hand

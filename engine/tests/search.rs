@@ -904,6 +904,15 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// so a move that changed did so because a subtree's value moved, not
 /// because it was searched at less than its depth.
 ///
+/// **Re-measured 2026-09-04 when correction history landed**, which moved
+/// three scores by three to seven points and one move. That is the largest
+/// re-baseline this array has taken from a single change and the size is
+/// what the change is: every earlier one moved the value of some subtrees,
+/// and this one moves the static evaluation every margin rule reads at
+/// every quiet node, so it moves the value of the whole tree a little.
+/// Main-search SEE pruning, a rule acting on one band of moves at low
+/// depth, moved two entries.
+///
 /// **The history heuristic moved four scores by two to twelve points and
 /// one move, and it is the first re-baseline here caused by an ordering
 /// change.** Ordering used to be the thing this fixture was safe against:
@@ -963,17 +972,17 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 13),
     ("d5e6", -109),
-    ("b4f4", 40),
+    ("b4f4", 33),
     ("c4c5", -613),
     ("d7c8r", 491),
     ("g5f6", 108),
     ("b1c3", 13),
     ("d1e3", 4),
     ("d2d4", 8),
-    ("d1e3", 2),
-    ("g1f2", 532),
+    ("d1e3", 8),
+    ("g1f2", 529),
     ("f1h1", 522),
-    ("g1g7", 536),
+    ("g1h1", 525),
     ("a1a7", 532),
 ];
 
