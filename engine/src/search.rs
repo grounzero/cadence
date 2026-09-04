@@ -56,7 +56,7 @@ use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{
-    Colour, MAX_PLY, Move, MoveList, PieceType, generate_legal, generate_noisy, to_uci,
+    Colour, MAX_MOVES, MAX_PLY, Move, MoveList, PieceType, generate_legal, generate_noisy, to_uci,
 };
 
 use crate::corrhist::CorrectionHistory;
@@ -435,6 +435,58 @@ pub fn lmp_skips(from: Option<usize>, m: Move, killers: [Move; 2], index: usize)
     from.is_some_and(|count| index >= count) && !m.is_noisy() && m != killers[0] && m != killers[1]
 }
 
+/// What a node's own window says about the value it found: at or above
+/// `beta` a lower bound, above the alpha the node started with an exact
+/// score, and otherwise an upper bound.
+///
+/// Fail-soft, so it reads the value against the window rather than
+/// returning the window. `alpha` is the node's original alpha and not the
+/// raised one, which is what makes an exact score distinguishable from a
+/// node nothing beat.
+#[must_use]
+pub fn bound_for(best: Score, alpha: Score, beta: Score) -> Bound {
+    if best >= beta {
+        Bound::Lower
+    } else if best > alpha {
+        Bound::Exact
+    } else {
+        Bound::Upper
+    }
+}
+
+/// Which of a node's moves that node searched, one bit per index into its
+/// own list. It is what [`Search::remember_history`] reads to tell a move
+/// that failed to cut from one that was never tried.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Searched([u64; Searched::WORDS]);
+
+impl Searched {
+    /// Words enough for [`MAX_MOVES`] bits, which is every index a
+    /// generated list can hold. The assertion below is what keeps the two
+    /// in step, since a size that divides unevenly would drop the tail.
+    pub const WORDS: usize = MAX_MOVES / 64;
+    const _EXACT: () = assert!(MAX_MOVES.is_multiple_of(64));
+
+    /// Nothing searched, which is every node's state before its loop.
+    #[must_use]
+    pub fn new() -> Searched {
+        Searched([0; Searched::WORDS])
+    }
+
+    /// Record that the move at `index` was searched, idempotently. It
+    /// indexes rather than saturates, so an index past a generated list's
+    /// length is a bounds check and not a bit quietly dropped.
+    pub fn set(&mut self, index: usize) {
+        self.0[index / 64] |= 1 << (index % 64);
+    }
+
+    /// Whether the move at `index` was searched.
+    #[must_use]
+    pub fn contains(&self, index: usize) -> bool {
+        self.0[index / 64] & (1 << (index % 64)) != 0
+    }
+}
+
 /// The deepest node at which a quiet move may be skipped for the margin.
 ///
 /// **Below the limit the rule is off, not weaker.** A node outside the band
@@ -620,6 +672,12 @@ pub struct Search<'a> {
     /// credits from a table that also debits.
     history_reduced_less: u64,
     history_reduced_more: u64,
+    /// How many quiet moves a cutoff debited, and how many of those the
+    /// node never searched. The second is the verification the debit loop
+    /// had none of: it is a share of the first that no rule here intends,
+    /// and a gate asserts it is zero rather than small.
+    history_debits: u64,
+    history_debits_unsearched: u64,
     /// How often the margin admitted a node, how many quiet moves it
     /// skipped there, and how often it would have skipped one and did not
     /// because the move gives check.
@@ -701,6 +759,8 @@ impl<'a> Search<'a> {
             null_refused_material: 0,
             lmr_reductions: 0,
             lmr_researches: 0,
+            history_debits: 0,
+            history_debits_unsearched: 0,
             history_reduced_less: 0,
             history_reduced_more: 0,
             futility_nodes: 0,
@@ -744,6 +804,8 @@ impl<'a> Search<'a> {
         self.lmr_researches = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
+        self.history_debits = 0;
+        self.history_debits_unsearched = 0;
         self.corrhist.clear();
         self.corrhist_updates = 0;
         self.corrhist_applied = 0;
@@ -1026,6 +1088,10 @@ impl<'a> Search<'a> {
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
+        // What the debit below is entitled to act on. Every rule that gives
+        // a move up leaves the loop above the one line that writes this, so
+        // the record needs no maintenance at any of them.
+        let mut searched = Searched::new();
         for (i, m) in legal.iter().enumerate() {
             if self.futile(board, futile, m, i) {
                 continue;
@@ -1039,6 +1105,7 @@ impl<'a> Search<'a> {
             if self.given_up(board, give_up, m, killers, i) {
                 continue;
             }
+            searched.set(i);
             board.make_move(m);
             // The check extension, on the child's own state: `make_move`
             // has just recomputed the checkers, so asking costs nothing
@@ -1099,7 +1166,7 @@ impl<'a> Search<'a> {
                         // with its own test; what a reader would otherwise
                         // get wrong is that the slice is the moves the node
                         // tried, and it is the moves the node passed.
-                        self.remember_history(us, &legal.as_slice()[..i], m, depth);
+                        self.remember_history(us, &legal.as_slice()[..i], &searched, m, depth);
                         break;
                     }
                 }
@@ -1108,13 +1175,7 @@ impl<'a> Search<'a> {
         // Fail-soft, so the bound follows the value and not the window it
         // was found in. Nothing an aborted search computed is stored: the
         // loop above returns before this line.
-        let bound = if best >= beta {
-            Bound::Lower
-        } else if best > original_alpha {
-            Bound::Exact
-        } else {
-            Bound::Upper
-        };
+        let bound = bound_for(best, original_alpha, beta);
         self.tt.store(
             key,
             best_move,
@@ -1316,14 +1377,28 @@ impl<'a> Search<'a> {
     }
 
     /// Record what this node's cutoff says about its quiet moves: credit
-    /// `cut`, and debit every quiet move tried ahead of it at this node.
-    fn remember_history(&mut self, us: Colour, tried: &[Move], cut: Move, depth: u32) {
+    /// `cut`, and debit the quiet moves ahead of it in `passed`. `searched`
+    /// is read by the counter alone here, so the debit is still the whole
+    /// slice and the gate on that counter fails against this commit.
+    fn remember_history(
+        &mut self,
+        us: Colour,
+        passed: &[Move],
+        searched: &Searched,
+        cut: Move,
+        depth: u32,
+    ) {
         if cut.is_noisy() {
             return;
         }
         let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
-        for &beaten in tried.iter().filter(|q| !q.is_noisy()) {
+        for (i, &beaten) in passed.iter().enumerate() {
+            if beaten.is_noisy() {
+                continue;
+            }
+            self.history_debits += 1;
+            self.history_debits_unsearched += u64::from(!searched.contains(i));
             self.history.update(us, beaten, -bonus);
         }
     }
@@ -1636,6 +1711,19 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
         self.history_reduced_less
+    }
+
+    /// How many quiet moves the cutoffs debited, and how many of those the
+    /// node never searched. The second is zero on a tree where the debit
+    /// reaches only what was searched, and `tests/history.rs` asserts it.
+    #[must_use]
+    pub fn history_debits(&self) -> u64 {
+        self.history_debits
+    }
+
+    #[must_use]
+    pub fn history_debits_unsearched(&self) -> u64 {
+        self.history_debits_unsearched
     }
 
     #[must_use]

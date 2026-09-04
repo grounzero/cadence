@@ -18,6 +18,12 @@
 //! reads on the downside; a table that only ever credits would pass every
 //! gate here that does not look for one.
 //!
+//! The debit's own gate is
+//! [`a_debit_reaches_only_the_moves_the_node_searched`], and it is the
+//! verification that loop had none of: the pruning rules give quiet moves
+//! up inside the slice a cutoff debits, and nothing said whether the table
+//! was learning from a move that failed or from one nobody played.
+//!
 //! The rest pin the arithmetic directly, without a search: the bonus, the
 //! ageing update's bound and its diminishing return, the shift, and the
 //! rule that history adjusts a reduction and never creates one.
@@ -27,10 +33,10 @@ mod support;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
-use cadence_core::{Colour, Move, MoveList, START_FEN, generate_legal};
+use cadence_core::{Colour, MAX_MOVES, Move, MoveList, START_FEN, generate_legal};
 use cadence_engine::history::{self, HISTORY_MAX, History, SHIFT_MAX, SPAN};
 use cadence_engine::picker::sort_from;
-use cadence_engine::search::{Limits, Search, history_reduction, lmr_reduction};
+use cadence_engine::search::{Limits, Search, Searched, history_reduction, lmr_reduction};
 use support::table;
 
 /// The depth the ordering gate runs at. Six, like the reduction gates:
@@ -191,6 +197,127 @@ fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
         s.history_reduced_more() > 0,
         "no history score ever lengthened a reduction"
     );
+}
+
+/// The depth the debit gate runs at, and it is chosen against a
+/// measurement rather than from the depths the two pruning rules name.
+///
+/// Both rules give quiet moves up from depth four on this position, and a
+/// debit falls on one of them only from depth eight: measured over root
+/// depths four to eleven, the count of debits landing on an unsearched move
+/// runs 0, 0, 0, 0, 34, 69, 144, 355. A gate at seven or below would assert
+/// the property of a search that never violated it, so eight is the first
+/// depth that works and nine is taken, one past it, for `GATE_DEPTH`'s
+/// reason in `tests/futility.rs`. At nine the margin gives up 51,228 moves,
+/// the count 41,858, and the cutoffs debit 318 quiet moves of which 69 were
+/// never searched.
+const DEBIT_DEPTH: u32 = 9;
+
+/// **The debit reaches the moves the node searched and no others.**
+///
+/// A move that was given up before `make_move` produced no evidence, and
+/// debiting it is the search learning from a game it did not play. The
+/// hazard is that the circuit closes: a debited move sorts lower, a lower
+/// rank is a higher index, and a higher index is nearer the count the
+/// pruning gives up at, so a move given up once is likelier to be given up
+/// again on evidence its own skipping created.
+///
+/// Three coverage assertions come first, because the property is trivially
+/// true of a search that pruned nothing: both rules must have given a quiet
+/// move up somewhere, and some cutoff must have debited one, or the fourth
+/// assertion passes without having asked anything.
+#[test]
+fn a_debit_reaches_only_the_moves_the_node_searched() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = board(MIDDLEGAME);
+    let mut s = Search::new(Limits::depth(DEBIT_DEPTH), &stop, &tt);
+    let best = s.run(&mut b, &mut Vec::new());
+    assert!(!best.is_null(), "no move");
+
+    assert!(
+        s.futility_skipped() > 0,
+        "the margin gave up no move, so the slice holds nothing it skipped"
+    );
+    assert!(
+        s.lmp_skipped() > 0,
+        "the count gave up no move, so the slice holds nothing it skipped"
+    );
+    assert!(
+        s.history_debits() > 0,
+        "no quiet cutoff debited anything at depth {DEBIT_DEPTH}"
+    );
+    assert_eq!(
+        s.history_debits_unsearched(),
+        0,
+        "{} of {} debits fell on a move the node never searched",
+        s.history_debits_unsearched(),
+        s.history_debits()
+    );
+}
+
+/// The record is empty until something is written to it, reads back what
+/// was written, and keeps its indices apart.
+///
+/// Idempotence is asserted because the loop visits an index once and a gate
+/// should not rest on that, and the two ends are asserted because a word
+/// index and a bit index are the two things an implementation gets the
+/// wrong way round while every middle case still passes.
+#[test]
+fn the_record_reads_back_what_was_set() {
+    let empty = Searched::new();
+    for i in 0..MAX_MOVES {
+        assert!(!empty.contains(i), "a fresh record holds {i}");
+    }
+    assert_eq!(
+        empty,
+        Searched::default(),
+        "default is not the empty record"
+    );
+
+    for &i in &[0usize, 1, 63, 64, 65, 127, 128, 191, 192, MAX_MOVES - 1] {
+        let mut r = Searched::new();
+        r.set(i);
+        assert!(r.contains(i), "{i} was set and does not read back");
+        r.set(i);
+        assert!(r.contains(i), "{i} did not survive being set twice");
+        for j in 0..MAX_MOVES {
+            assert_eq!(r.contains(j), i == j, "setting {i} moved {j}");
+        }
+    }
+
+    // Every index at once, which is the state a node that searched its
+    // whole list leaves behind.
+    let mut all = Searched::new();
+    for i in 0..MAX_MOVES {
+        all.set(i);
+    }
+    for i in 0..MAX_MOVES {
+        assert!(all.contains(i), "{i} is missing from a full record");
+    }
+}
+
+/// Every move list a generator can produce is indexable in the record.
+///
+/// The record is sized for [`MAX_MOVES`] and indexes rather than saturates,
+/// so this is `every_generated_move_indexes_inside_the_table`'s argument
+/// applied to the other array a cutoff reads: the bound is asserted against
+/// real lists rather than hidden behind a clamp that would pass on the day
+/// it stopped holding.
+#[test]
+fn every_generated_list_fits_the_record() {
+    let mut widest = 0;
+    for fen in support::corpus_fens() {
+        let b = board(&fen);
+        let n = generate_legal(&b).len();
+        assert!(n <= MAX_MOVES, "{fen}: {n} moves");
+        let mut r = Searched::new();
+        for i in 0..n {
+            r.set(i);
+        }
+        widest = widest.max(n);
+    }
+    assert!(widest > 0, "the corpus produced no moves");
 }
 
 /// Every entry the search writes stays inside the table's stated range,

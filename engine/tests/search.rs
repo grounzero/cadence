@@ -28,8 +28,8 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, to_uci};
 use cadence_engine::eval;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, Search, extension};
-use cadence_engine::tt::Table;
+use cadence_engine::search::{Limits, Search, bound_for, extension};
+use cadence_engine::tt::{Bound, Table};
 use support::{Outcome, Rng, play_game, random_mover, table};
 
 /// The result of one search: move, score, nodes, completed depth, pv.
@@ -1207,4 +1207,49 @@ fn versus_random(games: usize, depth: u32) -> (usize, usize, usize) {
         }
     }
     (won, games, plies)
+}
+
+/// The fail-soft bound a node stores, over the whole ordering of a value
+/// against its window.
+///
+/// It moved out of `negamax` under the line-count gate and is pinned here
+/// as arithmetic, which is what the move buys: the three cases are a total
+/// function of three scores and need no search to exercise. The boundaries
+/// are what an implementation gets wrong -- a value exactly at beta is a
+/// lower bound and one exactly at the original alpha is an upper one -- so
+/// they are asserted rather than left to the sweep.
+#[test]
+fn the_stored_bound_reads_the_value_against_the_window() {
+    assert_eq!(bound_for(10, 0, 10), Bound::Lower, "a value at beta");
+    assert_eq!(bound_for(11, 0, 10), Bound::Lower);
+    assert_eq!(bound_for(0, 0, 10), Bound::Upper, "a value at alpha");
+    assert_eq!(bound_for(-1, 0, 10), Bound::Upper);
+    assert_eq!(bound_for(1, 0, 10), Bound::Exact);
+    assert_eq!(bound_for(9, 0, 10), Bound::Exact);
+
+    // A null window has no room for an exact score, which is the property
+    // the search's own re-search rule rests on.
+    for best in -3..=3 {
+        assert_ne!(bound_for(best, 0, 1), Bound::Exact, "best {best}");
+    }
+
+    // And over a sweep, exactly one case holds for every value.
+    for alpha in [-100, -1, 0, 1, 100] {
+        for beta in [alpha + 1, alpha + 2, alpha + 50] {
+            for best in (alpha - 10)..=(beta + 10) {
+                let want = if best >= beta {
+                    Bound::Lower
+                } else if best > alpha {
+                    Bound::Exact
+                } else {
+                    Bound::Upper
+                };
+                assert_eq!(
+                    bound_for(best, alpha, beta),
+                    want,
+                    "{best} in ({alpha}, {beta})"
+                );
+            }
+        }
+    }
 }
