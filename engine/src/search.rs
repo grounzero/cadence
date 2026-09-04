@@ -59,6 +59,7 @@ use cadence_core::{
     Colour, MAX_PLY, Move, MoveList, PieceType, generate_legal, generate_noisy, to_uci,
 };
 
+use crate::corrhist::CorrectionHistory;
 use crate::eval;
 use crate::history::{self, History};
 use crate::picker;
@@ -570,6 +571,15 @@ pub struct Search<'a> {
     /// the two have one lifetime; thirty-two kibibytes, on the heap for
     /// `PvTable`'s reason rather than inline for `killers`'.
     history: History,
+    /// What the evaluation has been wrong by, per pawn structure and side,
+    /// across this whole search. Cleared beside the killers and the
+    /// history, so the three have one lifetime.
+    corrhist: CorrectionHistory,
+    /// How many observations were folded into the correction table, and at
+    /// how many nodes a non-zero correction was read back. Written where
+    /// the rule runs and read on no decision path.
+    corrhist_updates: u64,
+    corrhist_applied: u64,
     /// The depth of the iteration in progress, which is what the check
     /// extension's ply cap is a multiple of. Set at the head of each
     /// iteration; a field rather than a sixth argument to `negamax`
@@ -681,6 +691,9 @@ impl<'a> Search<'a> {
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             history: History::new(),
+            corrhist: CorrectionHistory::new(),
+            corrhist_updates: 0,
+            corrhist_applied: 0,
             root_depth: 0,
             evals: [None; MAX_PLY],
             null_attempts: 0,
@@ -731,6 +744,9 @@ impl<'a> Search<'a> {
         self.lmr_researches = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
+        self.corrhist.clear();
+        self.corrhist_updates = 0;
+        self.corrhist_applied = 0;
         self.futility_nodes = 0;
         self.futility_skipped = 0;
         self.futility_kept_check = 0;
@@ -957,11 +973,9 @@ impl<'a> Search<'a> {
         // measures is a position nobody is about to win material in, and a
         // check is exactly that claim being contested.
         let in_check = board.in_check();
-        self.evals[ply] = if in_check {
-            None
-        } else {
-            Some(eval::evaluate(board))
-        };
+        let pawn_key = board.pawn_key();
+        let us_eval = board.side_to_move();
+        self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // The margin, above the null move because the node's preamble runs
         // the margin tests there and because below it the rule would be
@@ -1108,7 +1122,66 @@ impl<'a> Search<'a> {
             depth.min(u32::from(u8::MAX)) as u8,
             bound,
         );
+        self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
+    }
+
+    /// The static evaluation this node's rules read, corrected by what the
+    /// evaluation has been wrong by on this pawn structure.
+    ///
+    /// The correction is read before the node folds anything in, so nothing
+    /// it offers has seen the score it will be scored against. It is added
+    /// here rather than inside any one rule's margin, because every rule
+    /// below reads this stack.
+    fn corrected_eval(
+        &mut self,
+        board: &Board,
+        in_check: bool,
+        pawn_key: u64,
+        side: Colour,
+    ) -> Option<Score> {
+        if in_check {
+            return None;
+        }
+        let correction = self.corrhist.correction(pawn_key, side);
+        self.corrhist_applied += u64::from(correction != 0);
+        Some(eval::evaluate(board) + correction)
+    }
+
+    /// Fold this node's disagreement between the static evaluation and the
+    /// score it returned into the correction table.
+    ///
+    /// Four things disqualify a node: no static reading, a mate score, a
+    /// best move that is noisy or absent, and a bound pointing the other
+    /// way from the difference. The first three are positions the
+    /// evaluation was never making a claim about; the fourth is a bound
+    /// that has not established the difference it appears to show.
+    #[allow(clippy::too_many_arguments)]
+    fn remember_correction(
+        &mut self,
+        pawn_key: u64,
+        side: Colour,
+        ply: usize,
+        best: Score,
+        best_move: Move,
+        bound: Bound,
+        depth: u32,
+    ) {
+        let Some(eval) = self.evals[ply] else {
+            return;
+        };
+        if score::is_mate(best) || best_move == Move::NULL || best_move.is_noisy() {
+            return;
+        }
+        let usable = match bound {
+            Bound::Exact => true,
+            Bound::Lower => best > eval,
+            Bound::Upper => best < eval,
+        };
+        if usable {
+            self.corrhist.update(pawn_key, side, best - eval, depth);
+            self.corrhist_updates += 1;
+        }
     }
 
     /// Put the node's move list in the order it will be searched, and hand
@@ -1597,6 +1670,18 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
         self.lmp_nodes
+    }
+
+    /// How many observations this search folded into the correction table,
+    /// and at how many nodes it read a non-zero correction back.
+    #[must_use]
+    pub fn corrhist_updates(&self) -> u64 {
+        self.corrhist_updates
+    }
+
+    #[must_use]
+    pub fn corrhist_applied(&self) -> u64 {
+        self.corrhist_applied
     }
 
     #[must_use]

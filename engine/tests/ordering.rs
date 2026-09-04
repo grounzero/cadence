@@ -1009,7 +1009,14 @@ fn demoting_the_moves_the_quiescence_search_refuses_would_reorder_nothing() {
 // ---------------------------------------------------------------------------
 
 /// The depth the two end-to-end gates below run at.
-const SORT_DEPTH: u32 = 7;
+///
+/// Six rather than seven since 2026-09-04, on the measurement the demotion
+/// gate's own doc recorded and left for the next item that had to touch
+/// this constant. Both counterfactuals were re-taken here at six on the
+/// tree that reading was written against, and both reproduce it to the
+/// node: 246,292 shipped, 248,029 with every capture ahead of the killers,
+/// and 1,281,421 with no ordering at all.
+const SORT_DEPTH: u32 = 6;
 
 /// End to end, with the table switched off: the sort is worth nodes on its
 /// own.
@@ -1132,8 +1139,8 @@ fn the_capture_sort_saves_nodes() {
         fens.len()
     );
     assert!(
-        total * 10 < 9 * 5_782_741,
-        "{total} nodes against the 5,782,741 the same search took with no ordering at all"
+        total * 10 < 9 * 1_281_421,
+        "{total} nodes against the 1,281,421 the same search took with no ordering at all"
     );
 }
 
@@ -1261,9 +1268,15 @@ fn the_capture_sort_saves_nodes() {
 /// and it is, but nobody tried shallower. **Depth six dominates depth seven
 /// on both gates in this file** -- 0.71% against 0.023% here, and a factor
 /// of 5.20 against 5.03 for the capture sort above, on the same set and at
-/// a fifth of the nodes. Recorded rather than taken, because changing what
-/// a gate covers is not a pruning item's change; the next item that has to
-/// touch `SORT_DEPTH` should take it, and this table is the argument.
+/// a fifth of the nodes.
+///
+/// **Taken 2026-09-04, and the exit was needed rather than merely
+/// available.** At depth seven this gate had lost its sign: the shipped
+/// order read 1,224,290 nodes against a bound of 1,150,900, so the
+/// demotion cost 6.4% where it had saved. Re-taking all three arms at six
+/// reproduces the table above to the node, which is the control saying
+/// nothing in the tree had moved under it, and restores a window of
+/// 0.71%.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1281,8 +1294,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 1_150_900,
-        "{total} nodes against the 1,150,999 the same search took with every capture ahead of the killers"
+        total < 248_029,
+        "{total} nodes against the 248,029 the same search took with every capture ahead of the killers"
     );
 }
 
