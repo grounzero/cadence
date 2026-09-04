@@ -59,6 +59,7 @@ use cadence_core::{
     Colour, MAX_PLY, Move, MoveList, PieceType, generate_legal, generate_noisy, to_uci,
 };
 
+use crate::corrhist::CorrectionHistory;
 use crate::eval;
 use crate::history::{self, History};
 use crate::picker;
@@ -570,6 +571,15 @@ pub struct Search<'a> {
     /// the two have one lifetime; thirty-two kibibytes, on the heap for
     /// `PvTable`'s reason rather than inline for `killers`'.
     history: History,
+    /// What the evaluation has been wrong by, per pawn structure and side,
+    /// across this whole search. Cleared beside the killers and the
+    /// history, so the three have one lifetime.
+    corrhist: CorrectionHistory,
+    /// How many observations were folded into the correction table, and at
+    /// how many nodes a non-zero correction was read back. Written where
+    /// the rule runs and read on no decision path.
+    corrhist_updates: u64,
+    corrhist_applied: u64,
     /// The depth of the iteration in progress, which is what the check
     /// extension's ply cap is a multiple of. Set at the head of each
     /// iteration; a field rather than a sixth argument to `negamax`
@@ -681,6 +691,9 @@ impl<'a> Search<'a> {
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             history: History::new(),
+            corrhist: CorrectionHistory::new(),
+            corrhist_updates: 0,
+            corrhist_applied: 0,
             root_depth: 0,
             evals: [None; MAX_PLY],
             null_attempts: 0,
@@ -731,6 +744,9 @@ impl<'a> Search<'a> {
         self.lmr_researches = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
+        self.corrhist.clear();
+        self.corrhist_updates = 0;
+        self.corrhist_applied = 0;
         self.futility_nodes = 0;
         self.futility_skipped = 0;
         self.futility_kept_check = 0;
@@ -1597,6 +1613,18 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
         self.lmp_nodes
+    }
+
+    /// How many observations this search folded into the correction table,
+    /// and at how many nodes it read a non-zero correction back.
+    #[must_use]
+    pub fn corrhist_updates(&self) -> u64 {
+        self.corrhist_updates
+    }
+
+    #[must_use]
+    pub fn corrhist_applied(&self) -> u64 {
+        self.corrhist_applied
     }
 
     #[must_use]
