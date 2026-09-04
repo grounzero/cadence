@@ -446,6 +446,29 @@ fn the_ladder_is_recorded_under_a_clock_and_not_under_a_depth() {
 /// fails loudly, and any tree that reopens the window re-arms the trial
 /// by itself. What must not happen is the third option, a quiet pass that
 /// looked and found nothing to ask.
+/// The cheapest rung this gate will calibrate on, in milliseconds.
+///
+/// Below it the clock has no resolution to spare and the trial measures
+/// scheduling noise rather than the rule. The gate's precondition is a rung
+/// the clock can measure, and stating it is better than widening a margin
+/// until the noise fits underneath.
+const MEASURABLE_MS: u64 = 8;
+
+/// The least headroom `soft` carries over the rung it was derived from, in
+/// milliseconds.
+///
+/// The quarter below is the intended margin and integer division takes it to
+/// zero under four milliseconds, which left the whole of the slack as the
+/// `+ 1`. This floor closes that whatever the rung, so a ladder that slips
+/// under `MEASURABLE_MS` in some later tree cannot produce degenerate slack.
+const MIN_HEADROOM_MS: u64 = 3;
+
+/// The soft budget a rung implies: a quarter of headroom, never less than
+/// [`MIN_HEADROOM_MS`].
+fn soft_for(cum: u64) -> u64 {
+    cum + (cum / 4).max(MIN_HEADROOM_MS) + 1
+}
+
 #[test]
 fn an_iteration_that_cannot_finish_is_not_started() {
     // The free ladder: enough depth to see the window, and a movetime that
@@ -464,8 +487,8 @@ fn an_iteration_that_cannot_finish_is_not_started() {
     for d in 1..rungs.len() {
         let cum = rungs[d - 1];
         let next = rungs[d] - rungs[d - 1];
-        let soft = cum + cum / 4 + 1;
-        if cum > 0 && 3 * soft <= 1_500 && cum + next > 3 * soft {
+        let soft = soft_for(cum);
+        if cum >= MEASURABLE_MS && 3 * soft <= 1_500 && cum + next > 3 * soft {
             window = Some((d, soft));
         }
     }
@@ -477,9 +500,9 @@ fn an_iteration_that_cannot_finish_is_not_started() {
         for d in 1..rungs.len() {
             let cum = rungs[d - 1];
             let next = rungs[d] - rungs[d - 1];
-            let soft = cum + cum / 4 + 1;
+            let soft = soft_for(cum);
             assert!(
-                cum == 0 || cum + next <= 3 * soft,
+                cum < MEASURABLE_MS || cum + next <= 3 * soft,
                 "a depth in the window exists at {d} and only the calibration cap hid it: {rungs:?}"
             );
         }
