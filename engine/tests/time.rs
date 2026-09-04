@@ -493,6 +493,22 @@ fn an_iteration_that_cannot_finish_is_not_started() {
         }
     }
     let Some((depth, soft)) = window else {
+        // The precondition's own coverage. `MEASURABLE_MS` excuses a rung
+        // from the assertion below, so a ladder whose every rung is under
+        // it would leave this branch asserting nothing at all and printing
+        // that the window is closed: the quiet pass this gate's doc says
+        // must not happen, arriving through the floor that was added to
+        // stop it failing wrongly. One rung has to clear the floor for the
+        // closure to have been checked over anything.
+        let measurable = (1..rungs.len())
+            .filter(|&d| rungs[d - 1] >= MEASURABLE_MS)
+            .count();
+        assert!(
+            measurable > 0,
+            "no rung reached {MEASURABLE_MS} ms, so the closed window was asserted over \
+             nothing: {rungs:?}"
+        );
+
         // The closed window, verified over every rung with the cost cap
         // ignored: a rung the cap alone excluded is a trial this gate
         // should have run and did not, and fails rather than passing over
