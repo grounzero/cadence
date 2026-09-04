@@ -904,6 +904,22 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// so a move that changed did so because a subtree's value moved, not
 /// because it was searched at less than its depth.
 ///
+/// **Re-measured when the debit was restricted to the moves the node
+/// searched**, which moved four scores by seven to forty-five points and
+/// three moves. It is the second-largest re-baseline this array has taken,
+/// behind late move pruning's twelve and five, and it is the reductions'
+/// class rather than a new one: the debit is what puts a quiet move in the
+/// negative tail the reduction reads, so restricting it lengthens fewer
+/// reductions and parts of the tree are searched nearer their own depth.
+/// Three of the four scores rose, which is the direction less reduction
+/// gives.
+///
+/// `d7c8r` at 491 returns to `d7c8q` at 536, which is the promotion
+/// tie-break the reverse-futility paragraph below already prices and it is
+/// moving back rather than further. The other two moves are in won
+/// positions where the entries either side of them are within fourteen
+/// points, so read them as the same tie one rank up.
+///
 /// **Re-measured 2026-09-04 when correction history landed**, which moved
 /// three scores by three to seven points and one move. That is the largest
 /// re-baseline this array has taken from a single change and the size is
@@ -972,17 +988,17 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("b1c3", 13),
     ("d5e6", -109),
-    ("b4f4", 33),
+    ("b4f4", 26),
     ("c4c5", -613),
-    ("d7c8r", 491),
+    ("d7c8q", 536),
     ("g5f6", 108),
     ("b1c3", 13),
     ("d1e3", 4),
     ("d2d4", 8),
     ("d1e3", 8),
-    ("g1f2", 529),
+    ("h1h7", 539),
     ("f1h1", 522),
-    ("g1h1", 525),
+    ("g1g7", 535),
     ("a1a7", 532),
 ];
 

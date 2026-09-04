@@ -1150,22 +1150,12 @@ impl<'a> Search<'a> {
                     self.table.update(ply, m);
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
-                        // The moves it beat are the ones before it in the
-                        // sorted list, which the list already holds, so
-                        // nothing has to be remembered as it runs.
-                        //
-                        // **Some of them were never searched**, and that is
-                        // stated rather than left for a reader to find: the
-                        // margin above and this rule both skip moves inside
-                        // this slice, so a quiet cutoff debits moves that
-                        // failed to cut and moves that were given up alike.
-                        // Over the bench positions that is 31% of the
-                        // debits against the margin's 2% before this rule.
-                        // It is left as it is because separating the two
-                        // changes what the table holds, which is a change
-                        // with its own test; what a reader would otherwise
-                        // get wrong is that the slice is the moves the node
-                        // tried, and it is the moves the node passed.
+                        // The moves it beat are the ones before it in
+                        // the sorted list, and `searched` is which of
+                        // those this node played. A move the margin or
+                        // the count gave up above produced no evidence,
+                        // so it is passed over rather than debited for a
+                        // game it was not in.
                         self.remember_history(us, &legal.as_slice()[..i], &searched, m, depth);
                         break;
                     }
@@ -1377,9 +1367,10 @@ impl<'a> Search<'a> {
     }
 
     /// Record what this node's cutoff says about its quiet moves: credit
-    /// `cut`, and debit the quiet moves ahead of it in `passed`. `searched`
-    /// is read by the counter alone here, so the debit is still the whole
-    /// slice and the gate on that counter fails against this commit.
+    /// `cut`, and debit the quiet moves in `passed` that `searched` says
+    /// this node tried. A move given up before `make_move` produced no
+    /// evidence, and the debit is what the node learned rather than what it
+    /// listed.
     fn remember_history(
         &mut self,
         us: Colour,
@@ -1394,7 +1385,7 @@ impl<'a> Search<'a> {
         let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
         for (i, &beaten) in passed.iter().enumerate() {
-            if beaten.is_noisy() {
+            if beaten.is_noisy() || !searched.contains(i) {
                 continue;
             }
             self.history_debits += 1;
