@@ -1083,22 +1083,15 @@ impl<'a> Search<'a> {
                     self.table.update(ply, m);
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
-                        // The moves it beat are the ones before it in the
-                        // sorted list, which the list already holds, so
-                        // nothing has to be remembered as it runs.
-                        //
-                        // **Some of them were never searched**, and that is
-                        // stated rather than left for a reader to find: the
-                        // margin above and this rule both skip moves inside
-                        // this slice, so a quiet cutoff debits moves that
-                        // failed to cut and moves that were given up alike.
-                        // Over the bench positions that is 31% of the
-                        // debits against the margin's 2% before this rule.
-                        // It is left as it is because separating the two
-                        // changes what the table holds, which is a change
-                        // with its own test; what a reader would otherwise
-                        // get wrong is that the slice is the moves the node
-                        // tried, and it is the moves the node passed.
+                        // The moves it beat are the ones before it in
+                        // the sorted list, and the margin and the count
+                        // above both skip moves inside it, so a quiet
+                        // cutoff debits moves that failed to cut and
+                        // moves that were never searched alike. Measured
+                        // over the bench positions at 0.4.8 that is 29.2%
+                        // of the debits, and separating the two changes
+                        // what the table holds, which is a change with
+                        // its own test.
                         self.remember_history(us, &legal.as_slice()[..i], m, depth);
                         break;
                     }
