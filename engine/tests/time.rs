@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal, parse_uci};
 use cadence_engine::search::{Limits, Search};
-use cadence_engine::time::{Budget, MOVE_OVERHEAD_MS, another_iteration_fits, budget};
+use cadence_engine::time::{
+    Budget, MOVE_OVERHEAD_MS, PROGRESS_MAX, another_iteration_fits, budget, progress,
+};
 use cadence_engine::tt::Table;
 use support::Engine;
 
@@ -29,14 +31,22 @@ fn limits(s: &str) -> Limits {
 }
 
 fn clock(time: u64, inc: u64, movestogo: Option<u32>) -> Budget {
+    clock_at(time, inc, movestogo, 0)
+}
+
+/// The same, at a stated point in the game. `clock` above takes the opening's
+/// full complement, which is where the hard budget is largest and so where
+/// every property about not overspending is hardest to hold.
+fn clock_at(time: u64, inc: u64, movestogo: Option<u32>, progress: u32) -> Budget {
     let mut l = limits(&format!("wtime {time} btime {time} winc {inc} binc {inc}"));
     l.movestogo = movestogo;
-    budget(&l, Colour::White).expect("a clock gives a budget")
+    budget(&l, Colour::White, progress).expect("a clock gives a budget")
 }
 
 const TIMES: [u64; 9] = [1, 20, 21, 50, 100, 500, 1000, 8000, 3_600_000];
 const INCS: [u64; 5] = [0, 10, 80, 400, 1000];
 const MTG: [Option<u32>; 5] = [None, Some(1), Some(5), Some(20), Some(40)];
+const PROGRESSES: [u32; 5] = [0, 6, 12, 18, PROGRESS_MAX];
 
 /// Nothing constrains the time, so the clock is never read. "Nothing" is
 /// exactly "the `go` named no clock at all": see the test below for the case
@@ -44,12 +54,12 @@ const MTG: [Option<u32>; 5] = [None, Some(1), Some(5), Some(20), Some(40)];
 #[test]
 fn no_constraint_means_no_budget() {
     for s in ["", "depth 6", "nodes 1000", "infinite", "depth 3 nodes 5"] {
-        assert_eq!(budget(&limits(s), Colour::White), None, "{s:?}");
-        assert_eq!(budget(&limits(s), Colour::Black), None, "{s:?}");
+        assert_eq!(budget(&limits(s), Colour::White, 0), None, "{s:?}");
+        assert_eq!(budget(&limits(s), Colour::Black, 0), None, "{s:?}");
     }
     // Fixed depth is what `bench` runs under, and it must never consult a
     // clock; this is the contract at the allocation.
-    assert_eq!(budget(&Limits::depth(7), Colour::White), None);
+    assert_eq!(budget(&Limits::depth(7), Colour::White, 0), None);
 }
 
 /// A `go` that named a clock always yields a budget, even when it did not
@@ -79,7 +89,7 @@ fn a_clock_for_the_other_side_only_is_a_budget_of_zero() {
         ("movestogo 40", Colour::White),
     ] {
         assert_eq!(
-            budget(&limits(line), us),
+            budget(&limits(line), us, 0),
             Some(Budget { soft: 0, hard: 0 }),
             "go {line} for {us:?}"
         );
@@ -87,24 +97,24 @@ fn a_clock_for_the_other_side_only_is_a_budget_of_zero() {
     // `movetime` and `infinite` are not clocks and are unaffected: the first
     // governs, and the second is refused a budget by the search itself.
     assert_eq!(
-        budget(&limits("movetime 300 wtime 1000"), Colour::Black),
-        budget(&limits("movetime 300"), Colour::Black)
+        budget(&limits("movetime 300 wtime 1000"), Colour::Black, 0),
+        budget(&limits("movetime 300"), Colour::Black, 0)
     );
 }
 
 #[test]
 fn movetime_is_the_budget_less_the_overhead() {
-    let b = budget(&limits("movetime 500"), Colour::White).expect("budget");
+    let b = budget(&limits("movetime 500"), Colour::White, 0).expect("budget");
     assert_eq!(b.soft, 500 - MOVE_OVERHEAD_MS);
     assert_eq!(b.hard, 500 - MOVE_OVERHEAD_MS);
     // Under the overhead: nothing to spend, but still a budget -- the search
     // returns its first iteration and no more.
-    let b = budget(&limits("movetime 5"), Colour::Black).expect("budget");
+    let b = budget(&limits("movetime 5"), Colour::Black, 0).expect("budget");
     assert_eq!(b, Budget { soft: 0, hard: 0 });
     // movetime is the same for either side.
     assert_eq!(
-        budget(&limits("movetime 300"), Colour::White),
-        budget(&limits("movetime 300"), Colour::Black)
+        budget(&limits("movetime 300"), Colour::White, 0),
+        budget(&limits("movetime 300"), Colour::Black, 0)
     );
 }
 
@@ -113,26 +123,38 @@ fn a_clock_gives_a_budget_bounded_by_half_of_what_is_left() {
     for &t in &TIMES {
         for &inc in &INCS {
             for &mtg in &MTG {
-                let b = clock(t, inc, mtg);
-                let avail = t.saturating_sub(MOVE_OVERHEAD_MS);
-                assert!(b.soft <= b.hard, "{t}+{inc} mtg {mtg:?}: {b:?}");
-                assert!(
-                    b.hard <= avail / 2,
-                    "{t}+{inc} mtg {mtg:?}: {b:?} vs avail {avail}"
-                );
-                if t <= MOVE_OVERHEAD_MS {
-                    assert_eq!(b, Budget { soft: 0, hard: 0 }, "{t}+{inc} mtg {mtg:?}");
-                }
-                if t >= 1000 {
-                    assert!(b.soft >= 10, "{t}+{inc} mtg {mtg:?}: {b:?} is stingy");
+                // Every point in the game, because the cap and the ordering
+                // of the two budgets are properties of the arithmetic and
+                // not of where the game has got to.
+                for &p in &PROGRESSES {
+                    let b = clock_at(t, inc, mtg, p);
+                    let avail = t.saturating_sub(MOVE_OVERHEAD_MS);
+                    assert!(b.soft <= b.hard, "{t}+{inc} mtg {mtg:?} at {p}: {b:?}");
+                    assert!(
+                        b.hard <= avail / 2,
+                        "{t}+{inc} mtg {mtg:?} at {p}: {b:?} vs avail {avail}"
+                    );
+                    if t <= MOVE_OVERHEAD_MS {
+                        assert_eq!(
+                            b,
+                            Budget { soft: 0, hard: 0 },
+                            "{t}+{inc} mtg {mtg:?} at {p}"
+                        );
+                    }
+                    if t >= 1000 {
+                        assert!(
+                            b.soft >= 10,
+                            "{t}+{inc} mtg {mtg:?} at {p}: {b:?} is stingy"
+                        );
+                    }
                 }
             }
         }
     }
     // And Black's clock is read for Black.
     let l = limits("wtime 100 btime 8000 winc 0 binc 80");
-    let w = budget(&l, Colour::White).expect("w");
-    let b = budget(&l, Colour::Black).expect("b");
+    let w = budget(&l, Colour::White, 0).expect("w");
+    let b = budget(&l, Colour::Black, 0).expect("b");
     assert!(b.hard > w.hard, "white {w:?} black {b:?}");
 }
 
@@ -210,6 +232,161 @@ fn a_game_that_spends_every_hard_budget_does_not_run_out() {
                 "move {mv} from {start}: clock ran out with increment"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// How far into the game the position is
+// ---------------------------------------------------------------------------
+
+/// The scale runs from the opening's full complement to a pawn ending, and
+/// it is read off material rather than off the move number. A move number
+/// counts shuffling and a book exit alike, which is the reason the input is
+/// not one.
+#[test]
+fn the_opening_is_no_progress_and_a_pawn_ending_is_all_of_it() {
+    let start = Board::from_fen(START_FEN).expect("start");
+    assert_eq!(progress(&start), 0);
+
+    let pawns = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").expect("pawns");
+    assert_eq!(progress(&pawns), PROGRESS_MAX);
+
+    // A rook ending is late but not the end of the scale, and a queenless
+    // middlegame sits between the two.
+    let rooks = Board::from_fen("r3k3/pppppppp/8/8/8/8/PPPPPPPP/R3K3 w Qq - 0 1").expect("rooks");
+    let mid = Board::from_fen("r1b1kbnr/pppppppp/2n5/8/8/2N5/PPPPPPPP/R1B1KBNR w KQkq - 0 1")
+        .expect("mid");
+    assert!(progress(&rooks) > progress(&mid), "{rooks:?}");
+    assert!(progress(&mid) > 0);
+    assert!(progress(&rooks) < PROGRESS_MAX);
+}
+
+/// The hard budget moves with how far into the game the position is, and the
+/// soft budget does not. The soft budget is this move's share of the clock
+/// and nothing here changes it; the hard budget is how far past that share an
+/// iteration already started may run, and that is what varies.
+#[test]
+fn game_progress_moves_the_hard_budget_and_leaves_the_soft_one_alone() {
+    let mut moved = 0;
+    for &t in &[1000u64, 8000, 3_600_000] {
+        for &inc in &INCS {
+            let opening = clock_at(t, inc, None, 0);
+            let ending = clock_at(t, inc, None, PROGRESS_MAX);
+            let cap = t.saturating_sub(MOVE_OVERHEAD_MS) / 2;
+            assert_eq!(
+                opening.soft, ending.soft,
+                "{t}+{inc}: the share moved, {opening:?} against {ending:?}"
+            );
+            if ending.hard < cap {
+                assert!(
+                    ending.hard < opening.hard,
+                    "{t}+{inc}: the hard budget did not move, {opening:?}"
+                );
+                moved += 1;
+            } else {
+                // The half-of-remaining cap binds at both ends, so the two
+                // are equal and are the cap. That is the low-clock and
+                // large-increment corner, where the budget is the cap's to
+                // set and this rule has no room in it at all.
+                assert_eq!(opening.hard, cap, "{t}+{inc}: {opening:?} vs cap {cap}");
+                assert_eq!(ending.hard, cap, "{t}+{inc}: {ending:?} vs cap {cap}");
+            }
+        }
+    }
+    assert!(moved >= 8, "only {moved} clocks left the rule any room");
+}
+
+/// It falls as the game goes on, and never rises. One more completed
+/// iteration changes the move chosen 23.0% of the time at the opening's full
+/// complement against 7.8% near a pawn ending, so what an overrun buys is
+/// largest early; the direction is the whole of the rule and this is the gate
+/// that holds it.
+#[test]
+fn the_hard_budget_falls_as_the_game_goes_on() {
+    for &t in &[1000u64, 8000, 60_000, 3_600_000] {
+        for &inc in &INCS {
+            for &mtg in &MTG {
+                let mut last = u64::MAX;
+                for p in 0..=PROGRESS_MAX {
+                    let b = clock_at(t, inc, mtg, p);
+                    assert!(
+                        b.hard <= last,
+                        "{t}+{inc} mtg {mtg:?} at {p}: {} rose from {last}",
+                        b.hard
+                    );
+                    last = b.hard;
+                }
+                // Non-increasing is not the property on its own: a constant
+                // satisfies it. Where the cap is not already binding at the
+                // ending, it must actually fall from one end to the other.
+                let opening = clock_at(t, inc, mtg, 0);
+                let ending = clock_at(t, inc, mtg, PROGRESS_MAX);
+                let cap = t.saturating_sub(MOVE_OVERHEAD_MS) / 2;
+                if ending.hard < cap {
+                    assert!(
+                        ending.hard < opening.hard,
+                        "{t}+{inc} mtg {mtg:?}: flat at {opening:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The hard budget never falls below the soft one, at any point in the game.
+///
+/// This is not a tidiness property. `another_iteration_fits` returns early
+/// when the two are equal, so a hard budget scaled under its soft budget
+/// would silently switch off the promoted rule that refuses an iteration it
+/// predicts cannot finish, and nothing else in this file would notice.
+#[test]
+fn the_hard_budget_never_falls_under_the_soft_one() {
+    for &t in &TIMES {
+        for &inc in &INCS {
+            for &mtg in &MTG {
+                for p in 0..=PROGRESS_MAX {
+                    let b = clock_at(t, inc, mtg, p);
+                    assert!(b.hard >= b.soft, "{t}+{inc} mtg {mtg:?} at {p}: {b:?}");
+                    // And where they differ the rule can still say no, which
+                    // is the half a bare ordering assertion would not catch.
+                    if b.hard > b.soft {
+                        let runaway = [1, 1, b.hard * 4];
+                        assert!(
+                            !another_iteration_fits(&runaway, b),
+                            "{t}+{inc} mtg {mtg:?} at {p}: the rule went inert at {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A budget scaled past the end of the scale is the end of the scale. The
+/// caller derives the input from material and cannot exceed it, so this is
+/// the clamp holding rather than a case that arises.
+#[test]
+fn progress_past_the_end_of_the_scale_is_the_end_of_it() {
+    for &t in &[1000u64, 8000] {
+        let end = clock_at(t, 80, None, PROGRESS_MAX);
+        for p in [PROGRESS_MAX + 1, PROGRESS_MAX * 4, u32::MAX] {
+            assert_eq!(clock_at(t, 80, None, p), end, "at {p}");
+        }
+    }
+}
+
+/// `movetime` names the budget exactly, so nothing about the position moves
+/// it. Under `movetime` the two budgets are equal and the rule that refuses
+/// an iteration is inert by design, which is what would otherwise be at risk
+/// here.
+#[test]
+fn movetime_does_not_read_how_far_into_the_game_the_position_is() {
+    for p in [0, 6, 12, 18, PROGRESS_MAX] {
+        assert_eq!(
+            budget(&limits("movetime 300"), Colour::White, p),
+            budget(&limits("movetime 300"), Colour::White, 0),
+            "at {p}"
+        );
     }
 }
 
@@ -604,7 +781,7 @@ fn the_rule_starts_an_iteration_whenever_it_cannot_predict() {
 #[test]
 fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
     let ladder = [0, 0, 0, 2, 9, 46, 153];
-    let movetime = budget(&limits("movetime 200"), Colour::White).expect("budget");
+    let movetime = budget(&limits("movetime 200"), Colour::White, 0).expect("budget");
     assert_eq!(movetime.soft, movetime.hard);
     assert!(another_iteration_fits(&ladder, movetime));
     // The same numbers on a clock, where the time is transferable.

@@ -759,7 +759,12 @@ impl<'a> Search<'a> {
         self.budget = if self.limits.infinite {
             None
         } else {
-            time::budget(&self.limits, board.side_to_move())
+            // Read once at the root and held for the move. The budget is a
+            // property of the position the clock is being spent on, and a
+            // budget that moved under the search would make the stopping
+            // rule read a different limit at every node.
+            let progress = time::progress(board);
+            time::budget(&self.limits, board.side_to_move(), progress)
         };
 
         let legal = generate_legal(board);

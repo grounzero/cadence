@@ -2,12 +2,16 @@
 
 //! Time management: how much of the clock one move may use.
 //!
-//! A pure function of the `go` limits and the side to move, in integer
-//! milliseconds, so that it can be tested as arithmetic (`tests/time.rs`)
-//! and so that the search consults a clock only when this says there is
-//! one. **Under a fixed-depth or node limit there is no budget and the
+//! A pure function of its arguments, in integer milliseconds, so that it can
+//! be tested as arithmetic (`tests/time.rs`) and so that the search consults
+//! a clock only when this says there is one. **Under a fixed-depth or node limit there is no budget and the
 //! search never reads the time**, which is what makes `bench` a function of
 //! the code alone.
+//!
+//! **The hard budget also reads how far into the game the position is**,
+//! which is the one input here that is not a `go` limit. It arrives as an
+//! integer derived by [`progress`], so the arithmetic below stays a pure
+//! function of its arguments and can still be tested as arithmetic.
 //!
 //! **Both budgets are capped at half of what is left after the overhead.**
 //! That cap is the "never" in "never lose on time": however the fractions
@@ -15,12 +19,31 @@
 //! time alone can never run it out.
 
 use cadence_core::Colour;
+use cadence_core::position::Board;
 
+use crate::eval;
 use crate::search::Limits;
 
 /// Milliseconds held back from every budget for the cost of getting the
 /// move out: the pipe to the GUI, thread scheduling, the GUI's own clock.
 pub const MOVE_OVERHEAD_MS: u64 = 20;
+
+/// The far end of the progress scale: a pawn ending, where no minor or
+/// major piece is left. Zero is the opening's full complement, so the scale
+/// is the evaluation's own read the other way up and the two cannot
+/// disagree about where a middlegame is.
+pub const PROGRESS_MAX: u32 = eval::PHASE_MAX as u32;
+
+/// How far into the game `board` is, `0..=PROGRESS_MAX`.
+///
+/// Material and not the move number, because a move number counts shuffling
+/// and a book exit alike. It is `eval::phase` subtracted from its own
+/// maximum, so a position the evaluation calls an endgame is one this calls
+/// late.
+#[must_use]
+pub fn progress(board: &Board) -> u32 {
+    PROGRESS_MAX.saturating_sub(eval::phase(board) as u32)
+}
 
 /// A time budget for one move, in milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,15 +54,16 @@ pub struct Budget {
     pub hard: u64,
 }
 
-/// The budget for `us` under `limits`, or `None` when nothing in `limits`
-/// constrains the time: no `movetime`, and no clock named for either side.
-/// `movetime` takes precedence over a clock when both are given.
+/// The budget for `us` under `limits` at `progress`, or `None` when nothing
+/// in `limits` constrains the time: no `movetime`, and no clock named for
+/// either side. `movetime` takes precedence over a clock when both are
+/// given, and ignores `progress` because it names the budget exactly.
 ///
 /// **`None` means "unlimited by design", and nothing else.** It is what
 /// `bench`, `go depth`, `go nodes` and `go infinite` get, and it is the
 /// licence not to read the clock at all.
 #[must_use]
-pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
+pub fn budget(limits: &Limits, us: Colour, _progress: u32) -> Option<Budget> {
     if let Some(movetime) = limits.movetime {
         let t = movetime.saturating_sub(MOVE_OVERHEAD_MS);
         return Some(Budget { soft: t, hard: t });

@@ -108,8 +108,8 @@ fn the_position_list_is_checked_in_and_covers_the_game() {
 fn the_bench_runs_under_no_time_budget() {
     // The contract at the allocation: a depth limit yields no budget, so
     // the search never reads the clock on a decision path.
-    assert_eq!(budget(&Limits::depth(DEPTH), Colour::White), None);
-    assert_eq!(budget(&Limits::depth(DEPTH), Colour::Black), None);
+    assert_eq!(budget(&Limits::depth(DEPTH), Colour::White, 0), None);
+    assert_eq!(budget(&Limits::depth(DEPTH), Colour::Black, 0), None);
 }
 
 #[test]
