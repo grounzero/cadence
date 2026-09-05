@@ -555,13 +555,28 @@ fn ladder(limits: Limits) -> (Vec<u64>, u64) {
 
 /// The clock that spends `soft` on a move, in sudden death with no
 /// increment: `budget` takes a twenty-fifth of what is left after the
-/// overhead, and the half-clock cap is nowhere near three times that.
+/// overhead, and the half-clock cap is nowhere near four times that.
 fn clock_for(soft: u64) -> Limits {
     let wtime = 25 * soft + MOVE_OVERHEAD_MS;
     Limits {
         time: [Some(wtime), Some(wtime)],
         ..Limits::default()
     }
+}
+
+/// The hard budget the engine will actually use for that clock, at the
+/// position the ladder is measured on.
+///
+/// Read off `budget` rather than written here as a multiple of `soft`. The
+/// multiple now depends on how far into the game the position is, so a
+/// constant would go on passing while asserting against a budget the search
+/// does not have, which is a gate that has stopped discriminating rather
+/// than one that fails.
+fn hard_for(soft: u64) -> u64 {
+    let board = Board::from_fen(MIDDLEGAME).expect("the middlegame position");
+    budget(&clock_for(soft), Colour::White, progress(&board))
+        .expect("a clock gives a budget")
+        .hard
 }
 
 /// The seam the gate below reads: one elapsed reading per completed
@@ -612,10 +627,10 @@ fn the_ladder_is_recorded_under_a_clock_and_not_under_a_depth() {
 ///
 /// **The window can be closed, and a closed window is verified rather
 /// than failed.** The waste exists only where an iteration can cost more
-/// than the hard budget leaves: with hard at three times soft, that needs
-/// the next iteration to outweigh roughly 2.75 times everything searched
-/// so far, which the derivation behind the rule states as the window
-/// closing at a branching factor of three. Null-move pruning brought this
+/// than the hard budget leaves, and how much more is what `hard_for` reads
+/// off the budget: at the full complement of pieces this ladder is measured
+/// on, hard is four times soft, so the next iteration must outweigh roughly
+/// 3.75 times everything searched so far. Null-move pruning brought this
 /// tree's ladder under that everywhere on this machine, so the free
 /// ladder can present no depth to build the trial on. The gate then
 /// asserts the closure off the whole ladder, cap ignored, and passes with
@@ -656,16 +671,17 @@ fn an_iteration_that_cannot_finish_is_not_started() {
     assert!(rungs.len() >= 3, "no ladder to read: {rungs:?}");
 
     // The window: the last completed iteration finished before `soft`, so
-    // the next is started, and it cannot finish before `hard`, which is
-    // three times `soft`. A quarter of headroom on `soft` so the clock
-    // survives the run-to-run variation between this ladder and the next.
+    // the next is started, and it cannot finish before `hard`, which
+    // `hard_for` reads off the budget itself. A quarter of headroom on
+    // `soft` so the clock survives the variation between two ladders.
     // The deepest such depth, capped so the gate costs about a second.
     let mut window = None;
     for d in 1..rungs.len() {
         let cum = rungs[d - 1];
         let next = rungs[d] - rungs[d - 1];
         let soft = soft_for(cum);
-        if cum >= MEASURABLE_MS && 3 * soft <= 1_500 && cum + next > 3 * soft {
+        let hard = hard_for(soft);
+        if cum >= MEASURABLE_MS && hard <= 1_500 && cum + next > hard {
             window = Some((d, soft));
         }
     }
@@ -695,7 +711,7 @@ fn an_iteration_that_cannot_finish_is_not_started() {
             let next = rungs[d] - rungs[d - 1];
             let soft = soft_for(cum);
             assert!(
-                cum < MEASURABLE_MS || cum + next <= 3 * soft,
+                cum < MEASURABLE_MS || cum + next <= hard_for(soft),
                 "a depth in the window exists at {d} and only the calibration cap hid it: {rungs:?}"
             );
         }
@@ -727,7 +743,7 @@ fn an_iteration_that_cannot_finish_is_not_started() {
         "{wasted} ms spent after the last completed iteration, which cost {cost} ms: \
          calibrated on depth {depth} of {rungs:?}, ran {run:?}, \
          soft {soft}, hard {}, returned at {returned}",
-        3 * soft
+        hard_for(soft)
     );
 }
 

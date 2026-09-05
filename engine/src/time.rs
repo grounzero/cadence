@@ -45,6 +45,18 @@ pub fn progress(board: &Board) -> u32 {
     PROGRESS_MAX.saturating_sub(eval::phase(board) as u32)
 }
 
+/// The hard budget's multiple of the soft one at the opening's full
+/// complement, in twelfths, falling by one twelfth per step of progress.
+/// So four times the soft budget at the opening, three at the middle of the
+/// scale where the old constant sat, and twice it in a pawn ending.
+const HARD_AT_THE_OPENING: u64 = 4 * HARD_SCALE;
+
+/// The denominator the multiple above is counted in. Twelfths, because the
+/// scale has twenty-four steps and this walks it from four down to two.
+const HARD_SCALE: u64 = 12;
+
+const _: () = assert!(HARD_AT_THE_OPENING - PROGRESS_MAX as u64 == 2 * HARD_SCALE);
+
 /// A time budget for one move, in milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
@@ -63,7 +75,7 @@ pub struct Budget {
 /// `bench`, `go depth`, `go nodes` and `go infinite` get, and it is the
 /// licence not to read the clock at all.
 #[must_use]
-pub fn budget(limits: &Limits, us: Colour, _progress: u32) -> Option<Budget> {
+pub fn budget(limits: &Limits, us: Colour, progress: u32) -> Option<Budget> {
     if let Some(movetime) = limits.movetime {
         let t = movetime.saturating_sub(MOVE_OVERHEAD_MS);
         return Some(Budget { soft: t, hard: t });
@@ -87,7 +99,12 @@ pub fn budget(limits: &Limits, us: Colour, _progress: u32) -> Option<Budget> {
         None => avail / 25,
     };
     let soft = (share + inc * 3 / 4).min(cap);
-    let hard = (soft * 3).min(cap);
+    // How far past its share an iteration already under way may run, and it
+    // shrinks as the game does. Clamped rather than trusted, because a
+    // multiple driven under `HARD_SCALE` would put the hard budget below the
+    // soft one and make `another_iteration_fits` inert.
+    let multiple = HARD_AT_THE_OPENING - u64::from(progress.min(PROGRESS_MAX));
+    let hard = (soft * multiple / HARD_SCALE).min(cap);
     Some(Budget { soft, hard })
 }
 
