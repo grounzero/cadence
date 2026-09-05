@@ -669,6 +669,12 @@ pub struct Search<'a> {
     /// no entry either: `bench` leaves this empty and reads no clock, which
     /// is the contract `tests/time.rs` pins.
     iterations: Vec<u64>,
+    /// The root move and the score at the end of each completed iteration,
+    /// in order, which is the state a rule spending on how long the root
+    /// move has stood reads. Written where the iteration is accepted and
+    /// read by nothing that decides anything, and unlike `iterations` it
+    /// costs no clock read, so it is kept under a depth limit too.
+    roots: Vec<(Move, Score)>,
 }
 
 impl<'a> Search<'a> {
@@ -712,6 +718,7 @@ impl<'a> Search<'a> {
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
             iterations: Vec::new(),
+            roots: Vec::new(),
         }
     }
 
@@ -756,6 +763,7 @@ impl<'a> Search<'a> {
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
         self.iterations.clear();
+        self.roots.clear();
         self.budget = if self.limits.infinite {
             None
         } else {
@@ -796,6 +804,11 @@ impl<'a> Search<'a> {
             self.completed_depth = depth;
             self.best = best;
             self.score = score;
+            // The iteration is accepted, so the pair it ended on joins the
+            // ones before it. An aborted iteration breaks out above and
+            // leaves nothing, which is what makes a run of equal moves here
+            // a run of completed ones.
+            self.roots.push((best, score));
             self.pv.clear();
             self.pv.extend_from_slice(self.table.line(0));
             self.report(board, out);
@@ -1711,6 +1724,31 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
         &self.iterations
+    }
+
+    /// The root move and score of each completed iteration, in order, and
+    /// empty where none completed. Kept under every limit, so a `go depth`
+    /// and a `bench` position record one entry per iteration while reading
+    /// no clock.
+    #[must_use]
+    pub fn iteration_roots(&self) -> &[(Move, Score)] {
+        &self.roots
+    }
+
+    /// How many completed iterations in a row ended on the move the last
+    /// one ended on, counting that one, and zero where none completed.
+    /// Derived from [`Search::iteration_roots`] rather than counted beside
+    /// it, so the two cannot disagree.
+    #[must_use]
+    pub fn stable_iterations(&self) -> usize {
+        let Some(&(last, _)) = self.roots.last() else {
+            return 0;
+        };
+        self.roots
+            .iter()
+            .rev()
+            .take_while(|&&(m, _)| m == last)
+            .count()
     }
 
     #[must_use]
