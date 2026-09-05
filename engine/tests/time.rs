@@ -378,13 +378,27 @@ fn ladder(limits: Limits) -> (Vec<u64>, u64) {
 
 /// The clock that spends `soft` on a move, in sudden death with no
 /// increment: `budget` takes a twenty-fifth of what is left after the
-/// overhead, and the half-clock cap is nowhere near three times that.
+/// overhead, and the half-clock cap is nowhere near the hard budget.
 fn clock_for(soft: u64) -> Limits {
     let wtime = 25 * soft + MOVE_OVERHEAD_MS;
     Limits {
         time: [Some(wtime), Some(wtime)],
         ..Limits::default()
     }
+}
+
+/// The hard budget the engine will actually use for that clock.
+///
+/// Read off `budget` rather than written here as a multiple of `soft`. The
+/// multiple is the allocation's to choose, and a copy of it in the gate goes
+/// on passing while asserting against a budget the search does not have,
+/// which is a gate that has stopped discriminating rather than one that
+/// fails. It is a copy today and this removes it before it is one that is
+/// wrong.
+fn hard_for(soft: u64) -> u64 {
+    budget(&clock_for(soft), Colour::White)
+        .expect("a clock gives a budget")
+        .hard
 }
 
 /// The seam the gate below reads: one elapsed reading per completed
@@ -488,7 +502,8 @@ fn an_iteration_that_cannot_finish_is_not_started() {
         let cum = rungs[d - 1];
         let next = rungs[d] - rungs[d - 1];
         let soft = soft_for(cum);
-        if cum >= MEASURABLE_MS && 3 * soft <= 1_500 && cum + next > 3 * soft {
+        let hard = hard_for(soft);
+        if cum >= MEASURABLE_MS && hard <= 1_500 && cum + next > hard {
             window = Some((d, soft));
         }
     }
@@ -518,7 +533,7 @@ fn an_iteration_that_cannot_finish_is_not_started() {
             let next = rungs[d] - rungs[d - 1];
             let soft = soft_for(cum);
             assert!(
-                cum < MEASURABLE_MS || cum + next <= 3 * soft,
+                cum < MEASURABLE_MS || cum + next <= hard_for(soft),
                 "a depth in the window exists at {d} and only the calibration cap hid it: {rungs:?}"
             );
         }
@@ -550,7 +565,7 @@ fn an_iteration_that_cannot_finish_is_not_started() {
         "{wasted} ms spent after the last completed iteration, which cost {cost} ms: \
          calibrated on depth {depth} of {rungs:?}, ran {run:?}, \
          soft {soft}, hard {}, returned at {returned}",
-        3 * soft
+        hard_for(soft)
     );
 }
 
