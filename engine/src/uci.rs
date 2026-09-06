@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
+use cadence_core::Move;
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci, to_uci};
 
@@ -39,14 +40,20 @@ pub struct Session {
     /// `MultiPV`: how many principal variations a search reports. One is the default, and at
     /// one the engine reports what it did without it.
     multipv: usize,
+    /// `Ponder`: whether the GUI intends to think on our move, which is what decides whether a
+    /// `bestmove` offers a move to ponder on. Off by default, and off is what every rating list
+    /// and every SPRT plays.
+    ponder: bool,
     /// The search thread started by the last `go`, until `stop`, the next `go`, or shutdown
     /// joins it. It may already have finished.
     search: Option<Running>,
 }
 
-/// A search in flight: the flag that ends it and the thread to wait for.
+/// A search in flight: the flag that ends it, the flag a `ponderhit` raises, and the thread to
+/// wait for.
 struct Running {
     stop: Arc<AtomicBool>,
+    ponder_hit: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -74,6 +81,7 @@ impl Session {
             chess960: false,
             tt: Arc::new(tt),
             multipv: 1,
+            ponder: false,
             search: None,
         }
     }
@@ -94,6 +102,12 @@ impl Session {
     #[must_use]
     pub fn multipv(&self) -> usize {
         self.multipv
+    }
+
+    /// The `Ponder` option.
+    #[must_use]
+    pub fn ponder(&self) -> bool {
+        self.ponder
     }
 
     /// The transposition table this session is playing with.
@@ -146,6 +160,11 @@ impl Session {
                 say(format_args!(
                     "option name MultiPV type spin default 1 min 1 max {MAX_MOVES}"
                 ));
+                // `Ponder` is what a GUI reads to decide whether to think on our move at all,
+                // and it is what puts the move to ponder on into the `bestmove` line. Off by
+                // default: pondering doubles the thinking one side gets, which is why every
+                // rating list disables it.
+                say(format_args!("option name Ponder type check default false"));
                 say(format_args!("uciok"));
             }
             "isready" => say(format_args!("readyok")),
@@ -157,13 +176,13 @@ impl Session {
             // has nothing to do with this one's, and an entry that survives is a score for a
             // position reached by a different route.
             "stop" => self.stop_search(),
+            "ponderhit" => self.ponderhit(),
             "ucinewgame" => {
                 self.stop_search();
                 self.tt.clear();
             }
             "quit" => return false,
-            // `debug`, `register`, `ponderhit` and anything unknown are ignored, per the
-            // protocol.
+            // `debug`, `register` and anything unknown are ignored, per the protocol.
             _ => {}
         }
         true
@@ -205,6 +224,12 @@ impl Session {
             self.set_hash(&value);
         } else if name.eq_ignore_ascii_case("MultiPV") {
             self.set_multipv(&value);
+        } else if name.eq_ignore_ascii_case("Ponder") {
+            if value.eq_ignore_ascii_case("true") {
+                self.ponder = true;
+            } else if value.eq_ignore_ascii_case("false") {
+                self.ponder = false;
+            }
         }
         // `Threads` is declared with a maximum of one and there is nothing to set: the value is
         // accepted and ignored. Unknown options are ignored too; a GUI sends whatever it was
@@ -320,11 +345,14 @@ impl Session {
             ));
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
         let chess960 = self.chess960;
         let multipv = self.multipv;
+        let ponder = self.ponder;
         let thread = {
             let stop = Arc::clone(&stop);
+            let ponder_hit = Arc::clone(&ponder_hit);
             // A handle of its own, so that a `setoption name Hash` during the search replaces
             // the session's table without pulling this one out from under the thread reading
             // it.
@@ -339,17 +367,42 @@ impl Session {
                     let legal = generate_legal(&board);
                     let mut out = std::io::stdout();
                     let mut search = Search::new(limits, &stop, &tt);
+                    search.set_ponder_hit(&ponder_hit);
                     search.set_chess960(chess960);
                     search.set_multipv(multipv);
                     let best = search.run(&mut board, &mut out);
-                    say(format_args!("bestmove {}", to_uci(best, &legal, chess960)));
+                    let spelled = to_uci(best, &legal, chess960);
+                    // Only when the GUI said it ponders. Off is the default and what every
+                    // rating list plays, and the line it reads there is the line it always read.
+                    match ponder
+                        .then(|| ponder_move(&mut board, best, search.pv(), chess960))
+                        .flatten()
+                    {
+                        Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
+                        None => say(format_args!("bestmove {spelled}")),
+                    }
                 })
         };
         match thread {
-            Ok(thread) => self.search = Some(Running { stop, thread }),
+            Ok(thread) => {
+                self.search = Some(Running {
+                    stop,
+                    ponder_hit,
+                    thread,
+                });
+            }
             Err(e) => say(format_args!(
                 "info string go: could not start the search thread: {e}"
             )),
+        }
+    }
+
+    /// `ponderhit`: the opponent played the move being pondered on, so the search keeps the tree
+    /// it has built and starts spending the clock from here. A flag rather than a new `Limits`,
+    /// because the search that has to hear about it is already running.
+    fn ponderhit(&mut self) {
+        if let Some(running) = &self.search {
+            running.ponder_hit.store(true, Ordering::Relaxed);
         }
     }
 
@@ -363,6 +416,23 @@ impl Session {
             let _ = running.thread.join();
         }
     }
+}
+
+/// The move to offer to ponder on: the second move of the principal variation, spelled in the
+/// position it is played in rather than at the root. `None` when the search left no line to
+/// speak of, which is what an aborted first iteration leaves.
+fn ponder_move(board: &mut Board, best: Move, pv: &[Move], chess960: bool) -> Option<String> {
+    if pv.first() != Some(&best) {
+        return None;
+    }
+    let reply = *pv.get(1)?;
+    board.make_move(best);
+    let legal = generate_legal(board);
+    let spelled = legal
+        .contains(reply)
+        .then(|| to_uci(reply, &legal, chess960));
+    board.unmake_move(best);
+    spelled
 }
 
 /// The start position. `START_FEN` is a constant the corpus pins, so this cannot fail; `expect`

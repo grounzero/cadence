@@ -79,6 +79,10 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
 pub struct Search<'a> {
     limits: Limits,
     stop: &'a AtomicBool,
+    /// The flag a `ponderhit` raises, read at the iteration boundary and inside
+    /// [`Search::out_of_time`]'s node interval. It is the stop flag's shape rather than a
+    /// replaced `Limits`, because the search that has to hear about it is already running.
+    ponder_hit: Option<&'a AtomicBool>,
     /// The transposition table. Shared with whoever else searches: the UCI session keeps one
     /// across the whole game, `bench` clears one between positions.
     tt: &'a Table,
@@ -89,6 +93,14 @@ pub struct Search<'a> {
     /// The time budget, when anything in `limits` constrains the time. `None` means the clock
     /// is never read.
     budget: Option<Budget>,
+    /// Whether this search is still pondering, which is `limits.ponder` until a hit is
+    /// absorbed. A field rather than the limit itself, because the limit records what the `go`
+    /// asked for and this records what the search is now doing.
+    pondering: bool,
+    /// The budget a `ponderhit` installs, from the clock the `go ponder` carried. Derived at
+    /// the head of the run because the hit is absorbed on a path with no board to read the side
+    /// to move from.
+    budget_on_hit: Option<Budget>,
     /// Set when a limit or the stop flag ends the search mid-iteration; the iteration's partial
     /// result is discarded, unless it is the first iteration's, which is all there is.
     aborted: bool,
@@ -210,11 +222,14 @@ impl<'a> Search<'a> {
         Search {
             limits,
             stop,
+            ponder_hit: None,
             tt,
             chess960: false,
             nodes: 0,
             start: Instant::now(),
             budget: None,
+            pondering: false,
+            budget_on_hit: None,
             aborted: false,
             completed_depth: 0,
             best: Move::NULL,
@@ -251,6 +266,12 @@ impl<'a> Search<'a> {
         }
     }
 
+    /// The flag to watch for a `ponderhit`. A search built without one still refuses to answer
+    /// a `go ponder` before `stop`, which is what a session that never sends the hit gets.
+    pub fn set_ponder_hit(&mut self, flag: &'a AtomicBool) {
+        self.ponder_hit = Some(flag);
+    }
+
     /// Spell castling moves in `info` lines per `UCI_Chess960`.
     pub fn set_chess960(&mut self, on: bool) {
         self.chess960 = on;
@@ -263,9 +284,10 @@ impl<'a> Search<'a> {
         self.multipv = n.max(1);
     }
 
-    /// The best move in `board`, or `Move::NULL` when there is none. Returns when the limits
-    /// are met or `stop` is raised; under `infinite`, only when `stop` is raised.
-    pub fn run(&mut self, board: &mut Board, out: &mut dyn Write) -> Move {
+    /// Clear everything one run owns and derive its budgets, so a `Search` reused for a second
+    /// `go` starts where a fresh one would. The clock origin is set here and moved again only
+    /// by a `ponderhit`.
+    fn begin(&mut self, board: &Board) {
         self.tt.new_search();
         self.start = Instant::now();
         self.nodes = 0;
@@ -298,11 +320,28 @@ impl<'a> Search<'a> {
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();
+        self.pondering = self.limits.ponder;
         self.budget = if self.limits.infinite {
             None
         } else {
             time::budget(&self.limits, board.side_to_move())
         };
+        // What the clock the `go ponder` carried is worth once a hit makes the time ours. A
+        // ponder has no budget of its own, so this is held rather than derived where it lands.
+        self.budget_on_hit = if self.pondering {
+            let mut clocked = self.limits;
+            clocked.ponder = false;
+            time::budget(&clocked, board.side_to_move())
+        } else {
+            None
+        };
+    }
+
+    /// The best move in `board`, or `Move::NULL` when there is none. Returns when the limits
+    /// are met or `stop` is raised; under `infinite` and under a ponder nobody has hit, only
+    /// when `stop` is raised.
+    pub fn run(&mut self, board: &mut Board, out: &mut dyn Write) -> Move {
+        self.begin(board);
 
         let legal = generate_legal(board);
         if legal.is_empty() {
@@ -370,6 +409,10 @@ impl<'a> Search<'a> {
             if let Some(i) = root_moves.iter().position(|&m| m == best) {
                 root_moves[..=i].rotate_right(1);
             }
+            // A hit may have arrived while this iteration ran, and the ladder below is read
+            // against the origin it moves. Absorbed before the budget is consulted, so the
+            // first clocked decision of the search is made on the new clock.
+            self.absorb_ponder_hit();
             if let Some(b) = self.budget {
                 let elapsed = self.elapsed_ms();
                 self.iterations.push(elapsed);
@@ -980,21 +1023,39 @@ impl<'a> Search<'a> {
             self.aborted = true;
             return true;
         }
-        if self.nodes & (CLOCK_INTERVAL - 1) == 0
-            && let Some(b) = self.budget
-            && self.elapsed_ms() >= b.hard
-        {
-            self.aborted = true;
-            return true;
+        if self.nodes & (CLOCK_INTERVAL - 1) == 0 {
+            // On the interval that already exists rather than on one of its own: a hit that
+            // waited for the end of a deep iteration would spend the clock it just took.
+            self.absorb_ponder_hit();
+            if let Some(b) = self.budget
+                && self.elapsed_ms() >= b.hard
+            {
+                self.aborted = true;
+                return true;
+            }
         }
         false
     }
 
-    /// Hold the finished search until `stop`, under the two limits that say so. `go infinite`
-    /// and `go ponder` both mean "do not answer until told", and a ponder that returned early
-    /// would be answering a question the opponent has not yet asked.
+    /// Take a `ponderhit` if one has arrived: the search stops pondering, the clock runs from
+    /// this moment, and the iteration ladder starts again. The ladder is cleared because an
+    /// entry measured from the ponder's origin, read against the new one, gives a branching
+    /// factor below one and starts an iteration on it.
+    fn absorb_ponder_hit(&mut self) {
+        if !self.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
+            return;
+        }
+        self.pondering = false;
+        self.start = Instant::now();
+        self.iterations.clear();
+        self.budget = self.budget_on_hit;
+    }
+
+    /// Hold the finished search until `stop`, in the two states that say so. `go infinite` and
+    /// a ponder nobody has hit both mean "do not answer until told", and a ponder that returned
+    /// early would be answering a question the opponent has not yet asked.
     fn wait_if_open_ended(&self) {
-        if self.limits.infinite || self.limits.ponder {
+        if self.limits.infinite || self.pondering {
             while !self.stop_requested() {
                 std::thread::sleep(Duration::from_millis(1));
             }

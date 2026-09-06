@@ -462,6 +462,21 @@ impl Engine {
             .unwrap_or_else(|_| panic!("no bestmove within {timeout:?} for `{go_line}`"))
     }
 
+    /// Run `body` on a thread and fail rather than block when it does not
+    /// finish. [`Engine::go_within`]'s reason, for a gate that has to send a
+    /// command mid-search and so cannot hand the whole exchange over.
+    pub fn within<T: Send + 'static>(
+        timeout: Duration,
+        body: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(body());
+        });
+        rx.recv_timeout(timeout)
+            .unwrap_or_else(|_| panic!("nothing within {timeout:?}"))
+    }
+
     /// `quit`, and wait for the process to exit cleanly.
     pub fn quit(mut self) {
         self.send("quit");
