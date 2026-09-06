@@ -1,19 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The version string the binary reports, composed at compile time.
-//!
-//! `build.rs` asks git what commit this is and whether HEAD is at an
-//! annotated tag, and emits the two answers raw. The rule that turns them
-//! into a name lives here, in the crate, because a build script has no
-//! tests. Two forms, and only two: `<version>` at the annotated tag, and
-//! `<version>-dev-<short commit>` for anything else.
-//!
-//! **The bare form is reachable only through a tag that matches the package
-//! version character for character.** Every way of not knowing arrives here
-//! as an empty tag, and an empty string does not match a version, so no
-//! failure inside `build.rs` can produce a build that reads as a release.
-//!
-//! Nothing here reaches a decision path.
+//! The version string the binary reports, composed at compile time. `build.rs` asks git what
+//! commit this is and whether HEAD is at an annotated tag, and emits the two answers raw.
 
 /// The tag HEAD is exactly at, or empty. Set by `build.rs`.
 const TAG: &str = env!("CADENCE_TAG");
@@ -28,13 +16,8 @@ pub const VERSION: &str = if is_release(TAG, PACKAGE) {
     concat!(env!("CARGO_PKG_VERSION"), "-dev-", env!("CADENCE_COMMIT"))
 };
 
-/// Whether `tag` releases `package`: exact equality and nothing looser.
-///
-/// Not a prefix test and not a "starts with the version" test. `0.3.0-rc1`
-/// and `v0.3.0` are both tags a person might reasonably write and neither is
-/// the `package` they are asked about, so neither releases it. The literals
-/// here and in the test below are an example of the function and not of this
-/// package, so they do not move when the version does.
+/// Whether `tag` releases `package`: exact equality and nothing looser. Not a prefix test and
+/// not a "starts with the version" test.
 const fn is_release(tag: &str, package: &str) -> bool {
     let (tag, package) = (tag.as_bytes(), package.as_bytes());
     if tag.is_empty() || tag.len() != package.len() {
@@ -54,13 +37,11 @@ const fn is_release(tag: &str, package: &str) -> bool {
 mod tests {
     use super::{PACKAGE, VERSION, is_release};
 
-    /// The short commit, or `unknown`. `build.rs` sets it and never leaves it
-    /// empty. It has no constant of its own outside these tests because the
-    /// version string is built by `concat!`, which takes the `env!` directly.
+    /// The short commit, or `unknown`. `build.rs` sets it and never leaves it empty.
     const COMMIT: &str = env!("CADENCE_COMMIT");
 
-    /// The property the fallback rests on: nothing that is not the version
-    /// itself grants the release form, and in particular nothing empty does.
+    /// The property the fallback rests on: nothing that is not the version itself grants the
+    /// release form, and in particular nothing empty does.
     #[test]
     fn only_an_exact_tag_releases() {
         assert!(is_release("0.3.0", "0.3.0"));
@@ -80,9 +61,8 @@ mod tests {
         }
     }
 
-    /// Whichever form this build took, it is one of the two and it opens with
-    /// the package version, so a reader who knows the version can always find
-    /// it at the front.
+    /// Whichever form this build took, it is one of the two and it opens with the package
+    /// version, so a reader who knows the version can always find it at the front.
     #[test]
     fn the_version_string_is_one_of_two_shapes() {
         assert!(
@@ -96,8 +76,8 @@ mod tests {
         );
     }
 
-    /// The commit is never empty, so the dev form can never trail off into
-    /// `<version>-dev-`, which reads as a truncation rather than as a fact.
+    /// The commit is never empty, so the dev form can never trail off into `<version>-dev-`,
+    /// which reads as a truncation rather than as a fact.
     #[test]
     fn the_commit_is_always_something() {
         assert!(!COMMIT.is_empty());

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A set of squares.
-//!
-//! No chess knowledge above "bits": the shifts know which file wraps, and
-//! nothing else. Anything that knows what a knight is lives in `attacks`.
+//! A set of squares. No chess knowledge above "bits": the shifts know which file wraps, and
+//! nothing else.
 
 use core::fmt;
 use core::mem::{align_of, size_of};
@@ -70,8 +68,8 @@ impl Bitboard {
         self.0 == 0
     }
 
-    /// At least one square. The negation of [`Bitboard::is_empty`], named so
-    /// that `if bb.any()` reads as it means.
+    /// At least one square. The negation of [`Bitboard::is_empty`], named so that `if bb.any()`
+    /// reads as it means.
     #[inline]
     #[must_use]
     pub const fn any(self) -> bool {
@@ -133,11 +131,9 @@ impl Bitboard {
         self.0 ^= sq.bb().0;
     }
 
-    /// Removes the lowest square from the set and returns it.
-    ///
-    /// Deliberately not `const`: it takes `&mut self`, and it is the one place
-    /// a [`Square`] is built from `trailing_zeros()`, which is the whole
-    /// reason `Square` is a newtype rather than an enum.
+    /// Removes the lowest square from the set and returns it. Deliberately not `const`: it
+    /// takes `&mut self`, and it is the one place a [`Square`] is built from
+    /// `trailing_zeros()`, which is the whole reason `Square` is a newtype rather than an enum.
     #[inline]
     pub fn pop_lsb(&mut self) -> Option<Square> {
         if self.0 == 0 {
@@ -149,9 +145,8 @@ impl Bitboard {
     }
 
     // --- shifts -----------------------------------------------------------
-    //
-    // The only place the file wrap is known. East/west shifts mask off the
-    // edge file first, so a set never wraps onto the next rank.
+    // The only place the file wrap is known. East/west shifts mask off the edge file first, so
+    // a set never wraps onto the next rank.
 
     #[inline]
     #[must_use]
@@ -301,8 +296,8 @@ impl IntoIterator for Bitboard {
 
 // --- display ---------------------------------------------------------------
 
-/// An 8×8 grid, rank 8 at the top, `x` for a set square and `.` for a clear
-/// one, followed by the hex value.
+/// An 8×8 grid, rank 8 at the top, `x` for a set square and `.` for a clear one, followed by
+/// the hex value.
 impl fmt::Debug for Bitboard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for r in (0..8).rev() {

@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! FEN, X-FEN and Shredder-FEN.
-//!
-//! **Both castling spellings are accepted on input and the position records
-//! which it was given**, because a GUI may send either and a position that
-//! round-trips through the wrong one is a different position. `KQkq` is read
-//! as the outermost rook on that side, which is X-FEN's rule and is what
-//! makes standard chess a case of Chess960 rather than a separate parser.
-//!
-//! Parsing validates: a position this accepts has one king a side, no pawn
-//! on a back rank, and castling rights whose rooks exist. What it does not
-//! check is reachability by legal play, which is why `movegen` and
-//! `position` carry the rules that hold for positions no game can produce.
+//! FEN, X-FEN and Shredder-FEN. **Both castling spellings are accepted on input and the
+//! position records which it was given**, because a GUI may send either and a position that
+//! round-trips through the wrong one is a different position.
 
 use alloc::string::String;
 use core::fmt::Write as _;
@@ -34,8 +25,8 @@ pub enum FenError {
     Placement,
     /// The side-to-move field was neither `w` nor `b`.
     SideToMove,
-    /// The castling field named a rook that is not there, or a right that
-    /// cannot exist given the king's square.
+    /// The castling field named a rook that is not there, or a right that cannot exist given
+    /// the king's square.
     Castling,
     /// The en-passant field was not `-` or a square on rank 3 or rank 6.
     EnPassant,
@@ -45,36 +36,27 @@ pub enum FenError {
     Kings,
 }
 
-/// Which castling-field notation to emit.
-///
-/// These are two different notations, not a formatting preference. The variant
-/// was called `Standard` and has been renamed, because "standard" invited
-/// reading it as "plain `KQkq`", which is what X-FEN writes only when the
-/// spelling is unambiguous.
+/// Which castling-field notation to emit. These are two different notations, not a formatting
+/// preference.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FenStyle {
-    /// `KQkq`, where each letter denotes the **outermost** rook on that side
-    /// of the king, not the a- and h-file rooks. Falls back to naming the
-    /// castling rook's file when, and only when, another rook of the same
-    /// colour stands outside it on the same side. The two halves fall back
-    /// independently, so a mixed field like `CQcq` is well-formed.
+    /// `KQkq`, where each letter denotes the **outermost** rook on that side of the king, not
+    /// the a- and h-file rooks. Falls back to naming the castling rook's file when, and only
+    /// when, another rook of the same colour stands outside it on the same side.
     XFen,
-    /// Always names the castling rook's file: `HAha`. Never ambiguous, never
-    /// mixed.
+    /// Always names the castling rook's file: `HAha`. Never ambiguous, never mixed.
     Shredder,
 }
 
 impl Board {
-    /// Parse a FEN. Accepts standard `KQkq` castling fields and the Shredder
-    /// rook-file spelling, in both cases with arbitrary rook files. Four to
-    /// six fields: the two counters may be omitted and default to `0 1`.
+    /// Parse a FEN. Accepts standard `KQkq` castling fields and the Shredder rook-file
+    /// spelling, in both cases with arbitrary rook files.
     ///
     /// # Errors
     ///
-    /// [`FenError`] describes which field was rejected. In particular a
-    /// castling right whose rook is not there, or whose king is not on its
-    /// back rank, is [`FenError::Castling`] here rather than a panic in move
-    /// generation.
+    /// [`FenError`] describes which field was rejected. In particular a castling right whose
+    /// rook is not there, or whose king is not on its back rank, is [`FenError::Castling`] here
+    /// rather than a panic in move generation.
     pub fn from_fen(fen: &str) -> Result<Board, FenError> {
         let fields: [&str; 6] = {
             let mut it = fen.split_whitespace();
@@ -135,11 +117,9 @@ impl Board {
         }))
     }
 
-    /// Emit this position as a FEN in the requested notation.
-    ///
-    /// The en-passant field is emitted whenever the last move was a double
-    /// pawn push, which is what the FEN specification says and what the
-    /// state holds.
+    /// Emit this position as a FEN in the requested notation. The en-passant field is emitted
+    /// whenever the last move was a double pawn push, which is what the FEN specification says
+    /// and what the state holds.
     #[must_use]
     pub fn to_fen(&self, style: FenStyle) -> String {
         let mut out = String::with_capacity(90);
@@ -219,10 +199,9 @@ impl Board {
         }
     }
 
-    /// Whether another rook of `c` stands on the back rank outside the
-    /// castling rook `rf` on side `s`: the condition under which X-FEN must
-    /// name the file. A property of the position, not of the layout: an
-    /// extra rook can arrive by promotion at any time.
+    /// Whether another rook of `c` stands on the back rank outside the castling rook `rf` on
+    /// side `s`: the condition under which X-FEN must name the file. A property of the
+    /// position, not of the layout: an extra rook can arrive by promotion at any time.
     fn rook_outside(&self, c: Colour, s: CastleSide, rf: Square) -> bool {
         let rooks = self.pieces(c, PieceType::Rook) & Bitboard::rank(rf.rank());
         rooks.into_iter().any(|sq| match s {
@@ -267,13 +246,8 @@ fn parse_placement(field: &str) -> Result<[Option<Piece>; 64], FenError> {
     Ok(mailbox)
 }
 
-/// The castling field, in either notation, resolved against the placement.
-///
-/// `K`/`k`: the outermost rook of that colour on the king's side of its
-/// king, on the back rank. `Q`/`q`: the outermost on the other side. A file
-/// letter: that file on the back rank, which must hold the colour's rook and
-/// must not be the king's file; the side follows from the file. Every right
-/// requires the king on its back rank.
+/// The castling field, in either notation, resolved against the placement. `K`/`k`: the
+/// outermost rook of that colour on the king's side of its king, on the back rank.
 fn parse_castling(
     field: &str,
     mailbox: &[Option<Piece>; 64],

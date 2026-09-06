@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Zobrist keys: const splitmix64 tables and typed key operations.
-//!
-//! Every table is built at compile time from a fixed seed, so the keys are a
-//! function of the code alone and two builds agree. **The key is maintained
-//! incrementally by `make_move` and `unmake_move` and recomputed nowhere on
-//! a decision path**; `Board::recomputed_key` exists for the gates, which
-//! assert the incremental value against it after every move.
+//! Zobrist keys: const splitmix64 tables and typed key operations. Every table is built at
+//! compile time from a fixed seed, so the keys are a function of the code alone and two builds
+//! agree.
 
 use crate::castling::CastlingRights;
 use crate::types::{File, Piece, Square};
 
-/// The generator state after each draw. splitmix64: twelve lines, and its
-/// output is a bijection of a counter, so distinct draws are distinct until
-/// the counter wraps at 2^64.
+/// The generator state after each draw. splitmix64: twelve lines, and its output is a bijection
+/// of a counter, so distinct draws are distinct until the counter wraps at 2^64.
 const fn splitmix64(state: u64) -> (u64, u64) {
     let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = state;
@@ -22,9 +17,8 @@ const fn splitmix64(state: u64) -> (u64, u64) {
     (z ^ (z >> 31), state)
 }
 
-/// Fixed for the life of the crate. Changing it changes every key, which is
-/// harmless to the engine and fatal to any stored table or datagen record
-/// that carried keys. There are none yet, which is the time to pick it.
+/// Fixed for the life of the crate. Changing it changes every key, which is harmless to the
+/// engine and fatal to any stored table or datagen record that carried keys.
 const SEED: u64 = 0x00CA_DE7C_E5EE_D002;
 
 /// The four tables, drawn in one sequence: piece-square, side, castling, ep.
@@ -91,8 +85,8 @@ pub fn side() -> u64 {
     TABLES.side
 }
 
-/// The key for the whole rights set. Losing a right is one XOR of the old
-/// index's key and the new one's.
+/// The key for the whole rights set. Losing a right is one XOR of the old index's key and the
+/// new one's.
 #[inline]
 #[must_use]
 pub fn castling(rights: CastlingRights) -> u64 {
