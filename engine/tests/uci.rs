@@ -149,6 +149,32 @@ fn go_depth_yields_a_legal_bestmove() {
 }
 
 #[test]
+fn multicore_go_yields_one_legal_bestmove() {
+    let (_, lines) = Engine::go_within(
+        &["setoption name Threads value 4", "position startpos"],
+        "go depth 3",
+        std::time::Duration::from_secs(20),
+    );
+    let out = lines.join("\n");
+    assert_bestmove_legal(&out, START_FEN, false);
+    assert_eq!(bestmoves(&out).len(), 1, "exactly one bestmove: {out:?}");
+    assert!(
+        out.lines().any(|line| line.starts_with("info depth 3 ")),
+        "the finite search completed rather than being stopped early: {out:?}"
+    );
+}
+
+#[test]
+fn multicore_infinite_search_stops_cleanly() {
+    let out = talk(
+        "setoption name Threads value 4\nposition startpos\ngo infinite\nisready\nstop\nquit\n",
+    );
+    assert_bestmove_legal(&out, START_FEN, false);
+    assert_eq!(bestmoves(&out).len(), 1, "exactly one bestmove: {out:?}");
+    assert!(out.lines().any(|line| line == "readyok"), "{out:?}");
+}
+
+#[test]
 fn go_without_a_position_searches_the_start_position() {
     let out = talk("go depth 1\nquit\n");
     assert_bestmove_legal(&out, START_FEN, false);

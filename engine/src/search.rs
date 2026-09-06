@@ -3,7 +3,7 @@
 //! The search, and what bounds it. `Limits` is the parsed `go` command.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
@@ -42,6 +42,11 @@ const CLOCK_INTERVAL: u64 = 1024;
 /// saying `currmove`, so nothing is written down a pipe that a watcher could not have read
 /// anyway.
 pub const CURRMOVE_AFTER_MS: u64 = 1000;
+
+/// How often a parallel worker publishes its local node count, in nodes. Each worker owns one
+/// atomic slot, so a publication is a store rather than a contended increment, and a parallel
+/// `go nodes` may overshoot by fewer than this many nodes per other worker.
+const NODE_PUBLISH_INTERVAL: u64 = 64;
 
 /// The deepest iteration: `MAX_PLY`, which is the state stack's bound. It is no longer the
 /// deepest ply either search reaches -- a check extension gives a ply back, and [`extension`]
@@ -85,6 +90,14 @@ pub struct Search<'a> {
     /// Spells castling moves in `info` lines the way the GUI expects.
     chess960: bool,
     nodes: u64,
+    /// All workers' nodes during a parallel UCI search. Absent on the
+    /// single-thread path, including `bench`, so the atomic has no cost and
+    /// cannot disturb its exact node-count contract.
+    shared_nodes: Option<(&'a [AtomicU64], usize)>,
+    /// Zero for the primary search. Helpers rotate their first root list by
+    /// this amount, which makes them explore useful alternative subtrees
+    /// instead of following the primary search step for step.
+    worker_index: usize,
     start: Instant,
     /// The time budget, when anything in `limits` constrains the time. `None` means the clock
     /// is never read.
@@ -213,6 +226,8 @@ impl<'a> Search<'a> {
             tt,
             chess960: false,
             nodes: 0,
+            shared_nodes: None,
+            worker_index: 0,
             start: Instant::now(),
             budget: None,
             aborted: false,
@@ -263,10 +278,28 @@ impl<'a> Search<'a> {
         self.multipv = n.max(1);
     }
 
+    /// Join a parallel search as worker `worker_index`, publishing its count into `nodes`. Each
+    /// worker keeps its own history, killers and principal variation, and only the node
+    /// counter, the stop flag and the table are shared.
+    pub(crate) fn set_parallel(&mut self, worker_index: usize, nodes: &'a [AtomicU64]) {
+        self.worker_index = worker_index;
+        self.shared_nodes = Some((nodes, worker_index));
+    }
+
     /// The best move in `board`, or `Move::NULL` when there is none. Returns when the limits
     /// are met or `stop` is raised; under `infinite`, only when `stop` is raised.
     pub fn run(&mut self, board: &mut Board, out: &mut dyn Write) -> Move {
         self.tt.new_search();
+        self.run_in_current_generation(board, out)
+    }
+
+    /// Run after the caller has advanced the shared table generation once
+    /// for the whole group of workers.
+    pub(crate) fn run_in_current_generation(
+        &mut self,
+        board: &mut Board,
+        out: &mut dyn Write,
+    ) -> Move {
         self.start = Instant::now();
         self.nodes = 0;
         self.aborted = false;
@@ -308,9 +341,12 @@ impl<'a> Search<'a> {
         if legal.is_empty() {
             self.score = if board.in_check() { mated_in(0) } else { DRAW };
             self.wait_if_infinite();
+            self.publish_nodes();
             return Move::NULL;
         }
         let mut root_moves: Vec<Move> = legal.iter().collect();
+        let root_count = root_moves.len();
+        root_moves.rotate_left(self.worker_index % root_count);
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         for depth in 1..=max_depth {
@@ -382,16 +418,20 @@ impl<'a> Search<'a> {
             }
         }
         self.wait_if_infinite();
+        self.publish_nodes();
         self.best
     }
 
-    /// Count a node, at the ply it sits at. The deepest ply is what `seldepth` reports and
-    /// nothing here reads it, so a search that keeps it visits the same nodes in the same order
-    /// as one that does not.
+    /// Count a node, at the ply it sits at, and publish the count where a group is watching.
+    /// The deepest ply is what `seldepth` reports and nothing here reads it, so a search that
+    /// keeps it visits the same nodes in the same order as one that does not.
     #[inline]
     fn visit(&mut self, ply: usize) {
         self.nodes += 1;
         self.seldepth = self.seldepth.max(ply);
+        if self.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
+            self.publish_nodes();
+        }
     }
 
     /// The root: every move a line before this one has not taken, the first in the full window
@@ -975,7 +1015,7 @@ impl<'a> Search<'a> {
             return false;
         }
         if let Some(n) = self.limits.nodes
-            && self.nodes >= n
+            && self.reported_nodes() >= n
         {
             self.aborted = true;
             return true;
@@ -1031,13 +1071,39 @@ impl<'a> Search<'a> {
         self.lines.push(RootLine { mv, score, pv });
     }
 
+    /// This search's nodes, or the group's where one is watching. A worker reads its own count
+    /// live and its siblings' from the slots they publish into, so a reported figure is about
+    /// the whole search rather than one thread.
+    #[inline]
+    fn reported_nodes(&self) -> u64 {
+        let Some((nodes, worker_index)) = self.shared_nodes else {
+            return self.nodes;
+        };
+        nodes.iter().enumerate().fold(0, |total, (index, nodes)| {
+            total.saturating_add(if index == worker_index {
+                self.nodes
+            } else {
+                nodes.load(Ordering::Relaxed)
+            })
+        })
+    }
+
+    /// Store this worker's count in the slot it owns. Nothing else writes that slot, so the
+    /// store is uncontended and needs no ordering beyond `Relaxed`.
+    #[inline]
+    fn publish_nodes(&self) {
+        if let Some((nodes, worker_index)) = self.shared_nodes {
+            nodes[worker_index].store(self.nodes, Ordering::Relaxed);
+        }
+    }
+
     /// One `info` line for line `number` of the iteration just completed, its pv spelled by
     /// walking it on the board so castling reads per the option. `multipv` is absent where only
     /// one line was asked for, which is the line every rating list and every test reads.
     fn report(&self, board: &mut Board, number: usize, out: &mut dyn Write) {
         let reported = &self.lines[number - 1];
         let ms = self.elapsed_ms();
-        let nps = self.nodes * 1000 / ms.max(1);
+        let nps = self.reported_nodes() * 1000 / ms.max(1);
         let numbered = if self.multipv > 1 {
             format!(" multipv {number}")
         } else {
@@ -1048,7 +1114,7 @@ impl<'a> Search<'a> {
             self.completed_depth,
             self.seldepth,
             score::uci(reported.score),
-            self.nodes,
+            self.reported_nodes(),
             self.tt.hashfull()
         );
         let mut made = 0;
