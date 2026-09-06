@@ -1,24 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Static evaluation: material and piece-square tables, tapered.
-//!
-//! Integer throughout and symmetric by construction: the tables are written
-//! from White's side and read through a vertical flip for Black, so the
-//! evaluation of a position and of its mirror differ only in sign. Nothing
-//! here reads the clock or allocates, and no float reaches a decision
-//! path.
+//! Static evaluation: material and piece-square tables, tapered. Integer throughout and
+//! symmetric by construction: the tables are written from White's side and read through a
+//! vertical flip for Black, so the evaluation of a position and of its mirror differ only in
+//! sign.
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, PieceType, Square};
 
 use crate::score::{MAX_EVAL, Score};
 
-/// The game phase scale. `PHASE_MAX` is the start position's full
-/// complement of minor and major pieces; zero is a pawn ending.
+/// The game phase scale. `PHASE_MAX` is the start position's full complement of minor and major
+/// pieces; zero is a pawn ending.
 pub const PHASE_MAX: i32 = 24;
 
-/// Phase weight per piece type: knights and bishops one, rooks two, queens
-/// four. Two of each minor, two rooks and a queen per side is 24.
+/// Phase weight per piece type: knights and bishops one, rooks two, queens four. Two of each
+/// minor, two rooks and a queen per side is 24.
 const PHASE_WEIGHT: [i32; 6] = [0, 1, 1, 2, 4, 0];
 const _: () = assert!(
     2 * (2 * PHASE_WEIGHT[1] + 2 * PHASE_WEIGHT[2] + 2 * PHASE_WEIGHT[3] + PHASE_WEIGHT[4])
@@ -35,9 +32,8 @@ static PST_EG: [[i32; 64]; 6] = build_tables(false);
 
 // --- the tables ------------------------------------------------------------
 
-// Squares are `i32` here so that the arithmetic is signed throughout; the
-// only casts are back to `usize` to index a table, which cannot lose anything
-// on `0..64`.
+// Squares are `i32` here so that the arithmetic is signed throughout; the only casts are back
+// to `usize` to index a table, which cannot lose anything on `0..64`.
 
 /// File and rank distance from the centre, each `0..=3`.
 const fn centre_distance(sq: i32) -> (i32, i32) {
@@ -62,14 +58,14 @@ const fn on_long_diagonal(sq: i32) -> bool {
 }
 
 const fn pawn(sq: i32, mg: bool) -> i32 {
-    // Advance is worth a little in the middlegame and a lot in the ending.
-    // Pawns never stand on the first or last rank; those entries are zero.
+    // Advance is worth a little in the middlegame and a lot in the ending. Pawns never stand on
+    // the first or last rank; those entries are zero.
     const RANK_MG: [i32; 8] = [0, 0, 0, 4, 8, 16, 30, 0];
     const RANK_EG: [i32; 8] = [0, 0, 4, 10, 20, 40, 70, 0];
     let (f, r) = (file_of(sq), rank_of(sq));
     if mg {
-        // A pawn on the central files in the middle of the board, where it
-        // takes space, is worth a little more in the middlegame.
+        // A pawn on the central files in the middle of the board, where it takes space, is
+        // worth a little more in the middlegame.
         let centre = if r >= 2 && r <= 4 {
             match f {
                 3 | 4 => 6,
@@ -122,8 +118,8 @@ const fn queen(sq: i32, mg: bool) -> i32 {
 }
 
 const fn king(sq: i32, mg: bool) -> i32 {
-    // Middlegame: the back rank, behind the castling files, and nowhere
-    // else. Endgame: the centre.
+    // Middlegame: the back rank, behind the castling files, and nowhere else. Endgame: the
+    // centre.
     const FILE_MG: [i32; 8] = [0, 20, 15, -10, -10, 0, 20, 10];
     let (f, r) = (file_of(sq), rank_of(sq));
     if mg {
@@ -156,9 +152,8 @@ const fn build_tables(mg: bool) -> [[i32; 64]; 6] {
 
 // --- the evaluation --------------------------------------------------------
 
-/// The game phase of `board`, `0..=PHASE_MAX`: the phase weights of every
-/// piece on the board, both colours, saturating at `PHASE_MAX`. Pawns and
-/// kings do not count.
+/// The game phase of `board`, `0..=PHASE_MAX`: the phase weights of every piece on the board,
+/// both colours, saturating at `PHASE_MAX`. Pawns and kings do not count.
 #[must_use]
 pub fn phase(board: &Board) -> i32 {
     let mut phase = 0;
@@ -169,8 +164,8 @@ pub fn phase(board: &Board) -> i32 {
     phase.min(PHASE_MAX)
 }
 
-/// The static evaluation of `board` from the side to move's point of view,
-/// in centipawns, strictly inside `(-MAX_EVAL, MAX_EVAL)`.
+/// The static evaluation of `board` from the side to move's point of view, in centipawns,
+/// strictly inside `(-MAX_EVAL, MAX_EVAL)`.
 #[must_use]
 pub fn evaluate(board: &Board) -> Score {
     let mut mg = 0;
@@ -191,11 +186,11 @@ pub fn evaluate(board: &Board) -> Score {
         }
     }
     let phase = phase.min(PHASE_MAX);
-    // Truncating division: symmetric under negation, so the mirror of a
-    // position evaluates to the exact negative.
+    // Truncating division: symmetric under negation, so the mirror of a position evaluates to
+    // the exact negative.
     let white = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX;
-    // A position with absurd material -- `from_fen` accepts sixty queens --
-    // must still not reach the mate scale.
+    // A position with absurd material -- `from_fen` accepts sixty queens -- must still not
+    // reach the mate scale.
     let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
     match board.side_to_move() {
         Colour::White => white,
@@ -203,9 +198,9 @@ pub fn evaluate(board: &Board) -> Score {
     }
 }
 
-/// The middlegame and endgame piece-square values of a piece of `pt` on
-/// `sq`, from the point of view of the colour that owns it. For inspection
-/// and tests; the evaluation reads the tables directly.
+/// The middlegame and endgame piece-square values of a piece of `pt` on `sq`, from the point of
+/// view of the colour that owns it. For inspection and tests; the evaluation reads the tables
+/// directly.
 #[must_use]
 pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
     let s = match colour {

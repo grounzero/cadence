@@ -1,23 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The order moves are tried in.
-//!
-//! Both searches order their moves here, and both by MVV-LVA: most valuable
-//! victim first, least valuable attacker among equal victims, a queen
-//! promotion above every capture, an underpromotion below every one. The
-//! main search sorts the legal list from behind whatever
-//! `search::order_first` left at its head.
-//!
-//! **Every rank here is a band, and only one band has anything inside it.**
-//! A score is not a constant and does not fit between two of them, so the
-//! ranks below are multiplied by [`BAND`] and the history score is added
-//! within the quiet one. `BAND` has why that leaves the stage order a
-//! property of the ranks alone.
-//!
-//! **Determinism.** The key is a function of the move and the two pieces it
-//! touches, the sort is a stable insertion sort, and ties keep generation
-//! order, so the order -- and with it the bench number -- is a function of
-//! the position alone.
+//! The order moves are tried in. Both searches order their moves here, and both by MVV-LVA:
+//! most valuable victim first, least valuable attacker among equal victims, a queen promotion
+//! above every capture, an underpromotion below every one.
 
 use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
@@ -38,27 +23,25 @@ const fn rank(pt: PieceType) -> i32 {
     }
 }
 
-/// Capture keys lie in `0..=37`. A queen promotion is above all of them
-/// and an underpromotion below; a promotion that also captures adds its
-/// capture's key, so it keeps the capture order within its class.
+/// Capture keys lie in `0..=37`. A queen promotion is above all of them and an underpromotion
+/// below; a promotion that also captures adds its capture's key, so it keeps the capture order
+/// within its class.
 const QUEEN_PROMOTION: i32 = 64;
 const UNDERPROMOTION: i32 = -64;
 
-/// The key of a capture of `victim` by `attacker`; a higher key is tried
-/// first. The victim's rank dominates, eight to one, and the cheaper
-/// attacker wins among equal victims.
+/// The key of a capture of `victim` by `attacker`; a higher key is tried first. The victim's
+/// rank dominates, eight to one, and the cheaper attacker wins among equal victims.
 #[must_use]
 pub const fn capture_key(attacker: PieceType, victim: PieceType) -> i32 {
     rank(victim) * 8 + (5 - rank(attacker))
 }
 
-/// The key of a noisy move in `board`: its capture's key, if it captures,
-/// with a promotion's bonus or penalty on top. A quiet move is zero.
+/// The key of a noisy move in `board`: its capture's key, if it captures, with a promotion's
+/// bonus or penalty on top. A quiet move is zero.
 ///
 /// # Panics
 ///
-/// If a capture's squares do not hold pieces, which no generated move's
-/// fail to.
+/// If a capture's squares do not hold pieces, which no generated move's fail to.
 #[must_use]
 pub fn noisy_key(board: &Board, m: Move) -> i32 {
     let capture = if m.is_en_passant() {
@@ -84,41 +67,33 @@ fn piece_type_at(board: &Board, sq: Square) -> PieceType {
         .map_or_else(|| panic!("no piece on {sq}"), Piece::piece_type)
 }
 
-/// The highest and lowest keys [`noisy_key`] can return: a queen promotion
-/// that captures a queen, and an underpromotion that captures nothing.
-/// Every band below is placed against these rather than against the
-/// literals, so that retuning a capture key moves the bands with it.
+/// The highest and lowest keys [`noisy_key`] can return: a queen promotion that captures a
+/// queen, and an underpromotion that captures nothing. Every band below is placed against these
+/// rather than against the literals, so that retuning a capture key moves the bands with it.
 const NOISY_MAX: i32 = QUEEN_PROMOTION + capture_key(PieceType::Pawn, PieceType::Queen);
 const NOISY_MIN: i32 = UNDERPROMOTION;
 
-/// The rank of a quiet move that is not a killer, and one rank for all of
-/// them. Below every other band there is.
-///
-/// One rank and a score inside it: the history heuristic is what
-/// distinguishes one of these from another, and a quiet move whose score is
-/// zero -- nothing has cut with it and nothing has refuted it -- keeps the
-/// place a stable sort gives it, which is generation order.
+/// The rank of a quiet move that is not a killer, and one rank for all of them. Below every
+/// other band there is.
 const QUIET: i32 = -512;
 
-/// What one rank is worth on the scale [`move_key`] returns, and what makes
-/// the ranks bands rather than points. Wider than the history score's whole
-/// range, which is the property the stage order rests on; the assertion
-/// below is what keeps the two in step if either moves.
+/// What one rank is worth on the scale [`move_key`] returns, and what makes the ranks bands
+/// rather than points. Wider than the history score's whole range, which is the property the
+/// stage order rests on; the assertion below is what keeps the two in step if either moves.
 const BAND: i32 = 1 << 16;
 
 const _: () = assert!(BAND > 2 * HISTORY_MAX);
 const _: () = assert!(NOISY_MAX as i64 * BAND as i64 <= i32::MAX as i64);
 const _: () = assert!(QUIET as i64 * BAND as i64 - HISTORY_MAX as i64 >= i32::MIN as i64);
 
-/// The two killer ranks, one per slot. Two numbers rather than one shared
-/// rank: the sort is stable, so a single rank would leave the slots in
-/// generator order, which is the order they exist to override. The
-/// assertions below pin every edge the stage order rests on.
+/// The two killer ranks, one per slot. Two numbers rather than one shared rank: the sort is
+/// stable, so a single rank would leave the slots in generator order, which is the order they
+/// exist to override.
 const KILLER: [i32; 2] = [-128, -129];
 
-/// What a noisy move's key is reduced by when the exchange on the square it
-/// lands on loses material: `see::see` below zero. A subtraction rather than
-/// a rank, so the group moves and nothing inside it does.
+/// What a noisy move's key is reduced by when the exchange on the square it lands on loses
+/// material: `see::see` below zero. A subtraction rather than a rank, so the group moves and
+/// nothing inside it does.
 const LOSING: i32 = 256;
 
 const _: () = assert!(KILLER[0] > KILLER[1]);
@@ -126,18 +101,10 @@ const _: () = assert!(KILLER[0] < NOISY_MIN);
 const _: () = assert!(NOISY_MAX - LOSING < KILLER[1]);
 const _: () = assert!(NOISY_MIN - LOSING > QUIET);
 
-/// The key of any legal move: its rank times [`BAND`], plus its history
-/// score where it has one. The rank is [`noisy_key`] for a noisy move whose
-/// exchange does not lose material, that key less [`LOSING`] for one that
-/// does, a [`KILLER`] rank for a quiet move in a slot, and [`QUIET`] for the
-/// rest.
-///
-/// **The order of the branches is the contract.** Nothing in the signature
-/// stops a slot holding a capture, and one ranked as a killer would sort
-/// below every other capture.
-///
-/// `history` is the side to move's row, or an empty slice for a caller with
-/// no table to offer.
+/// The key of any legal move: its rank times [`BAND`], plus its history score where it has one.
+/// The rank is [`noisy_key`] for a noisy move whose exchange does not lose material, that key
+/// less [`LOSING`] for one that does, a [`KILLER`] rank for a quiet move in a slot, and
+/// [`QUIET`] for the rest.
 fn move_key(
     board: &Board,
     m: Move,
@@ -161,16 +128,16 @@ fn move_key(
     }
 }
 
-/// Order `list`, a noisy move list of `board`, by descending [`noisy_key`]:
-/// most valuable victim first. `demote_losing` is off here, so no
-/// [`see::see`] is paid for a move the caller is about to skip anyway.
+/// Order `list`, a noisy move list of `board`, by descending [`noisy_key`]: most valuable
+/// victim first. `demote_losing` is off here, so no [`see::see`] is paid for a move the caller
+/// is about to skip anyway.
 pub fn sort_noisy(board: &Board, list: &mut MoveList) {
     sort_impl(board, list, 0, [Move::NULL; 2], false, &[]);
 }
 
-/// Order `list` from `start` onward: the noisy moves by descending
-/// [`noisy_key`], then the killers, then the losing noisy moves, then the
-/// quiet moves by history score. Stable, so ties keep generation order.
+/// Order `list` from `start` onward: the noisy moves by descending [`noisy_key`], then the
+/// killers, then the losing noisy moves, then the quiet moves by history score. Stable, so ties
+/// keep generation order.
 pub fn sort_from(
     board: &Board,
     list: &mut MoveList,
@@ -181,10 +148,9 @@ pub fn sort_from(
     sort_impl(board, list, start, killers, true, history);
 }
 
-/// The sort both entry points above run, `demote_losing` deciding whether
-/// a noisy move that loses material is ranked below the killers or left
-/// among the other noisy moves. [`move_key`] says why the two callers
-/// answer that differently.
+/// The sort both entry points above run, `demote_losing` deciding whether a noisy move that
+/// loses material is ranked below the killers or left among the other noisy moves. [`move_key`]
+/// says why the two callers answer that differently.
 fn sort_impl(
     board: &Board,
     list: &mut MoveList,
