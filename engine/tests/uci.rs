@@ -539,3 +539,189 @@ fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
         "a node-limited search of {nodes} nodes named a root move: {counted:?}"
     );
 }
+
+/// The `info depth` lines of `out`, with `nps` and `time` dropped.
+///
+/// Both are wall-clock readings and belong to the run rather than to the
+/// tree, so two searches of the same tree agree on everything else and on
+/// neither of these.
+fn iteration_lines(out: &[String]) -> Vec<String> {
+    out.iter()
+        .filter(|l| l.starts_with("info depth "))
+        .map(|l| {
+            let toks: Vec<&str> = l.split_whitespace().collect();
+            let mut kept = Vec::new();
+            let mut i = 0;
+            while i < toks.len() {
+                if toks[i] == "nps" || toks[i] == "time" {
+                    i += 2;
+                    continue;
+                }
+                kept.push(toks[i]);
+                i += 1;
+            }
+            kept.join(" ")
+        })
+        .collect()
+}
+
+/// The score on an `info` line as a number that orders the way the protocol
+/// reads it.
+///
+/// A mate score is worth more than any centipawn score of the same sign, so
+/// it maps outside the centipawn range rather than being compared against it.
+fn score_key(line: &str) -> i64 {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    let at = toks
+        .iter()
+        .position(|t| *t == "score")
+        .unwrap_or_else(|| panic!("no score on {line}"));
+    let kind = toks.get(at + 1).unwrap_or_else(|| panic!("{line}"));
+    let value: i64 = toks
+        .get(at + 2)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"));
+    match *kind {
+        "cp" => value,
+        "mate" if value > 0 => 1_000_000 - value,
+        "mate" => -1_000_000 - value,
+        other => panic!("score kind `{other}` on {line}"),
+    }
+}
+
+/// `MultiPV` is declared as a spin bounded by the longest move list the
+/// generator can return.
+///
+/// The maximum is [`cadence_core::MAX_MOVES`] because a root asked for more
+/// lines than it has moves reports the moves it has. The default is one, and
+/// that is the value every rating list and every test plays under.
+#[test]
+fn uci_advertises_multipv() {
+    let out = talk("uci\nquit\n");
+    let expected = format!(
+        "option name MultiPV type spin default 1 min 1 max {}",
+        cadence_core::MAX_MOVES
+    );
+    assert!(
+        out.lines().any(|l| l == expected),
+        "no `{expected}` line in {out:?}"
+    );
+}
+
+/// At `MultiPV 1` the engine emits what it emits with the option never set,
+/// line for line and node for node.
+///
+/// This is the condition the whole option is built under: the default is what
+/// every rating list and every SPRT plays, so a line that moves here is a
+/// defect rather than a cost. The `multipv` field is absent from both,
+/// because a single line has no second to number.
+#[test]
+fn multipv_one_emits_exactly_what_the_option_never_set_emits() {
+    let untouched = Engine::go(&["position startpos"], "go depth 10");
+    let asked = Engine::go(
+        &["setoption name MultiPV value 1", "position startpos"],
+        "go depth 10",
+    );
+    let a = iteration_lines(&untouched);
+    let b = iteration_lines(&asked);
+    assert_eq!(a.len(), 10, "{untouched:?}");
+    assert_eq!(a, b, "MultiPV 1 moved the iteration lines");
+    for line in a.iter().chain(&b) {
+        assert!(
+            !line.contains(" multipv "),
+            "a single line was numbered: {line}"
+        );
+    }
+}
+
+/// Above one, every iteration reports the number of lines asked for, each a
+/// distinct legal root move, in descending score order.
+///
+/// The lines are numbered from one and the numbering restarts each iteration,
+/// which is what a GUI reads to keep the panel in place.
+#[test]
+fn multipv_above_one_reports_distinct_legal_moves_in_descending_order() {
+    let wanted = 4;
+    let out = Engine::go(
+        &[
+            &format!("setoption name MultiPV value {wanted}"),
+            "position startpos",
+        ],
+        "go depth 8",
+    );
+    let board = Board::from_fen(START_FEN).expect("the start position");
+    let legal = generate_legal(&board);
+    let lines = iteration_lines(&out);
+    assert_eq!(lines.len(), 8 * wanted, "{out:?}");
+    for iteration in lines.chunks(wanted) {
+        let mut moves = Vec::new();
+        let mut scores = Vec::new();
+        for (i, line) in iteration.iter().enumerate() {
+            let number: usize =
+                field(line, "multipv").unwrap_or_else(|| panic!("no multipv on {line}"));
+            assert_eq!(number, i + 1, "the lines are numbered out of order: {line}");
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            let at = toks
+                .iter()
+                .position(|t| *t == "pv")
+                .unwrap_or_else(|| panic!("no pv on {line}"));
+            let first = toks
+                .get(at + 1)
+                .unwrap_or_else(|| panic!("empty pv: {line}"));
+            assert!(
+                parse_uci(&legal, first).is_some(),
+                "`{first}` is not a legal move at the root: {line}"
+            );
+            moves.push((*first).to_string());
+            scores.push(score_key(line));
+        }
+        let mut distinct = moves.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            moves.len(),
+            "a move was reported twice: {moves:?}"
+        );
+        for pair in scores.windows(2) {
+            assert!(
+                pair[0] >= pair[1],
+                "the lines are not in descending order: {scores:?}"
+            );
+        }
+    }
+}
+
+/// Asking for more lines than the position has root moves reports the moves
+/// it has, and asking for more than one costs nodes.
+///
+/// The second half is what stops the option being accepted and ignored: a
+/// second root move is a second search, so the count has to rise.
+#[test]
+fn multipv_is_bounded_by_the_root_moves_and_costs_nodes_above_one() {
+    let board = Board::from_fen(START_FEN).expect("the start position");
+    let roots = generate_legal(&board).len();
+    let out = Engine::go(
+        &[
+            &format!("setoption name MultiPV value {}", roots + 5),
+            "position startpos",
+        ],
+        "go depth 5",
+    );
+    let lines = iteration_lines(&out);
+    assert_eq!(lines.len(), 5 * roots, "{out:?}");
+
+    let nodes = |setup: &[&str]| -> u64 {
+        let out = Engine::go(setup, "go depth 8");
+        out.iter()
+            .rfind(|l| l.starts_with("info depth "))
+            .and_then(|l| field(l, "nodes"))
+            .expect("a completed iteration")
+    };
+    let one = nodes(&["setoption name MultiPV value 1", "position startpos"]);
+    let four = nodes(&["setoption name MultiPV value 4", "position startpos"]);
+    assert!(
+        four > one,
+        "MultiPV 4 searched {four} nodes against MultiPV 1's {one}"
+    );
+}

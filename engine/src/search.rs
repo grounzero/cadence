@@ -675,6 +675,23 @@ pub struct Search<'a> {
     /// read by nothing that decides anything, and unlike `iterations` it
     /// costs no clock read, so it is kept under a depth limit too.
     roots: Vec<(Move, Score)>,
+    /// How many principal variations the root reports, from `MultiPV`. One
+    /// is the default and the only value a test or a rating list plays.
+    multipv: usize,
+    /// The lines the iteration in progress found, best first once it is
+    /// accepted. One entry at `MultiPV` 1, which is the pv `report` prints.
+    lines: Vec<RootLine>,
+}
+
+/// One reported principal variation: the root move, its score, and the line
+/// the iteration ended on.
+///
+/// The pv is owned rather than read back off [`PvTable`], because the table
+/// holds one root line and a second search of the root overwrites it.
+struct RootLine {
+    mv: Move,
+    score: Score,
+    pv: Vec<Move>,
 }
 
 impl<'a> Search<'a> {
@@ -719,12 +736,22 @@ impl<'a> Search<'a> {
             reverse_futility_refused_window: 0,
             iterations: Vec::new(),
             roots: Vec::new(),
+            multipv: 1,
+            lines: Vec::new(),
         }
     }
 
     /// Spell castling moves in `info` lines per `UCI_Chess960`.
     pub fn set_chess960(&mut self, on: bool) {
         self.chess960 = on;
+    }
+
+    /// Report `n` principal variations, clamped to at least one.
+    ///
+    /// A root with fewer moves than this reports the moves it has. At one
+    /// the root searches and reports exactly what it did before this option.
+    pub fn set_multipv(&mut self, n: usize) {
+        self.multipv = n.max(1);
     }
 
     /// The best move in `board`, or `Move::NULL` when there is none.
@@ -764,6 +791,7 @@ impl<'a> Search<'a> {
         self.reverse_futility_refused_window = 0;
         self.iterations.clear();
         self.roots.clear();
+        self.lines.clear();
         self.budget = if self.limits.infinite {
             None
         } else {
@@ -785,7 +813,20 @@ impl<'a> Search<'a> {
             // belongs to it rather than to the deepest line of any
             // iteration before it.
             self.seldepth = 0;
-            let (best, score) = self.search_root(board, &legal, &root_moves, depth, out);
+            // One search of the root per line asked for, each skipping the
+            // moves the lines before it took. A root with fewer moves than
+            // this reports the moves it has.
+            let wanted = self.multipv.min(root_moves.len());
+            self.lines.clear();
+            let mut partial = (root_moves[0], -INFINITE);
+            for _ in 0..wanted {
+                let (best, score) = self.search_root(board, &legal, &root_moves, depth, out);
+                if self.aborted {
+                    partial = (best, score);
+                    break;
+                }
+                self.keep_line(best, score);
+            }
             if self.aborted {
                 // The last completed iteration stands. If there is none,
                 // the best root move fully searched so far does -- the
@@ -794,6 +835,13 @@ impl<'a> Search<'a> {
                 // first iteration is not small: a quarter of a million
                 // nodes in Kiwipete.
                 if self.completed_depth == 0 {
+                    // A line that finished outranks the one the abort cut
+                    // short, and at `MultiPV` 1 there is never one to
+                    // prefer.
+                    let (best, score) = match self.lines.first() {
+                        Some(line) => (line.mv, line.score),
+                        None => partial,
+                    };
                     self.best = best;
                     self.score = if score == -INFINITE { DRAW } else { score };
                     self.pv.clear();
@@ -802,6 +850,10 @@ impl<'a> Search<'a> {
                 break;
             }
             self.completed_depth = depth;
+            // Descending, and the sort is stable, so lines that scored
+            // equally stay in the order the root found them.
+            self.lines.sort_by_key(|line| std::cmp::Reverse(line.score));
+            let (best, score) = (self.lines[0].mv, self.lines[0].score);
             self.best = best;
             self.score = score;
             // The iteration is accepted, so the pair it ended on joins the
@@ -810,8 +862,10 @@ impl<'a> Search<'a> {
             // a run of completed ones.
             self.roots.push((best, score));
             self.pv.clear();
-            self.pv.extend_from_slice(self.table.line(0));
-            self.report(board, out);
+            self.pv.extend_from_slice(&self.lines[0].pv);
+            for number in 1..=self.lines.len() {
+                self.report(board, number, out);
+            }
             // The best move first next time: what makes an aborted
             // iteration's fallback -- the previous iteration -- a good one,
             // and the only ordering there is.
@@ -846,8 +900,11 @@ impl<'a> Search<'a> {
         self.seldepth = self.seldepth.max(ply);
     }
 
-    /// The root: every move, the first in the full window and the rest in
-    /// a null one, the best move and its score.
+    /// The root: every move a line before this one has not taken, the first
+    /// in the full window and the rest in a null one.
+    ///
+    /// Returns the best of those moves and its score. `MultiPV` 1 leaves
+    /// nothing to skip, so the loop runs the whole list as it always has.
     fn search_root(
         &mut self,
         board: &mut Board,
@@ -860,9 +917,19 @@ impl<'a> Search<'a> {
         self.table.clear(0);
         let mut alpha = -INFINITE;
         let beta = INFINITE;
-        let mut best = moves[0];
+        let mut best = Move::NULL;
         let mut best_score = -INFINITE;
+        // The moves this root has searched, which is what the null window
+        // is conditioned on. It is the index in the list only when no
+        // earlier line took anything.
+        let mut searched = 0;
         for (i, &m) in moves.iter().enumerate() {
+            if self.lines.iter().any(|line| line.mv == m) {
+                continue;
+            }
+            if searched == 0 {
+                best = m;
+            }
             self.name_current(m, i + 1, legal, out);
             board.make_move(m);
             // A root move that gives check is extended like any other: the
@@ -877,15 +944,16 @@ impl<'a> Search<'a> {
             // here is `INFINITE`, so the second condition on the re-search
             // is true whenever the first is; it is written out because the
             // rule is one rule.
-            let mut score = if i == 0 {
+            let mut score = if searched == 0 {
                 -self.negamax(board, child, 1, -beta, -alpha)
             } else {
                 -self.negamax(board, child, 1, -alpha - 1, -alpha)
             };
-            if i > 0 && !self.aborted && score > alpha && score < beta {
+            if searched > 0 && !self.aborted && score > alpha && score < beta {
                 score = -self.negamax(board, child, 1, -beta, -alpha);
             }
             board.unmake_move(m);
+            searched += 1;
             if self.aborted {
                 break;
             }
@@ -1567,21 +1635,39 @@ impl<'a> Search<'a> {
         let _ = out.flush();
     }
 
-    /// One `info` line for the iteration just completed. The pv is spelled
-    /// by walking it on the board, so castling reads per the option.
-    fn report(&self, board: &mut Board, out: &mut dyn Write) {
+    /// Keep the line the root just returned, with the pv it ended on.
+    ///
+    /// Taken off [`PvTable`] here because the next line's search of the root
+    /// clears row zero and writes its own.
+    fn keep_line(&mut self, mv: Move, score: Score) {
+        let pv = self.table.line(0).to_vec();
+        self.lines.push(RootLine { mv, score, pv });
+    }
+
+    /// One `info` line for line `number` of the iteration just completed.
+    ///
+    /// The pv is spelled by walking it on the board, so castling reads per
+    /// the option. `multipv` is absent where only one line was asked for,
+    /// which is the line every rating list and every test reads.
+    fn report(&self, board: &mut Board, number: usize, out: &mut dyn Write) {
+        let reported = &self.lines[number - 1];
         let ms = self.elapsed_ms();
         let nps = self.nodes * 1000 / ms.max(1);
+        let numbered = if self.multipv > 1 {
+            format!(" multipv {number}")
+        } else {
+            String::new()
+        };
         let mut line = format!(
-            "info depth {} seldepth {} score {} nodes {} nps {nps} hashfull {} time {ms} pv",
+            "info depth {} seldepth {}{numbered} score {} nodes {} nps {nps} hashfull {} time {ms} pv",
             self.completed_depth,
             self.seldepth,
-            score::uci(self.score),
+            score::uci(reported.score),
             self.nodes,
             self.tt.hashfull()
         );
         let mut made = 0;
-        for &m in &self.pv {
+        for &m in &reported.pv {
             let legal = generate_legal(board);
             if !legal.contains(m) {
                 break;
@@ -1591,7 +1677,7 @@ impl<'a> Search<'a> {
             board.make_move(m);
             made += 1;
         }
-        for &m in self.pv[..made].iter().rev() {
+        for &m in reported.pv[..made].iter().rev() {
             board.unmake_move(m);
         }
         let _ = writeln!(out, "{line}");
