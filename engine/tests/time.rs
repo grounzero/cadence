@@ -907,4 +907,99 @@ fn a_ponder_does_not_answer_on_its_own_budget() {
         "no move after stop"
     );
     e.quit();
+
+    // And `ponderhit` is the other way it is told. The same ponder, released by the hit rather
+    // than by `stop`, answers on the clock the `go ponder` carried.
+    let out = Engine::within(Duration::from_secs(20), || {
+        let mut e = Engine::spawn();
+        e.send("position startpos");
+        e.sync();
+        e.send("go ponder wtime 20000 btime 20000");
+        let seen = e.sync();
+        assert!(
+            !seen.iter().any(|l| l.starts_with("bestmove")),
+            "the ponder answered before the hit: {seen:?}"
+        );
+        e.send("ponderhit");
+        let out = e.read_until("bestmove ");
+        e.quit();
+        out
+    });
+    assert!(
+        out.last().is_some_and(|l| l.starts_with("bestmove ")),
+        "no move after ponderhit: {out:?}"
+    );
+}
+
+/// **A `ponderhit` moves the clock origin to the moment it arrived.** The `time` an `info` line
+/// carries is elapsed from that origin, so the gap between it and the wall clock of the whole
+/// exchange is the pondering the budget no longer counts.
+#[test]
+fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
+    const PONDERED_MS: u64 = 700;
+
+    let (wall, lines) = Engine::within(Duration::from_secs(30), || {
+        let mut e = Engine::spawn();
+        e.send("position startpos");
+        e.sync();
+        let start = Instant::now();
+        e.send("go ponder wtime 20000 btime 20000");
+        std::thread::sleep(Duration::from_millis(PONDERED_MS));
+        e.send("ponderhit");
+        let lines = e.read_until("bestmove ");
+        let wall = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        e.quit();
+        (wall, lines)
+    });
+
+    // The last iteration line before the move: its `time` is what the search thinks it has
+    // spent, and after a hit that is measured from the hit.
+    let reported: u64 = lines
+        .iter()
+        .rev()
+        .filter(|l| l.starts_with("info depth "))
+        .find_map(|l| {
+            let toks: Vec<&str> = l.split_whitespace().collect();
+            let at = toks.iter().position(|t| *t == "time")?;
+            toks.get(at + 1)?.parse().ok()
+        })
+        .unwrap_or_else(|| panic!("no info line with a time: {lines:?}"));
+
+    assert!(
+        wall >= reported + PONDERED_MS / 2,
+        "the search reported {reported} ms of a {wall} ms exchange, so the clock still counts \
+         the {PONDERED_MS} ms it spent pondering"
+    );
+}
+
+/// **A ponder that is hit becomes an ordinary clocked search and answers on its own.** The hit
+/// is raised before the run here, so the whole search is the one a `ponderhit` leaves behind:
+/// it records a ladder, and it returns without anything raising `stop`.
+#[test]
+fn a_ponder_that_is_hit_becomes_a_clocked_search() {
+    let stop = AtomicBool::new(false);
+    let hit = AtomicBool::new(true);
+    let tt = Table::new(16).expect("a table");
+    let mut board = Board::from_fen(START_FEN).expect("the start position");
+    let mut s = Search::new(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
+    s.set_ponder_hit(&hit);
+    let best = s.run(&mut board, &mut Vec::new());
+
+    assert!(!best.is_null(), "no move from a hit ponder");
+    assert!(
+        !stop.load(Ordering::Relaxed),
+        "the test raised stop, so this measured nothing"
+    );
+    assert!(
+        !s.iterations_ms().is_empty(),
+        "a hit ponder recorded no iteration, so it never took the clock"
+    );
+    let budget = budget(&limits("wtime 20000 btime 20000"), Colour::White).expect("a budget");
+    assert!(
+        s.iterations_ms()
+            .last()
+            .is_some_and(|&ms| ms <= budget.hard),
+        "the ladder ran past the hard budget it took on the hit: {:?}",
+        s.iterations_ms()
+    );
 }

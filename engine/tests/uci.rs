@@ -725,3 +725,96 @@ fn multipv_is_bounded_by_the_root_moves_and_costs_nodes_above_one() {
         "MultiPV 4 searched {four} nodes against MultiPV 1's {one}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Ponder
+// ---------------------------------------------------------------------------
+
+/// A GUI ponders only against an engine that declares the option, so the
+/// declaration is what makes `go ponder` reachable at all.
+///
+/// Off by default: pondering doubles the thinking one side gets, which is why
+/// every rating list disables it, and the default is the condition every SPRT
+/// plays under.
+#[test]
+fn uci_advertises_ponder() {
+    let out = talk("uci\nquit\n");
+    assert!(
+        out.lines()
+            .any(|l| l == "option name Ponder type check default false"),
+        "no Ponder option line in {out:?}"
+    );
+    let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
+    let at = out
+        .lines()
+        .position(|l| l.starts_with("option name Ponder "))
+        .expect("the Ponder option");
+    assert!(at < uciok, "the Ponder option is declared after uciok");
+}
+
+/// With `Ponder` off the engine emits what it emits with the option never
+/// set, line for line.
+///
+/// The default is what every rating list and every SPRT plays, so the ponder
+/// move must not reach the wire under it: the non-regression is a statement
+/// about the plumbing costing nothing when the option is not taken, and a
+/// token added to every `bestmove` would be outside what it measured.
+#[test]
+fn ponder_off_emits_exactly_what_the_option_never_set_emits() {
+    let untouched = Engine::go(&["position startpos"], "go depth 10");
+    let off = Engine::go(
+        &["setoption name Ponder value false", "position startpos"],
+        "go depth 10",
+    );
+    assert_eq!(iteration_lines(&untouched).len(), 10, "{untouched:?}");
+    assert_eq!(
+        iteration_lines(&untouched),
+        iteration_lines(&off),
+        "Ponder off moved the iteration lines"
+    );
+    for lines in [&untouched, &off] {
+        let best = lines.last().expect("a bestmove line");
+        assert!(
+            !best.contains(" ponder "),
+            "a ponder move with the option off: {best}"
+        );
+    }
+}
+
+/// The move offered to ponder on is the second move of the principal
+/// variation the search just printed, spelled in the position it is played
+/// in.
+///
+/// That is the move the engine expects the opponent to play, so it is the one
+/// position worth thinking about while the clock is theirs.
+#[test]
+fn the_ponder_move_is_the_second_move_of_the_principal_variation() {
+    let lines = Engine::go(
+        &["setoption name Ponder value true", "position startpos"],
+        "go depth 10",
+    );
+    let pv: Vec<String> = lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("info depth "))
+        .and_then(|l| l.split(" pv ").nth(1))
+        .map(|rest| rest.split_whitespace().map(str::to_string).collect())
+        .expect("an info line with a pv");
+    assert!(pv.len() >= 2, "the pv is too short to ponder on: {pv:?}");
+    assert_eq!(
+        lines.last().expect("a bestmove line"),
+        &format!("bestmove {} ponder {}", pv[0], pv[1]),
+        "the bestmove line does not carry the pv's second move"
+    );
+
+    // And it is a legal reply, which is what "spelled in the position it is
+    // played in" means: the root's move list cannot spell it.
+    let mut board = Board::from_fen(START_FEN).expect("the start position");
+    board.play(parse_uci(&generate_legal(&board), &pv[0]).expect("the best move is legal"));
+    assert!(
+        parse_uci(&generate_legal(&board), &pv[1]).is_some(),
+        "the ponder move {} is not legal after {}",
+        pv[1],
+        pv[0]
+    );
+}
