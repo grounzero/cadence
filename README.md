@@ -1,8 +1,6 @@
 # Cadence
 
-Cadence is a UCI chess engine written in Rust, with standard chess and
-Chess960/DFRC support. It runs as a command-line engine and can be loaded by
-any chess GUI or match runner that supports UCI.
+UCI chess engine with standard chess and Chess960/DFRC support.
 
 ## Requirements
 
