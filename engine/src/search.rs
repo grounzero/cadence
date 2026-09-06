@@ -307,7 +307,7 @@ impl<'a> Search<'a> {
         let legal = generate_legal(board);
         if legal.is_empty() {
             self.score = if board.in_check() { mated_in(0) } else { DRAW };
-            self.wait_if_infinite();
+            self.wait_if_open_ended();
             return Move::NULL;
         }
         let mut root_moves: Vec<Move> = legal.iter().collect();
@@ -381,7 +381,7 @@ impl<'a> Search<'a> {
                 }
             }
         }
-        self.wait_if_infinite();
+        self.wait_if_open_ended();
         self.best
     }
 
@@ -990,9 +990,11 @@ impl<'a> Search<'a> {
         false
     }
 
-    /// "Do not exit the search without being told so in this mode."
-    fn wait_if_infinite(&self) {
-        if self.limits.infinite {
+    /// Hold the finished search until `stop`, under the two limits that say so. `go infinite`
+    /// and `go ponder` both mean "do not answer until told", and a ponder that returned early
+    /// would be answering a question the opponent has not yet asked.
+    fn wait_if_open_ended(&self) {
+        if self.limits.infinite || self.limits.ponder {
             while !self.stop_requested() {
                 std::thread::sleep(Duration::from_millis(1));
             }

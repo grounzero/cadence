@@ -867,3 +867,44 @@ fn the_entries_do_not_survive_into_the_next_search() {
         s.iteration_roots()
     );
 }
+
+/// **`go ponder` reads no clock and answers nothing until it is told to.** It arrives with the
+/// clock on it, so the defect this replaced was a ponder parsing as an ordinary clocked search
+/// and returning a move on its own budget, which is a move the opponent has not asked for.
+#[test]
+fn a_ponder_does_not_answer_on_its_own_budget() {
+    let limits = Limits {
+        ponder: true,
+        time: [Some(60_000), Some(60_000)],
+        ..Limits::default()
+    };
+    assert!(
+        budget(&limits, Colour::White).is_none(),
+        "a ponder was given a budget"
+    );
+
+    let parsed = Limits::parse("ponder wtime 60000 btime 60000 winc 600 binc 600".split(' '));
+    assert!(parsed.ponder, "`ponder` did not parse");
+    assert!(
+        budget(&parsed, Colour::White).is_none(),
+        "a parsed `go ponder` still took a budget from the clock"
+    );
+
+    // End to end: the clock here would end an ordinary search inside 100 ms, and a ponder is
+    // still going when `stop` arrives.
+    let mut e = support::Engine::spawn();
+    e.send("position startpos");
+    e.send("go ponder wtime 200 btime 200");
+    let seen = e.sync();
+    assert!(
+        !seen.iter().any(|l| l.starts_with("bestmove")),
+        "the ponder answered before it was told to: {seen:?}"
+    );
+    e.send("stop");
+    let out = e.read_until("bestmove ");
+    assert!(
+        out.last().is_some_and(|l| l.starts_with("bestmove ")),
+        "no move after stop"
+    );
+    e.quit();
+}

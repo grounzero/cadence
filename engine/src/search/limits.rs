@@ -19,6 +19,10 @@ pub struct Limits {
     pub movetime: Option<u64>,
     /// `go infinite`: search until `stop`, and do not return before it.
     pub infinite: bool,
+    /// `go ponder`: search the opponent's time until `stop` or `ponderhit`, reading no clock.
+    /// It bounds the search the way `infinite` does, because a ponder that returns a move on a
+    /// budget has answered a question nobody asked yet.
+    pub ponder: bool,
     /// `wtime` / `btime`, in milliseconds, indexed by `Colour`.
     pub time: [Option<u64>; 2],
     /// `winc` / `binc`, in milliseconds, indexed by `Colour`.
@@ -37,6 +41,7 @@ impl Limits {
         while let Some(token) = it.next() {
             match token {
                 "infinite" => limits.infinite = true,
+                "ponder" => limits.ponder = true,
                 "depth" => limits.depth = small(&mut it),
                 "nodes" => limits.nodes = large(&mut it),
                 "movetime" => limits.movetime = large(&mut it),

@@ -26,6 +26,11 @@ pub struct Budget {
 /// when both are given.
 #[must_use]
 pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
+    // A ponder is searching the opponent's time, so there is nothing here to divide. It answers
+    // on `stop` or on the budget a `ponderhit` brings with it, and never on this one.
+    if limits.ponder {
+        return None;
+    }
     if let Some(movetime) = limits.movetime {
         let t = movetime.saturating_sub(MOVE_OVERHEAD_MS);
         return Some(Budget { soft: t, hard: t });
