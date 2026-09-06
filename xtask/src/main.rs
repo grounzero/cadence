@@ -788,7 +788,13 @@ fn check_boundary(source: Source) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Every regular file under `dir`, skipping `SKIP_DIRS` and `.DS_Store`.
+/// Every regular file under `dir`, skipping `SKIP_DIRS`, `.DS_Store` and `.git`.
+///
+/// `.git` is skipped as a file and not only as a directory. In a linked
+/// worktree it is a file holding `gitdir: <absolute path>`, so collecting it
+/// made the boundary scan report an absolute home path against a tree that
+/// did not contain one, and the gate could not pass anywhere but the primary
+/// clone.
 fn collect_all(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -800,7 +806,7 @@ fn collect_all(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
                 continue;
             }
             collect_all(&path, out)?;
-        } else if ty.is_file() && name != ".DS_Store" {
+        } else if ty.is_file() && name != ".DS_Store" && name != ".git" {
             out.push(path);
         }
     }
@@ -1222,6 +1228,41 @@ mod tests {
     /// their own manifest, in CI, beside the fmt and clippy legs. A matcher
     /// whose tests nothing runs is the same shape as a rule nothing checks.
     const NOT_ALLOWED: &str = "core/src/lib.rs";
+
+    /// A linked worktree's `.git` is a file whose one line is an absolute path,
+    /// and collecting it made `check-boundary` report a violation in every
+    /// worktree while the tree itself was clean. Reverting the skip fails this
+    /// with the live symptom rather than with a shape that resembles it.
+    #[test]
+    fn a_worktrees_dot_git_file_is_not_collected() {
+        let dir = std::env::temp_dir().join(format!("cadence-xtask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory to walk");
+        std::fs::write(
+            dir.join(".git"),
+            "gitdir: /Users/someone/git/clone/.git/worktrees/w\n",
+        )
+        .expect("the worktree marker");
+        std::fs::write(dir.join("kept.rs"), "// a file the walk keeps\n").expect("a kept file");
+
+        let mut found = Vec::new();
+        collect_all(&dir, &mut found).expect("the walk");
+        let names: Vec<String> = found
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            names.iter().any(|n| n == "kept.rs"),
+            "walked nothing: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == ".git"),
+            "a worktree's .git file was collected and the boundary scan would read it: {names:?}"
+        );
+    }
 
     #[test]
     fn the_exempt_list_is_a_list_of_non_ascii_characters_once_each() {
