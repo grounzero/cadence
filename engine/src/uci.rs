@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use cadence_core::position::Board;
-use cadence_core::{START_FEN, generate_legal, parse_uci, to_uci};
+use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci, to_uci};
 
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
@@ -48,6 +48,9 @@ pub struct Session {
     /// The transposition table, kept across the whole game and shared with
     /// the search thread. `Hash` replaces it; `ucinewgame` clears it.
     tt: Arc<Table>,
+    /// `MultiPV`: how many principal variations a search reports. One is
+    /// the default, and at one the engine reports what it did without it.
+    multipv: usize,
     /// The search thread started by the last `go`, until `stop`, the next
     /// `go`, or shutdown joins it. It may already have finished.
     search: Option<Running>,
@@ -82,6 +85,7 @@ impl Session {
             board: start_position(),
             chess960: false,
             tt: Arc::new(tt),
+            multipv: 1,
             search: None,
         }
     }
@@ -96,6 +100,12 @@ impl Session {
     #[must_use]
     pub fn chess960(&self) -> bool {
         self.chess960
+    }
+
+    /// The `MultiPV` option.
+    #[must_use]
+    pub fn multipv(&self) -> usize {
+        self.multipv
     }
 
     /// The transposition table this session is playing with.
@@ -144,6 +154,13 @@ impl Session {
                 // set.
                 say(format_args!(
                     "option name Threads type spin default 1 min 1 max 1"
+                ));
+                // `MultiPV` above one searches the second-best root move and
+                // beyond, so it costs nodes by construction. The maximum is
+                // the longest move list the generator can return, because a
+                // root asked for more lines reports the moves it has.
+                say(format_args!(
+                    "option name MultiPV type spin default 1 min 1 max {MAX_MOVES}"
                 ));
                 say(format_args!("uciok"));
             }
@@ -203,10 +220,26 @@ impl Session {
             }
         } else if name.eq_ignore_ascii_case("Hash") {
             self.set_hash(&value);
+        } else if name.eq_ignore_ascii_case("MultiPV") {
+            self.set_multipv(&value);
         }
         // `Threads` is declared with a maximum of one and there is nothing
         // to set: the value is accepted and ignored. Unknown options are
         // ignored too; a GUI sends whatever it was told to.
+    }
+
+    /// `setoption name MultiPV value <n>`: how many lines a search reports.
+    ///
+    /// Clamped rather than refused, for [`Session::set_hash`]'s reason: a GUI
+    /// that sends an out-of-range value is not going to send another.
+    fn set_multipv(&mut self, value: &str) {
+        let Ok(asked) = value.trim().parse::<usize>() else {
+            say(format_args!(
+                "info string setoption MultiPV: `{value}` is not a number, ignoring it"
+            ));
+            return;
+        };
+        self.multipv = asked.clamp(1, MAX_MOVES);
     }
 
     /// `setoption name Hash value <mebibytes>`: a new table of that size.
@@ -325,6 +358,7 @@ impl Session {
         let stop = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
         let chess960 = self.chess960;
+        let multipv = self.multipv;
         let thread = {
             let stop = Arc::clone(&stop);
             // A handle of its own, so that a `setoption name Hash` during
@@ -343,6 +377,7 @@ impl Session {
                     let mut out = std::io::stdout();
                     let mut search = Search::new(limits, &stop, &tt);
                     search.set_chess960(chess960);
+                    search.set_multipv(multipv);
                     let best = search.run(&mut board, &mut out);
                     say(format_args!("bestmove {}", to_uci(best, &legal, chess960)));
                 })
