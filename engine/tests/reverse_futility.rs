@@ -38,7 +38,7 @@ use cadence_core::START_FEN;
 use cadence_core::position::Board;
 use cadence_engine::eval;
 use cadence_engine::score::{Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, Search, reverse_futile, reverse_futility_margin};
+use cadence_engine::search::{Limits, reverse_futile, reverse_futility_margin};
 use support::{PAWN_ENDGAMES, table};
 
 /// The depth the two set gates below search to.
@@ -82,7 +82,7 @@ fn one_node(fen: &str, depth: u32, alpha: Score, beta: Score) -> (Score, u64, u6
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(fen);
-    let mut s = Search::new(Limits::depth(depth), &stop, &tt);
+    let mut s = support::search(Limits::depth(depth), &stop, &tt);
     let score = s.node_window(&mut b, depth, 0, alpha, beta);
     (
         score,
@@ -307,7 +307,7 @@ fn a_middlegame_search_returns_nodes_on_the_margin() {
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut b = support::position(&fen);
-        let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
         let best = s.run(&mut b, &mut Vec::new());
         assert!(!best.is_null(), "{fen}: no move");
         assert_eq!(
@@ -345,7 +345,7 @@ fn a_pawn_endgame_takes_the_margin_where_the_null_move_refuses_it() {
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut b = support::position(fen);
-        let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
         let _ = s.run(&mut b, &mut Vec::new());
         assert_eq!(
             s.completed_depth(),

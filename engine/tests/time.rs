@@ -370,7 +370,7 @@ fn ladder(limits: Limits) -> (Vec<u64>, u64) {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
     let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
-    let mut s = Search::new(limits, &stop, &tt);
+    let mut s = support::search(limits, &stop, &tt);
     let start = Instant::now();
     s.run(&mut board, &mut std::io::sink());
     let returned = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -649,7 +649,7 @@ fn searched<T>(fen: &str, limits: Limits, read: impl FnOnce(&Search, Move) -> T)
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
     let mut board = Position::new(Board::from_fen(fen).expect("a position"));
-    let mut s = Search::new(limits, &stop, &tt);
+    let mut s = support::search(limits, &stop, &tt);
     let best = s.run(&mut board, &mut std::io::sink());
     read(&s, best)
 }
@@ -758,7 +758,7 @@ fn an_abandoned_iteration_leaves_no_entry() {
             std::thread::sleep(Duration::from_millis(500));
             stop.store(true, Ordering::Relaxed);
         });
-        let mut s = Search::new(Limits::infinite(), &stop, &tt);
+        let mut s = support::search(Limits::infinite(), &stop, &tt);
         let best = s.run(&mut board, &mut std::io::sink());
         assert!(
             s.completed_depth() >= 1,
@@ -785,7 +785,7 @@ fn a_search_that_completes_no_iteration_keeps_nothing() {
     let stop = AtomicBool::new(true);
     let tt = Table::new(HASH_MB).expect("a table");
     let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
-    let mut s = Search::new(Limits::infinite(), &stop, &tt);
+    let mut s = support::search(Limits::infinite(), &stop, &tt);
     let best = s.run(&mut board, &mut std::io::sink());
     assert_eq!(s.completed_depth(), 0);
     assert!(
@@ -850,7 +850,7 @@ fn the_entries_do_not_survive_into_the_next_search() {
     let tt = Table::new(HASH_MB).expect("a table");
     let mut first = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
     let mut second = Position::new(Board::from_fen(FORCED).expect("the forced position"));
-    let mut s = Search::new(Limits::depth(6), &stop, &tt);
+    let mut s = support::search(Limits::depth(6), &stop, &tt);
     s.run(&mut first, &mut std::io::sink());
     assert_eq!(s.iteration_roots().len(), 6);
     s.run(&mut second, &mut std::io::sink());
@@ -1010,7 +1010,7 @@ fn a_ponder_that_is_hit_becomes_a_clocked_search() {
     let hit = AtomicBool::new(true);
     let tt = Table::new(16).expect("a table");
     let mut board = Position::new(Board::from_fen(START_FEN).expect("the start position"));
-    let mut s = Search::new(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
+    let mut s = support::search(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
     s.set_ponder_hit(&hit);
     let best = s.run(&mut board, &mut Vec::new());
 

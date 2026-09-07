@@ -101,7 +101,7 @@ use cadence_core::{Move, Square, generate_legal, generate_noisy};
 use cadence_engine::picker::{noisy_key, sort_from, sort_noisy};
 use cadence_engine::position::Position;
 use cadence_engine::score::Score;
-use cadence_engine::search::{Limits, Search, order_first, remember_killer};
+use cadence_engine::search::{Limits, order_first, remember_killer};
 use cadence_engine::see::see;
 use cadence_engine::tt::{self, Bound, Table};
 
@@ -117,7 +117,7 @@ fn board(fen: &str) -> Board {
 fn search_with(board: &mut Position, depth: u32, tt: &Table) -> (Move, Score, u64) {
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
-    let mut s = Search::new(Limits::depth(depth), &stop, tt);
+    let mut s = support::search(Limits::depth(depth), &stop, tt);
     let best = s.run(board, &mut sink);
     (best, s.score(), s.nodes())
 }
@@ -1752,14 +1752,14 @@ fn a_reused_search_remembers_no_killers() {
     let mut pairs = 0;
     for pair in fens.windows(2) {
         let tt = Table::with_buckets(0).expect("a table of no buckets");
-        let mut reused = Search::new(Limits::depth(REUSE_DEPTH), &stop, &tt);
+        let mut reused = support::search(Limits::depth(REUSE_DEPTH), &stop, &tt);
         reused.run(&mut support::position(&pair[0]), &mut sink);
         sink.clear();
         let again = reused.run(&mut support::position(&pair[1]), &mut sink);
         let after = reused.nodes();
 
         let fresh_tt = Table::with_buckets(0).expect("a table of no buckets");
-        let mut fresh = Search::new(Limits::depth(REUSE_DEPTH), &stop, &fresh_tt);
+        let mut fresh = support::search(Limits::depth(REUSE_DEPTH), &stop, &fresh_tt);
         sink.clear();
         let alone = fresh.run(&mut support::position(&pair[1]), &mut sink);
         assert_eq!(

@@ -37,7 +37,7 @@ use cadence_engine::eval;
 use cadence_engine::picker::{capture_key, noisy_key, sort_noisy};
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, Score, mate_in};
-use cadence_engine::search::{Limits, Search};
+use cadence_engine::search::Limits;
 use cadence_engine::see::see;
 use support::table;
 
@@ -55,7 +55,7 @@ fn search(board: &mut Position, limits: Limits) -> Result {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut sink = Vec::new();
-    let mut s = Search::new(limits, &stop, &tt);
+    let mut s = support::search(limits, &stop, &tt);
     let best = s.run(board, &mut sink);
     Result {
         best,

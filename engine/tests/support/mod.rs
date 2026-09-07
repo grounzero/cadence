@@ -146,6 +146,20 @@ pub fn position(fen: &str) -> cadence_engine::position::Position {
     )
 }
 
+/// A search over `tt` with `limits` already set, which is what a gate builds. The limits are a
+/// setter on the search rather than an argument to its constructor, and writing that out at
+/// every gate is the cost this absorbs.
+#[must_use]
+pub fn search<'a>(
+    limits: cadence_engine::search::Limits,
+    stop: &'a std::sync::atomic::AtomicBool,
+    tt: &'a cadence_engine::tt::Table,
+) -> cadence_engine::search::Search<'a> {
+    let mut search = cadence_engine::search::Search::new(stop, tt);
+    search.set_limits(limits);
+    search
+}
+
 /// A table for one search, at the size the engine defaults to.
 ///
 /// Every gate that ran before the table existed gets a fresh one per

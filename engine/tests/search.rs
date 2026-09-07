@@ -29,7 +29,7 @@ use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, 
 use cadence_engine::eval;
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, Search, extension};
+use cadence_engine::search::{Limits, extension};
 use cadence_engine::tt::Table;
 use support::{Outcome, Rng, play_game, random_mover, table};
 
@@ -47,7 +47,7 @@ fn search(board: &mut Position, limits: Limits) -> Result {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut sink = Vec::new();
-    let mut s = Search::new(limits, &stop, &tt);
+    let mut s = support::search(limits, &stop, &tt);
     let best = s.run(board, &mut sink);
     Result {
         best,
@@ -640,7 +640,7 @@ fn an_interior_node_at_the_ply_bound_answers_instead_of_running_off_its_arrays()
         // here.
         for ply in [MAX_PLY, MAX_PLY + 1, MAX_PLY + 64] {
             for depth in [1u32, 2, 8] {
-                let mut s = Search::new(Limits::default(), &stop, &tt);
+                let mut s = support::search(Limits::default(), &stop, &tt);
                 let score = s.node(&mut b, depth, ply);
                 assert_eq!(
                     score,
@@ -669,7 +669,7 @@ fn the_deepest_ply_a_search_reaches_is_still_searched() {
         // first without searching anything.
         tt.clear();
         let mut b = support::position(&fen);
-        let mut s = Search::new(Limits::default(), &stop, &tt);
+        let mut s = support::search(Limits::default(), &stop, &tt);
         let _ = s.node(&mut b, 1, MAX_PLY - 1);
         assert!(s.nodes() > 1, "{fen}: ply {} searched nothing", MAX_PLY - 1);
         assert_eq!(b.ply(), 0, "{fen}: board left off its root");
@@ -814,15 +814,15 @@ fn a_window_that_brackets_the_value_returns_the_value() {
         let mut b = support::position(&fen);
         for depth in depths {
             let tt = no_table();
-            let full = Search::new(Limits::default(), &stop, &tt).node(&mut b, depth, 0);
-            let below = Search::new(Limits::default(), &stop, &tt).node_window(
+            let full = support::search(Limits::default(), &stop, &tt).node(&mut b, depth, 0);
+            let below = support::search(Limits::default(), &stop, &tt).node_window(
                 &mut b,
                 depth,
                 0,
                 full - 1,
                 full,
             );
-            let above = Search::new(Limits::default(), &stop, &tt).node_window(
+            let above = support::search(Limits::default(), &stop, &tt).node_window(
                 &mut b,
                 depth,
                 0,
@@ -878,7 +878,7 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
         .iter()
         .map(|fen| {
             let mut b = support::position(fen);
-            let mut s = Search::new(Limits::depth(WINDOW_DEPTH), &stop, &tt);
+            let mut s = support::search(Limits::depth(WINDOW_DEPTH), &stop, &tt);
             let best = s.run(&mut b, &mut Vec::new());
             (best.to_uci_chess960(), s.score())
         })
@@ -1010,7 +1010,7 @@ fn the_narrower_window_saves_nodes() {
     let mut total = 0u64;
     for fen in sample() {
         let mut b = support::position(&fen);
-        let mut s = Search::new(Limits::depth(WINDOW_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(WINDOW_DEPTH), &stop, &tt);
         let _ = s.run(&mut b, &mut Vec::new());
         total += s.nodes();
     }

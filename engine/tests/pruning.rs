@@ -23,7 +23,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{START_FEN, generate_legal};
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, Search};
+use cadence_engine::search::Limits;
 use support::{PAWN_ENDGAMES, table};
 
 /// The depth the gates search to. Six: deep enough that null-window nodes
@@ -52,7 +52,7 @@ fn a_middlegame_search_prunes_through_the_null_move() {
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut b = support::position(&fen);
-        let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
         let best = s.run(&mut b, &mut Vec::new());
         assert!(!best.is_null(), "{fen}: no move");
         assert_eq!(
@@ -100,7 +100,7 @@ fn a_pawn_endgame_refuses_the_null_move() {
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut b = Position::new(b0.duplicate());
-        let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
         let _ = s.run(&mut b, &mut Vec::new());
         assert_eq!(
             s.completed_depth(),

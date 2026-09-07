@@ -76,7 +76,8 @@ pub fn bench() -> Report {
         tt.clear();
         let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("bench position {fen}: {e:?}"));
         let mut pos = Position::new(board);
-        let mut search = Search::new(Limits::depth(DEPTH), &stop, &tt);
+        let mut search = Search::new(&stop, &tt);
+        search.set_limits(Limits::depth(DEPTH));
         let best = search.run(&mut pos, &mut std::io::sink());
         nodes += search.nodes();
         lines.push(Line {

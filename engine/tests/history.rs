@@ -30,7 +30,7 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, Move, MoveList, START_FEN, generate_legal};
 use cadence_engine::history::{self, HISTORY_MAX, History, SHIFT_MAX, SPAN};
 use cadence_engine::picker::sort_from;
-use cadence_engine::search::{Limits, Search, history_reduction, lmr_reduction};
+use cadence_engine::search::{Limits, history_reduction, lmr_reduction};
 use support::table;
 
 /// The depth the ordering gate runs at. Six, like the reduction gates:
@@ -95,7 +95,7 @@ fn a_cutoff_raises_a_score_and_the_order_follows() {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(&fen);
-    let mut s = Search::new(Limits::depth(ORDER_DEPTH), &stop, &tt);
+    let mut s = support::search(Limits::depth(ORDER_DEPTH), &stop, &tt);
     let best = s.run(&mut b, &mut Vec::new());
     assert!(!best.is_null(), "{fen}: no move");
     assert_eq!(
@@ -171,7 +171,7 @@ fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(MIDDLEGAME);
-    let mut s = Search::new(Limits::depth(MODULATION_DEPTH), &stop, &tt);
+    let mut s = support::search(Limits::depth(MODULATION_DEPTH), &stop, &tt);
     let best = s.run(&mut b, &mut Vec::new());
     assert!(!best.is_null(), "no move");
     assert_eq!(
@@ -203,7 +203,7 @@ fn a_real_search_leaves_every_entry_inside_the_bound() {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(&support::standard_fen("kiwipete"));
-    let mut s = Search::new(Limits::depth(ORDER_DEPTH), &stop, &tt);
+    let mut s = support::search(Limits::depth(ORDER_DEPTH), &stop, &tt);
     let _ = s.run(&mut b, &mut Vec::new());
     for side in Colour::ALL {
         let row = s.history().side(side);
@@ -237,7 +237,7 @@ fn the_table_does_not_survive_a_second_search() {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(&support::standard_fen("kiwipete"));
-    let mut s = Search::new(Limits::depth(ORDER_DEPTH), &stop, &tt);
+    let mut s = support::search(Limits::depth(ORDER_DEPTH), &stop, &tt);
 
     let _ = s.run(&mut b, &mut Vec::new());
     let nodes = s.nodes();

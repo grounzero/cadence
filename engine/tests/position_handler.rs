@@ -334,7 +334,7 @@ use std::sync::atomic::AtomicBool;
 
 use cadence_core::parse_uci;
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, Search};
+use cadence_engine::search::Limits;
 
 /// The position reached by replaying `moves` from `fen` with `play`, built
 /// independently of the handler.
@@ -372,7 +372,7 @@ fn assert_go_is_legal_here(s: &Session, context: &str) {
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
     let tt = support::table();
-    let m = Search::new(Limits::depth(1), &stop, &tt).run(&mut board, &mut sink);
+    let m = support::search(Limits::depth(1), &stop, &tt).run(&mut board, &mut sink);
     let legal = generate_legal(s.board());
     if legal.is_empty() {
         assert!(m.is_null(), "{context}");

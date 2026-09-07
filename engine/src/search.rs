@@ -233,9 +233,9 @@ struct RootLine {
 
 impl<'a> Search<'a> {
     #[must_use]
-    pub fn new(limits: Limits, stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
+    pub fn new(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
         Search {
-            limits,
+            limits: Limits::default(),
             stop,
             ponder_hit: None,
             tt,
@@ -281,6 +281,12 @@ impl<'a> Search<'a> {
             multipv: 1,
             lines: Vec::new(),
         }
+    }
+
+    /// What the `go` asked for, which `begin` reads once at the head of each run. A setter
+    /// rather than a constructor argument, so that one search can serve more than one `go`.
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
     }
 
     /// The flag to watch for a `ponderhit`. A search built without one still refuses to answer
@@ -1218,7 +1224,7 @@ impl<'a> Search<'a> {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    use super::{Limits, Search};
+    use super::Search;
     use crate::tt::Table;
 
     /// `reported_nodes` answers for the group and not for the worker that asks. This is the one
@@ -1233,7 +1239,7 @@ mod tests {
         slots[2].store(20, Ordering::Relaxed);
         slots[3].store(3, Ordering::Relaxed);
 
-        let mut search = Search::new(Limits::default(), &stop, &tt);
+        let mut search = Search::new(&stop, &tt);
         search.nodes = 7;
         assert_eq!(
             search.reported_nodes(),
