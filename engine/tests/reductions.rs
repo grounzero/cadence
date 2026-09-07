@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal};
-use cadence_engine::search::{Limits, Search, lmr_reduction, reduction};
+use cadence_engine::search::{Limits, lmr_reduction, reduction};
 use support::table;
 
 /// The depth the gates search to.
@@ -81,7 +81,7 @@ fn a_middlegame_search_reduces_late_moves_and_verifies_fail_highs() {
         let tt = table();
         let mut b = support::position(&fen);
         assert!(!generate_legal(&b).is_empty(), "{fen}: no legal moves");
-        let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
         let best = s.run(&mut b, &mut Vec::new());
         assert!(!best.is_null(), "{fen}: no move");
         assert_eq!(

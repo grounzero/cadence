@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal};
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, Search};
+use cadence_engine::search::Limits;
 use support::{Rng, table};
 
 /// Search `board` to the given limits with a fresh stop flag, discarding
@@ -24,7 +24,7 @@ fn best(board: &mut Position, limits: Limits) -> Move {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut sink = Vec::new();
-    Search::new(limits, &stop, &tt).run(board, &mut sink)
+    support::search(limits, &stop, &tt).run(board, &mut sink)
 }
 
 fn assert_legal(fen: &str, m: Move) {
@@ -122,7 +122,7 @@ fn a_raised_stop_flag_returns_a_legal_move_at_once() {
     let mut sink = Vec::new();
     let start = Instant::now();
     let tt = table();
-    let m = Search::new(Limits::infinite(), &stop, &tt).run(&mut board, &mut sink);
+    let m = support::search(Limits::infinite(), &stop, &tt).run(&mut board, &mut sink);
     assert!(start.elapsed() < Duration::from_secs(5));
     assert_legal(&fen, m);
 }
@@ -140,7 +140,7 @@ fn infinite_waits_for_stop() {
             let mut board = Position::new(Board::from_fen(&fen).expect("kiwipete parses"));
             let mut sink = Vec::new();
             let tt = table();
-            Search::new(Limits::infinite(), &stop, &tt).run(&mut board, &mut sink)
+            support::search(Limits::infinite(), &stop, &tt).run(&mut board, &mut sink)
         })
     };
     std::thread::sleep(Duration::from_millis(200));

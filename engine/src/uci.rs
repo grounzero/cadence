@@ -402,7 +402,8 @@ impl Session {
                     // `bestmove` a GUI reads is spelled in one place whatever `Threads` is.
                     let (best, pv) = if threads == 1 {
                         let mut out = std::io::stdout();
-                        let mut search = Search::new(limits, &stop, &tt);
+                        let mut search = Search::new(&stop, &tt);
+                        search.set_limits(limits);
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
@@ -515,7 +516,8 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
             .stack_size(SEARCH_STACK_BYTES)
             .spawn(move || {
                 let mut sink = std::io::sink();
-                let mut search = Search::new(limits, &helper_stop, &helper_tt);
+                let mut search = Search::new(&helper_stop, &helper_tt);
+                search.set_limits(limits);
                 search.set_ponder_hit(&helper_ponder_hit);
                 search.set_chess960(chess960);
                 search.set_multipv(multipv);
@@ -531,7 +533,8 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     }
 
     let mut out = std::io::stdout();
-    let mut search = Search::new(limits, stop, tt);
+    let mut search = Search::new(stop, tt);
+    search.set_limits(limits);
     search.set_ponder_hit(ponder_hit);
     search.set_chess960(chess960);
     search.set_multipv(multipv);

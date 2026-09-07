@@ -34,7 +34,7 @@ use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal};
 use cadence_engine::eval;
 use cadence_engine::score::{MATE_IN_MAX_PLY, Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, Search, futile_node, futility_margin, futility_skips};
+use cadence_engine::search::{Limits, futile_node, futility_margin, futility_skips};
 use support::table;
 
 /// The depth the set gate below searches to.
@@ -76,7 +76,7 @@ fn one_node(fen: &str, depth: u32, alpha: Score) -> (Score, u64, u64, u64) {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(fen);
-    let mut s = Search::new(Limits::depth(depth), &stop, &tt);
+    let mut s = support::search(Limits::depth(depth), &stop, &tt);
     let score = s.node_window(&mut b, depth, 0, alpha, alpha + 1);
     (
         score,
@@ -159,7 +159,7 @@ fn a_middlegame_search_skips_quiet_moves_near_the_horizon() {
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut b = support::position(&fen);
-        let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
         let best = s.run(&mut b, &mut Vec::new());
         assert!(!best.is_null(), "{fen}: no move");
         assert_eq!(

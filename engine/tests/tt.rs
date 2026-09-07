@@ -40,7 +40,7 @@ use cadence_core::types::PromoPiece;
 use cadence_core::{Move, Square, generate_legal};
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, MAX_EVAL, Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, Search};
+use cadence_engine::search::Limits;
 use cadence_engine::tt::{self, Bound, Entry, Table};
 use cadence_engine::{
     bench,
@@ -56,7 +56,7 @@ use support::Rng;
 fn search_with(board: &mut Position, depth: u32, tt: &Table) -> (Move, Score, u64) {
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
-    let mut s = Search::new(Limits::depth(depth), &stop, tt);
+    let mut s = support::search(Limits::depth(depth), &stop, tt);
     let best = s.run(board, &mut sink);
     (best, s.score(), s.nodes())
 }
