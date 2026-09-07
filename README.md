@@ -40,6 +40,13 @@ To use Cadence in a GUI, select `target/release/cadence` as a UCI engine.
 For Chess960 games, enable the GUI's Chess960 mode; it will set the
 `UCI_Chess960` option.
 
+The `Threads` option runs Lazy SMP: one primary search that reports the
+principal variation and chooses the move, and helpers that keep their own
+history and killers and reach the primary only through the shared
+transposition table. The default is one, which is the only setting under which
+a search repeats exactly; `bench` builds its own single search and ignores the
+option entirely.
+
 Cadence also provides command-line perft and bench modes:
 
 ```sh

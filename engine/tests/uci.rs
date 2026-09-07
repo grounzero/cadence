@@ -149,6 +149,80 @@ fn go_depth_yields_a_legal_bestmove() {
 }
 
 #[test]
+fn multicore_go_yields_one_legal_bestmove() {
+    let (_, lines) = Engine::go_within(
+        &["setoption name Threads value 4", "position startpos"],
+        "go depth 3",
+        std::time::Duration::from_secs(20),
+    );
+    let out = lines.join("\n");
+    assert_bestmove_legal(&out, START_FEN, false);
+    assert_eq!(bestmoves(&out).len(), 1, "exactly one bestmove: {out:?}");
+    assert!(
+        out.lines().any(|line| line.starts_with("info depth 3 ")),
+        "the finite search completed rather than being stopped early: {out:?}"
+    );
+}
+
+#[test]
+fn multicore_infinite_search_stops_cleanly() {
+    let out = talk(
+        "setoption name Threads value 4\nposition startpos\ngo infinite\nisready\nstop\nquit\n",
+    );
+    assert_bestmove_legal(&out, START_FEN, false);
+    assert_eq!(bestmoves(&out).len(), 1, "exactly one bestmove: {out:?}");
+    assert!(out.lines().any(|line| line == "readyok"), "{out:?}");
+}
+
+/// A host that runs the parallel path with one worker stops passing. Strictly greater and not a
+/// ratio: a lone search at a fixed depth is deterministic, so a group that contributed nothing
+/// reports *exactly* the single-thread count, and any real helper makes it larger.
+///
+/// The summation itself is asserted in `search.rs`, deterministically. This is the end-to-end
+/// half, and it is the half that depends on the helpers being scheduled at all.
+#[test]
+fn four_threads_out_node_one_at_a_fixed_depth() {
+    // Eight. Deeper inverts it -- by depth twelve the shared table saves the group more than
+    // the duplication costs it and four threads report fewer nodes than one -- and shallower
+    // leaves no window for a helper to reach its first publication on a small machine.
+    const DEPTH: u32 = 8;
+    let one = nodes_at_fixed_depth(1, DEPTH);
+    let four = nodes_at_fixed_depth(4, DEPTH);
+    assert!(
+        four > one,
+        "four threads reported {four} nodes at depth {DEPTH} against one thread's {one}; \
+         equal means the group contributed nothing, which is a single-threaded host"
+    );
+}
+
+/// The `nodes` field of the last `info depth <depth>` line of a fixed-depth search. Fixed depth
+/// rather than fixed time, because duplicated work scales with the number of workers however
+/// few cores they are timesharing.
+fn nodes_at_fixed_depth(threads: usize, depth: u32) -> u64 {
+    let option = format!("setoption name Threads value {threads}");
+    let (_, lines) = Engine::go_within(
+        &[&option, "position startpos"],
+        &format!("go depth {depth}"),
+        std::time::Duration::from_secs(60),
+    );
+    let prefix = format!("info depth {depth} ");
+    let line = lines
+        .iter()
+        .rfind(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no `{prefix}` line at Threads={threads} in {lines:?}"));
+    let mut fields = line.split_whitespace();
+    while let Some(field) = fields.next() {
+        if field == "nodes" {
+            return fields
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("unparsable nodes in `{line}`"));
+        }
+    }
+    panic!("no nodes field in `{line}`")
+}
+
+#[test]
 fn go_without_a_position_searches_the_start_position() {
     let out = talk("go depth 1\nquit\n");
     assert_bestmove_legal(&out, START_FEN, false);

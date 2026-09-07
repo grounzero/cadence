@@ -931,6 +931,34 @@ fn a_ponder_does_not_answer_on_its_own_budget() {
     );
 }
 
+/// **A `ponderhit` is answered whatever `Threads` is set to.** The flag reaches the search
+/// through `set_ponder_hit`, and a parallel `go` builds its own searches, so a primary that was
+/// not given the flag never leaves the ponder and plays on until `stop` -- which is a loss on
+/// time against a GUI, and which every test at the default `Threads` passes.
+#[test]
+fn a_ponderhit_is_answered_at_more_than_one_thread() {
+    let out = Engine::within(Duration::from_secs(30), || {
+        let mut e = Engine::spawn();
+        e.send("setoption name Threads value 4");
+        e.send("position startpos");
+        e.sync();
+        e.send("go ponder wtime 20000 btime 20000");
+        let seen = e.sync();
+        assert!(
+            !seen.iter().any(|l| l.starts_with("bestmove")),
+            "the ponder answered before the hit: {seen:?}"
+        );
+        e.send("ponderhit");
+        let out = e.read_until("bestmove ");
+        e.quit();
+        out
+    });
+    assert!(
+        out.last().is_some_and(|l| l.starts_with("bestmove ")),
+        "no move after ponderhit at Threads=4: {out:?}"
+    );
+}
+
 /// **A `ponderhit` moves the clock origin to the moment it arrived.** The `time` an `info` line
 /// carries is elapsed from that origin, so the gap between it and the wall clock of the whole
 /// exchange is the pondering the budget no longer counts.

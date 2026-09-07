@@ -5,7 +5,7 @@
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use cadence_core::Move;
@@ -26,6 +26,14 @@ const ENGINE_AUTHOR: &str = "Michael Grounds";
 /// each frame holding a `MoveList` and a little more; 16 MiB is far above that in any profile.
 const SEARCH_STACK_BYTES: usize = 16 << 20;
 
+/// `Threads` when a GUI has not set it. One, which is what `bench`, every rating list and every
+/// SPRT play, and the only value for which a search is reproducible.
+pub const DEFAULT_THREADS: usize = 1;
+
+/// The most searches one `go` will run. Each reserves [`SEARCH_STACK_BYTES`] of stack, so the
+/// ceiling is a real resource claim rather than a formality.
+pub const MAX_THREADS: usize = 64;
+
 /// The state one UCI session carries between commands.
 pub struct Session {
     /// The current position, at ply zero, with the game history the `position` command replayed
@@ -44,6 +52,9 @@ pub struct Session {
     /// `bestmove` offers a move to ponder on. Off by default, and off is what every rating list
     /// and every SPRT plays.
     ponder: bool,
+    /// `Threads`: how many searches one `go` runs, one primary and the rest Lazy SMP helpers.
+    /// One is the default and is the only setting under which a search repeats exactly.
+    threads: usize,
     /// The search thread started by the last `go`, until `stop`, the next `go`, or shutdown
     /// joins it. It may already have finished.
     search: Option<Running>,
@@ -82,6 +93,7 @@ impl Session {
             tt: Arc::new(tt),
             multipv: 1,
             ponder: false,
+            threads: DEFAULT_THREADS,
             search: None,
         }
     }
@@ -108,6 +120,12 @@ impl Session {
     #[must_use]
     pub fn ponder(&self) -> bool {
         self.ponder
+    }
+
+    /// The `Threads` option.
+    #[must_use]
+    pub fn threads(&self) -> usize {
+        self.threads
     }
 
     /// The transposition table this session is playing with.
@@ -146,12 +164,11 @@ impl Session {
                     tt::MIN_HASH_MB,
                     tt::MAX_HASH_MB
                 ));
-                // `Threads` is declared with a maximum of one, which is the truthful
-                // declaration: the search is single-threaded and does not implement Lazy SMP.
-                // Declaring it stops runners warning that the engine lacks an option they were
-                // told to set.
+                // `Threads` above one runs Lazy SMP: one primary search that reports and
+                // chooses, and helpers that reach it only through the table. The default stays
+                // at one, which is what every rating list and every SPRT plays.
                 say(format_args!(
-                    "option name Threads type spin default 1 min 1 max 1"
+                    "option name Threads type spin default {DEFAULT_THREADS} min 1 max {MAX_THREADS}"
                 ));
                 // `MultiPV` above one searches the second-best root move and beyond, so it
                 // costs nodes by construction. The maximum is the longest move list the
@@ -230,10 +247,23 @@ impl Session {
             } else if value.eq_ignore_ascii_case("false") {
                 self.ponder = false;
             }
+        } else if name.eq_ignore_ascii_case("Threads") {
+            self.set_threads(&value);
         }
-        // `Threads` is declared with a maximum of one and there is nothing to set: the value is
-        // accepted and ignored. Unknown options are ignored too; a GUI sends whatever it was
-        // told to.
+        // Unknown options are ignored; a GUI sends whatever it was told to.
+    }
+
+    /// `setoption name Threads value <n>`: how many searches one `go` runs. Clamped rather than
+    /// refused, for [`Session::set_hash`]'s reason: a GUI that sends an out-of-range value is
+    /// not going to send another.
+    fn set_threads(&mut self, value: &str) {
+        let Ok(asked) = value.trim().parse::<usize>() else {
+            say(format_args!(
+                "info string setoption Threads: `{value}` is not a number, ignoring it"
+            ));
+            return;
+        };
+        self.threads = asked.clamp(1, MAX_THREADS);
     }
 
     /// `setoption name MultiPV value <n>`: how many lines a search reports. Clamped rather than
@@ -350,6 +380,7 @@ impl Session {
         let chess960 = self.chess960;
         let multipv = self.multipv;
         let ponder = self.ponder;
+        let threads = self.threads;
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -365,17 +396,33 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
-                    let mut out = std::io::stdout();
-                    let mut search = Search::new(limits, &stop, &tt);
-                    search.set_ponder_hit(&ponder_hit);
-                    search.set_chess960(chess960);
-                    search.set_multipv(multipv);
-                    let best = search.run(&mut board, &mut out);
+                    // Both arms answer with the move and the line it came from, so the
+                    // `bestmove` a GUI reads is spelled in one place whatever `Threads` is.
+                    let (best, pv) = if threads == 1 {
+                        let mut out = std::io::stdout();
+                        let mut search = Search::new(limits, &stop, &tt);
+                        search.set_ponder_hit(&ponder_hit);
+                        search.set_chess960(chess960);
+                        search.set_multipv(multipv);
+                        let best = search.run(&mut board, &mut out);
+                        (best, search.pv().to_vec())
+                    } else {
+                        parallel_search(ParallelGo {
+                            board: &mut board,
+                            limits,
+                            stop: &stop,
+                            ponder_hit: &ponder_hit,
+                            tt: &tt,
+                            chess960,
+                            threads,
+                            multipv,
+                        })
+                    };
                     let spelled = to_uci(best, &legal, chess960);
                     // Only when the GUI said it ponders. Off is the default and what every
                     // rating list plays, and the line it reads there is the line it always read.
                     match ponder
-                        .then(|| ponder_move(&mut board, best, search.pv(), chess960))
+                        .then(|| ponder_move(&mut board, best, &pv, chess960))
                         .flatten()
                     {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
@@ -416,6 +463,87 @@ impl Session {
             let _ = running.thread.join();
         }
     }
+}
+
+/// One `go` run as Lazy SMP. The primary reports, chooses, and owns the line the `bestmove`
+/// is spelled from; helpers carry their own history, killers and principal variation, start
+/// from rotated root orders, and reach each other only through the lockless table.
+struct ParallelGo<'a> {
+    board: &'a mut Board,
+    limits: Limits,
+    stop: &'a Arc<AtomicBool>,
+    /// Given to every worker, not only the primary. A helper without it keeps `pondering` true
+    /// for the whole search, which is a state the rest of the search reasons about; the primary
+    /// without it never answers a `ponderhit` at all and plays on until `stop`.
+    ponder_hit: &'a Arc<AtomicBool>,
+    tt: &'a Arc<Table>,
+    chess960: bool,
+    threads: usize,
+    multipv: usize,
+}
+
+/// Run `go` across `threads` searches and return the primary's move and line. The generation is
+/// advanced once here rather than once per worker, which is what `run_in_current_generation` is
+/// for. The shared node slots are what keep `nodes` and `nps` about the group.
+fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
+    let ParallelGo {
+        board,
+        limits,
+        stop,
+        ponder_hit,
+        tt,
+        chess960,
+        threads,
+        multipv,
+    } = go;
+    tt.new_search();
+    let nodes: Arc<[AtomicU64]> = (0..threads)
+        .map(|_| AtomicU64::new(0))
+        .collect::<Vec<_>>()
+        .into();
+    let mut helpers = Vec::with_capacity(threads.saturating_sub(1));
+    for worker_index in 1..threads {
+        let mut helper_board = board.duplicate();
+        let helper_stop = Arc::clone(stop);
+        let helper_ponder_hit = Arc::clone(ponder_hit);
+        let helper_tt = Arc::clone(tt);
+        let helper_nodes = Arc::clone(&nodes);
+        let result = std::thread::Builder::new()
+            .name(format!("search-helper-{worker_index}"))
+            .stack_size(SEARCH_STACK_BYTES)
+            .spawn(move || {
+                let mut sink = std::io::sink();
+                let mut search = Search::new(limits, &helper_stop, &helper_tt);
+                search.set_ponder_hit(&helper_ponder_hit);
+                search.set_chess960(chess960);
+                search.set_multipv(multipv);
+                search.set_parallel(worker_index, &helper_nodes);
+                search.run_in_current_generation(&mut helper_board, &mut sink)
+            });
+        match result {
+            Ok(helper) => helpers.push(helper),
+            Err(e) => say(format_args!(
+                "info string go: could not start helper {worker_index}: {e}"
+            )),
+        }
+    }
+
+    let mut out = std::io::stdout();
+    let mut search = Search::new(limits, stop, tt);
+    search.set_ponder_hit(ponder_hit);
+    search.set_chess960(chess960);
+    search.set_multipv(multipv);
+    search.set_parallel(0, &nodes);
+    let best = search.run_in_current_generation(board, &mut out);
+    let pv = search.pv().to_vec();
+
+    // The primary has answered, so the helpers have nothing left to contribute. They check the
+    // flag at every node, so this is the whole of the shutdown.
+    stop.store(true, Ordering::Relaxed);
+    for helper in helpers {
+        let _ = helper.join();
+    }
+    (best, pv)
 }
 
 /// The move to offer to ponder on: the second move of the principal variation, spelled in the
