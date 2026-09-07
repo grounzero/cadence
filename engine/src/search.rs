@@ -203,6 +203,13 @@ pub struct Search<'a> {
     /// other way.
     reverse_futility_cutoffs: u64,
     reverse_futility_refused_window: u64,
+    /// How many check evasion lists the quiescence search prepared, and how many of those the
+    /// sort moved a new move to the head of. The first is the shape [`Search::futility_nodes`]
+    /// has and it is here for the same reason: what the ordering is worth is no longer visible
+    /// in a node count, so the gate reads the decision, and a gate that saw only the second
+    /// would pass a search that had stopped reaching an in-check horizon at all.
+    evasion_lists: u64,
+    evasion_lists_reordered: u64,
     /// Elapsed milliseconds at the end of each completed iteration, in order, and empty where
     /// there is no budget. Written from the reading the soft-budget test already takes, so it
     /// adds no clock read anywhere, and under a depth or node limit it adds no entry either:
@@ -276,6 +283,8 @@ impl<'a> Search<'a> {
             lmp_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
+            evasion_lists: 0,
+            evasion_lists_reordered: 0,
             iterations: Vec::new(),
             roots: Vec::new(),
             multipv: 1,
@@ -339,6 +348,8 @@ impl<'a> Search<'a> {
         self.lmp_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
+        self.evasion_lists = 0;
+        self.evasion_lists_reordered = 0;
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();
@@ -1021,7 +1032,14 @@ impl<'a> Search<'a> {
             // Noisy evasions first, by victim; the quiet ones keep the order the generator
             // emitted them in, behind all of those. No killers and no history: whether either
             // ranks the quiet evasions usefully is unmeasured, and a second change.
+            let generated_first = evasions.as_slice()[0];
             picker::sort_from(board, &mut evasions, 0, [Move::NULL; 2], &[]);
+            // The head is the move a cutoff here is bought with, so it is the element the
+            // counter reads. Both are written on no decision path.
+            self.evasion_lists += 1;
+            if evasions.as_slice()[0] != generated_first {
+                self.evasion_lists_reordered += 1;
+            }
             (evasions, -INFINITE)
         } else {
             if board.halfmove_clock() >= 100 {

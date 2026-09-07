@@ -960,44 +960,66 @@ fn a_noisy_evasion_that_loses_is_not_the_answer() {
     }
 }
 
-/// The end-to-end gate: the same corpus positions the depth-one bound below
-/// uses, at depth two, where a check at the horizon has a tree under it.
+/// The end-to-end gate: the corpus at depth two, where a check at the
+/// horizon has a tree under it, reading the decision rather than its cost.
 /// This is the one that fails if the sort is never called.
 ///
-/// Depth two rather than depth one, which the bound below already runs:
-/// the two answer the same way (249,995 nodes against 54,702 at depth one)
-/// and the deeper one puts a tree under more of the checks.
+/// **It asserted a node ceiling until 2026-09-07 and had stopped being able
+/// to.** The reference was taken before losing captures were refused:
+/// 306,698 nodes in generation order against 68,845 ordered, a 4.45x
+/// window, with the ceiling at 150,000 between them. Exchange pruning took
+/// both readings down and took the window with them, to 12,342 against
+/// 10,643, so the ceiling sat 12.2x above the reading it existed to refuse
+/// and deleting `picker::sort_from` from the evasion path left all 27 tests
+/// in this file green.
 ///
-/// Measured over the corpus at depth two: 306,698 nodes with the evasions
-/// in generation order and 68,845 with them ordered, the worst position
-/// being Kiwipete either way (294,587 and 59,825). The ceiling is half the
-/// first, which is more than twice the second: it is a coverage assertion,
-/// not a size claim, and anything that reorders the evasions clears it by
-/// a wide margin while anything that does not fails it by a wide one.
-const CORPUS_DEPTH_TWO_NODE_CEILING: u64 = 150_000;
-
+/// **Summing the corpus is what closed the window, and it closed further
+/// than the ratio shows.** Only three of the 67 positions change at all,
+/// Kiwipete carries 1,676 of the 1,699-node difference, and one position
+/// searches three nodes *fewer* in generation order. The one position that
+/// can see the property gives 1.34x; the 66 that cannot bring it to 1.16x.
+/// Going deeper does not reopen it, measured at depths 1 to 6: 1.17, 1.16,
+/// 1.12, 1.07, 1.08, 1.09. A ceiling re-derived into that window would
+/// carry 8% either side, fail on changes that have nothing to do with
+/// evasions, and be raised -- which is how 150,000 came to sit where it
+/// did.
+///
+/// **Asserting the sorted order instead would rebuild the same hole one
+/// level down.** `the_check_evasions_sort_noisy_first_and_keep_generation_order`
+/// above already asserts exactly that, over this same population, and it
+/// passes with the sort deleted from `quiesce`, because it calls
+/// `picker::sort_from` itself. The property that lost its gate is not the
+/// sorter's output; it is that the search's in-check path applies it.
+///
+/// So the property goes where the pruning rules keep theirs, on a counter,
+/// in the two halves `futility_nodes` and `futility_skipped` are in: lists
+/// prepared says the in-check horizon is reached at all, and lists
+/// reordered says the sort ran and moved the head. Neither is a node count,
+/// so no unrelated change can drift them, and a bound that cannot drift is
+/// a bound nobody has to raise.
 #[test]
-fn ordering_the_check_evasions_saves_nodes() {
-    let mut total = 0;
-    let mut worst = (0u64, String::new());
+fn ordering_the_check_evasions_reaches_the_head_of_the_list() {
+    let (mut lists, mut reordered) = (0u64, 0u64);
     for fen in support::corpus_fens() {
         let mut b = support::position(&fen);
         if generate_legal(&b).is_empty() {
             continue;
         }
-        let r = search(&mut b, Limits::depth(2));
-        total += r.nodes;
-        if r.nodes > worst.0 {
-            worst = (r.nodes, fen.clone());
-        }
+        let stop = AtomicBool::new(false);
+        let tt = table();
+        let mut s = support::search(Limits::depth(2), &stop, &tt);
+        s.run(&mut b, &mut Vec::new());
+        lists += s.evasion_lists();
+        reordered += s.evasion_lists_reordered();
     }
-    println!(
-        "corpus at depth two: {total} nodes, worst {} in {}",
-        worst.0, worst.1
+    println!("{lists} evasion lists prepared, {reordered} reordered at the head");
+    assert!(
+        lists > 0,
+        "the corpus at depth two reached no check at the horizon"
     );
     assert!(
-        total < CORPUS_DEPTH_TWO_NODE_CEILING,
-        "{total} nodes over the corpus at depth two"
+        reordered > 0,
+        "{lists} evasion lists prepared and the sort moved the head of none"
     );
 }
 
@@ -1163,12 +1185,21 @@ fn a_losing_evasion_is_searched_all_the_same() {
     }
 }
 
-/// The corpus at depth two, with losing captures refused. Measured with
-/// them searched: 68,845 nodes, Kiwipete the worst at 59,825 (the ceiling
-/// the evasion sort's gate holds is 150,000). With them refused the
-/// measured total falls well under the ceiling here, which sits between
-/// the two: a coverage assertion again, failing if the rule is not applied
-/// and clearing by a wide margin if it is.
+/// The corpus at depth two, with losing captures refused. **Re-measured on
+/// 2026-09-07, because the reading quoted here was taken before the rule
+/// this gates existed:** 63,206 nodes with the losing captures searched,
+/// Kiwipete the worst at 55,045, against 10,643 with them refused and 4,991
+/// there. The ceiling sits between the two, 3.8x above the reading it
+/// admits and well under the one it refuses.
+///
+/// **A node ceiling is the right instrument here and was the wrong one for
+/// the evasion sort above, and the difference is the window:** 5.94x rather
+/// than 1.16x, because this rule removes whole subtrees while the sort
+/// reorders a list that is searched either way. That is also why the two
+/// are not merged, though they print the same total today: deleting the
+/// `see` test fails this gate, the depth-one bound below and the
+/// single-position gate above it, while deleting the sort fails none of
+/// them.
 const CORPUS_DEPTH_TWO_PRUNED_CEILING: u64 = 40_000;
 
 #[test]
