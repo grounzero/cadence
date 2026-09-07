@@ -27,6 +27,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, to_uci};
 use cadence_engine::eval;
+use cadence_engine::position::Position;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, Search, extension};
 use cadence_engine::tt::Table;
@@ -42,7 +43,7 @@ struct Result {
     pv: Vec<Move>,
 }
 
-fn search(board: &mut Board, limits: Limits) -> Result {
+fn search(board: &mut Position, limits: Limits) -> Result {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut sink = Vec::new();
@@ -93,7 +94,7 @@ fn deepening_searches_more_and_reports_the_depth_reached() {
     ] {
         let mut prev = 0;
         for depth in 1..=4 {
-            let r = search(&mut board(&fen), Limits::depth(depth));
+            let r = search(&mut support::position(&fen), Limits::depth(depth));
             assert_eq!(r.depth, depth, "{fen} depth {depth}: reported {}", r.depth);
             assert!(
                 r.nodes > prev,
@@ -119,17 +120,17 @@ fn the_same_position_and_depth_give_the_same_move_score_and_node_count() {
     let fens = sample();
     let first: Vec<Result> = fens
         .iter()
-        .map(|f| search(&mut board(f), Limits::depth(3)))
+        .map(|f| search(&mut support::position(f), Limits::depth(3)))
         .collect();
     let mut again: Vec<Option<Result>> = vec![None; fens.len()];
     for (i, f) in fens.iter().enumerate().rev() {
-        again[i] = Some(search(&mut board(f), Limits::depth(3)));
+        again[i] = Some(search(&mut support::position(f), Limits::depth(3)));
     }
     for (i, f) in fens.iter().enumerate() {
         assert_eq!(Some(&first[i]), again[i].as_ref(), "{f}");
     }
     // And the same board searched twice in a row.
-    let mut b = board(&support::standard_fen("kiwipete"));
+    let mut b = support::position(&support::standard_fen("kiwipete"));
     let a = search(&mut b, Limits::depth(4));
     let c = search(&mut b, Limits::depth(4));
     assert_eq!(a, c);
@@ -176,7 +177,7 @@ fn is_mated(b: &Board) -> bool {
 }
 
 /// The side to move's moves that mate at once.
-fn mates_in_one(b: &mut Board) -> Vec<Move> {
+fn mates_in_one(b: &mut Position) -> Vec<Move> {
     let mut out = Vec::new();
     for m in generate_legal(b).iter() {
         b.make_move(m);
@@ -191,7 +192,7 @@ fn mates_in_one(b: &mut Board) -> Vec<Move> {
 /// The side to move's moves after which every reply allows a mate in one:
 /// the keys of a mate in two. Brute force, three plies, written from
 /// `generate_legal` alone so it shares nothing with the search.
-fn mates_in_two(b: &mut Board) -> Vec<Move> {
+fn mates_in_two(b: &mut Position) -> Vec<Move> {
     let mut out = Vec::new();
     for m in generate_legal(b).iter() {
         b.make_move(m);
@@ -232,7 +233,7 @@ const MATES_IN_TWO: &[(&str, &str)] = &[
 #[test]
 fn the_mate_in_two_positions_are_what_they_claim() {
     for (fen, key) in MATES_IN_TWO {
-        let mut b = board(fen);
+        let mut b = support::position(fen);
         let key = mv(&b, key);
         assert!(mates_in_one(&mut b).is_empty(), "{fen} has a mate in one");
         let keys = mates_in_two(&mut b);
@@ -246,7 +247,7 @@ fn the_mate_in_two_positions_are_what_they_claim() {
 #[test]
 fn mate_in_two_is_found_with_the_score_mate_2() {
     for (fen, _) in MATES_IN_TWO {
-        let mut b = board(fen);
+        let mut b = support::position(fen);
         let keys = mates_in_two(&mut b);
         // Mate in two is three plies, and the mated side is found to have
         // no moves only at a node that generates them, which a leaf does
@@ -266,7 +267,7 @@ fn mate_in_two_is_found_with_the_score_mate_2() {
 #[test]
 fn mate_in_one_and_being_mated_in_one_are_scored_by_distance() {
     // Rb8# for White to move; Black to move can only walk into it.
-    let mut w = board("7k/8/6K1/8/8/8/8/1R6 w - - 0 1");
+    let mut w = support::position("7k/8/6K1/8/8/8/8/1R6 w - - 0 1");
     let mates = mates_in_one(&mut w);
     assert_eq!(mates, vec![mv(&w, "b1b8")]);
     let r = search(&mut w, Limits::depth(2));
@@ -274,7 +275,7 @@ fn mate_in_one_and_being_mated_in_one_are_scored_by_distance() {
     assert_eq!(r.score, mate_in(1));
     assert_eq!(score::uci(r.score), "mate 1");
 
-    let mut b = board("7k/8/6K1/8/8/8/8/1R6 b - - 0 1");
+    let mut b = support::position("7k/8/6K1/8/8/8/8/1R6 b - - 0 1");
     assert_eq!(generate_legal(&b).len(), 1, "only Kg8");
     let r = search(&mut b, Limits::depth(3));
     assert_eq!(r.score, mated_in(2), "score {}", r.score);
@@ -286,14 +287,14 @@ fn mate_in_one_and_being_mated_in_one_are_scored_by_distance() {
 
 #[test]
 fn a_mated_or_stalemated_root_returns_null_with_the_terminal_score() {
-    let mut b = board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
+    let mut b = support::position("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
     assert!(is_mated(&b));
     let r = search(&mut b, Limits::depth(3));
     assert_eq!(r.best, Move::NULL);
     assert_eq!(r.score, mated_in(0));
     assert_eq!(r.score, -MATE);
 
-    let mut b = board("7k/8/6Q1/8/8/8/8/7K b - - 0 1");
+    let mut b = support::position("7k/8/6Q1/8/8/8/8/7K b - - 0 1");
     assert!(!b.in_check() && generate_legal(&b).is_empty(), "stalemate");
     let r = search(&mut b, Limits::depth(3));
     assert_eq!(r.best, Move::NULL);
@@ -314,7 +315,7 @@ fn a_threefold_against_the_game_history_is_a_draw_in_the_tree() {
     // P_b, Black to move, with Qe1 and Kg2 -- then the cycle is played to
     // bring the root back to Qe3 / Kg1 with P_b twice in the history.
     let fen = "7k/RQ4p1/8/8/8/8/5PKP/4q3 b - - 10 40";
-    let mut b = board(fen);
+    let mut b = support::position(fen);
     for u in ["e1e3", "g2g1", "e3e1", "g1g2", "e1e3", "g2g1"] {
         let m = mv(&b, u);
         b.play(m);
@@ -346,7 +347,7 @@ fn a_threefold_against_the_game_history_is_a_draw_in_the_tree() {
         assert_eq!(r.score, DRAW, "depth {depth}: score {}", r.score);
     }
     // Without the history: the same position is simply lost.
-    let mut fresh = board(&root);
+    let mut fresh = support::position(&root);
     let r = search(&mut fresh, Limits::depth(3));
     assert!(r.score < -500, "without history, score {}", r.score);
 }
@@ -357,7 +358,7 @@ fn a_threefold_against_the_game_history_is_a_draw_in_the_tree() {
 #[test]
 fn the_fifty_move_rule_is_a_draw_in_the_tree() {
     let fen = "8/8/8/3k4/8/8/8/QQQ1K3 b - - 98 70";
-    let mut b = board(fen);
+    let mut b = support::position(fen);
     // The construction, checked: after every Black move, White has no mate
     // in one, and neither side has a capture or a pawn move.
     for m in generate_legal(&b).iter() {
@@ -372,7 +373,7 @@ fn the_fifty_move_rule_is_a_draw_in_the_tree() {
     let r = search(&mut b, Limits::depth(3));
     assert_eq!(r.score, DRAW, "score {}", r.score);
     // One ply earlier it is not a draw yet: at the leaf the clock reads 99.
-    let mut earlier = board("8/8/8/3k4/8/8/8/QQQ1K3 b - - 97 70");
+    let mut earlier = support::position("8/8/8/3k4/8/8/8/QQQ1K3 b - - 97 70");
     let r = search(&mut earlier, Limits::depth(2));
     assert!(r.score < -1000, "score {}", r.score);
 }
@@ -385,7 +386,7 @@ fn a_stalemate_is_a_draw_and_is_not_chosen_when_winning() {
     // squares covered by the queen and the pawns, with no move and not in
     // check.
     let fen = "7k/8/8/8/5q2/6pp/8/7K b - - 0 1";
-    let mut b = board(fen);
+    let mut b = support::position(fen);
     let qf2 = mv(&b, "f4f2");
     b.make_move(qf2);
     assert!(
@@ -411,9 +412,9 @@ fn the_node_limit_stops_the_search() {
     // limit under it stops the search inside its first iteration, which
     // then reports no completed depth and plays the best root move it had
     // fully searched; a limit over it completes depth one at least.
-    let depth_one = search(&mut board(&fen), Limits::depth(1)).nodes;
+    let depth_one = search(&mut support::position(&fen), Limits::depth(1)).nodes;
     for n in [100u64, 1000, 5000, 20_000, 4 * depth_one] {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let limits = Limits {
             nodes: Some(n),
             ..Limits::default()
@@ -433,7 +434,7 @@ fn the_node_limit_stops_the_search() {
         );
     }
     // A limit too small for one iteration still yields a legal move.
-    let mut b = board(&fen);
+    let mut b = support::position(&fen);
     let limits = Limits {
         nodes: Some(1),
         ..Limits::default()
@@ -473,7 +474,7 @@ fn pv_bound(depth: u32) -> usize {
 
 #[test]
 fn the_depth_limit_is_exact() {
-    let mut b = board(START_FEN);
+    let mut b = support::position(START_FEN);
     for depth in [1, 2, 5] {
         let r = search(&mut b, Limits::depth(depth));
         assert_eq!(r.depth, depth);
@@ -557,7 +558,7 @@ fn a_mate_by_quiet_checks_is_found_at_the_depth_the_extension_buys() {
         // 1. Nh6+ Kh8 2. Qg8+ Rxg8 3. Nf7#.
         ("5rk1/5Npp/8/8/8/1Q6/8/6K1 w - - 0 1", 3, 3),
     ] {
-        let mut b = board(fen);
+        let mut b = support::position(fen);
         let r = search(&mut b, Limits::depth(depth));
         assert_eq!(
             r.score,
@@ -595,7 +596,7 @@ fn no_line_runs_past_the_ply_the_extension_stops_at() {
         "8/8/4k3/8/8/2Q5/8/4K2R w - - 0 1",
     ];
     for fen in checking.iter().map(|f| (*f).to_string()).chain(sample()) {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         for depth in [1u32, 2, 4] {
             let r = search(&mut b, Limits::depth(depth));
             assert!(
@@ -633,7 +634,7 @@ fn an_interior_node_at_the_ply_bound_answers_instead_of_running_off_its_arrays()
     let stop = AtomicBool::new(false);
     let tt = table();
     for fen in sample() {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         // Past the bound as well as at it: an extension that gives back
         // more than one ply, or a bound written as an equality, both land
         // here.
@@ -667,7 +668,7 @@ fn the_deepest_ply_a_search_reaches_is_still_searched() {
         // and a table carried across them answers the second from the
         // first without searching anything.
         tt.clear();
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let mut s = Search::new(Limits::default(), &stop, &tt);
         let _ = s.node(&mut b, 1, MAX_PLY - 1);
         assert!(s.nodes() > 1, "{fen}: ply {} searched nothing", MAX_PLY - 1);
@@ -810,7 +811,7 @@ fn a_window_that_brackets_the_value_returns_the_value() {
             .into_iter()
             .map(|f| (f.to_string(), 1..=BRACKET_DEPTH)),
     ) {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         for depth in depths {
             let tt = no_table();
             let full = Search::new(Limits::default(), &stop, &tt).node(&mut b, depth, 0);
@@ -876,7 +877,7 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
     let got: Vec<(String, Score)> = sample()
         .iter()
         .map(|fen| {
-            let mut b = board(fen);
+            let mut b = support::position(fen);
             let mut s = Search::new(Limits::depth(WINDOW_DEPTH), &stop, &tt);
             let best = s.run(&mut b, &mut Vec::new());
             (best.to_uci_chess960(), s.score())
@@ -1008,7 +1009,7 @@ fn the_narrower_window_saves_nodes() {
     let stop = AtomicBool::new(false);
     let mut total = 0u64;
     for fen in sample() {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let mut s = Search::new(Limits::depth(WINDOW_DEPTH), &stop, &tt);
         let _ = s.run(&mut b, &mut Vec::new());
         total += s.nodes();
@@ -1113,8 +1114,8 @@ fn a_mate_is_reported_as_mate_and_spelled_per_the_option() {
 // ---------------------------------------------------------------------------
 
 /// An engine player at fixed depth, with the nodes it searched.
-fn engine_player(depth: u32, nodes: &mut u64) -> impl FnMut(&mut Board) -> Move + '_ {
-    move |b: &mut Board| {
+fn engine_player(depth: u32, nodes: &mut u64) -> impl FnMut(&mut Position) -> Move + '_ {
+    move |b: &mut Position| {
         let r = search(b, Limits::depth(depth));
         *nodes += r.nodes;
         r.best

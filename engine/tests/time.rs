@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
+use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{Budget, MOVE_OVERHEAD_MS, another_iteration_fits, budget};
 use cadence_engine::tt::Table;
@@ -368,7 +369,7 @@ const HASH_MB: usize = 16;
 fn ladder(limits: Limits) -> (Vec<u64>, u64) {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
-    let mut board = Board::from_fen(MIDDLEGAME).expect("the middlegame position");
+    let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
     let mut s = Search::new(limits, &stop, &tt);
     let start = Instant::now();
     s.run(&mut board, &mut std::io::sink());
@@ -647,7 +648,7 @@ fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
 fn searched<T>(fen: &str, limits: Limits, read: impl FnOnce(&Search, Move) -> T) -> T {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
-    let mut board = Board::from_fen(fen).expect("a position");
+    let mut board = Position::new(Board::from_fen(fen).expect("a position"));
     let mut s = Search::new(limits, &stop, &tt);
     let best = s.run(&mut board, &mut std::io::sink());
     read(&s, best)
@@ -751,7 +752,7 @@ fn the_last_entry_is_what_the_search_returns() {
 fn an_abandoned_iteration_leaves_no_entry() {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
-    let mut board = Board::from_fen(MIDDLEGAME).expect("the middlegame position");
+    let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
     std::thread::scope(|scope| {
         scope.spawn(|| {
             std::thread::sleep(Duration::from_millis(500));
@@ -783,7 +784,7 @@ fn an_abandoned_iteration_leaves_no_entry() {
 fn a_search_that_completes_no_iteration_keeps_nothing() {
     let stop = AtomicBool::new(true);
     let tt = Table::new(HASH_MB).expect("a table");
-    let mut board = Board::from_fen(MIDDLEGAME).expect("the middlegame position");
+    let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
     let mut s = Search::new(Limits::infinite(), &stop, &tt);
     let best = s.run(&mut board, &mut std::io::sink());
     assert_eq!(s.completed_depth(), 0);
@@ -847,8 +848,8 @@ const ENDING: &str = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
 fn the_entries_do_not_survive_into_the_next_search() {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
-    let mut first = Board::from_fen(MIDDLEGAME).expect("the middlegame position");
-    let mut second = Board::from_fen(FORCED).expect("the forced position");
+    let mut first = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
+    let mut second = Position::new(Board::from_fen(FORCED).expect("the forced position"));
     let mut s = Search::new(Limits::depth(6), &stop, &tt);
     s.run(&mut first, &mut std::io::sink());
     assert_eq!(s.iteration_roots().len(), 6);
@@ -1008,7 +1009,7 @@ fn a_ponder_that_is_hit_becomes_a_clocked_search() {
     let stop = AtomicBool::new(false);
     let hit = AtomicBool::new(true);
     let tt = Table::new(16).expect("a table");
-    let mut board = Board::from_fen(START_FEN).expect("the start position");
+    let mut board = Position::new(Board::from_fen(START_FEN).expect("the start position"));
     let mut s = Search::new(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
     s.set_ponder_hit(&hit);
     let best = s.run(&mut board, &mut Vec::new());

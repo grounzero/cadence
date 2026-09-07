@@ -99,6 +99,7 @@ use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Move, Square, generate_legal, generate_noisy};
 use cadence_engine::picker::{noisy_key, sort_from, sort_noisy};
+use cadence_engine::position::Position;
 use cadence_engine::score::Score;
 use cadence_engine::search::{Limits, Search, order_first, remember_killer};
 use cadence_engine::see::see;
@@ -113,7 +114,7 @@ fn board(fen: &str) -> Board {
 }
 
 /// One search of `board` to `depth` against `tt`: move, score, nodes.
-fn search_with(board: &mut Board, depth: u32, tt: &Table) -> (Move, Score, u64) {
+fn search_with(board: &mut Position, depth: u32, tt: &Table) -> (Move, Score, u64) {
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
     let mut s = Search::new(Limits::depth(depth), &stop, tt);
@@ -355,7 +356,7 @@ fn the_two_bogus_moves_that_would_kill_the_process() {
 /// horizon -- so this poisons every key a depth-two search can look up,
 /// and `depth = 0` is below the depth one any of those probes needs, so
 /// the entry is read for its move and for nothing else.
-fn poison(b: &mut Board, tt: &Table, pick: impl Fn(&Board) -> Move) {
+fn poison(b: &mut Position, tt: &Table, pick: impl Fn(&Board) -> Move) {
     for m in generate_legal(b).iter() {
         b.make_move(m);
         let mv = pick(b);
@@ -397,12 +398,12 @@ fn the_tables_move_is_read_at_every_interior_node() {
     let mut moved = 0;
     for fen in &fens {
         let quiet = table();
-        let mut b = board(fen);
+        let mut b = support::position(fen);
         poison(&mut b, &quiet, |_| Move::NULL);
         let (_, _, null_nodes) = search_with(&mut b, POISON_DEPTH, &quiet);
 
         let loud = table();
-        let mut b = board(fen);
+        let mut b = support::position(fen);
         poison(&mut b, &loud, last_legal);
         let (_, _, loud_nodes) = search_with(&mut b, POISON_DEPTH, &loud);
 
@@ -435,13 +436,13 @@ fn a_move_the_table_cannot_supply_is_ignored_by_the_search() {
     let mut checked = 0;
     for fen in &fens {
         let quiet = table();
-        let mut b = board(fen);
+        let mut b = support::position(fen);
         poison(&mut b, &quiet, |_| Move::NULL);
         let clean = search_with(&mut b, POISON_DEPTH, &quiet);
 
         for which in 0..2 {
             let poisoned = table();
-            let mut b = board(fen);
+            let mut b = support::position(fen);
             poison(&mut b, &poisoned, |child| {
                 bogus_moves(child)
                     .get(which)
@@ -493,12 +494,12 @@ fn the_tables_move_saves_nodes() {
     let (mut with, mut without) = (0u64, 0u64);
     for fen in &fens {
         let (_, _, w) = search_with(
-            &mut board(fen),
+            &mut support::position(fen),
             DEEP,
             &Table::new(tt::DEFAULT_HASH_MB).expect("a table"),
         );
         let (_, _, wo) = search_with(
-            &mut board(fen),
+            &mut support::position(fen),
             DEEP,
             &Table::with_buckets(0).expect("a table of no buckets"),
         );
@@ -1128,7 +1129,7 @@ fn the_capture_sort_saves_nodes() {
     let mut total = 0u64;
     for fen in &fens {
         let (_, _, n) = search_with(
-            &mut board(fen),
+            &mut support::position(fen),
             SORT_DEPTH,
             &Table::with_buckets(0).expect("a table of no buckets"),
         );
@@ -1283,7 +1284,7 @@ fn demoting_the_losing_captures_saves_nodes() {
     let mut total = 0u64;
     for fen in &fens {
         let (_, _, n) = search_with(
-            &mut board(fen),
+            &mut support::position(fen),
             SORT_DEPTH,
             &Table::with_buckets(0).expect("a table of no buckets"),
         );
@@ -1752,15 +1753,15 @@ fn a_reused_search_remembers_no_killers() {
     for pair in fens.windows(2) {
         let tt = Table::with_buckets(0).expect("a table of no buckets");
         let mut reused = Search::new(Limits::depth(REUSE_DEPTH), &stop, &tt);
-        reused.run(&mut board(&pair[0]), &mut sink);
+        reused.run(&mut support::position(&pair[0]), &mut sink);
         sink.clear();
-        let again = reused.run(&mut board(&pair[1]), &mut sink);
+        let again = reused.run(&mut support::position(&pair[1]), &mut sink);
         let after = reused.nodes();
 
         let fresh_tt = Table::with_buckets(0).expect("a table of no buckets");
         let mut fresh = Search::new(Limits::depth(REUSE_DEPTH), &stop, &fresh_tt);
         sink.clear();
-        let alone = fresh.run(&mut board(&pair[1]), &mut sink);
+        let alone = fresh.run(&mut support::position(&pair[1]), &mut sink);
         assert_eq!(
             (again, after),
             (alone, fresh.nodes()),

@@ -333,6 +333,7 @@ fn setoption_uci_chess960_is_read_case_insensitively_and_persists() {
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::parse_uci;
+use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
 
 /// The position reached by replaying `moves` from `fen` with `play`, built
@@ -367,7 +368,7 @@ fn assert_same_position(got: &Board, want: &Board, context: &str) {
 /// The search, run on a duplicate of the session's board, returns a move
 /// legal in the position the board shows.
 fn assert_go_is_legal_here(s: &Session, context: &str) {
-    let mut board = s.board().duplicate();
+    let mut board = Position::new(s.board().duplicate());
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
     let tt = support::table();

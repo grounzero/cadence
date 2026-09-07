@@ -11,6 +11,7 @@ pub mod eval;
 pub mod history;
 pub mod perft;
 pub mod picker;
+pub mod position;
 pub mod score;
 pub mod search;
 pub mod see;
