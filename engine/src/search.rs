@@ -288,7 +288,6 @@ impl<'a> Search<'a> {
     /// `go` starts where a fresh one would. The clock origin is set here and moved again only
     /// by a `ponderhit`.
     fn begin(&mut self, board: &Board) {
-        self.tt.new_search();
         self.start = Instant::now();
         self.nodes = 0;
         self.aborted = false;
@@ -341,6 +340,10 @@ impl<'a> Search<'a> {
     /// are met or `stop` is raised; under `infinite` and under a ponder nobody has hit, only
     /// when `stop` is raised.
     pub fn run(&mut self, board: &mut Board, out: &mut dyn Write) -> Move {
+        // Here and not in `begin`, which is per worker rather than per search. A group of
+        // workers advances the generation once between them, so the bump belongs to whoever
+        // starts the group.
+        self.tt.new_search();
         self.begin(board);
 
         let legal = generate_legal(board);
