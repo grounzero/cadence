@@ -14,12 +14,13 @@ use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal};
+use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
 use support::{Rng, table};
 
 /// Search `board` to the given limits with a fresh stop flag, discarding
 /// `info` output.
-fn best(board: &mut Board, limits: Limits) -> Move {
+fn best(board: &mut Position, limits: Limits) -> Move {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut sink = Vec::new();
@@ -39,7 +40,7 @@ fn assert_legal(fen: &str, m: Move) {
 #[test]
 fn the_search_returns_a_legal_move_from_every_corpus_position() {
     for fen in support::corpus_fens() {
-        let mut board = Board::from_fen(&fen).expect("corpus fen parses");
+        let mut board = Position::new(Board::from_fen(&fen).expect("corpus fen parses"));
         if generate_legal(&board).is_empty() {
             continue;
         }
@@ -67,7 +68,7 @@ fn the_search_returns_a_legal_move_along_random_games() {
     seeds.extend(support::dfrc_arrays().into_iter().map(|(_, _, f)| f));
     let mut positions = 0;
     for (i, fen) in seeds.iter().enumerate() {
-        let mut board = Board::from_fen(fen).expect("fen parses");
+        let mut board = Position::new(Board::from_fen(fen).expect("fen parses"));
         let mut rng = Rng::new(0xBE57 + i as u64);
         for _ in 0..120 {
             let legal = generate_legal(&board);
@@ -92,7 +93,7 @@ fn the_search_returns_null_when_there_is_no_legal_move() {
         "7k/8/6Q1/8/8/8/8/7K b - - 0 1",  // stalemated
         "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", // fool's mate
     ] {
-        let mut board = Board::from_fen(fen).expect("fen parses");
+        let mut board = Position::new(Board::from_fen(fen).expect("fen parses"));
         assert!(generate_legal(&board).is_empty(), "{fen} has legal moves");
         assert_eq!(best(&mut board, Limits::depth(1)), Move::NULL, "{fen}");
     }
@@ -101,8 +102,8 @@ fn the_search_returns_null_when_there_is_no_legal_move() {
 #[test]
 fn the_search_is_a_function_of_the_position() {
     for fen in support::standard_fens() {
-        let mut a = Board::from_fen(&fen).expect("fen parses");
-        let mut b = Board::from_fen(&fen).expect("fen parses");
+        let mut a = Position::new(Board::from_fen(&fen).expect("fen parses"));
+        let mut b = Position::new(Board::from_fen(&fen).expect("fen parses"));
         let first = best(&mut a, Limits::depth(1));
         let second = best(&mut b, Limits::depth(1));
         assert_eq!(first, second, "{fen}");
@@ -116,7 +117,7 @@ fn the_search_is_a_function_of_the_position() {
 #[test]
 fn a_raised_stop_flag_returns_a_legal_move_at_once() {
     let fen = support::standard_fen("kiwipete");
-    let mut board = Board::from_fen(&fen).expect("kiwipete parses");
+    let mut board = Position::new(Board::from_fen(&fen).expect("kiwipete parses"));
     let stop = AtomicBool::new(true);
     let mut sink = Vec::new();
     let start = Instant::now();
@@ -136,7 +137,7 @@ fn infinite_waits_for_stop() {
         let stop = stop.clone();
         let fen = fen.clone();
         std::thread::spawn(move || {
-            let mut board = Board::from_fen(&fen).expect("kiwipete parses");
+            let mut board = Position::new(Board::from_fen(&fen).expect("kiwipete parses"));
             let mut sink = Vec::new();
             let tt = table();
             Search::new(Limits::infinite(), &stop, &tt).run(&mut board, &mut sink)

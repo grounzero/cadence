@@ -35,6 +35,7 @@ use cadence_core::types::PromoPiece;
 use cadence_core::{Colour, Move, PieceType, START_FEN, generate_legal, generate_noisy, parse_uci};
 use cadence_engine::eval;
 use cadence_engine::picker::{capture_key, noisy_key, sort_noisy};
+use cadence_engine::position::Position;
 use cadence_engine::score::{self, Score, mate_in};
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::see::see;
@@ -50,7 +51,7 @@ struct Result {
     pv: Vec<Move>,
 }
 
-fn search(board: &mut Board, limits: Limits) -> Result {
+fn search(board: &mut Position, limits: Limits) -> Result {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut sink = Vec::new();
@@ -134,7 +135,7 @@ fn captures_of(b: &Board, pt: PieceType) -> Vec<Move> {
 
 /// Whether the side to move's piece of type `pt` could be captured if it
 /// passed: the opponent's captures of it after a null move.
-fn en_prise(b: &mut Board, pt: PieceType) -> bool {
+fn en_prise(b: &mut Position, pt: PieceType) -> bool {
     b.make_null_move();
     let hit = !captures_of(b, pt).is_empty();
     b.unmake_null_move();
@@ -144,7 +145,7 @@ fn en_prise(b: &mut Board, pt: PieceType) -> bool {
 /// Whether `bad`, a capture, loses material to the worst recapture on its
 /// destination square: the mover's balance after the recapture is below
 /// its balance before the capture.
-fn loses_material_to_a_recapture(b: &mut Board, bad: Move) -> bool {
+fn loses_material_to_a_recapture(b: &mut Position, bad: Move) -> bool {
     assert!(bad.is_capture(), "{bad:?} is not a capture");
     let us = b.side_to_move();
     let before = balance(b, us);
@@ -163,7 +164,7 @@ fn loses_material_to_a_recapture(b: &mut Board, bad: Move) -> bool {
 
 /// Whether the side to move has a move after which the opponent has no
 /// capture at all.
-fn has_a_move_allowing_no_capture(b: &mut Board) -> bool {
+fn has_a_move_allowing_no_capture(b: &mut Position) -> bool {
     let legal = generate_legal(b);
     legal.iter().any(|m| {
         b.make_move(m);
@@ -175,7 +176,7 @@ fn has_a_move_allowing_no_capture(b: &mut Board) -> bool {
 
 /// The side to move's best static score after one move: the depth-one
 /// score of a search whose horizon is quiet.
-fn best_static_reply(b: &mut Board) -> Score {
+fn best_static_reply(b: &mut Position) -> Score {
     let mut best = Score::MIN;
     for m in generate_legal(b).iter() {
         b.make_move(m);
@@ -197,7 +198,7 @@ fn best_static_reply(b: &mut Board) -> Score {
 /// Only sound where the value of a root move is minus the static
 /// evaluation of the position it leads to, which is what a quiet horizon
 /// means: the callers below each establish that before using this.
-fn root_re_searches(b: &mut Board) -> u64 {
+fn root_re_searches(b: &mut Position) -> u64 {
     let mut best = Score::MIN;
     let mut re_searched = 0;
     for (i, m) in generate_legal(b).iter().enumerate() {
@@ -236,7 +237,7 @@ const LOSING_CAPTURES: &[(&str, &str)] = &[
 fn the_losing_captures_are_what_they_claim() {
     for (fen, bad) in LOSING_CAPTURES {
         for (fen, bad) in both_colours(fen, bad) {
-            let mut b = board(&fen);
+            let mut b = support::position(&fen);
             let bad = mv(&b, &bad);
             assert!(
                 loses_material_to_a_recapture(&mut b, bad),
@@ -257,7 +258,7 @@ fn the_losing_captures_are_what_they_claim() {
 fn a_capture_refuted_by_an_immediate_recapture_is_not_played() {
     for (fen, bad) in LOSING_CAPTURES {
         for (fen, bad) in both_colours(fen, bad) {
-            let mut b = board(&fen);
+            let mut b = support::position(&fen);
             let bad = mv(&b, &bad);
             // Standing pat is a lower bound for the side to move at the
             // horizon, so at depth one no reply scores above its static
@@ -293,7 +294,7 @@ const ATTACKED_PIECES: &[(&str, PieceType)] = &[
 fn the_attacked_pieces_are_what_they_claim() {
     for (fen, pt) in ATTACKED_PIECES {
         for (fen, _) in both_colours(fen, "a1a1") {
-            let mut b = board(&fen);
+            let mut b = support::position(&fen);
             assert!(en_prise(&mut b, *pt), "{fen}: the {pt:?} is not attacked");
             // A move after which it is safe exists, and so does one after
             // which it is not: the choice is real.
@@ -320,7 +321,7 @@ fn the_attacked_pieces_are_what_they_claim() {
 fn a_piece_attacked_at_the_root_is_not_left_to_be_taken() {
     for (fen, pt) in ATTACKED_PIECES {
         for (fen, _) in both_colours(fen, "a1a1") {
-            let mut b = board(&fen);
+            let mut b = support::position(&fen);
             for depth in 1..=3 {
                 let r = search(&mut b, Limits::depth(depth));
                 b.make_move(r.best);
@@ -351,7 +352,7 @@ const STAND_PAT: &str = "7k/5q2/8/8/1p6/pP6/P7/7K w - - 0 1";
 #[test]
 fn the_stand_pat_position_is_what_it_claims() {
     for (fen, _) in both_colours(STAND_PAT, "a1a1") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let legal = generate_legal(&b);
         assert!(legal.len() > 1, "{fen}: {} moves", legal.len());
         for m in legal.iter() {
@@ -372,7 +373,7 @@ fn the_stand_pat_position_is_what_it_claims() {
 #[test]
 fn a_losing_capture_is_never_forced_on_the_side_to_move_at_the_horizon() {
     for (fen, _) in both_colours(STAND_PAT, "a1a1") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let expected = best_static_reply(&mut b);
         let roots = generate_legal(&b).len() as u64;
         let r = search(&mut b, Limits::depth(1));
@@ -412,7 +413,7 @@ fn a_quiet_horizon_costs_one_node_per_leaf_and_scores_the_static_evaluation() {
             .map(|(_, _, f)| f),
     );
     for fen in fens {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let legal = generate_legal(&b);
         // The premise, checked: nothing noisy is available after any move.
         for m in legal.iter() {
@@ -434,7 +435,7 @@ fn a_quiet_horizon_costs_one_node_per_leaf_and_scores_the_static_evaluation() {
 #[test]
 fn a_noisy_horizon_is_searched_below_depth_one() {
     let fen = support::standard_fen("kiwipete");
-    let mut b = board(&fen);
+    let mut b = support::position(&fen);
     let roots = generate_legal(&b).len() as u64;
     let r = search(&mut b, Limits::depth(1));
     assert_eq!(r.depth, 1);
@@ -456,7 +457,7 @@ fn a_noisy_horizon_is_searched_below_depth_one() {
 #[test]
 fn mate_in_one_is_found_at_depth_one() {
     for (fen, key) in both_colours("7k/8/6K1/8/8/8/8/1R6 w - - 0 1", "b1b8") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let key = mv(&b, &key);
         let r = search(&mut b, Limits::depth(1));
         assert_eq!(r.best, key, "{fen}: played {:?}", r.best);
@@ -476,7 +477,7 @@ const SKEWER: &str = "4k2q/8/8/8/8/8/8/R5K1 w - - 0 1";
 #[test]
 fn the_skewer_is_what_it_claims() {
     for (fen, key) in both_colours(SKEWER, "a1a8") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let key = mv(&b, &key);
         b.make_move(key);
         assert!(b.in_check(), "{fen}: {key:?} is not check");
@@ -504,7 +505,7 @@ fn the_skewer_is_what_it_claims() {
 #[test]
 fn a_check_at_the_horizon_is_answered_with_every_evasion() {
     for (fen, key) in both_colours(SKEWER, "a1a8") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let key = mv(&b, &key);
         for depth in 1..=2 {
             let r = search(&mut b, Limits::depth(depth));
@@ -528,7 +529,7 @@ const PROMOTION: &str = "6k1/6p1/8/8/2b5/7R/p7/6K1 w - - 0 1";
 
 /// Whether every promotion the opponent has is met by a capture of the
 /// promoted piece.
-fn every_promotion_is_captured(b: &mut Board) -> bool {
+fn every_promotion_is_captured(b: &mut Position) -> bool {
     let promotions: Vec<Move> = generate_legal(b)
         .iter()
         .filter(|m| m.is_promotion())
@@ -545,7 +546,7 @@ fn every_promotion_is_captured(b: &mut Board) -> bool {
 #[test]
 fn the_promotion_position_is_what_it_claims() {
     for (fen, _) in both_colours(PROMOTION, "a1a1") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let mut covered = 0;
         let mut open = 0;
         let mut checks = 0;
@@ -585,7 +586,7 @@ fn the_promotion_position_is_what_it_claims() {
 #[test]
 fn a_promotion_at_the_horizon_is_seen() {
     for (fen, _) in both_colours(PROMOTION, "a1a1") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         for depth in 1..=2 {
             let r = search(&mut b, Limits::depth(depth));
             b.make_move(r.best);
@@ -770,7 +771,7 @@ fn the_noisy_moves_are_sorted_by_key_stably() {
 /// search returns before it reaches the order.
 fn for_each_in_check_child(mut f: impl FnMut(&str, Move, &Board, &[Move])) {
     for fen in support::corpus_fens() {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         for m in generate_legal(&b).iter() {
             b.make_move(m);
             if b.in_check() {
@@ -899,7 +900,7 @@ const DEFENDED_BLOCKER: &str = "8/8/8/8/8/7N/4k1PP/q6K w - - 0 1";
 #[test]
 fn the_defended_blocker_is_what_it_claims() {
     for (fen, key) in both_colours(DEFENDED_BLOCKER, "h3g1") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         assert!(b.in_check(), "{fen}: not in check");
         let legal = generate_legal(&b);
         assert_eq!(legal.len(), 1, "{fen}: {:?}", legal.as_slice());
@@ -945,7 +946,7 @@ fn the_defended_blocker_is_what_it_claims() {
 #[test]
 fn a_noisy_evasion_that_loses_is_not_the_answer() {
     for (fen, key) in both_colours(DEFENDED_BLOCKER, "h3g1") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let key = mv(&b, &key);
         for depth in 1..=3 {
             let r = search(&mut b, Limits::depth(depth));
@@ -980,7 +981,7 @@ fn ordering_the_check_evasions_saves_nodes() {
     let mut total = 0;
     let mut worst = (0u64, String::new());
     for fen in support::corpus_fens() {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         if generate_legal(&b).is_empty() {
             continue;
         }
@@ -1024,7 +1025,7 @@ fn ordering_the_check_evasions_saves_nodes() {
 /// side's quiet moves, asserted to be the same move and the same value
 /// after every one of them, and that value returned. A noisy root move is
 /// the main search's business and is skipped.
-fn the_only_reply_exchange(b: &mut Board, uci: &str) -> i32 {
+fn the_only_reply_exchange(b: &mut Position, uci: &str) -> i32 {
     let root = generate_legal(b);
     let mut value = None;
     for m in root.iter().filter(|m| !m.is_noisy()) {
@@ -1072,7 +1073,7 @@ fn fen(b: &Board) -> String {
 #[test]
 fn a_losing_capture_at_the_horizon_is_refused_without_being_searched() {
     for (fen, reply) in both_colours(STAND_PAT, "f7b3") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         assert!(the_only_reply_exchange(&mut b, &reply) < 0);
         let expected = best_static_reply(&mut b);
         let roots = generate_legal(&b).len() as u64;
@@ -1096,7 +1097,7 @@ const WINNING_AT_THE_HORIZON: &str = "7k/5q2/8/8/8/n7/P7/7K w - - 0 1";
 #[test]
 fn a_winning_capture_at_the_horizon_is_searched() {
     for (fen, reply) in both_colours(WINNING_AT_THE_HORIZON, "f7a2") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         assert!(the_only_reply_exchange(&mut b, &reply) > 0);
         let ceiling = best_static_reply(&mut b);
         let roots = generate_legal(&b).len() as u64;
@@ -1120,7 +1121,7 @@ const EVEN_AT_THE_HORIZON: &str = "7k/8/8/8/pp6/nP6/P7/7K w - - 0 1";
 #[test]
 fn an_even_exchange_at_the_horizon_is_searched() {
     for (fen, reply) in both_colours(EVEN_AT_THE_HORIZON, "a4b3") {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         assert_eq!(the_only_reply_exchange(&mut b, &reply), 0);
         let roots = generate_legal(&b).len() as u64;
         let r = search(&mut b, Limits::depth(1));
@@ -1156,7 +1157,7 @@ fn a_losing_evasion_is_searched_all_the_same() {
         .into_iter()
         .zip([14, 12])
     {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let r = search(&mut b, Limits::depth(1));
         assert_eq!(r.nodes, expected, "{fen}");
     }
@@ -1175,7 +1176,7 @@ fn refusing_losing_captures_saves_nodes() {
     let mut total = 0;
     let mut worst = (0u64, String::new());
     for fen in support::corpus_fens() {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         if generate_legal(&b).is_empty() {
             continue;
         }
@@ -1215,7 +1216,7 @@ const DEPTH_ONE_NODE_CEILING: u64 = 15_000;
 fn depth_one_is_bounded_in_every_corpus_position() {
     let mut worst = (0u64, String::new());
     for fen in support::corpus_fens() {
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         if generate_legal(&b).is_empty() {
             continue;
         }

@@ -13,6 +13,7 @@ use crate::corrhist::CorrectionHistory;
 use crate::eval;
 use crate::history::{self, History};
 use crate::picker;
+use crate::position::Position;
 use crate::score::{self, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 use crate::time::{self, Budget};
@@ -363,7 +364,7 @@ impl<'a> Search<'a> {
     /// The best move in `board`, or `Move::NULL` when there is none. Returns when the limits
     /// are met or `stop` is raised; under `infinite` and under a ponder nobody has hit, only
     /// when `stop` is raised.
-    pub fn run(&mut self, board: &mut Board, out: &mut dyn Write) -> Move {
+    pub fn run(&mut self, board: &mut Position, out: &mut dyn Write) -> Move {
         // Here and not in `begin`, which is per worker rather than per search. A group of
         // workers advances the generation once between them, so the bump belongs to whoever
         // starts the group.
@@ -376,7 +377,7 @@ impl<'a> Search<'a> {
     /// `set_parallel`.
     pub(crate) fn run_in_current_generation(
         &mut self,
-        board: &mut Board,
+        board: &mut Position,
         out: &mut dyn Write,
     ) -> Move {
         self.begin(board);
@@ -489,7 +490,7 @@ impl<'a> Search<'a> {
     /// nothing to skip, so the loop runs the whole list as it always has.
     fn search_root(
         &mut self,
-        board: &mut Board,
+        board: &mut Position,
         legal: &MoveList,
         moves: &[Move],
         depth: u32,
@@ -550,7 +551,7 @@ impl<'a> Search<'a> {
     /// One interior node of the main search, at the `ply` and `depth` given, searched with the
     /// full window.
     #[must_use]
-    pub fn node(&mut self, board: &mut Board, depth: u32, ply: usize) -> Score {
+    pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
         self.node_window(board, depth, ply, -INFINITE, INFINITE)
     }
 
@@ -559,7 +560,7 @@ impl<'a> Search<'a> {
     #[must_use]
     pub fn node_window(
         &mut self,
-        board: &mut Board,
+        board: &mut Position,
         depth: u32,
         ply: usize,
         alpha: Score,
@@ -576,7 +577,7 @@ impl<'a> Search<'a> {
     /// is discarded by every caller.
     fn negamax(
         &mut self,
-        board: &mut Board,
+        board: &mut Position,
         depth: u32,
         ply: usize,
         mut alpha: Score,
@@ -843,7 +844,7 @@ impl<'a> Search<'a> {
     /// re-run at the full child depth before its answer is believed.
     fn late_move(
         &mut self,
-        board: &mut Board,
+        board: &mut Position,
         child: u32,
         base: u32,
         history: i32,
@@ -946,7 +947,7 @@ impl<'a> Search<'a> {
     /// has nothing but pawns beside the king ([`has_non_pawn_material`]).
     fn null_move(
         &mut self,
-        board: &mut Board,
+        board: &mut Position,
         depth: u32,
         ply: usize,
         alpha: Score,
@@ -982,7 +983,13 @@ impl<'a> Search<'a> {
     /// The quiescence search. Out of check the side to move may stand pat, then every noisy
     /// move is tried most valuable victim first, except those whose static exchange loses
     /// material.
-    fn quiesce(&mut self, board: &mut Board, ply: usize, mut alpha: Score, beta: Score) -> Score {
+    fn quiesce(
+        &mut self,
+        board: &mut Position,
+        ply: usize,
+        mut alpha: Score,
+        beta: Score,
+    ) -> Score {
         self.visit(ply);
         self.table.clear(ply);
         if self.out_of_time() {
@@ -1171,7 +1178,7 @@ impl<'a> Search<'a> {
     /// One `info` line for line `number` of the iteration just completed, its pv spelled by
     /// walking it on the board so castling reads per the option. `multipv` is absent where only
     /// one line was asked for, which is the line every rating list and every test reads.
-    fn report(&self, board: &mut Board, number: usize, out: &mut dyn Write) {
+    fn report(&self, board: &mut Position, number: usize, out: &mut dyn Write) {
         let reported = &self.lines[number - 1];
         let ms = self.elapsed_ms();
         let nps = self.reported_nodes() * 1000 / ms.max(1);

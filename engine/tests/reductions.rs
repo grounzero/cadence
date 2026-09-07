@@ -79,7 +79,7 @@ fn a_middlegame_search_reduces_late_moves_and_verifies_fail_highs() {
     ] {
         let stop = AtomicBool::new(false);
         let tt = table();
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         assert!(!generate_legal(&b).is_empty(), "{fen}: no legal moves");
         let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
         let best = s.run(&mut b, &mut Vec::new());

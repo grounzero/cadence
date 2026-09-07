@@ -132,6 +132,20 @@ pub fn corpus_fens() -> Vec<String> {
 // The transposition table
 // ---------------------------------------------------------------------------
 
+/// The search position at `fen`, which is what a gate hands to a search. Eight test files
+/// carried a `board(fen)` of their own before this existed, and every one of them wanted this.
+///
+/// # Panics
+///
+/// If `fen` does not parse. A gate naming an unparseable position is a broken gate, and the
+/// panic names it.
+#[must_use]
+pub fn position(fen: &str) -> cadence_engine::position::Position {
+    cadence_engine::position::Position::new(
+        cadence_core::position::Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}")),
+    )
+}
+
 /// A table for one search, at the size the engine defaults to.
 ///
 /// Every gate that ran before the table existed gets a fresh one per
@@ -510,7 +524,7 @@ pub enum Outcome {
 /// A player: given the board, returns the move to play. The harness checks
 /// that it is legal, so a player that returns an illegal move fails the
 /// test by name rather than corrupting the board.
-pub type Player<'a> = dyn FnMut(&mut Board) -> Move + 'a;
+pub type Player<'a> = dyn FnMut(&mut cadence_engine::position::Position) -> Move + 'a;
 
 /// Play `white` against `black` from `fen` until a rules-based end or `cap`
 /// plies. Returns the outcome and the moves played.
@@ -520,7 +534,9 @@ pub fn play_game(
     black: &mut Player<'_>,
     cap: usize,
 ) -> (Outcome, Vec<Move>) {
-    let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+    let mut board = cadence_engine::position::Position::new(
+        Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}")),
+    );
     let mut moves = Vec::new();
     loop {
         let legal = generate_legal(&board);
@@ -570,8 +586,10 @@ pub fn insufficient_material(board: &Board) -> bool {
 }
 
 /// A player that picks a uniformly random legal move.
-pub fn random_mover(rng: &mut Rng) -> impl FnMut(&mut Board) -> Move + '_ {
-    move |board: &mut Board| {
+pub fn random_mover(
+    rng: &mut Rng,
+) -> impl FnMut(&mut cadence_engine::position::Position) -> Move + '_ {
+    move |board: &mut cadence_engine::position::Position| {
         let legal = generate_legal(board);
         legal.as_slice()[rng.below(legal.len())]
     }

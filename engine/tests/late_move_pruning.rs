@@ -76,7 +76,7 @@ fn board(fen: &str) -> Board {
 fn one_node(fen: &str, depth: u32, alpha: Score) -> (Score, u64, u64, u64) {
     let stop = AtomicBool::new(false);
     let tt = table();
-    let mut b = board(fen);
+    let mut b = support::position(fen);
     let mut s = Search::new(Limits::depth(depth), &stop, &tt);
     let score = s.node_window(&mut b, depth, 0, alpha, alpha + 1);
     (score, s.lmp_nodes(), s.lmp_skipped(), s.lmp_kept_check())
@@ -268,7 +268,7 @@ fn a_middlegame_search_gives_up_late_quiet_moves() {
     ] {
         let stop = AtomicBool::new(false);
         let tt = table();
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let mut s = Search::new(Limits::depth(GATE_DEPTH), &stop, &tt);
         let best = s.run(&mut b, &mut Vec::new());
         assert!(!best.is_null(), "{fen}: no move");

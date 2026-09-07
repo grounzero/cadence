@@ -94,7 +94,7 @@ fn a_cutoff_raises_a_score_and_the_order_follows() {
     let fen = support::standard_fen("kiwipete");
     let stop = AtomicBool::new(false);
     let tt = table();
-    let mut b = board(&fen);
+    let mut b = support::position(&fen);
     let mut s = Search::new(Limits::depth(ORDER_DEPTH), &stop, &tt);
     let best = s.run(&mut b, &mut Vec::new());
     assert!(!best.is_null(), "{fen}: no move");
@@ -170,7 +170,7 @@ fn a_cutoff_raises_a_score_and_the_order_follows() {
 fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
     let stop = AtomicBool::new(false);
     let tt = table();
-    let mut b = board(MIDDLEGAME);
+    let mut b = support::position(MIDDLEGAME);
     let mut s = Search::new(Limits::depth(MODULATION_DEPTH), &stop, &tt);
     let best = s.run(&mut b, &mut Vec::new());
     assert!(!best.is_null(), "no move");
@@ -202,7 +202,7 @@ fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
 fn a_real_search_leaves_every_entry_inside_the_bound() {
     let stop = AtomicBool::new(false);
     let tt = table();
-    let mut b = board(&support::standard_fen("kiwipete"));
+    let mut b = support::position(&support::standard_fen("kiwipete"));
     let mut s = Search::new(Limits::depth(ORDER_DEPTH), &stop, &tt);
     let _ = s.run(&mut b, &mut Vec::new());
     for side in Colour::ALL {
@@ -236,7 +236,7 @@ fn a_real_search_leaves_every_entry_inside_the_bound() {
 fn the_table_does_not_survive_a_second_search() {
     let stop = AtomicBool::new(false);
     let tt = table();
-    let mut b = board(&support::standard_fen("kiwipete"));
+    let mut b = support::position(&support::standard_fen("kiwipete"));
     let mut s = Search::new(Limits::depth(ORDER_DEPTH), &stop, &tt);
 
     let _ = s.run(&mut b, &mut Vec::new());

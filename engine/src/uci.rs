@@ -12,6 +12,7 @@ use cadence_core::Move;
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci, to_uci};
 
+use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
 
@@ -376,7 +377,7 @@ impl Session {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let ponder_hit = Arc::new(AtomicBool::new(false));
-        let mut board = self.board.duplicate();
+        let board = self.board.duplicate();
         let chess960 = self.chess960;
         let multipv = self.multipv;
         let ponder = self.ponder;
@@ -396,6 +397,7 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
+                    let mut pos = Position::new(board);
                     // Both arms answer with the move and the line it came from, so the
                     // `bestmove` a GUI reads is spelled in one place whatever `Threads` is.
                     let (best, pv) = if threads == 1 {
@@ -404,11 +406,11 @@ impl Session {
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
-                        let best = search.run(&mut board, &mut out);
+                        let best = search.run(&mut pos, &mut out);
                         (best, search.pv().to_vec())
                     } else {
                         parallel_search(ParallelGo {
-                            board: &mut board,
+                            board: &mut pos,
                             limits,
                             stop: &stop,
                             ponder_hit: &ponder_hit,
@@ -422,7 +424,7 @@ impl Session {
                     // Only when the GUI said it ponders. Off is the default and what every
                     // rating list plays, and the line it reads there is the line it always read.
                     match ponder
-                        .then(|| ponder_move(&mut board, best, &pv, chess960))
+                        .then(|| ponder_move(&mut pos, best, &pv, chess960))
                         .flatten()
                     {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
@@ -469,7 +471,7 @@ impl Session {
 /// is spelled from; helpers carry their own history, killers and principal variation, start
 /// from rotated root orders, and reach each other only through the lockless table.
 struct ParallelGo<'a> {
-    board: &'a mut Board,
+    board: &'a mut Position,
     limits: Limits,
     stop: &'a Arc<AtomicBool>,
     /// Given to every worker, not only the primary. A helper without it keeps `pondering` true
@@ -503,7 +505,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         .into();
     let mut helpers = Vec::with_capacity(threads.saturating_sub(1));
     for worker_index in 1..threads {
-        let mut helper_board = board.duplicate();
+        let mut helper_board = Position::new(board.duplicate());
         let helper_stop = Arc::clone(stop);
         let helper_ponder_hit = Arc::clone(ponder_hit);
         let helper_tt = Arc::clone(tt);
@@ -549,7 +551,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
 /// The move to offer to ponder on: the second move of the principal variation, spelled in the
 /// position it is played in rather than at the root. `None` when the search left no line to
 /// speak of, which is what an aborted first iteration leaves.
-fn ponder_move(board: &mut Board, best: Move, pv: &[Move], chess960: bool) -> Option<String> {
+fn ponder_move(board: &mut Position, best: Move, pv: &[Move], chess960: bool) -> Option<String> {
     if pv.first() != Some(&best) {
         return None;
     }

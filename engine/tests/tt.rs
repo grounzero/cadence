@@ -36,9 +36,9 @@ mod support;
 
 use std::sync::atomic::AtomicBool;
 
-use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{Move, Square, generate_legal};
+use cadence_engine::position::Position;
 use cadence_engine::score::{self, MAX_EVAL, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::tt::{self, Bound, Entry, Table};
@@ -52,12 +52,8 @@ use support::Rng;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn board(fen: &str) -> Board {
-    Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
-}
-
 /// One search of `board` to `depth` against `tt`: move, score, nodes.
-fn search_with(board: &mut Board, depth: u32, tt: &Table) -> (Move, Score, u64) {
+fn search_with(board: &mut Position, depth: u32, tt: &Table) -> (Move, Score, u64) {
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
     let mut s = Search::new(Limits::depth(depth), &stop, tt);
@@ -689,8 +685,12 @@ fn the_table_saves_nodes() {
     let fens = gate_fens();
     let (mut total_with, mut total_without) = (0u64, 0u64);
     for fen in &fens {
-        let (_, _, without) = search_with(&mut board(fen), GATE_DEPTH, &no_table());
-        let (_, _, with) = search_with(&mut board(fen), GATE_DEPTH, &table(tt::DEFAULT_HASH_MB));
+        let (_, _, without) = search_with(&mut support::position(fen), GATE_DEPTH, &no_table());
+        let (_, _, with) = search_with(
+            &mut support::position(fen),
+            GATE_DEPTH,
+            &table(tt::DEFAULT_HASH_MB),
+        );
         total_with += with;
         total_without += without;
         if with < without {
@@ -764,7 +764,7 @@ fn no_entry_claims_more_depth_than_was_searched() {
         support::ENDGAME_FENS[3].to_string(),
     ] {
         let tt = table(tt::DEFAULT_HASH_MB);
-        let mut b = board(&fen);
+        let mut b = support::position(&fen);
         let _ = search_with(&mut b, depth, &tt);
         let mut at_full_depth = 0;
         let mut children = 0;
@@ -839,10 +839,10 @@ fn a_repeated_search_reuses_a_warm_table() {
     let mut warmed = 0;
     for fen in &fens {
         let tt = table(tt::DEFAULT_HASH_MB);
-        let (_, _, first_nodes) = search_with(&mut board(fen), GATE_DEPTH, &tt);
+        let (_, _, first_nodes) = search_with(&mut support::position(fen), GATE_DEPTH, &tt);
         let mut cheapest = first_nodes;
         for _ in 1..6 {
-            let (_, _, nodes) = search_with(&mut board(fen), GATE_DEPTH, &tt);
+            let (_, _, nodes) = search_with(&mut support::position(fen), GATE_DEPTH, &tt);
             cheapest = cheapest.min(nodes);
         }
         if cheapest < first_nodes {
@@ -876,14 +876,14 @@ fn mate_distances_survive_a_warm_table() {
     for (fen, expected) in positions {
         let tt = table(tt::DEFAULT_HASH_MB);
         for repeat in 0..4 {
-            let (_, score, _) = search_with(&mut board(fen), 4, &tt);
+            let (_, score, _) = search_with(&mut support::position(fen), 4, &tt);
             assert_eq!(score, expected, "{fen}: search {repeat} scored {score}");
         }
         // The same table, now at other depths: an entry written at one
         // depth is read at another, which is where an unadjusted mate
         // score surfaces.
         for depth in [2, 3, 4, 5, 6] {
-            let (_, score, _) = search_with(&mut board(fen), depth, &tt);
+            let (_, score, _) = search_with(&mut support::position(fen), depth, &tt);
             if depth >= 4 {
                 assert_eq!(score, expected, "{fen} at depth {depth}: scored {score}");
             }
@@ -894,7 +894,7 @@ fn mate_distances_survive_a_warm_table() {
     let fen = "7k/8/6K1/8/8/8/8/1R6 b - - 0 1";
     let tt = table(tt::DEFAULT_HASH_MB);
     for depth in [3, 4, 5, 6, 5, 4, 3] {
-        let (_, score, _) = search_with(&mut board(fen), depth, &tt);
+        let (_, score, _) = search_with(&mut support::position(fen), depth, &tt);
         assert_eq!(score, mated_in(2), "depth {depth}: scored {score}");
     }
 }
@@ -993,8 +993,11 @@ fn the_bench_clears_the_table_between_positions() {
     let fens = bench::positions();
     assert_eq!(report.lines.len(), fens.len());
     for line in &report.lines {
-        let (best, _, nodes) =
-            search_with(&mut board(&line.fen), bench::DEPTH, &table(bench::HASH_MB));
+        let (best, _, nodes) = search_with(
+            &mut support::position(&line.fen),
+            bench::DEPTH,
+            &table(bench::HASH_MB),
+        );
         assert_eq!(
             nodes, line.nodes,
             "{}: the bench counted {} nodes, a standalone search {nodes}",
@@ -1010,7 +1013,7 @@ fn the_bench_clears_the_table_between_positions() {
     let shared = table(bench::HASH_MB);
     let pass = |shared: &Table| -> u64 {
         fens.iter()
-            .map(|fen| search_with(&mut board(fen), SEAM_DEPTH, shared).2)
+            .map(|fen| search_with(&mut support::position(fen), SEAM_DEPTH, shared).2)
             .sum()
     };
     let first = pass(&shared);

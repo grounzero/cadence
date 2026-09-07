@@ -13,6 +13,7 @@ use std::time::Instant;
 use cadence_core::Move;
 use cadence_core::position::Board;
 
+use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::Table;
 
@@ -73,10 +74,10 @@ pub fn bench() -> Report {
     for fen in positions() {
         // The seam: nothing an earlier position learned reaches this one.
         tt.clear();
-        let mut board =
-            Board::from_fen(fen).unwrap_or_else(|e| panic!("bench position {fen}: {e:?}"));
+        let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("bench position {fen}: {e:?}"));
+        let mut pos = Position::new(board);
         let mut search = Search::new(Limits::depth(DEPTH), &stop, &tt);
-        let best = search.run(&mut board, &mut std::io::sink());
+        let best = search.run(&mut pos, &mut std::io::sink());
         nodes += search.nodes();
         lines.push(Line {
             fen: fen.to_string(),

@@ -165,6 +165,7 @@ use std::sync::atomic::AtomicBool;
 
 use cadence_core::START_FEN;
 use cadence_core::position::Board;
+use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
 use support::table;
 
@@ -173,7 +174,7 @@ use support::table;
 const DEPTH: u32 = 8;
 
 fn search_to(fen: &str, depth: u32) -> (u64, u64, u64) {
-    let mut board = Board::from_fen(fen).expect("a legal fen");
+    let mut board = Position::new(Board::from_fen(fen).expect("a legal fen"));
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut s = Search::new(Limits::depth(depth), &stop, &tt);
