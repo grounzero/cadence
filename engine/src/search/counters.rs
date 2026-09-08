@@ -119,6 +119,19 @@ impl Search<'_> {
         self.reverse_futility_refused_window
     }
 
+    /// How many check evasion lists the quiescence search prepared, and how many of those the
+    /// sort moved a new move to the head of. The first says the in-check horizon was reached at
+    /// all, which is what stops the second being vacuous.
+    #[must_use]
+    pub fn evasion_lists(&self) -> u64 {
+        self.evasion_lists
+    }
+
+    #[must_use]
+    pub fn evasion_lists_reordered(&self) -> u64 {
+        self.evasion_lists_reordered
+    }
+
     /// The table the last search left behind, for a gate that wants to see what the cutoffs
     /// wrote and what the ordering would do with it.
     #[must_use]
