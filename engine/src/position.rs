@@ -9,7 +9,7 @@ use cadence_core::position::Board;
 use cadence_core::{DirtyPieces, Move};
 
 /// The board the search makes moves on, wrapped so that mutation has one entry point. Read
-/// access derefs to [`Board`], and there is deliberately no `DerefMut`: the four methods below
+/// access derefs to [`Board`], and there is deliberately no `DerefMut`: the five methods below
 /// are the only way to move the position, which is what keeps a second cursor beside it honest.
 pub struct Position {
     board: Board,
