@@ -15,6 +15,7 @@ use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci, to_uci};
 use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
+use crate::tune::{self, Param, Tunables};
 
 /// The public identity: what appears on rating lists and in the header of every game a GUI
 /// records. The version half is [`crate::version::VERSION`] rather than the package version, so
@@ -56,6 +57,9 @@ pub struct Session {
     /// `Threads`: how many searches one `go` runs, one primary and the rest Lazy SMP helpers.
     /// One is the default and is the only setting under which a search repeats exactly.
     threads: usize,
+    /// The search constants a tune may move, as the options in `tune::PARAMS` last set them.
+    /// Handed to every search a `go` starts and to nothing else.
+    tunables: Tunables,
     /// The search thread started by the last `go`, until `stop`, the next `go`, or shutdown
     /// joins it. It may already have finished.
     search: Option<Running>,
@@ -95,6 +99,7 @@ impl Session {
             multipv: 1,
             ponder: false,
             threads: DEFAULT_THREADS,
+            tunables: Tunables::DEFAULT,
             search: None,
         }
     }
@@ -127,6 +132,12 @@ impl Session {
     #[must_use]
     pub fn threads(&self) -> usize {
         self.threads
+    }
+
+    /// The search constants this session's next `go` will read.
+    #[must_use]
+    pub fn tunables(&self) -> &Tunables {
+        &self.tunables
     }
 
     /// The transposition table this session is playing with.
@@ -183,6 +194,11 @@ impl Session {
                 // default: pondering doubles the thinking one side gets, which is why every
                 // rating list disables it.
                 say(format_args!("option name Ponder type check default false"));
+                // The search constants a tune may move, from the same table `cadence spsa`
+                // prints, so the names a tuner sends are the names declared here.
+                for param in tune::PARAMS {
+                    say(format_args!("{}", param.uci_option()));
+                }
                 say(format_args!("uciok"));
             }
             "isready" => say(format_args!("readyok")),
@@ -250,6 +266,8 @@ impl Session {
             }
         } else if name.eq_ignore_ascii_case("Threads") {
             self.set_threads(&value);
+        } else if let Some(param) = tune::find(&name) {
+            self.set_tunable(param, &value);
         }
         // Unknown options are ignored; a GUI sends whatever it was told to.
     }
@@ -265,6 +283,20 @@ impl Session {
             return;
         };
         self.threads = asked.clamp(1, MAX_THREADS);
+    }
+
+    /// `setoption name <param> value <v>` for a tunable constant: clamped into its range, and
+    /// ignored with the value kept where the text is not a number of the parameter's kind. A
+    /// malformed value never reaches the search and never ends the session.
+    fn set_tunable(&mut self, param: &Param, value: &str) {
+        match param.parse(value) {
+            Some(stored) => param.set(&mut self.tunables, stored),
+            None => say(format_args!(
+                "info string setoption {}: `{value}` is not a number, keeping {}",
+                param.name,
+                param.spell(self.tunables.get(param.tunable))
+            )),
+        }
     }
 
     /// `setoption name MultiPV value <n>`: how many lines a search reports. Clamped rather than
@@ -382,6 +414,7 @@ impl Session {
         let multipv = self.multipv;
         let ponder = self.ponder;
         let threads = self.threads;
+        let tunables = self.tunables;
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -407,6 +440,7 @@ impl Session {
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
+                        search.set_tunables(tunables);
                         let best = search.run(&mut pos, &mut out);
                         (best, search.pv().to_vec())
                     } else {
@@ -419,6 +453,7 @@ impl Session {
                             chess960,
                             threads,
                             multipv,
+                            tunables,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -483,6 +518,7 @@ struct ParallelGo<'a> {
     chess960: bool,
     threads: usize,
     multipv: usize,
+    tunables: Tunables,
 }
 
 /// Run `go` across `threads` searches and return the primary's move and line. The generation is
@@ -498,6 +534,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         chess960,
         threads,
         multipv,
+        tunables,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -521,6 +558,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 search.set_ponder_hit(&helper_ponder_hit);
                 search.set_chess960(chess960);
                 search.set_multipv(multipv);
+                search.set_tunables(tunables);
                 search.set_parallel(worker_index, &helper_nodes);
                 search.run_in_current_generation(&mut helper_board, &mut sink)
             });
@@ -538,6 +576,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_ponder_hit(ponder_hit);
     search.set_chess960(chess960);
     search.set_multipv(multipv);
+    search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
     let best = search.run_in_current_generation(board, &mut out);
     let pv = search.pv().to_vec();

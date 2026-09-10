@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 
-use cadence_engine::{bench, perft, uci};
+use cadence_engine::{bench, perft, tune, uci};
 
 /// The subcommand table. `cadence` with no subcommand speaks UCI on stdin.
 const SUBCOMMANDS: &[(&str, &str)] = &[
@@ -19,6 +19,10 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
         "bench",
         "the fixed-depth search over the checked-in position set; the last line is the node count",
     ),
+    (
+        "spsa",
+        "print the tuner's input block: one line per search constant a tune may move",
+    ),
 ];
 
 fn main() -> ExitCode {
@@ -29,6 +33,7 @@ fn main() -> ExitCode {
         // Each subcommand is one arm here and one row in SUBCOMMANDS.
         Some("perft") => perft::run(&args[2..]),
         Some("bench") => bench::run(&args[2..]),
+        Some("spsa") => tune::run(&args[2..]),
         Some(name) => {
             eprintln!("cadence: unknown subcommand `{name}`");
             usage();
