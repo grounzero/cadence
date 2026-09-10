@@ -26,7 +26,8 @@ mod pruning;
 mod pv;
 
 pub use depth::{
-    REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, reduction,
+    REDUCTION_INDEX, extension, history_reduction, iir_reduction, lmr_reduction, null_reduction,
+    reduction,
 };
 pub use limits::Limits;
 pub use pruning::{
@@ -203,6 +204,10 @@ pub struct Search<'a> {
     /// other way.
     reverse_futility_cutoffs: u64,
     reverse_futility_refused_window: u64,
+    /// How often a node lost a ply because its table probe named no move. It is the population
+    /// the rule acts on rather than what the rule saved, and the saving is the node count
+    /// itself, which is why one counter is enough here where the two rules above want three.
+    iir_nodes: u64,
     /// How many check evasion lists the quiescence search prepared, and how many of those the
     /// sort moved a new move to the head of. The first is the shape [`Search::futility_nodes`]
     /// has and it is here for the same reason: what the ordering is worth is no longer visible
@@ -283,6 +288,7 @@ impl<'a> Search<'a> {
             lmp_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
+            iir_nodes: 0,
             evasion_lists: 0,
             evasion_lists_reordered: 0,
             iterations: Vec::new(),
@@ -348,6 +354,7 @@ impl<'a> Search<'a> {
         self.lmp_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
+        self.iir_nodes = 0;
         self.evasion_lists = 0;
         self.evasion_lists_reordered = 0;
         self.iterations.clear();
@@ -653,6 +660,11 @@ impl<'a> Search<'a> {
             return score;
         }
 
+        // A node the table named no move for is searched shallower, in the sixth preamble
+        // position and last above the move loop. The shortened depth is the node's from here
+        // on, so the margin, the count and every child read it rather than the depth asked for.
+        let depth = self.iir_depth(depth, tt_move);
+
         let mut legal = generate_legal(board);
         if legal.is_empty() {
             return if in_check { mated_in(ply) } else { DRAW };
@@ -832,6 +844,16 @@ impl<'a> Search<'a> {
     /// The transposition table at an interior node: the move a hit named, and the score to
     /// return where the stored bound answers this node's question outright. The move comes back
     /// whatever the depth says, which is why the two halves come back separately.
+    /// The depth this node is actually searched at, once the internal iterative reduction has
+    /// been read. It is a method rather than the free function alone so that the counter is
+    /// written exactly where the rule runs, which is the extraction the line-count gate asked
+    /// for rather than a shape chosen for its own sake.
+    fn iir_depth(&mut self, depth: u32, tt_move: Move) -> u32 {
+        let iir = iir_reduction(depth, tt_move != Move::NULL);
+        self.iir_nodes += u64::from(iir > 0);
+        depth - iir
+    }
+
     fn probe(
         &self,
         board: &Board,

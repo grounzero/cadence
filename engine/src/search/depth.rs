@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! How much less deeply a move is searched than its siblings. Everything here can be undone by
-//! a re-search, which is what separates it from the rules in `pruning`.
+//! How much less deeply a move is searched than its siblings, and the one rule that shortens
+//! the node itself. Every per-move rule here can be undone by a re-search, which is what
+//! separates them from `pruning`; [`iir_reduction`] is the exception and says so.
 
 use cadence_core::Move;
 
@@ -18,6 +19,25 @@ const EXTEND_WITHIN: usize = 2;
 #[must_use]
 pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
+}
+
+/// The shallowest depth at which a node with no table move is searched shallower. Below it the
+/// node is cheap enough that the iteration this rule stands in for costs more than it saves.
+const IIR_DEPTH: u32 = 4;
+
+/// How many plies that node loses. One rather than two because the rule fires on the absence of
+/// a move rather than on evidence about one, which is the weaker premise of the two.
+const IIR_REDUCTION: u32 = 1;
+
+/// How many plies a node searched at `depth` loses when its table probe named no move. **It is
+/// the one rule in this module no re-search undoes**, because the node returns a score for the
+/// shortened depth and stores it at that depth.
+#[must_use]
+pub fn iir_reduction(depth: u32, has_tt_move: bool) -> u32 {
+    if has_tt_move || depth < IIR_DEPTH {
+        return 0;
+    }
+    IIR_REDUCTION
 }
 
 /// How many plies past the one the move would have cost a null-move verification is shortened

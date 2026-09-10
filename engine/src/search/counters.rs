@@ -87,6 +87,14 @@ impl Search<'_> {
         self.lmp_nodes
     }
 
+    /// How often a node lost a ply because its table probe named no move. There is one counter
+    /// and not three because what the rule saves is the node count itself, so a second figure
+    /// would be the first one restated.
+    #[must_use]
+    pub fn iir_nodes(&self) -> u64 {
+        self.iir_nodes
+    }
+
     /// How many observations this search folded into the correction table,
     /// and at how many nodes it read a non-zero correction back.
     #[must_use]
