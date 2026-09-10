@@ -154,15 +154,13 @@ fn the_spsa_block_and_the_uci_declaration_agree() {
     let (block, code) = spsa(&[]);
     assert_eq!(code, Some(0));
     let options = declared();
-    let lines: Vec<&str> = block.lines().collect();
+    // Split exactly as the tuner's form validator splits, on the newline alone, so that a final
+    // newline shows up as the empty piece that validator refuses as a malformed parameter.
+    let lines: Vec<&str> = block.split('\n').collect();
     assert_eq!(
         lines.len(),
         PARAMS.len(),
-        "one line per parameter: {block:?}"
-    );
-    assert!(
-        block.ends_with('\n') && !block.ends_with("\n\n"),
-        "a blank line in the block is a parameter the tuner cannot parse: {block:?}"
+        "one piece per parameter and no empty piece, a final newline included: {block:?}"
     );
     for line in lines {
         let fields: Vec<&str> = line.split(',').map(str::trim).collect();
