@@ -8,6 +8,7 @@ use cadence_core::{Move, PieceType};
 
 use super::depth::REDUCTION_INDEX;
 use crate::score::{self, Score};
+use crate::tune::{MILLI, Tunable, Tunables};
 
 /// Whether the side to move has any piece beside its pawns and king. The null move's zugzwang
 /// guard, and the one condition there that is a chess claim rather than a search claim: passing
@@ -44,21 +45,20 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
 /// there rather than because it is unsafe there.
 const LMP_DEPTH: u32 = 8;
 
-/// What the count of moves a node searches grows by: the square of the remaining depth over
-/// this. **The square rather than the slope, and one number rather than two.** The count has to
-/// grow faster than the move list does or the rule turns off by itself at the depths where the
-/// list is longest, which a linear count does; the base is [`REDUCTION_INDEX`] and is not a
-/// parameter, so the shape arrives with a single number to tune, as [`FUTILITY_MARGIN`]'s slope
-/// does.
-const LMP_DIVISOR: u32 = 2;
+/// What the count of moves a node searches grows by, in thousandths: the square of the remaining
+/// depth over this. Thousandths so that a tune can move it by less than a whole divisor, and at
+/// two it divides exactly as the integer it replaced did.
+pub(crate) const LMP_DIVISOR: i32 = 2 * MILLI;
 
 /// How many moves a node at `depth` searches before the quiet moves behind them are given up.
-/// Total for [`futility_margin`]'s reason, and it cannot overflow: `depth` is bounded by
-/// [`LMP_DEPTH`] at the one place that reads it against a node, and the product is taken in
-/// `u32`.
+/// Total for [`futility_margin`]'s reason: the products saturate and the divisor is at least one.
 #[must_use]
-pub fn lmp_count(depth: u32) -> usize {
-    REDUCTION_INDEX + (depth.saturating_mul(depth) / LMP_DIVISOR) as usize
+pub fn lmp_count(tunables: &Tunables, depth: u32) -> usize {
+    let divisor = u64::try_from(tunables.get(Tunable::LmpDivisor)).map_or(1, |d| d.max(1));
+    let scaled = u64::from(depth)
+        .saturating_mul(u64::from(depth))
+        .saturating_mul(u64::from(MILLI.unsigned_abs()));
+    REDUCTION_INDEX.saturating_add(usize::try_from(scaled / divisor).unwrap_or(usize::MAX))
 }
 
 /// The index from which this node gives up its quiet moves, or `None` where the rule cannot
@@ -68,8 +68,8 @@ pub fn lmp_count(depth: u32) -> usize {
 /// which is the exemption this rule's asymmetry bears on hardest: [`reduction`] refuses the
 /// same node and can afford to be wrong, because a reduced search that beats alpha is re-run.
 #[must_use]
-pub fn lmp_index(in_check: bool, depth: u32, moves: usize) -> Option<usize> {
-    let count = lmp_count(depth);
+pub fn lmp_index(tunables: &Tunables, in_check: bool, depth: u32, moves: usize) -> Option<usize> {
+    let count = lmp_count(tunables, depth);
     (!in_check && depth <= LMP_DEPTH && moves > count).then_some(count)
 }
 
@@ -91,30 +91,31 @@ const FUTILITY_DEPTH: u32 = 3;
 /// What the margin grows by per ply of remaining depth, in centipawns. **Linear rather than
 /// squared because the evidence is linear**: the material a search can win grows with the moves
 /// it has, not with their square.
-const FUTILITY_MARGIN: Score = 150;
+pub(crate) const FUTILITY_MARGIN: Score = 150;
 
 /// How far below alpha a node's static evaluation may sit and still have its quiet moves
-/// searched: [`FUTILITY_MARGIN`] per ply of `depth`.
+/// searched: the futility margin `tunables` holds, per ply of `depth`.
 #[must_use]
-pub fn futility_margin(depth: u32) -> Score {
+pub fn futility_margin(tunables: &Tunables, depth: u32) -> Score {
     // Saturating, and total for that reason: no caller passes a depth outside the band, and a
     // function that is only right for the arguments something happens to hand it is one a gate
     // cannot pin. [`futile_node`] adds it to the evaluation with a saturating add for the same
     // reason, so the pair cannot overflow at any depth at all.
-    FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
+    let per_ply = tunables.get(Tunable::FutilityMargin);
+    per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
 /// Whether a node may skip quiet moves for the margin: its static evaluation plus
 /// [`futility_margin`] still does not reach `alpha`. Alpha on the mate scale refuses it, and in
 /// check `evals[ply]` is `None`, so the rule cannot read anything and cannot fire.
 #[must_use]
-pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
+pub fn futile_node(tunables: &Tunables, eval: Option<Score>, depth: u32, alpha: Score) -> bool {
     let Some(eval) = eval else {
         return false;
     };
     depth <= FUTILITY_DEPTH
         && !score::is_mate(alpha)
-        && eval.saturating_add(futility_margin(depth)) <= alpha
+        && eval.saturating_add(futility_margin(tunables, depth)) <= alpha
 }
 
 /// Whether the move at `index` of a node [`futile_node`] admitted is a candidate to be skipped
@@ -128,21 +129,27 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
 /// What the margin a node is returned on grows by per ply of remaining depth, in centipawns.
 /// **It is the only thing bounding this rule**, because there is no depth limit here, so it is
 /// chosen where it bounds as well as where it sizes.
-const REVERSE_FUTILITY_MARGIN: Score = 150;
+pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 150;
 
 /// How far above `beta` a node's static evaluation must stand before the node is returned
-/// without being searched: [`REVERSE_FUTILITY_MARGIN`] per ply of `depth`.
+/// without being searched: the reverse futility margin `tunables` holds, per ply of `depth`.
 #[must_use]
-pub fn reverse_futility_margin(depth: u32) -> Score {
+pub fn reverse_futility_margin(tunables: &Tunables, depth: u32) -> Score {
     // Saturating, and total for that reason, like [`futility_margin`].
-    REVERSE_FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
+    let per_ply = tunables.get(Tunable::ReverseFutilityMargin);
+    per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
 /// The bound a node may be returned at without being searched at all: its static evaluation
 /// less [`reverse_futility_margin`], where that still stands at or above `beta`. `None` is a
 /// node that has to be searched.
 #[must_use]
-pub fn reverse_futile(eval: Option<Score>, depth: u32, beta: Score) -> Option<Score> {
-    let bound = eval?.saturating_sub(reverse_futility_margin(depth));
+pub fn reverse_futile(
+    tunables: &Tunables,
+    eval: Option<Score>,
+    depth: u32,
+    beta: Score,
+) -> Option<Score> {
+    let bound = eval?.saturating_sub(reverse_futility_margin(tunables, depth));
     (!score::is_mate(beta) && bound >= beta).then_some(bound)
 }

@@ -40,7 +40,12 @@ use cadence_engine::score::{MATE_IN_MAX_PLY, Score};
 use cadence_engine::search::{
     Limits, REDUCTION_INDEX, lmp_count, lmp_index, lmp_skips, lmr_reduction,
 };
+use cadence_engine::tune::Tunables;
 use support::table;
+
+/// The compiled-in values of the constants a tune may move, which is what every gate here
+/// pins.
+const DEFAULT: &Tunables = &Tunables::DEFAULT;
 
 /// The depth the set gate below searches to.
 ///
@@ -98,7 +103,7 @@ fn the_count_is_what_gives_the_move_up() {
         .expect("the start position has a quiet move");
     let killers = [Move::NULL; 2];
     for depth in 1..=8 {
-        let count = lmp_count(depth);
+        let count = lmp_count(DEFAULT, depth);
         let from = Some(count);
         assert!(
             lmp_skips(from, quiet, killers, count),
@@ -127,7 +132,7 @@ fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
         .expect("the start position has a quiet move");
     for depth in 1..=32 {
         assert!(
-            lmp_count(depth) >= REDUCTION_INDEX,
+            lmp_count(DEFAULT, depth) >= REDUCTION_INDEX,
             "depth {depth}: the count fell inside the reduction's exempt prefix"
         );
         for index in 0..REDUCTION_INDEX {
@@ -137,7 +142,12 @@ fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
                 "depth {depth} index {index}: the reduction fired inside its own prefix"
             );
             assert!(
-                !lmp_skips(lmp_index(false, depth, 64), quiet, [Move::NULL; 2], index),
+                !lmp_skips(
+                    lmp_index(DEFAULT, false, depth, 64),
+                    quiet,
+                    [Move::NULL; 2],
+                    index
+                ),
                 "depth {depth} index {index}: given up inside the reduction's prefix"
             );
         }
@@ -148,17 +158,17 @@ fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
 /// search under it searches more moves before giving the rest up.
 #[test]
 fn the_count_is_the_documented_count() {
-    assert_eq!(lmp_count(1), 3);
-    assert_eq!(lmp_count(2), 5);
-    assert_eq!(lmp_count(3), 7);
-    assert_eq!(lmp_count(4), 11);
-    assert_eq!(lmp_count(5), 15);
-    assert_eq!(lmp_count(6), 21);
-    assert_eq!(lmp_count(7), 27);
-    assert_eq!(lmp_count(8), 35);
+    assert_eq!(lmp_count(DEFAULT, 1), 3);
+    assert_eq!(lmp_count(DEFAULT, 2), 5);
+    assert_eq!(lmp_count(DEFAULT, 3), 7);
+    assert_eq!(lmp_count(DEFAULT, 4), 11);
+    assert_eq!(lmp_count(DEFAULT, 5), 15);
+    assert_eq!(lmp_count(DEFAULT, 6), 21);
+    assert_eq!(lmp_count(DEFAULT, 7), 27);
+    assert_eq!(lmp_count(DEFAULT, 8), 35);
     for depth in 1..64 {
         assert!(
-            lmp_count(depth + 1) > lmp_count(depth),
+            lmp_count(DEFAULT, depth + 1) > lmp_count(DEFAULT, depth),
             "depth {depth}: the count did not grow"
         );
     }
@@ -170,10 +180,10 @@ fn the_count_is_the_documented_count() {
 /// above the limit, so only the limit can be doing the refusing.
 #[test]
 fn no_pruning_past_the_depth_limit() {
-    assert!(lmp_index(false, 8, 256).is_some(), "depth eight");
+    assert!(lmp_index(DEFAULT, false, 8, 256).is_some(), "depth eight");
     for depth in 9..64 {
         assert!(
-            lmp_index(false, depth, 256).is_none(),
+            lmp_index(DEFAULT, false, depth, 256).is_none(),
             "depth {depth}: the node was admitted past the limit"
         );
     }
@@ -187,7 +197,7 @@ fn a_node_in_check_never_gives_a_move_up() {
     for depth in 0..12 {
         for moves in [1, 8, 40, 256] {
             assert!(
-                lmp_index(true, depth, moves).is_none(),
+                lmp_index(DEFAULT, true, depth, moves).is_none(),
                 "depth {depth} with {moves} moves"
             );
         }
@@ -199,13 +209,13 @@ fn a_node_in_check_never_gives_a_move_up() {
 #[test]
 fn a_node_inside_the_count_is_not_admitted() {
     for depth in 1..=8 {
-        let count = lmp_count(depth);
+        let count = lmp_count(DEFAULT, depth);
         assert!(
-            lmp_index(false, depth, count).is_none(),
+            lmp_index(DEFAULT, false, depth, count).is_none(),
             "depth {depth}: a node of exactly the count was admitted"
         );
         assert!(
-            lmp_index(false, depth, count + 1).is_some(),
+            lmp_index(DEFAULT, false, depth, count + 1).is_some(),
             "depth {depth}: a node one past the count was refused"
         );
     }
@@ -327,9 +337,9 @@ fn a_quiet_check_survives_the_count_and_the_mate_is_found() {
         .position(|m| board(QUIET_MATE).gives_check(m) && !m.is_noisy())
         .expect("the gate's own position has a quiet check");
     assert!(
-        mate >= lmp_count(3),
+        mate >= lmp_count(DEFAULT, 3),
         "the mating move sorts at {mate}, inside the count of {}",
-        lmp_count(3)
+        lmp_count(DEFAULT, 3)
     );
 
     let (score, nodes, _, kept) = one_node(QUIET_MATE, 3, 0);

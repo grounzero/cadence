@@ -18,6 +18,7 @@ use crate::score::{self, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 use crate::time::{self, Budget};
 use crate::tt::{Bound, Table};
+use crate::tune::Tunables;
 
 mod counters;
 mod depth;
@@ -29,6 +30,7 @@ pub use depth::{
     REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, reduction,
 };
 pub use limits::Limits;
+pub(crate) use pruning::{FUTILITY_MARGIN, LMP_DIVISOR, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
     futile_node, futility_margin, futility_skips, has_non_pawn_material, improving, lmp_count,
     lmp_index, lmp_skips, reverse_futile, reverse_futility_margin,
@@ -94,6 +96,10 @@ pub struct Search<'a> {
     tt: &'a Table,
     /// Spells castling moves in `info` lines the way the GUI expects.
     chess960: bool,
+    /// The values the pruning rules read for the constants a tune may move. Compiled-in unless
+    /// the UCI session set others, which is why `bench`, building its own searches, never sees
+    /// a setting.
+    tunables: Tunables,
     nodes: u64,
     /// Every worker's slot, and this worker's index into it, while a group is searching.
     /// `None` on the single-thread path, which is where `bench` runs and where the exact
@@ -247,6 +253,7 @@ impl<'a> Search<'a> {
             ponder_hit: None,
             tt,
             chess960: false,
+            tunables: Tunables::DEFAULT,
             nodes: 0,
             shared_nodes: None,
             worker_index: 0,
@@ -307,6 +314,11 @@ impl<'a> Search<'a> {
     /// Spell castling moves in `info` lines per `UCI_Chess960`.
     pub fn set_chess960(&mut self, on: bool) {
         self.chess960 = on;
+    }
+
+    /// Search with `tunables` in place of the compiled-in values, from the next run on.
+    pub fn set_tunables(&mut self, tunables: Tunables) {
+        self.tunables = tunables;
     }
 
     /// Report `n` principal variations, clamped to at least one. A root with fewer moves than
@@ -672,14 +684,14 @@ impl<'a> Search<'a> {
         // below it instead: nothing between the two writes what the test reads, and this rule
         // returns no score of its own, so the sequence is unaffected and what the placement
         // saves is the test at every node the null move cuts.
-        let futile = futile_node(self.evals[ply], depth, alpha);
+        let futile = futile_node(&self.tunables, self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
 
         // The count, read once against the list this node actually holds, because the rule is
         // off at a node the count already admits whole. It sits beside the margin and not above
         // it: the two act on one population and overlap over 43% of it, and whichever is asked
         // first keeps the moves it takes.
-        let give_up = lmp_index(in_check, depth, legal.len());
+        let give_up = lmp_index(&self.tunables, in_check, depth, legal.len());
         self.lmp_nodes += u64::from(give_up.is_some());
 
         let original_alpha = alpha;
@@ -946,7 +958,7 @@ impl<'a> Search<'a> {
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let bound = reverse_futile(self.evals[ply], depth, beta)?;
+        let bound = reverse_futile(&self.tunables, self.evals[ply], depth, beta)?;
         if board.halfmove_clock() >= 100 {
             return None;
         }

@@ -17,5 +17,6 @@ pub mod search;
 pub mod see;
 pub mod time;
 pub mod tt;
+pub mod tune;
 pub mod uci;
 pub mod version;

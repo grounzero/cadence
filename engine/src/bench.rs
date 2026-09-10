@@ -16,6 +16,7 @@ use cadence_core::position::Board;
 use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::Table;
+use crate::tune::Tunables;
 
 /// The transposition table size the bench runs with, in mebibytes. Sixteen, which is what the
 /// STC preset passes and what the engine defaults to today.
@@ -78,6 +79,9 @@ pub fn bench() -> Report {
         let mut pos = Position::new(board);
         let mut search = Search::new(&stop, &tt);
         search.set_limits(Limits::depth(DEPTH));
+        // The compiled-in values and never a setting, which is the separation `HASH_MB` makes for
+        // the table: a tunable that reached here would make the count depend on an option.
+        search.set_tunables(Tunables::DEFAULT);
         let best = search.run(&mut pos, &mut std::io::sink());
         nodes += search.nodes();
         lines.push(Line {
