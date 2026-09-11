@@ -217,18 +217,18 @@ pub fn find(name: &str) -> Option<&'static Param> {
     PARAMS.iter().find(|p| p.name.eq_ignore_ascii_case(name))
 }
 
-/// The subcommand: print the tuner's input block, one line per parameter and nothing else, so
-/// it can be pasted as it stands. Takes no arguments, because the block is the table.
+/// The subcommand: print the tuner's input block, one line per parameter and nothing else, not
+/// even a final newline, because the tuner's form reads the empty piece after one as a
+/// malformed parameter. Takes no arguments, because the block is the table.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     if !args.is_empty() {
         eprintln!("cadence spsa takes no arguments: the parameters are declared in the source");
         return ExitCode::from(2);
     }
+    let block: Vec<String> = PARAMS.iter().map(Param::spsa_line).collect();
     let mut out = std::io::stdout().lock();
-    for param in PARAMS {
-        let _ = writeln!(out, "{}", param.spsa_line());
-    }
+    let _ = write!(out, "{}", block.join("\n"));
     let _ = out.flush();
     ExitCode::SUCCESS
 }
