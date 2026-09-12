@@ -30,7 +30,7 @@ pub use depth::{
     REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, reduction,
 };
 pub use limits::Limits;
-pub(crate) use pruning::{FUTILITY_MARGIN, LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
+pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
     futile_node, futility_margin, futility_skips, has_non_pawn_material, improving, lmp_count,
     lmp_index, lmp_skips, reverse_futile, reverse_futility_margin,
@@ -684,7 +684,7 @@ impl<'a> Search<'a> {
         // below it instead: nothing between the two writes what the test reads, and this rule
         // returns no score of its own, so the sequence is unaffected and what the placement
         // saves is the test at every node the null move cuts.
-        let futile = futile_node(&self.tunables, self.evals[ply], depth, alpha);
+        let futile = futile_node(self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
 
         // The count, read once against the list this node actually holds, because the rule is

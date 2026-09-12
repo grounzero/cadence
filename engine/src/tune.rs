@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::search::{FUTILITY_MARGIN, LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
+use crate::search::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 
 /// Stored units per declared unit of a float parameter, and the three decimal places one is
 /// spelled with. The search reads integers only, so a float is converted once, here, on the way
@@ -19,7 +19,6 @@ pub const MILLI: i32 = 1000;
 /// [`Tunables`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tunable {
-    FutilityMargin,
     ReverseFutilityMargin,
     LmpMultiplier,
 }
@@ -52,16 +51,6 @@ pub struct Param {
 /// Every tunable constant, in [`Tunable`] order. A row is the whole of a parameter's
 /// declaration, so the UCI option and the tune input cannot disagree about it.
 pub const PARAMS: &[Param] = &[
-    Param {
-        tunable: Tunable::FutilityMargin,
-        name: "futility_margin",
-        kind: Kind::Int,
-        default: FUTILITY_MARGIN,
-        min: 50,
-        max: 300,
-        c_end: 12.5,
-        r_end: 0.002,
-    },
     Param {
         tunable: Tunable::ReverseFutilityMargin,
         name: "reverse_futility_margin",

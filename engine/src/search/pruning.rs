@@ -94,31 +94,30 @@ const FUTILITY_DEPTH: u32 = 3;
 /// What the margin grows by per ply of remaining depth, in centipawns. **Linear rather than
 /// squared because the evidence is linear**: the material a search can win grows with the moves
 /// it has, not with their square.
-pub(crate) const FUTILITY_MARGIN: Score = 150;
+const FUTILITY_MARGIN: Score = 150;
 
 /// How far below alpha a node's static evaluation may sit and still have its quiet moves
-/// searched: the futility margin `tunables` holds, per ply of `depth`.
+/// searched: [`FUTILITY_MARGIN`] per ply of `depth`.
 #[must_use]
-pub fn futility_margin(tunables: &Tunables, depth: u32) -> Score {
+pub fn futility_margin(depth: u32) -> Score {
     // Saturating, and total for that reason: no caller passes a depth outside the band, and a
     // function that is only right for the arguments something happens to hand it is one a gate
     // cannot pin. [`futile_node`] adds it to the evaluation with a saturating add for the same
     // reason, so the pair cannot overflow at any depth at all.
-    let per_ply = tunables.get(Tunable::FutilityMargin);
-    per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
+    FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
 /// Whether a node may skip quiet moves for the margin: its static evaluation plus
 /// [`futility_margin`] still does not reach `alpha`. Alpha on the mate scale refuses it, and in
 /// check `evals[ply]` is `None`, so the rule cannot read anything and cannot fire.
 #[must_use]
-pub fn futile_node(tunables: &Tunables, eval: Option<Score>, depth: u32, alpha: Score) -> bool {
+pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
     let Some(eval) = eval else {
         return false;
     };
     depth <= FUTILITY_DEPTH
         && !score::is_mate(alpha)
-        && eval.saturating_add(futility_margin(tunables, depth)) <= alpha
+        && eval.saturating_add(futility_margin(depth)) <= alpha
 }
 
 /// Whether the move at `index` of a node [`futile_node`] admitted is a candidate to be skipped
