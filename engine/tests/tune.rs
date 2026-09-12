@@ -212,6 +212,38 @@ fn the_spsa_subcommand_refuses_arguments() {
     assert!(out.is_empty(), "printed a block anyway: {out:?}");
 }
 
+/// **A float's bounds live in the block and nowhere else**, which is the half of FINDINGS F116
+/// that can be gated here. A `type string` declaration carries no minimum and no maximum, so the
+/// drift gate above has nothing to compare for a float, and the only place a reader can see the
+/// range is the line `cadence spsa` prints.
+///
+/// What this cannot gate is a block edited by hand after it is printed: the engine clamps such a
+/// value in silence, and nothing in this tree sees the form. That half is a creation step, and
+/// F116 carries it.
+#[test]
+fn a_floats_bounds_are_in_the_block_because_its_declaration_has_none() {
+    for p in PARAMS.iter().filter(|p| p.kind == Kind::Float) {
+        let declared = p.uci_option();
+        let toks: Vec<&str> = declared.split_whitespace().collect();
+        assert!(
+            !toks.contains(&"min") && !toks.contains(&"max"),
+            "a string option cannot declare bounds: {declared}"
+        );
+        let line = p.spsa_line();
+        let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+        assert_eq!(
+            fields[3],
+            p.spell(p.min),
+            "the block's minimum is the table's: {line}"
+        );
+        assert_eq!(
+            fields[4],
+            p.spell(p.max),
+            "the block's maximum is the table's: {line}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What a value does on the way in
 // ---------------------------------------------------------------------------
@@ -220,23 +252,23 @@ fn the_spsa_subcommand_refuses_arguments() {
 /// and a value outside the range is clamped into it rather than refused.
 #[test]
 fn a_float_takes_every_spelling_a_tuner_sends() {
-    let p = param(Tunable::LmpDivisor);
+    let p = param(Tunable::LmpMultiplier);
     assert_eq!(p.kind, Kind::Float);
     for (text, stored) in [
-        ("2.5", 2500),
-        ("2.5000000000000004", 2500),
-        ("2.4999999999999996", 2500),
-        ("3e0", 3000),
-        ("3.5E+00", 3500),
-        ("+2.25", 2250),
-        (" 2.0 ", 2000),
-        ("2", 2000),
-        ("2.0005", 2001),
-        ("0.5", 1000),
-        ("-3", 1000),
-        ("1e-05", 1000),
-        ("7", 6000),
-        ("1e300", 6000),
+        ("0.5", 500),
+        ("0.5000000000000004", 500),
+        ("0.4999999999999996", 500),
+        ("1e0", 1000),
+        ("1.5E+00", 1500),
+        ("+0.25", 250),
+        (" 0.5 ", 500),
+        ("1", 1000),
+        ("0.5006", 501),
+        ("0", 0),
+        ("-3", 0),
+        ("1e-05", 0),
+        ("3", 2000),
+        ("1e300", 2000),
     ] {
         assert_eq!(p.parse(text), Some(stored), "`{text}`");
     }
@@ -371,10 +403,11 @@ fn every_option_at_its_default_is_the_untouched_search() {
     assert_eq!(strip(&untouched), strip(&asked));
 }
 
-/// The divisor is held in thousandths, and at its default it divides exactly as the integer it
-/// replaced did, at every depth and not only the ones the rule reads.
+/// **The identity the reparameterisation claims.** At its default the multiplier gives the count
+/// the divisor gave, at every depth and not only the ones the rule reads: `3 + d * d * 500 /
+/// 1000` is `3 + d * d / 2`, so the tree cannot have moved.
 #[test]
-fn the_default_divisor_is_the_integer_it_replaced() {
+fn the_default_multiplier_is_the_divisor_it_replaced() {
     for depth in 0..=u32::from(u8::MAX) {
         assert_eq!(
             lmp_count(&Tunables::DEFAULT, depth),

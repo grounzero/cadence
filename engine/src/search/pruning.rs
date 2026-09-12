@@ -45,20 +45,23 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
 /// there rather than because it is unsafe there.
 const LMP_DEPTH: u32 = 8;
 
-/// What the count of moves a node searches grows by, in thousandths: the square of the remaining
-/// depth over this. Thousandths so that a tune can move it by less than a whole divisor, and at
-/// two it divides exactly as the integer it replaced did.
-pub(crate) const LMP_DIVISOR: i32 = 2 * MILLI;
+/// What the count of moves a node searches grows by, in thousandths of a move per ply squared:
+/// the square of the remaining depth times this. **The weak end is the large one**: at zero the
+/// count is [`REDUCTION_INDEX`] and every quiet move behind the third is given up, while at two
+/// the count outruns the move lists and the rule reaches almost nothing.
+pub(crate) const LMP_MULTIPLIER: i32 = MILLI / 2;
 
 /// How many moves a node at `depth` searches before the quiet moves behind them are given up.
-/// Total for [`futility_margin`]'s reason: the products saturate and the divisor is at least one.
+/// Total for [`futility_margin`]'s reason: the products saturate, and a multiplier of zero is a
+/// count of [`REDUCTION_INDEX`] rather than a division by zero.
 #[must_use]
 pub fn lmp_count(tunables: &Tunables, depth: u32) -> usize {
-    let divisor = u64::try_from(tunables.get(Tunable::LmpDivisor)).map_or(1, |d| d.max(1));
+    let multiplier = u64::try_from(tunables.get(Tunable::LmpMultiplier)).unwrap_or(0);
     let scaled = u64::from(depth)
         .saturating_mul(u64::from(depth))
-        .saturating_mul(u64::from(MILLI.unsigned_abs()));
-    REDUCTION_INDEX.saturating_add(usize::try_from(scaled / divisor).unwrap_or(usize::MAX))
+        .saturating_mul(multiplier);
+    let counted = scaled / u64::from(MILLI.unsigned_abs());
+    REDUCTION_INDEX.saturating_add(usize::try_from(counted).unwrap_or(usize::MAX))
 }
 
 /// The index from which this node gives up its quiet moves, or `None` where the rule cannot
