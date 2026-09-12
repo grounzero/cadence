@@ -8,7 +8,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::search::{FUTILITY_MARGIN, LMP_DIVISOR, REVERSE_FUTILITY_MARGIN};
+use crate::search::{FUTILITY_MARGIN, LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 
 /// Stored units per declared unit of a float parameter, and the three decimal places one is
 /// spelled with. The search reads integers only, so a float is converted once, here, on the way
@@ -21,7 +21,7 @@ pub const MILLI: i32 = 1000;
 pub enum Tunable {
     FutilityMargin,
     ReverseFutilityMargin,
-    LmpDivisor,
+    LmpMultiplier,
 }
 
 /// How a parameter is spelled to a GUI and to the tuner.
@@ -73,13 +73,13 @@ pub const PARAMS: &[Param] = &[
         r_end: 0.002,
     },
     Param {
-        tunable: Tunable::LmpDivisor,
-        name: "lmp_divisor",
+        tunable: Tunable::LmpMultiplier,
+        name: "lmp_multiplier",
         kind: Kind::Float,
-        default: LMP_DIVISOR,
-        min: MILLI,
-        max: 6 * MILLI,
-        c_end: 0.25,
+        default: LMP_MULTIPLIER,
+        min: 0,
+        max: 2 * MILLI,
+        c_end: 0.1,
         r_end: 0.002,
     },
 ];

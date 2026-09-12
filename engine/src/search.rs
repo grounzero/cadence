@@ -30,7 +30,7 @@ pub use depth::{
     REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, reduction,
 };
 pub use limits::Limits;
-pub(crate) use pruning::{FUTILITY_MARGIN, LMP_DIVISOR, REVERSE_FUTILITY_MARGIN};
+pub(crate) use pruning::{FUTILITY_MARGIN, LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
     futile_node, futility_margin, futility_skips, has_non_pawn_material, improving, lmp_count,
     lmp_index, lmp_skips, reverse_futile, reverse_futility_margin,
