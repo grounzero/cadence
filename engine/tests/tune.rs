@@ -284,7 +284,7 @@ fn a_float_takes_every_spelling_a_tuner_sends() {
 /// An integer takes an integer and nothing else, which is what a tuner sends for one.
 #[test]
 fn an_integer_takes_an_integer() {
-    let p = param(Tunable::FutilityMargin);
+    let p = param(Tunable::ReverseFutilityMargin);
     assert_eq!(p.kind, Kind::Int);
     assert_eq!(p.parse("150"), Some(150));
     assert_eq!(p.parse(" 151 "), Some(151));
