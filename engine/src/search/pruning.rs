@@ -49,7 +49,7 @@ const LMP_DEPTH: u32 = 8;
 /// the square of the remaining depth times this. **The weak end is the large one**: at zero the
 /// count is [`REDUCTION_INDEX`] and every quiet move behind the third is given up, while at two
 /// the count outruns the move lists and the rule reaches almost nothing.
-pub(crate) const LMP_MULTIPLIER: i32 = MILLI / 2;
+pub(crate) const LMP_MULTIPLIER: i32 = 912;
 
 /// How many moves a node at `depth` searches before the quiet moves behind them are given up.
 /// Total for [`futility_margin`]'s reason: the products saturate, and a multiplier of zero is a
@@ -131,7 +131,7 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
 /// What the margin a node is returned on grows by per ply of remaining depth, in centipawns.
 /// **It is the only thing bounding this rule**, because there is no depth limit here, so it is
 /// chosen where it bounds as well as where it sizes.
-pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 150;
+pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 72;
 
 /// How far above `beta` a node's static evaluation must stand before the node is returned
 /// without being searched: the reverse futility margin `tunables` holds, per ply of `depth`.

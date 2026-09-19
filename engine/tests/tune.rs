@@ -403,14 +403,21 @@ fn every_option_at_its_default_is_the_untouched_search() {
     assert_eq!(strip(&untouched), strip(&asked));
 }
 
-/// **The identity the reparameterisation claims.** At its default the multiplier gives the count
-/// the divisor gave, at every depth and not only the ones the rule reads: `3 + d * d * 500 /
-/// 1000` is `3 + d * d / 2`, so the tree cannot have moved.
+/// **The identity the reparameterisation claimed**, which is a claim about the formula and not
+/// about the current default: at a multiplier of 0.500, `3 + d * d * 500 / 1000` is
+/// `3 + d * d / 2` at every depth, which is what said the change of 2026-09-12 moved no tree.
+///
+/// **It is asserted at 0.500 explicitly because the default has moved.** The tune of 2026-09-18
+/// left it at 0.912, and `tests/late_move_pruning.rs` is what pins the counts the engine now
+/// searches with.
 #[test]
-fn the_default_multiplier_is_the_divisor_it_replaced() {
+fn the_multiplier_at_a_half_is_the_divisor_it_replaced() {
+    let half = param(Tunable::LmpMultiplier);
+    let mut tunables = Tunables::DEFAULT;
+    half.set(&mut tunables, half.parse("0.500").expect("a half parses"));
     for depth in 0..=u32::from(u8::MAX) {
         assert_eq!(
-            lmp_count(&Tunables::DEFAULT, depth),
+            lmp_count(&tunables, depth),
             REDUCTION_INDEX + (depth * depth / 2) as usize,
             "depth {depth}"
         );
