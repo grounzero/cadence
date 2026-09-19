@@ -33,10 +33,17 @@ use cadence_engine::picker::sort_from;
 use cadence_engine::search::{Limits, history_reduction, lmr_reduction};
 use support::table;
 
-/// The depth the ordering gate runs at. Six, like the reduction gates:
-/// deep enough that quiet cutoffs are plentiful and the table has been
-/// written to well before the last iteration sorts a list.
-const ORDER_DEPTH: u32 = 6;
+/// The depth the ordering gate runs at. **Seven from 2026-09-18, and six
+/// before it**, deep enough that quiet cutoffs are plentiful and the table
+/// has been written to well before the last iteration sorts a list.
+///
+/// **The raise is a measurement and not a convenience.** Run 1's tune left a
+/// reverse futility margin of 72 centipawns per ply, which returns nodes
+/// before their quiet moves are ever searched, so a cutoff that would credit
+/// the table does not happen. Measured on Kiwipete at both trees: the first
+/// credited root quiet move sits at depth five before the tune and at depth
+/// seven after it, with depths five and six crediting nothing at all.
+const ORDER_DEPTH: u32 = 7;
 
 /// The depth the modulation gate runs at, and it is deeper for a reason
 /// that is a property of the mechanism rather than of the position.

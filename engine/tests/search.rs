@@ -970,20 +970,39 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// is the SPRT's question and not this gate's. What this gate still refuses
 /// is a *window* moving them, which is unchanged: the array is re-measured
 /// on the shipped full-window build, as every re-baseline above was.
+///
+/// **Re-measured 2026-09-18 for run 1's tuned values, and the size is stated
+/// exactly rather than as a superlative, because a later reader comparing
+/// re-baselines needs to know this one is an outlier.** Eleven of the
+/// fourteen entries moved and **eight of the fourteen moves changed**,
+/// against the late move pruning landing's twelve scores and five moves: more
+/// moves than any re-baseline here, one fewer entry than the largest. Scores
+/// moved by up to 83 points, `c4c5` from -613 to -530, where correction
+/// history moved three to seven.
+///
+/// **Two rules moved at once, which is the reason and also the caution.** The
+/// reverse futility margin went from 150 to 72 centipawns per ply and the
+/// late move pruning count nearly doubled, leaving a fixed-depth tree 6.3
+/// times the size. Both are causes this fixture documents as legitimate, a
+/// rule that reads beta and a rule that deletes moves, so the method is
+/// unchanged; what is not a precedent is the size, which belongs to two
+/// tuned constants moving together and not to a margin change as such.
+/// `d7c8r` returning to `d7c8q` at 548 is the tie-break three paragraphs up
+/// flipping back, and is read as a tie for the reason given there.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("b1c3", 13),
-    ("d5e6", -109),
-    ("b4f4", 33),
-    ("c4c5", -613),
-    ("d7c8r", 491),
+    ("d2d4", 9),
+    ("d5e6", -102),
+    ("b4f4", 36),
+    ("c4c5", -530),
+    ("d7c8q", 548),
     ("g5f6", 108),
-    ("b1c3", 13),
-    ("d1e3", 4),
-    ("d2d4", 8),
-    ("d1e3", 8),
-    ("g1f2", 529),
+    ("d2d4", 9),
+    ("e1f3", 8),
+    ("e1d3", 8),
+    ("e1d3", 10),
+    ("h1h7", 532),
     ("f1h1", 522),
-    ("g1h1", 525),
+    ("g1g7", 532),
     ("a1a7", 532),
 ];
 
