@@ -895,7 +895,17 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 }
 
 /// What `sample()` answers at `WINDOW_DEPTH` with no table, measured on
-/// the tree the history heuristic left. Against the full-window-everywhere
+/// the tree the capture probe left.
+///
+/// **The probe moved one score and no moves, which is the smallest
+/// re-baseline this array has taken**, against futility's two scores and
+/// one move and late move pruning's twelve and five. `d7c8r` rose from
+/// 491 to 520 in pos5, the promotion-on-capture position whose promotion
+/// piece the paragraph below already prices as a tie-break: the rule
+/// reads beta, so it is in the class that re-baselines this fixture, and
+/// a single score moving is what a rule that fires only from depth five
+/// upward does to a depth-seven sample. Measured on the shipped
+/// full-window build, as every re-baseline here was. Against the full-window-everywhere
 /// tree it was first measured on, the null-move landing moved two scores
 /// by two points with every move unchanged; the reductions moved five
 /// scores by two to nine points and three moves, which is what a rule
@@ -975,7 +985,7 @@ const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("d5e6", -109),
     ("b4f4", 33),
     ("c4c5", -613),
-    ("d7c8r", 491),
+    ("d7c8r", 520),
     ("g5f6", 108),
     ("b1c3", 13),
     ("d1e3", 4),

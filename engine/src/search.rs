@@ -32,8 +32,9 @@ pub use depth::{
 pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
-    futile_node, futility_margin, futility_skips, has_non_pawn_material, improving, lmp_count,
-    lmp_index, lmp_skips, reverse_futile, reverse_futility_margin,
+    PROBCUT_REDUCTION, futile_node, futility_margin, futility_skips, has_non_pawn_material,
+    improving, lmp_count, lmp_index, lmp_skips, probcut_bound, reverse_futile,
+    reverse_futility_margin,
 };
 use pv::PvTable;
 
@@ -57,6 +58,20 @@ pub const CURRMOVE_AFTER_MS: u64 = 1000;
 /// left and stand on the evaluation there.
 const MAX_DEPTH: u32 = MAX_PLY as u32;
 const _: () = assert!(MAX_DEPTH as usize == MAX_PLY);
+
+/// Which bound a node's fail-soft value carries: a lower one where it reached beta, an exact one
+/// where it beat the alpha the node started with, an upper one otherwise. Out of `negamax`
+/// because the line-count limit says so, and pinned as arithmetic in `tests/probcut.rs`.
+#[must_use]
+pub fn bound_for(best: Score, original_alpha: Score, beta: Score) -> Bound {
+    if best >= beta {
+        Bound::Lower
+    } else if best > original_alpha {
+        Bound::Exact
+    } else {
+        Bound::Upper
+    }
+}
 
 /// Move `first` to the head of `list`, keeping the rest in the order they were generated in.
 /// Returns whether `list` held it at all.
@@ -209,6 +224,13 @@ pub struct Search<'a> {
     /// other way.
     reverse_futility_cutoffs: u64,
     reverse_futility_refused_window: u64,
+    /// How often the capture probe ran at a node, how many captures it searched at reduced depth
+    /// once the quiescence screen passed them, and how often one of those cut the node. The
+    /// fourth is how often it would have run and did not because the node had the full window.
+    probcut_attempts: u64,
+    probcut_searches: u64,
+    probcut_cutoffs: u64,
+    probcut_refused_window: u64,
     /// How many check evasion lists the quiescence search prepared, and how many of those the
     /// sort moved a new move to the head of. The first is the shape [`Search::futility_nodes`]
     /// has and it is here for the same reason: what the ordering is worth is no longer visible
@@ -290,6 +312,10 @@ impl<'a> Search<'a> {
             lmp_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
+            probcut_attempts: 0,
+            probcut_searches: 0,
+            probcut_cutoffs: 0,
+            probcut_refused_window: 0,
             evasion_lists: 0,
             evasion_lists_reordered: 0,
             iterations: Vec::new(),
@@ -360,6 +386,10 @@ impl<'a> Search<'a> {
         self.lmp_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
+        self.probcut_attempts = 0;
+        self.probcut_searches = 0;
+        self.probcut_cutoffs = 0;
+        self.probcut_refused_window = 0;
         self.evasion_lists = 0;
         self.evasion_lists_reordered = 0;
         self.iterations.clear();
@@ -665,6 +695,12 @@ impl<'a> Search<'a> {
             return score;
         }
 
+        // Below the null move, which is ADR-0008's order: this is the one preamble rule that
+        // trusts a reduced search of a real move rather than a static reading or a pass.
+        if let Some(score) = self.probcut(board, depth, ply, alpha, beta) {
+            return score;
+        }
+
         let mut legal = generate_legal(board);
         if legal.is_empty() {
             return if in_check { mated_in(ply) } else { DRAW };
@@ -757,13 +793,7 @@ impl<'a> Search<'a> {
         }
         // Fail-soft, so the bound follows the value and not the window it was found in. Nothing
         // an aborted search computed is stored: the loop above returns before this line.
-        let bound = if best >= beta {
-            Bound::Lower
-        } else if best > original_alpha {
-            Bound::Exact
-        } else {
-            Bound::Upper
-        };
+        let bound = bound_for(best, original_alpha, beta);
         self.tt.store(
             key,
             best_move,
@@ -1005,6 +1035,57 @@ impl<'a> Search<'a> {
         if score >= beta {
             self.null_cutoffs += 1;
             return Some(if score::is_mate(score) { beta } else { score });
+        }
+        None
+    }
+
+    /// The capture probe at one node: a capture whose exchange could carry the static evaluation
+    /// to the raised beta is screened by the quiescence search and then searched
+    /// [`PROBCUT_REDUCTION`] plies shallower, and the first to stand at or above that bound cuts
+    /// the node. `Some` is the cutoff, never on the mate scale; `None` means search the node.
+    fn probcut(
+        &mut self,
+        board: &mut Position,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Option<Score> {
+        let eval = self.evals[ply];
+        let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
+            // Asked as though the window were null, so the counter sees only nodes the window
+            // alone refused.
+            if beta != alpha + 1 && probcut_bound(eval, depth, beta - 1, beta).is_some() {
+                self.probcut_refused_window += 1;
+            }
+            return None;
+        };
+        if board.halfmove_clock() >= 100 {
+            return None;
+        }
+        let eval = eval?;
+        self.probcut_attempts += 1;
+        let mut noisy = generate_noisy(board);
+        picker::sort_noisy(board, &mut noisy);
+        let child = depth.saturating_sub(PROBCUT_REDUCTION);
+        for m in noisy.iter() {
+            if see::see(board, m) < raised - eval {
+                continue;
+            }
+            board.make_move(m);
+            let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
+            if score >= raised {
+                self.probcut_searches += 1;
+                score = -self.negamax(board, child, ply + 1, -raised, -raised + 1);
+            }
+            board.unmake_move(m);
+            if self.aborted {
+                return Some(DRAW);
+            }
+            if score >= raised {
+                self.probcut_cutoffs += 1;
+                return Some(if score::is_mate(score) { raised } else { score });
+            }
         }
         None
     }

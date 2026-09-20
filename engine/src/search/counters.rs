@@ -119,6 +119,29 @@ impl Search<'_> {
         self.reverse_futility_refused_window
     }
 
+    /// How many nodes ran the capture probe, how many captures it searched at reduced depth, and
+    /// how many of those cut the node.
+    #[must_use]
+    pub fn probcut_attempts(&self) -> u64 {
+        self.probcut_attempts
+    }
+
+    #[must_use]
+    pub fn probcut_searches(&self) -> u64 {
+        self.probcut_searches
+    }
+
+    #[must_use]
+    pub fn probcut_cutoffs(&self) -> u64 {
+        self.probcut_cutoffs
+    }
+
+    /// How often the probe would have run and did not because the node had the full window.
+    #[must_use]
+    pub fn probcut_refused_by_window(&self) -> u64 {
+        self.probcut_refused_window
+    }
+
     /// How many check evasion lists the quiescence search prepared, and how many of those the
     /// sort moved a new move to the head of. The first says the in-check horizon was reached at
     /// all, which is what stops the second being vacuous.
