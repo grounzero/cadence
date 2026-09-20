@@ -9,6 +9,7 @@ pub mod bench;
 pub mod corrhist;
 pub mod eval;
 pub mod history;
+pub mod level;
 pub mod perft;
 pub mod picker;
 pub mod position;
