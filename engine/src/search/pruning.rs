@@ -155,3 +155,32 @@ pub fn reverse_futile(
     let bound = eval?.saturating_sub(reverse_futility_margin(tunables, depth));
     (!score::is_mate(beta) && bound >= beta).then_some(bound)
 }
+
+/// The shallowest node the capture probe runs at. **Chosen by a shadow measurement and not
+/// tuned**, with the reduction and the margin below, as the candidate whose cuts save most while
+/// disagreeing with the node's own search no more often than the null move's do.
+const PROBCUT_DEPTH: u32 = 5;
+
+/// How much shallower than the node the probe searches a capture, the capture's own ply included.
+/// Chosen with [`PROBCUT_DEPTH`] and [`PROBCUT_MARGIN`] as one reading, so none of the three was
+/// picked with the other two unknown.
+pub const PROBCUT_REDUCTION: u32 = 4;
+
+/// How far above beta a capture's shallow search must stand before the node is cut, in
+/// centipawns. It is read against the tree the other margins leave, so any change to reverse
+/// futility's, futility's or late move pruning's reopens it.
+const PROBCUT_MARGIN: Score = 100;
+
+/// The raised beta a node's capture probe must beat, or `None` where the rule cannot run: no
+/// static reading, a full window, too shallow, or either bound on the mate scale. In check
+/// `eval` is `None`, so the rule cannot run there at all.
+#[must_use]
+pub fn probcut_bound(eval: Option<Score>, depth: u32, alpha: Score, beta: Score) -> Option<Score> {
+    eval?;
+    let raised = beta.saturating_add(PROBCUT_MARGIN);
+    (depth >= PROBCUT_DEPTH
+        && beta == alpha + 1
+        && !score::is_mate(beta)
+        && !score::is_mate(raised))
+    .then_some(raised)
+}

@@ -32,8 +32,9 @@ pub use depth::{
 pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
-    futile_node, futility_margin, futility_skips, has_non_pawn_material, improving, lmp_count,
-    lmp_index, lmp_skips, reverse_futile, reverse_futility_margin,
+    PROBCUT_REDUCTION, futile_node, futility_margin, futility_skips, has_non_pawn_material,
+    improving, lmp_count, lmp_index, lmp_skips, probcut_bound, reverse_futile,
+    reverse_futility_margin,
 };
 use pv::PvTable;
 
@@ -209,6 +210,13 @@ pub struct Search<'a> {
     /// other way.
     reverse_futility_cutoffs: u64,
     reverse_futility_refused_window: u64,
+    /// How often the capture probe ran at a node, how many captures it searched at reduced depth
+    /// once the quiescence screen passed them, and how often one of those cut the node. The
+    /// fourth is how often it would have run and did not because the node had the full window.
+    probcut_attempts: u64,
+    probcut_searches: u64,
+    probcut_cutoffs: u64,
+    probcut_refused_window: u64,
     /// How many check evasion lists the quiescence search prepared, and how many of those the
     /// sort moved a new move to the head of. The first is the shape [`Search::futility_nodes`]
     /// has and it is here for the same reason: what the ordering is worth is no longer visible
@@ -290,6 +298,10 @@ impl<'a> Search<'a> {
             lmp_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
+            probcut_attempts: 0,
+            probcut_searches: 0,
+            probcut_cutoffs: 0,
+            probcut_refused_window: 0,
             evasion_lists: 0,
             evasion_lists_reordered: 0,
             iterations: Vec::new(),
@@ -360,6 +372,10 @@ impl<'a> Search<'a> {
         self.lmp_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
+        self.probcut_attempts = 0;
+        self.probcut_searches = 0;
+        self.probcut_cutoffs = 0;
+        self.probcut_refused_window = 0;
         self.evasion_lists = 0;
         self.evasion_lists_reordered = 0;
         self.iterations.clear();
