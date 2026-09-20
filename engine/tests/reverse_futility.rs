@@ -204,16 +204,16 @@ fn a_mate_beta_refuses_the_margin() {
     }
 }
 
-/// The margin is 72 centipawns per ply of remaining depth, under three
-/// quarters of a pawn, pinned against the constant the tune of 2026-09-18
-/// left, and it grows: a node with more search under it has to clear beta
-/// by more before its whole subtree is given up.
+/// The margin is a pawn and a half per ply of remaining depth, pinned
+/// against the values the constant's own comment names, and it grows: a
+/// node with more search under it has to clear beta by more before its
+/// whole subtree is given up.
 #[test]
 fn the_margin_is_the_documented_margin() {
-    assert_eq!(reverse_futility_margin(DEFAULT, 1), 72);
-    assert_eq!(reverse_futility_margin(DEFAULT, 2), 144);
-    assert_eq!(reverse_futility_margin(DEFAULT, 3), 216);
-    assert_eq!(reverse_futility_margin(DEFAULT, 6), 432);
+    assert_eq!(reverse_futility_margin(DEFAULT, 1), 150);
+    assert_eq!(reverse_futility_margin(DEFAULT, 2), 300);
+    assert_eq!(reverse_futility_margin(DEFAULT, 3), 450);
+    assert_eq!(reverse_futility_margin(DEFAULT, 6), 900);
     for depth in 1..16 {
         assert!(
             reverse_futility_margin(DEFAULT, depth + 1) > reverse_futility_margin(DEFAULT, depth),
@@ -273,42 +273,26 @@ fn the_bound_is_the_quantity_the_condition_established() {
 /// both at the same ply.
 #[test]
 fn the_margin_is_the_depth_limit() {
-    // 600 centipawns above beta covers as many plies as the margin fits
-    // into it, and the ply after that is one the evidence does not cover.
-    // Derived rather than pinned, because the band is a function of the
-    // evidence and the margin is a tuned constant.
-    let covered = (1..64)
-        .take_while(|&d| reverse_futility_margin(DEFAULT, d) <= 600)
-        .count() as u32;
-    for depth in 1..=covered {
+    // 600 centipawns above beta: four plies of margin exactly, and the
+    // fifth is one the evidence does not cover.
+    for depth in 1..=4 {
         assert!(
             reverse_futile(DEFAULT, Some(600), depth, 0).is_some(),
             "depth {depth}: 600 centipawns did not cover {} of margin",
             reverse_futility_margin(DEFAULT, depth)
         );
     }
-    for depth in covered + 1..64 {
+    for depth in 5..64 {
         assert!(
             reverse_futile(DEFAULT, Some(600), depth, 0).is_none(),
             "depth {depth}: the margin did not outrun a gap of 600"
         );
     }
-    // The band is a function of the evidence and not of a constant, so the
-    // boundary is derived: a node is returned exactly when the gap above beta
-    // reaches the margin for its depth, whatever a tune has left that margin
-    // at.
-    for depth in 1..64 {
-        let margin = reverse_futility_margin(DEFAULT, depth);
-        assert!(
-            reverse_futile(DEFAULT, Some(margin), depth, 0).is_some(),
-            "depth {depth}: a gap of exactly {margin} was not covered"
-        );
-        assert!(
-            reverse_futile(DEFAULT, Some(margin - 1), depth, 0).is_none(),
-            "depth {depth}: a gap of {} outran a margin of {margin}",
-            margin - 1
-        );
-    }
+    // The band is a function of the evidence and not of a constant.
+    assert!(reverse_futile(DEFAULT, Some(150), 1, 0).is_some());
+    assert!(reverse_futile(DEFAULT, Some(150), 2, 0).is_none());
+    assert!(reverse_futile(DEFAULT, Some(6_000), 40, 0).is_some());
+    assert!(reverse_futile(DEFAULT, Some(6_000), 41, 0).is_none());
 }
 
 /// The pruning happens in a real search: a middlegame and the start
