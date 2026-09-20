@@ -25,6 +25,7 @@ mod depth;
 mod limits;
 mod pruning;
 mod pv;
+pub mod shadow;
 
 pub use depth::{
     REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, reduction,
@@ -227,6 +228,20 @@ pub struct Search<'a> {
     /// iteration is accepted and read by nothing that decides anything, and unlike `iterations`
     /// it costs no clock read, so it is kept under a depth limit too.
     roots: Vec<(Move, Score)>,
+    /// While set, the search writes nothing a later decision reads and counts its nodes apart:
+    /// the shadow's probes run under it.
+    quiet: bool,
+    quiet_nodes: u64,
+    /// Set for one node: skip its null move, so the shadow can see what the full search says.
+    skip_null: bool,
+    /// Which scratch table a quiet search stores to, and what it overwrote in the killers and
+    /// the history, so that both can be put back when the quiet search ends.
+    arm: usize,
+    /// The quiet node count an arm started at, and whether it has spent its cap.
+    quiet_from: u64,
+    quiet_capped: bool,
+    killer_journal: Vec<(usize, [Move; 2])>,
+    history_journal: Vec<(Colour, Move, i32)>,
     /// How many principal variations the root reports, from `MultiPV`. One
     /// is the default and the only value a test or a rating list plays.
     multipv: usize,
@@ -296,6 +311,14 @@ impl<'a> Search<'a> {
             roots: Vec::new(),
             multipv: 1,
             lines: Vec::new(),
+            quiet: false,
+            quiet_nodes: 0,
+            skip_null: false,
+            arm: 0,
+            quiet_from: 0,
+            quiet_capped: false,
+            killer_journal: Vec::new(),
+            history_journal: Vec::new(),
         }
     }
 
@@ -507,6 +530,13 @@ impl<'a> Search<'a> {
     /// keeps it visits the same nodes in the same order as one that does not.
     #[inline]
     fn visit(&mut self, ply: usize) {
+        if self.quiet {
+            self.quiet_nodes += 1;
+            if self.quiet_nodes - self.quiet_from > shadow::ARM_NODE_CAP {
+                self.quiet_capped = true;
+            }
+            return;
+        }
         self.nodes += 1;
         self.seldepth = self.seldepth.max(ply);
         if self.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
@@ -612,6 +642,11 @@ impl<'a> Search<'a> {
         mut alpha: Score,
         beta: Score,
     ) -> Score {
+        // A quiet search that has spent its cap stops here: the node it belongs to is dropped
+        // from every arm, so the value it returns is never read.
+        if self.quiet_capped {
+            return DRAW;
+        }
         // The horizon: the quiescence search takes over, and counts the node.
         if depth == 0 {
             return self.quiesce(board, ply, alpha, beta);
@@ -661,9 +696,36 @@ impl<'a> Search<'a> {
             return bound;
         }
 
-        if let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
+        let skip_null = std::mem::take(&mut self.skip_null);
+        if !skip_null && let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
+            if !self.quiet && shadow::sample_null() {
+                let was = self.quiet;
+                self.quiet = true;
+                self.quiet_from = self.quiet_nodes;
+                self.quiet_capped = false;
+                self.arm = shadow::NULL_ARM;
+                self.skip_null = true;
+                let full = self.negamax(board, depth, ply, alpha, beta);
+                self.skip_null = false;
+                self.quiet = was;
+                self.undo_quiet();
+                if !self.aborted && !self.quiet_capped {
+                    shadow::record_null(depth, full >= beta);
+                }
+                self.quiet_capped = false;
+            }
             return score;
         }
+
+        let arms = if self.quiet {
+            None
+        } else {
+            Some(self.shadow_arms(board, depth, ply, alpha, beta))
+        };
+        if self.aborted {
+            return DRAW;
+        }
+        let spent_from = self.nodes;
 
         let mut legal = generate_legal(board);
         if legal.is_empty() {
@@ -742,6 +804,9 @@ impl<'a> Search<'a> {
                     alpha = score;
                     self.table.update(ply, m);
                     if alpha >= beta {
+                        if self.quiet {
+                            self.killer_journal.push((ply, self.killers[ply]));
+                        }
                         remember_killer(&mut self.killers[ply], m);
                         // The moves it beat are the ones before it in the sorted list, and the
                         // margin and the count above both skip moves inside it, so a quiet
@@ -757,6 +822,9 @@ impl<'a> Search<'a> {
         }
         // Fail-soft, so the bound follows the value and not the window it was found in. Nothing
         // an aborted search computed is stored: the loop above returns before this line.
+        if let Some(arms) = arms {
+            shadow::record(depth, &arms, best >= beta, self.nodes - spent_from);
+        }
         let bound = if best >= beta {
             Bound::Lower
         } else if best > original_alpha {
@@ -764,6 +832,16 @@ impl<'a> Search<'a> {
         } else {
             Bound::Upper
         };
+        if self.quiet {
+            shadow::scratch(self.arm).store(
+                key,
+                best_move,
+                score::to_tt(best, ply),
+                depth.min(u32::from(u8::MAX)) as u8,
+                bound,
+            );
+            return best;
+        }
         self.tt.store(
             key,
             best_move,
@@ -773,6 +851,108 @@ impl<'a> Search<'a> {
         );
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
+    }
+
+    /// Put back every killer and history score a quiet search wrote, newest first.
+    fn undo_quiet(&mut self) {
+        while let Some((ply, killers)) = self.killer_journal.pop() {
+            self.killers[ply] = killers;
+        }
+        while let Some((side, m, value)) = self.history_journal.pop() {
+            self.history.set(side, m, value);
+        }
+    }
+
+    /// Every probe arm at this node, each run quietly. An arm is admitted where the node has a
+    /// null window, a static reading, a beta and a raised beta off the mate scale, and depth for a
+    /// child at that reduction.
+    fn shadow_arms(
+        &mut self,
+        board: &mut Position,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> [[shadow::Arm; shadow::MARGINS.len()]; shadow::REDUCTIONS.len()] {
+        let mut arms = [[shadow::Arm::default(); shadow::MARGINS.len()]; shadow::REDUCTIONS.len()];
+        if beta != alpha + 1
+            || self.evals[ply].is_none()
+            || score::is_mate(beta)
+            || board.halfmove_clock() >= 100
+            || depth > shadow::ARM_DEPTH_CAP
+        {
+            return arms;
+        }
+        self.quiet = true;
+        for (r, &reduction) in shadow::REDUCTIONS.iter().enumerate() {
+            if depth <= reduction {
+                continue;
+            }
+            for (m, &margin) in shadow::MARGINS.iter().enumerate() {
+                let raised = beta.saturating_add(margin);
+                if score::is_mate(raised) {
+                    continue;
+                }
+                self.quiet_from = self.quiet_nodes;
+                self.quiet_capped = false;
+                self.arm = r * shadow::MARGINS.len() + m;
+                let cut = self.probcut_probe(board, depth, ply, raised, reduction);
+                self.undo_quiet();
+                if self.quiet_capped {
+                    self.quiet = false;
+                    self.quiet_capped = false;
+                    shadow::record_dropped(depth);
+                    return [[shadow::Arm::default(); shadow::MARGINS.len()];
+                        shadow::REDUCTIONS.len()];
+                }
+                arms[r][m] = shadow::Arm {
+                    admitted: true,
+                    cut: cut.is_some(),
+                    nodes: self.quiet_nodes - self.quiet_from,
+                };
+                if self.aborted {
+                    self.quiet = false;
+                    return arms;
+                }
+            }
+        }
+        self.quiet = false;
+        arms
+    }
+
+    /// The probe: the captures whose exchange could reach `raised` from the static evaluation,
+    /// each screened by the quiescence search and then searched at `depth - reduction` against
+    /// `raised`. `Some` is the first score that beats it.
+    fn probcut_probe(
+        &mut self,
+        board: &mut Position,
+        depth: u32,
+        ply: usize,
+        raised: Score,
+        reduction: u32,
+    ) -> Option<Score> {
+        let eval = self.evals[ply]?;
+        let mut noisy = generate_noisy(board);
+        picker::sort_noisy(board, &mut noisy);
+        let child = depth.saturating_sub(reduction);
+        for m in noisy.iter() {
+            if see::see(board, m) < raised - eval {
+                continue;
+            }
+            board.make_move(m);
+            let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
+            if score >= raised && child > 0 {
+                score = -self.negamax(board, child, ply + 1, -raised, -raised + 1);
+            }
+            board.unmake_move(m);
+            if self.aborted {
+                return None;
+            }
+            if score >= raised {
+                return Some(score);
+            }
+        }
+        None
     }
 
     /// The static evaluation this node's rules read, corrected by what the evaluation has been
@@ -853,7 +1033,14 @@ impl<'a> Search<'a> {
         alpha: Score,
         beta: Score,
     ) -> (Move, Option<Score>) {
-        let Some(hit) = self.tt.probe(key) else {
+        let found = if self.quiet {
+            shadow::scratch(self.arm)
+                .probe(key)
+                .or_else(|| self.tt.probe(key))
+        } else {
+            self.tt.probe(key)
+        };
+        let Some(hit) = found else {
             return (Move::NULL, None);
         };
         if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
@@ -940,6 +1127,12 @@ impl<'a> Search<'a> {
             return;
         }
         let bonus = history::bonus(depth);
+        if self.quiet {
+            self.history_journal.push((us, cut, self.history.get(us, cut)));
+            for &beaten in tried.iter().filter(|q| !q.is_noisy()) {
+                self.history_journal.push((us, beaten, self.history.get(us, beaten)));
+            }
+        }
         self.history.update(us, cut, bonus);
         for &beaten in tried.iter().filter(|q| !q.is_noisy()) {
             self.history.update(us, beaten, -bonus);

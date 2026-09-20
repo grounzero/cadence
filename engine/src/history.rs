@@ -99,6 +99,11 @@ impl History {
         self.rows[side.index() * SPAN + m.from_to()]
     }
 
+    /// Put `m`'s score for `side` back to `value`: the shadow's undo, and nothing else calls it.
+    pub fn set(&mut self, side: Colour, m: Move, value: i32) {
+        self.rows[side.index() * SPAN + m.from_to()] = value;
+    }
+
     /// Credit or debit `m` for `side` by `bonus`, through [`apply`].
     pub fn update(&mut self, side: Colour, m: Move, bonus: i32) {
         let i = side.index() * SPAN + m.from_to();

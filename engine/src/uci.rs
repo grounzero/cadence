@@ -202,6 +202,7 @@ impl Session {
                 say(format_args!("uciok"));
             }
             "isready" => say(format_args!("readyok")),
+            "shadow" => crate::search::shadow::print(),
             "setoption" => self.set_option(tokens),
             "position" => self.set_position(tokens),
             "go" => self.go(tokens),
