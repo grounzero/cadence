@@ -59,6 +59,20 @@ pub const CURRMOVE_AFTER_MS: u64 = 1000;
 const MAX_DEPTH: u32 = MAX_PLY as u32;
 const _: () = assert!(MAX_DEPTH as usize == MAX_PLY);
 
+/// Which bound a node's fail-soft value carries: a lower one where it reached beta, an exact one
+/// where it beat the alpha the node started with, an upper one otherwise. Out of `negamax`
+/// because the line-count limit says so, and pinned as arithmetic in `tests/probcut.rs`.
+#[must_use]
+pub fn bound_for(best: Score, original_alpha: Score, beta: Score) -> Bound {
+    if best >= beta {
+        Bound::Lower
+    } else if best > original_alpha {
+        Bound::Exact
+    } else {
+        Bound::Upper
+    }
+}
+
 /// Move `first` to the head of `list`, keeping the rest in the order they were generated in.
 /// Returns whether `list` held it at all.
 #[must_use]
@@ -681,6 +695,12 @@ impl<'a> Search<'a> {
             return score;
         }
 
+        // Below the null move, which is ADR-0008's order: this is the one preamble rule that
+        // trusts a reduced search of a real move rather than a static reading or a pass.
+        if let Some(score) = self.probcut(board, depth, ply, alpha, beta) {
+            return score;
+        }
+
         let mut legal = generate_legal(board);
         if legal.is_empty() {
             return if in_check { mated_in(ply) } else { DRAW };
@@ -773,13 +793,7 @@ impl<'a> Search<'a> {
         }
         // Fail-soft, so the bound follows the value and not the window it was found in. Nothing
         // an aborted search computed is stored: the loop above returns before this line.
-        let bound = if best >= beta {
-            Bound::Lower
-        } else if best > original_alpha {
-            Bound::Exact
-        } else {
-            Bound::Upper
-        };
+        let bound = bound_for(best, original_alpha, beta);
         self.tt.store(
             key,
             best_move,
@@ -1021,6 +1035,57 @@ impl<'a> Search<'a> {
         if score >= beta {
             self.null_cutoffs += 1;
             return Some(if score::is_mate(score) { beta } else { score });
+        }
+        None
+    }
+
+    /// The capture probe at one node: a capture whose exchange could carry the static evaluation
+    /// to the raised beta is screened by the quiescence search and then searched
+    /// [`PROBCUT_REDUCTION`] plies shallower, and the first to stand at or above that bound cuts
+    /// the node. `Some` is the cutoff, never on the mate scale; `None` means search the node.
+    fn probcut(
+        &mut self,
+        board: &mut Position,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Option<Score> {
+        let eval = self.evals[ply];
+        let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
+            // Asked as though the window were null, so the counter sees only nodes the window
+            // alone refused.
+            if beta != alpha + 1 && probcut_bound(eval, depth, beta - 1, beta).is_some() {
+                self.probcut_refused_window += 1;
+            }
+            return None;
+        };
+        if board.halfmove_clock() >= 100 {
+            return None;
+        }
+        let eval = eval?;
+        self.probcut_attempts += 1;
+        let mut noisy = generate_noisy(board);
+        picker::sort_noisy(board, &mut noisy);
+        let child = depth.saturating_sub(PROBCUT_REDUCTION);
+        for m in noisy.iter() {
+            if see::see(board, m) < raised - eval {
+                continue;
+            }
+            board.make_move(m);
+            let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
+            if score >= raised {
+                self.probcut_searches += 1;
+                score = -self.negamax(board, child, ply + 1, -raised, -raised + 1);
+            }
+            board.unmake_move(m);
+            if self.aborted {
+                return Some(DRAW);
+            }
+            if score >= raised {
+                self.probcut_cutoffs += 1;
+                return Some(if score::is_mate(score) { raised } else { score });
+            }
         }
         None
     }

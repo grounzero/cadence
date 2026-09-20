@@ -18,7 +18,8 @@ use std::sync::atomic::AtomicBool;
 
 use cadence_core::START_FEN;
 use cadence_engine::score::{MATE_IN_MAX_PLY, mate_in};
-use cadence_engine::search::{Limits, probcut_bound};
+use cadence_engine::search::{Limits, bound_for, probcut_bound};
+use cadence_engine::tt::Bound;
 use support::table;
 
 /// The depth the search gates run to. Eight: past the rule's minimum by enough that the probe
@@ -146,4 +147,20 @@ fn the_bound_refuses_what_the_rule_may_not_touch() {
         (first..=deep).all(|d| probcut_bound(Some(0), d, 0, 1).is_some()),
         "admission is not monotone in depth"
     );
+}
+
+/// The bound a fail-soft value carries, which left `negamax` when the rule's two lines took it
+/// past the line-count limit. It is arithmetic and it is pinned here so that the extraction is a
+/// gate's business rather than a private rearrangement.
+#[test]
+fn a_fail_soft_value_carries_the_bound_its_window_says() {
+    assert_eq!(bound_for(10, 0, 10), Bound::Lower, "at beta");
+    assert_eq!(bound_for(11, 0, 10), Bound::Lower, "past beta");
+    assert_eq!(bound_for(5, 0, 10), Bound::Exact, "inside the window");
+    assert_eq!(
+        bound_for(0, 0, 10),
+        Bound::Upper,
+        "at the alpha it started with"
+    );
+    assert_eq!(bound_for(-5, 0, 10), Bound::Upper, "below it");
 }
