@@ -12,6 +12,7 @@ use cadence_core::{Colour, MAX_PLY, Move, MoveList, generate_legal, generate_noi
 use crate::corrhist::CorrectionHistory;
 use crate::eval;
 use crate::history::{self, History};
+use crate::level;
 use crate::picker;
 use crate::position::Position;
 use crate::score::{self, DRAW, INFINITE, Score, mated_in};
@@ -255,6 +256,10 @@ pub struct Search<'a> {
     /// The lines the iteration in progress found, best first once it is
     /// accepted. One entry at `MultiPV` 1, which is the pv `report` prints.
     lines: Vec<RootLine>,
+    /// The level this search plays down to, from `UCI_LimitStrength` and
+    /// `UCI_Elo`. `None` is full strength and is what `bench` and every test
+    /// run under, because nothing here calls the setter.
+    level: Option<level::Policy>,
 }
 
 /// One reported principal variation: the root move, its score, and the line the iteration
@@ -322,6 +327,7 @@ impl<'a> Search<'a> {
             roots: Vec::new(),
             multipv: 1,
             lines: Vec::new(),
+            level: None,
         }
     }
 
@@ -352,6 +358,13 @@ impl<'a> Search<'a> {
     /// option existed.
     pub fn set_multipv(&mut self, n: usize) {
         self.multipv = n.max(1);
+    }
+
+    /// Play down to `level`, or at full strength where it is `None`. Nothing in
+    /// `bench` calls this, which is what makes the node count a function of the
+    /// code alone however the option is set.
+    pub fn set_level(&mut self, level: Option<level::Policy>) {
+        self.level = level;
     }
 
     /// Clear everything one run owns and derive its budgets, so a `Search` reused for a second
@@ -462,7 +475,12 @@ impl<'a> Search<'a> {
             self.seldepth = 0;
             // One search of the root per line asked for, each skipping the moves the lines
             // before it took. A root with fewer moves than this reports the moves it has.
-            let wanted = self.multipv.min(root_moves.len());
+            // The level owns the line count where one is set, and the session
+            // refuses to hold both, so these two never disagree here.
+            let wanted = self
+                .level
+                .map_or(self.multipv, |policy| policy.candidates)
+                .min(root_moves.len());
             self.lines.clear();
             let mut partial = (root_moves[0], -INFINITE);
             for _ in 0..wanted {
@@ -527,9 +545,46 @@ impl<'a> Search<'a> {
                 }
             }
         }
+        self.sample_from_candidates(board);
         self.wait_if_open_ended();
         self.publish_nodes();
         self.best
+    }
+
+    /// Where a level is set, replace the best move with one sampled from the
+    /// lines within its margin. Once, after the last iteration, so that every
+    /// time decision and every `roots` entry above is the search's own.
+    fn sample_from_candidates(&mut self, board: &Position) {
+        let Some(policy) = self.level else {
+            return;
+        };
+        if self.lines.len() < 2 {
+            return;
+        }
+        let best = self.lines[0].score;
+        // The lines are sorted descending, so the first one outside the margin
+        // ends the candidate set rather than being skipped over.
+        let admitted = self
+            .lines
+            .iter()
+            .take_while(|line| best - line.score <= policy.margin)
+            .count()
+            .max(1);
+        let deficits: Vec<i32> = self.lines[..admitted]
+            .iter()
+            .map(|line| best - line.score)
+            .collect();
+        // The seed is the position and the move number, never the process and
+        // never the search's own depth, which would make the reply depend on how
+        // fast the machine was. The move number is what makes a repetition of one
+        // position a fresh draw rather than the same move twice.
+        let seed = board.board().key() ^ u64::from(board.board().fullmove_number()).rotate_left(32);
+        let chosen = level::choose(&deficits, policy.halving, seed);
+        let line = &self.lines[chosen];
+        self.best = line.mv;
+        self.score = line.score;
+        self.pv.clear();
+        self.pv.extend_from_slice(&line.pv);
     }
 
     /// Count a node, at the ply it sits at, and publish the count where a group is watching.
