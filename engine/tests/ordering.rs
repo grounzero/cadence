@@ -1278,13 +1278,6 @@ fn the_capture_sort_saves_nodes() {
 /// reproduces the table above to the node, which is the control saying
 /// nothing in the tree had moved under it, and restores a window of
 /// 0.71%.
-/// **Both arms re-taken 2026-09-18, on the tree run 1's tune left.** Shipped
-/// 257,771 nodes against 259,782 with every capture ahead of the killers: a
-/// window of 0.77%, where 2026-09-04 measured 0.71% at 246,292 against
-/// 248,029. The absolute counts rose because the tuned values make the
-/// fixed-depth tree 6.3 times larger, and **the gate kept its sign**, which
-/// is what the re-take was for: the bound was not raised to fit, it was
-/// re-measured, and the demotion still saves nodes.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1302,8 +1295,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 259_782,
-        "{total} nodes against the 259,782 the same search took with every capture ahead of the killers"
+        total < 248_029,
+        "{total} nodes against the 248,029 the same search took with every capture ahead of the killers"
     );
 }
 

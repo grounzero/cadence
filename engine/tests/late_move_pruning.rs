@@ -159,13 +159,13 @@ fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
 #[test]
 fn the_count_is_the_documented_count() {
     assert_eq!(lmp_count(DEFAULT, 1), 3);
-    assert_eq!(lmp_count(DEFAULT, 2), 6);
-    assert_eq!(lmp_count(DEFAULT, 3), 11);
-    assert_eq!(lmp_count(DEFAULT, 4), 17);
-    assert_eq!(lmp_count(DEFAULT, 5), 25);
-    assert_eq!(lmp_count(DEFAULT, 6), 35);
-    assert_eq!(lmp_count(DEFAULT, 7), 47);
-    assert_eq!(lmp_count(DEFAULT, 8), 61);
+    assert_eq!(lmp_count(DEFAULT, 2), 5);
+    assert_eq!(lmp_count(DEFAULT, 3), 7);
+    assert_eq!(lmp_count(DEFAULT, 4), 11);
+    assert_eq!(lmp_count(DEFAULT, 5), 15);
+    assert_eq!(lmp_count(DEFAULT, 6), 21);
+    assert_eq!(lmp_count(DEFAULT, 7), 27);
+    assert_eq!(lmp_count(DEFAULT, 8), 35);
     for depth in 1..64 {
         assert!(
             lmp_count(DEFAULT, depth + 1) > lmp_count(DEFAULT, depth),
