@@ -497,8 +497,8 @@ impl Session {
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let board = self.board.duplicate();
         let chess960 = self.chess960;
-        let multipv = self.multipv;
         let level = self.level();
+        let multipv = level.map_or(self.multipv, |policy| policy.candidates);
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
@@ -527,9 +527,11 @@ impl Session {
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
-                        search.set_level(level);
                         search.set_tunables(tunables);
-                        let best = search.run(&mut pos, &mut out);
+                        let mut best = search.run(&mut pos, &mut out);
+                        if let Some(policy) = level {
+                            best = search.sample(policy, &pos);
+                        }
                         (best, search.pv().to_vec())
                     } else {
                         parallel_search(ParallelGo {
@@ -670,10 +672,12 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_ponder_hit(ponder_hit);
     search.set_chess960(chess960);
     search.set_multipv(multipv);
-    search.set_level(level);
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
-    let best = search.run_in_current_generation(board, &mut out);
+    let mut best = search.run_in_current_generation(board, &mut out);
+    if let Some(policy) = level {
+        best = search.sample(policy, board);
+    }
     let pv = search.pv().to_vec();
 
     // The primary has answered, so the helpers have nothing left to contribute. They check the

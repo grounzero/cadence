@@ -256,10 +256,6 @@ pub struct Search<'a> {
     /// The lines the iteration in progress found, best first once it is
     /// accepted. One entry at `MultiPV` 1, which is the pv `report` prints.
     lines: Vec<RootLine>,
-    /// The level this search plays down to, from `UCI_LimitStrength` and
-    /// `UCI_Elo`. `None` is full strength and is what `bench` and every test
-    /// run under, because nothing here calls the setter.
-    level: Option<level::Policy>,
 }
 
 /// One reported principal variation: the root move, its score, and the line the iteration
@@ -327,7 +323,6 @@ impl<'a> Search<'a> {
             roots: Vec::new(),
             multipv: 1,
             lines: Vec::new(),
-            level: None,
         }
     }
 
@@ -358,13 +353,6 @@ impl<'a> Search<'a> {
     /// option existed.
     pub fn set_multipv(&mut self, n: usize) {
         self.multipv = n.max(1);
-    }
-
-    /// Play down to `level`, or at full strength where it is `None`. Nothing in
-    /// `bench` calls this, which is what makes the node count a function of the
-    /// code alone however the option is set.
-    pub fn set_level(&mut self, level: Option<level::Policy>) {
-        self.level = level;
     }
 
     /// Clear everything one run owns and derive its budgets, so a `Search` reused for a second
@@ -475,12 +463,7 @@ impl<'a> Search<'a> {
             self.seldepth = 0;
             // One search of the root per line asked for, each skipping the moves the lines
             // before it took. A root with fewer moves than this reports the moves it has.
-            // The level owns the line count where one is set, and the session
-            // refuses to hold both, so these two never disagree here.
-            let wanted = self
-                .level
-                .map_or(self.multipv, |policy| policy.candidates)
-                .min(root_moves.len());
+            let wanted = self.multipv.min(root_moves.len());
             self.lines.clear();
             let mut partial = (root_moves[0], -INFINITE);
             for _ in 0..wanted {
@@ -545,21 +528,18 @@ impl<'a> Search<'a> {
                 }
             }
         }
-        self.sample_from_candidates(board);
         self.wait_if_open_ended();
         self.publish_nodes();
         self.best
     }
 
-    /// Where a level is set, replace the best move with one sampled from the
-    /// lines within its margin. Once, after the last iteration, so that every
-    /// time decision and every `roots` entry above is the search's own.
-    fn sample_from_candidates(&mut self, board: &Position) {
-        let Some(policy) = self.level else {
-            return;
-        };
+    /// Replace the best move with one sampled from the lines within `policy`'s
+    /// margin, and return it. **Called by the caller after `run` has returned**,
+    /// so the level is on no path inside the search and costs the default tree
+    /// nothing, not even a field on this struct.
+    pub fn sample(&mut self, policy: level::Policy, board: &Position) -> Move {
         if self.lines.len() < 2 {
-            return;
+            return self.best;
         }
         let best = self.lines[0].score;
         // The lines are sorted descending, so the first one outside the margin
@@ -585,6 +565,7 @@ impl<'a> Search<'a> {
         self.score = line.score;
         self.pv.clear();
         self.pv.extend_from_slice(&line.pv);
+        self.best
     }
 
     /// Count a node, at the ply it sits at, and publish the count where a group is watching.
