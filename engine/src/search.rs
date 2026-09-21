@@ -256,6 +256,11 @@ pub struct Search<'a> {
     /// The lines the iteration in progress found, best first once it is
     /// accepted. One entry at `MultiPV` 1, which is the pv `report` prints.
     lines: Vec<RootLine>,
+    /// The lines of the last iteration that was accepted, which is what a level
+    /// samples among. Separate from `lines` because an aborted iteration leaves
+    /// that one holding however much of itself it finished, and every limit but
+    /// a fixed depth aborts.
+    accepted: Vec<RootLine>,
 }
 
 /// One reported principal variation: the root move, its score, and the line the iteration
@@ -323,6 +328,7 @@ impl<'a> Search<'a> {
             roots: Vec::new(),
             multipv: 1,
             lines: Vec::new(),
+            accepted: Vec::new(),
         }
     }
 
@@ -396,6 +402,7 @@ impl<'a> Search<'a> {
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();
+        self.accepted.clear();
         self.pondering = self.limits.ponder;
         self.budget = if self.limits.infinite {
             None
@@ -513,6 +520,10 @@ impl<'a> Search<'a> {
             if let Some(i) = root_moves.iter().position(|&m| m == best) {
                 root_moves[..=i].rotate_right(1);
             }
+            // The iteration stood, so its lines become the set a level samples
+            // among. A swap rather than a copy: the vector left in `lines` is
+            // cleared at the head of the next iteration.
+            std::mem::swap(&mut self.lines, &mut self.accepted);
             // A hit may have arrived while this iteration ran, and the ladder below is read
             // against the origin it moves. Absorbed before the budget is consulted, so the
             // first clocked decision of the search is made on the new clock.
@@ -538,19 +549,19 @@ impl<'a> Search<'a> {
     /// so the level is on no path inside the search and costs the default tree
     /// nothing, not even a field on this struct.
     pub fn sample(&mut self, policy: level::Policy, board: &Position) -> Move {
-        if self.lines.len() < 2 {
+        if self.accepted.len() < 2 {
             return self.best;
         }
-        let best = self.lines[0].score;
+        let best = self.accepted[0].score;
         // The lines are sorted descending, so the first one outside the margin
         // ends the candidate set rather than being skipped over.
         let admitted = self
-            .lines
+            .accepted
             .iter()
             .take_while(|line| best - line.score <= policy.margin)
             .count()
             .max(1);
-        let deficits: Vec<i32> = self.lines[..admitted]
+        let deficits: Vec<i32> = self.accepted[..admitted]
             .iter()
             .map(|line| best - line.score)
             .collect();
@@ -560,7 +571,7 @@ impl<'a> Search<'a> {
         // position a fresh draw rather than the same move twice.
         let seed = board.board().key() ^ u64::from(board.board().fullmove_number()).rotate_left(32);
         let chosen = level::choose(&deficits, policy.halving, seed);
-        let line = &self.lines[chosen];
+        let line = &self.accepted[chosen];
         self.best = line.mv;
         self.score = line.score;
         self.pv.clear();
