@@ -204,6 +204,43 @@ fn a_level_refuses_while_more_than_one_line_is_reported() {
     );
 }
 
+/// A level engages only on one thread, in both orders, and says so. Above one
+/// the search is not reproducible run to run, so a level there would keep the
+/// option and lose the property the option is for. **This is the configuration
+/// the bot actually runs**, which is why it is a refusal and not a caveat.
+#[test]
+fn a_level_refuses_beside_more_than_one_thread() {
+    let on = level_on(MIN_ELO);
+
+    let mut level_last = vec!["setoption name Threads value 2".to_string()];
+    level_last.extend(on.iter().cloned());
+    let out = search(FENS[0], &as_refs(&level_last));
+    assert!(
+        out.iter()
+            .any(|l| l.starts_with("info string") && l.contains("Threads")),
+        "no spoken refusal when the level arrived second, in {out:?}"
+    );
+    assert_eq!(
+        candidate_moves(&out).len(),
+        1,
+        "a refused level still took the root's line count"
+    );
+
+    let mut threads_last: Vec<String> = on.to_vec();
+    threads_last.push("setoption name Threads value 2".to_string());
+    let out = search(FENS[0], &as_refs(&threads_last));
+    assert!(
+        out.iter()
+            .any(|l| l.starts_with("info string") && l.contains("Threads")),
+        "no spoken refusal when Threads arrived second, in {out:?}"
+    );
+    assert_eq!(
+        candidate_moves(&out).len(),
+        level::policy(MIN_ELO).candidates,
+        "Threads took effect against a standing level"
+    );
+}
+
 /// A level must change what the engine plays. An option accepted and ignored
 /// passes every other gate here, so this is the one that says it does something.
 #[test]

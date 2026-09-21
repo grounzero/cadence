@@ -298,9 +298,9 @@ impl Session {
         // Unknown options are ignored; a GUI sends whatever it was told to.
     }
 
-    /// `setoption name Threads value <n>`: how many searches one `go` runs. Clamped rather than
-    /// refused, for [`Session::set_hash`]'s reason: a GUI that sends an out-of-range value is
-    /// not going to send another.
+    /// `setoption name Threads value <n>`: how many searches one `go` runs, clamped rather than
+    /// refused for [`Session::set_hash`]'s reason. A standing level holds it at one, because a
+    /// level's move is reproducible only where the search is.
     fn set_threads(&mut self, value: &str) {
         let Ok(asked) = value.trim().parse::<usize>() else {
             say(format_args!(
@@ -308,7 +308,15 @@ impl Session {
             ));
             return;
         };
-        self.threads = asked.clamp(1, MAX_THREADS);
+        let asked = asked.clamp(1, MAX_THREADS);
+        if asked > 1 && self.limit_strength {
+            say(format_args!(
+                "info string setoption Threads: a level is reproducible only on one thread, \
+                 so Threads stays at 1 while UCI_LimitStrength is on"
+            ));
+            return;
+        }
+        self.threads = asked;
     }
 
     /// `setoption name <param> value <v>` for a tunable constant: clamped into its range, and
@@ -347,13 +355,20 @@ impl Session {
     }
 
     /// `setoption name UCI_LimitStrength value <bool>`: whether the engine plays down at all.
-    /// It refuses to engage while more than one line is reported, because the level owns the
-    /// line count and two writers of one field would leave neither option honest.
+    /// It refuses to engage beside `MultiPV` or `Threads` above one, because the level owns the
+    /// line count and its move is reproducible only on one thread.
     fn set_limit_strength(&mut self, value: &str) {
         if value.eq_ignore_ascii_case("true") {
             if self.multipv > 1 {
                 say(format_args!(
                     "info string setoption UCI_LimitStrength: UCI_Elo needs MultiPV at 1, so \
+                     the level is not engaged"
+                ));
+                return;
+            }
+            if self.threads > 1 {
+                say(format_args!(
+                    "info string setoption UCI_LimitStrength: UCI_Elo needs Threads at 1, so \
                      the level is not engaged"
                 ));
                 return;
