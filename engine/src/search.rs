@@ -12,6 +12,7 @@ use cadence_core::{Colour, MAX_PLY, Move, MoveList, generate_legal, generate_noi
 use crate::corrhist::CorrectionHistory;
 use crate::eval;
 use crate::history::{self, History};
+use crate::level;
 use crate::picker;
 use crate::position::Position;
 use crate::score::{self, DRAW, INFINITE, Score, mated_in};
@@ -529,6 +530,41 @@ impl<'a> Search<'a> {
         }
         self.wait_if_open_ended();
         self.publish_nodes();
+        self.best
+    }
+
+    /// Replace the best move with one sampled from the lines within `policy`'s
+    /// margin, and return it. **Called by the caller after `run` has returned**,
+    /// so the level is on no path inside the search and costs the default tree
+    /// nothing, not even a field on this struct.
+    pub fn sample(&mut self, policy: level::Policy, board: &Position) -> Move {
+        if self.lines.len() < 2 {
+            return self.best;
+        }
+        let best = self.lines[0].score;
+        // The lines are sorted descending, so the first one outside the margin
+        // ends the candidate set rather than being skipped over.
+        let admitted = self
+            .lines
+            .iter()
+            .take_while(|line| best - line.score <= policy.margin)
+            .count()
+            .max(1);
+        let deficits: Vec<i32> = self.lines[..admitted]
+            .iter()
+            .map(|line| best - line.score)
+            .collect();
+        // The seed is the position and the move number, never the process and
+        // never the search's own depth, which would make the reply depend on how
+        // fast the machine was. The move number is what makes a repetition of one
+        // position a fresh draw rather than the same move twice.
+        let seed = board.board().key() ^ u64::from(board.board().fullmove_number()).rotate_left(32);
+        let chosen = level::choose(&deficits, policy.halving, seed);
+        let line = &self.lines[chosen];
+        self.best = line.mv;
+        self.score = line.score;
+        self.pv.clear();
+        self.pv.extend_from_slice(&line.pv);
         self.best
     }
 

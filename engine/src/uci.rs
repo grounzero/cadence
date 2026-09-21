@@ -12,6 +12,7 @@ use cadence_core::Move;
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci, to_uci};
 
+use crate::level;
 use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
@@ -50,6 +51,12 @@ pub struct Session {
     /// `MultiPV`: how many principal variations a search reports. One is the default, and at
     /// one the engine reports what it did without it.
     multipv: usize,
+    /// `UCI_LimitStrength`: whether the engine plays down at all. A boolean rather than a
+    /// sentinel value of the number, so no arithmetic on a rating can turn the feature on.
+    limit_strength: bool,
+    /// `UCI_Elo`: the rating the level aims at, which picks a rung of `level::LADDER`. Read
+    /// only where `limit_strength` is set, so its value alone reaches nothing.
+    elo: u32,
     /// `Ponder`: whether the GUI intends to think on our move, which is what decides whether a
     /// `bestmove` offers a move to ponder on. Off by default, and off is what every rating list
     /// and every SPRT plays.
@@ -97,6 +104,8 @@ impl Session {
             chess960: false,
             tt: Arc::new(tt),
             multipv: 1,
+            limit_strength: false,
+            elo: level::MAX_ELO,
             ponder: false,
             threads: DEFAULT_THREADS,
             tunables: Tunables::DEFAULT,
@@ -189,6 +198,19 @@ impl Session {
                 say(format_args!(
                     "option name MultiPV type spin default 1 min 1 max {MAX_MOVES}"
                 ));
+                // The strength pair, declared as a GUI and the bridge already expect it. The
+                // boolean is the gate and the number is inert without it, which is what lets a
+                // GUI send a rating it read off an opponent without changing how the engine
+                // plays.
+                say(format_args!(
+                    "option name UCI_LimitStrength type check default false"
+                ));
+                say(format_args!(
+                    "option name UCI_Elo type spin default {} min {} max {}",
+                    level::MAX_ELO,
+                    level::MIN_ELO,
+                    level::MAX_ELO
+                ));
                 // `Ponder` is what a GUI reads to decide whether to think on our move at all,
                 // and it is what puts the move to ponder on into the `bestmove` line. Off by
                 // default: pondering doubles the thinking one side gets, which is why every
@@ -258,6 +280,10 @@ impl Session {
             self.set_hash(&value);
         } else if name.eq_ignore_ascii_case("MultiPV") {
             self.set_multipv(&value);
+        } else if name.eq_ignore_ascii_case("UCI_LimitStrength") {
+            self.set_limit_strength(&value);
+        } else if name.eq_ignore_ascii_case("UCI_Elo") {
+            self.set_elo(&value);
         } else if name.eq_ignore_ascii_case("Ponder") {
             if value.eq_ignore_ascii_case("true") {
                 self.ponder = true;
@@ -272,9 +298,9 @@ impl Session {
         // Unknown options are ignored; a GUI sends whatever it was told to.
     }
 
-    /// `setoption name Threads value <n>`: how many searches one `go` runs. Clamped rather than
-    /// refused, for [`Session::set_hash`]'s reason: a GUI that sends an out-of-range value is
-    /// not going to send another.
+    /// `setoption name Threads value <n>`: how many searches one `go` runs, clamped rather than
+    /// refused for [`Session::set_hash`]'s reason. A standing level holds it at one, because a
+    /// level's move is reproducible only where the search is.
     fn set_threads(&mut self, value: &str) {
         let Ok(asked) = value.trim().parse::<usize>() else {
             say(format_args!(
@@ -282,7 +308,15 @@ impl Session {
             ));
             return;
         };
-        self.threads = asked.clamp(1, MAX_THREADS);
+        let asked = asked.clamp(1, MAX_THREADS);
+        if asked > 1 && self.limit_strength {
+            say(format_args!(
+                "info string setoption Threads: a level is reproducible only on one thread, \
+                 so Threads stays at 1 while UCI_LimitStrength is on"
+            ));
+            return;
+        }
+        self.threads = asked;
     }
 
     /// `setoption name <param> value <v>` for a tunable constant: clamped into its range, and
@@ -309,7 +343,59 @@ impl Session {
             ));
             return;
         };
-        self.multipv = asked.clamp(1, MAX_MOVES);
+        let asked = asked.clamp(1, MAX_MOVES);
+        if asked > 1 && self.limit_strength {
+            say(format_args!(
+                "info string setoption MultiPV: a level owns the line count, so MultiPV stays \
+                 at 1 while UCI_LimitStrength is on"
+            ));
+            return;
+        }
+        self.multipv = asked;
+    }
+
+    /// `setoption name UCI_LimitStrength value <bool>`: whether the engine plays down at all.
+    /// It refuses to engage beside `MultiPV` or `Threads` above one, because the level owns the
+    /// line count and its move is reproducible only on one thread.
+    fn set_limit_strength(&mut self, value: &str) {
+        if value.eq_ignore_ascii_case("true") {
+            if self.multipv > 1 {
+                say(format_args!(
+                    "info string setoption UCI_LimitStrength: UCI_Elo needs MultiPV at 1, so \
+                     the level is not engaged"
+                ));
+                return;
+            }
+            if self.threads > 1 {
+                say(format_args!(
+                    "info string setoption UCI_LimitStrength: UCI_Elo needs Threads at 1, so \
+                     the level is not engaged"
+                ));
+                return;
+            }
+            self.limit_strength = true;
+        } else if value.eq_ignore_ascii_case("false") {
+            self.limit_strength = false;
+        }
+    }
+
+    /// `setoption name UCI_Elo value <rating>`: the rating a level aims at. Clamped into the
+    /// ladder's declared range, and inert on its own: nothing reads it while
+    /// `UCI_LimitStrength` is false.
+    fn set_elo(&mut self, value: &str) {
+        let Ok(asked) = value.trim().parse::<u32>() else {
+            say(format_args!(
+                "info string setoption UCI_Elo: `{value}` is not a number, ignoring it"
+            ));
+            return;
+        };
+        self.elo = asked.clamp(level::MIN_ELO, level::MAX_ELO);
+    }
+
+    /// The policy a `go` runs under, or `None` where the engine plays its own game. This is the
+    /// only place the two options are read together, and it is what the search is handed.
+    fn level(&self) -> Option<level::Policy> {
+        self.limit_strength.then(|| level::policy(self.elo))
     }
 
     /// `setoption name Hash value <mebibytes>`: a new table of that size. Out-of-range values
@@ -411,7 +497,8 @@ impl Session {
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let board = self.board.duplicate();
         let chess960 = self.chess960;
-        let multipv = self.multipv;
+        let level = self.level();
+        let multipv = level.map_or(self.multipv, |policy| policy.candidates);
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
@@ -441,7 +528,10 @@ impl Session {
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
                         search.set_tunables(tunables);
-                        let best = search.run(&mut pos, &mut out);
+                        let mut best = search.run(&mut pos, &mut out);
+                        if let Some(policy) = level {
+                            best = search.sample(policy, &pos);
+                        }
                         (best, search.pv().to_vec())
                     } else {
                         parallel_search(ParallelGo {
@@ -453,6 +543,7 @@ impl Session {
                             chess960,
                             threads,
                             multipv,
+                            level,
                             tunables,
                         })
                     };
@@ -518,6 +609,10 @@ struct ParallelGo<'a> {
     chess960: bool,
     threads: usize,
     multipv: usize,
+    /// The level the primary plays down to, or `None` for full strength. Helpers
+    /// never carry it: they fill the table and report nothing, so a level on one
+    /// would buy a worse tree and no different move.
+    level: Option<level::Policy>,
     tunables: Tunables,
 }
 
@@ -534,6 +629,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         chess960,
         threads,
         multipv,
+        level,
         tunables,
     } = go;
     tt.new_search();
@@ -578,7 +674,10 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_multipv(multipv);
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
-    let best = search.run_in_current_generation(board, &mut out);
+    let mut best = search.run_in_current_generation(board, &mut out);
+    if let Some(policy) = level {
+        best = search.sample(policy, board);
+    }
     let pv = search.pv().to_vec();
 
     // The primary has answered, so the helpers have nothing left to contribute. They check the
