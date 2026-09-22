@@ -32,6 +32,11 @@ const FENS: [&str; 4] = [
 /// separate, and a fraction of a second in debug.
 const GATE_DEPTH: u32 = 7;
 
+/// The node budget the abort gate searches under. Enough to pass several
+/// iterations and never enough to finish the one it is cut off in, which is the
+/// condition every limit but a fixed depth puts the search under.
+const GATE_NODES: u64 = 300_000;
+
 /// Every rung of the compiled-in ladder, which is what a gate walks when it has
 /// to hold at every value rather than at one.
 fn rungs() -> Vec<u32> {
@@ -62,6 +67,19 @@ fn played(out: &[String]) -> String {
         .next()
         .unwrap_or_default()
         .to_string()
+}
+
+/// One search of `fen` under [`GATE_NODES`], which aborts its last iteration.
+fn search_to_node_limit(fen: &str, setup: &[&str]) -> Vec<String> {
+    let mut lines: Vec<&str> = setup.to_vec();
+    let position = format!("position fen {fen}");
+    lines.push(&position);
+    let (_, out) = Engine::go_within(
+        &lines,
+        &format!("go nodes {GATE_NODES}"),
+        std::time::Duration::from_secs(60),
+    );
+    out
 }
 
 /// The setup that turns a level on, which every behaviour gate below sends.
@@ -291,6 +309,60 @@ fn a_sampled_move_is_always_one_of_the_reported_candidates() {
             assert!(
                 seen.len() <= level::policy(elo).candidates,
                 "level {elo} reported more lines than its candidate count, on {fen}"
+            );
+        }
+    }
+}
+
+/// **A level samples under a limit that aborts, which is every limit a game is
+/// played under.** Fixed depth is the one that completes its last iteration, and
+/// it is the only one the other gates here use, so a sampler that read a
+/// half-finished iteration would pass all of them and fire in no real game.
+///
+/// Stated as a rate over positions rather than as one move, because sampling is
+/// allowed to return the best line and often should.
+#[test]
+fn a_level_samples_under_a_node_limit_as_well_as_a_fixed_depth() {
+    for elo in rungs() {
+        let mut deviated = 0;
+        let mut counted = 0;
+        for fen in FENS {
+            let out = search_to_node_limit(fen, &as_refs(&level_on(elo)));
+            let seen = candidate_moves(&out);
+            if seen.len() < 2 {
+                continue;
+            }
+            counted += 1;
+            if played(&out) != seen[0] {
+                deviated += 1;
+            }
+        }
+        assert!(
+            counted > 0,
+            "level {elo} reported fewer than two lines on every position, so the \
+             node limit left it nothing to sample from"
+        );
+        assert!(
+            deviated > 0,
+            "level {elo} played its best line on all {counted} positions under a \
+             node limit, so the level is inert wherever an iteration is cut short"
+        );
+    }
+}
+
+/// A level must report the lines it sampled among, whatever cut the search
+/// short. The board reads them to show the candidates and mark the one taken,
+/// and a truncated set is a different set from the one the move came from.
+#[test]
+fn a_level_reports_its_full_candidate_set_under_a_node_limit() {
+    for elo in rungs() {
+        let wanted = level::policy(elo).candidates;
+        for fen in FENS {
+            let out = search_to_node_limit(fen, &as_refs(&level_on(elo)));
+            assert_eq!(
+                candidate_moves(&out).len(),
+                wanted,
+                "level {elo} reported a short candidate set on {fen}"
             );
         }
     }
