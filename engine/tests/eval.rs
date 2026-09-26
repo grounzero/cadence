@@ -21,7 +21,7 @@ mod support;
 
 use cadence_core::position::Board;
 use cadence_core::{CastlingRights, Colour, FenStyle, START_FEN, generate_legal};
-use cadence_engine::eval::{PHASE_MAX, evaluate, phase};
+use cadence_engine::eval::{PHASE_MAX, WEIGHTS, evaluate, phase, trace};
 use cadence_engine::score::{MAX_EVAL, Score};
 use support::{Rng, mirror, mirror_fen};
 
@@ -202,18 +202,24 @@ fn the_evaluation_is_antisymmetric_under_a_colour_flip() {
     assert!(ending >= 200, "only {ending} positions at phase 0");
 }
 
+/// Absurd material, which `from_fen` accepts. The last two carry forty
+/// queens, which is enough for the evaluation's clamp to bind.
+const ABSURD: [&str; 6] = [
+    "QQQQQQQQ/QQQQQQQQ/8/8/8/8/8/k6K w - - 0 1",
+    "qqqqqqqq/qqqqqqqq/8/8/8/8/8/K6k w - - 0 1",
+    "RRRRRRRR/RRRRRRRR/RRRRRRRR/8/8/8/8/k6K b - - 0 1",
+    "k6K/8/8/8/8/nnnnnnnn/bbbbbbbb/qqqqqqqq w - - 0 1",
+    "QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/8/8/k6K b - - 0 1",
+    "K6k/8/8/qqqqqqqq/qqqqqqqq/qqqqqqqq/qqqqqqqq/qqqqqqqq w - - 0 1",
+];
+
 #[test]
 fn the_evaluation_stays_inside_the_evaluation_bound() {
     let mut positions = positions();
     // Absurd material, both ways, and the evaluation must still not reach
     // the mate scale: a mate score that is really an evaluation would be
     // preferred to a real mate, or feared like one.
-    for fen in [
-        "QQQQQQQQ/QQQQQQQQ/8/8/8/8/8/k6K w - - 0 1",
-        "qqqqqqqq/qqqqqqqq/8/8/8/8/8/K6k w - - 0 1",
-        "RRRRRRRR/RRRRRRRR/RRRRRRRR/8/8/8/8/k6K b - - 0 1",
-        "k6K/8/8/8/8/nnnnnnnn/bbbbbbbb/qqqqqqqq w - - 0 1",
-    ] {
+    for fen in ABSURD {
         positions.push(board(fen));
     }
     for b in &positions {
@@ -338,4 +344,61 @@ fn the_evaluation_prefers_a_centralised_knight_and_an_advanced_pawn() {
     let home_b = white(&board("4k3/4p3/8/8/8/8/8/4K3 w - - 0 1"));
     let second_b = white(&board("4k3/8/8/8/8/8/4p3/4K3 w - - 0 1"));
     assert!(second_b < home_b, "black pawn e7 {home_b} vs e2 {second_b}");
+}
+
+/// The evaluation from White's point of view before its clamp, rebuilt
+/// from the trace alone: the coefficients dotted with the weights, then
+/// blended by the phase. Wide arithmetic, so that nothing here can wrap
+/// where the evaluation's own does not.
+fn from_trace(b: &Board) -> i64 {
+    let t = trace(b);
+    let (mut mg, mut eg) = (0i64, 0i64);
+    for (c, w) in t.coefficients.iter().zip(WEIGHTS.iter()) {
+        mg += i64::from(*c) * i64::from(w.mg);
+        eg += i64::from(*c) * i64::from(w.eg);
+    }
+    let p = i64::from(t.phase);
+    let max = i64::from(PHASE_MAX);
+    (mg * p + eg * (max - p)) / max
+}
+
+#[test]
+fn the_trace_dotted_with_the_weights_is_the_evaluation() {
+    // The gate that keeps the tuner and the search on one evaluation. A
+    // term added to `evaluate` outside the walk the trace records, or a
+    // weight read from anywhere but the table, breaks it.
+    let mut positions = positions();
+    positions.extend(ABSURD.iter().map(|f| board(f)));
+    let bound = i64::from(MAX_EVAL - 1);
+    let (mut exact, mut clamped, mut rights_live, mut dfrc) = (0usize, 0usize, 0usize, 0usize);
+    for b in &positions {
+        let fen = b.to_fen(FenStyle::Shredder);
+        assert_eq!(trace(b).phase, phase(b), "{fen}");
+        let rebuilt = from_trace(b);
+        let evaluated = i64::from(white(b));
+        if rebuilt.abs() < bound {
+            // The clamp is the identity here, so this is equality before it.
+            assert_eq!(rebuilt, evaluated, "{fen}");
+            exact += 1;
+            if b.castling_rights() != CastlingRights::NONE {
+                rights_live += 1;
+            }
+            if is_dfrc(b) {
+                dfrc += 1;
+            }
+        } else {
+            assert_eq!(rebuilt.clamp(-bound, bound), evaluated, "{fen}");
+            clamped += 1;
+        }
+    }
+    println!(
+        "coverage: {exact} exact, {rights_live} with rights live, {dfrc} DFRC, {clamped} clamped"
+    );
+    assert!(exact >= 5000, "only {exact} positions compared exactly");
+    assert!(
+        rights_live >= 1000,
+        "only {rights_live} positions with castling rights live"
+    );
+    assert!(dfrc >= 500, "only {dfrc} DFRC positions");
+    assert!(clamped >= 2, "the clamp bound on only {clamped} positions");
 }

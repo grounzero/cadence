@@ -16,6 +16,7 @@ pub mod position;
 pub mod score;
 pub mod search;
 pub mod see;
+pub mod texel;
 pub mod time;
 pub mod tt;
 pub mod tune;
