@@ -26,9 +26,26 @@ const _: () = assert!(
 const MATERIAL_MG: [i32; 6] = [100, 320, 330, 500, 900, 0];
 const MATERIAL_EG: [i32; 6] = [110, 300, 310, 520, 920, 0];
 
-/// The piece-square tables, `[piece type][square]`, White's point of view.
-static PST_MG: [[i32; 64]; 6] = build_tables(true);
-static PST_EG: [[i32; 64]; 6] = build_tables(false);
+/// A middlegame and an endgame value: the unit every weight of the evaluation is stored in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pair {
+    pub mg: i32,
+    pub eg: i32,
+}
+
+/// Where material starts in [`WEIGHTS`]: one entry per piece type, by `PieceType::index`.
+pub const MATERIAL: usize = 0;
+
+/// Where the piece-square tables start in [`WEIGHTS`]: `64 * piece type + square`, White's
+/// point of view.
+pub const PST: usize = MATERIAL + 6;
+
+/// How many weights the evaluation reads.
+pub const WEIGHT_COUNT: usize = PST + 6 * 64;
+
+/// Every number the evaluation reads, in one table a tuner can address by index. Built at
+/// compile time from the material values and the named shapes below.
+pub static WEIGHTS: [Pair; WEIGHT_COUNT] = build_weights();
 
 // --- the tables ------------------------------------------------------------
 
@@ -134,20 +151,65 @@ const fn king(sq: i32, mg: bool) -> i32 {
     }
 }
 
-const fn build_tables(mg: bool) -> [[i32; 64]; 6] {
-    let mut t = [[0; 64]; 6];
+const fn build_weights() -> [Pair; WEIGHT_COUNT] {
+    let mut w = [Pair { mg: 0, eg: 0 }; WEIGHT_COUNT];
+    let mut pt = 0;
+    while pt < 6 {
+        w[MATERIAL + pt] = Pair {
+            mg: MATERIAL_MG[pt],
+            eg: MATERIAL_EG[pt],
+        };
+        pt += 1;
+    }
     let mut sq: i32 = 0;
     while sq < 64 {
         let i = sq as usize;
-        t[0][i] = pawn(sq, mg);
-        t[1][i] = knight(sq, mg);
-        t[2][i] = bishop(sq, mg);
-        t[3][i] = rook(sq, mg);
-        t[4][i] = queen(sq, mg);
-        t[5][i] = king(sq, mg);
+        w[PST + i] = Pair {
+            mg: pawn(sq, true),
+            eg: pawn(sq, false),
+        };
+        w[PST + 64 + i] = Pair {
+            mg: knight(sq, true),
+            eg: knight(sq, false),
+        };
+        w[PST + 2 * 64 + i] = Pair {
+            mg: bishop(sq, true),
+            eg: bishop(sq, false),
+        };
+        w[PST + 3 * 64 + i] = Pair {
+            mg: rook(sq, true),
+            eg: rook(sq, false),
+        };
+        w[PST + 4 * 64 + i] = Pair {
+            mg: queen(sq, true),
+            eg: queen(sq, false),
+        };
+        w[PST + 5 * 64 + i] = Pair {
+            mg: king(sq, true),
+            eg: king(sq, false),
+        };
         sq += 1;
     }
-    t
+    w
+}
+
+/// The name a weight is reported under: `material.knight` or `pst.knight.d4`. For the tuner
+/// and its output; nothing on a search path reads it.
+///
+/// # Panics
+///
+/// If `index` is not below [`WEIGHT_COUNT`]. That is a caller naming a weight that does not exist.
+#[must_use]
+pub fn weight_name(index: usize) -> String {
+    const NAMES: [&str; 6] = ["pawn", "knight", "bishop", "rook", "queen", "king"];
+    assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
+    if index < PST {
+        format!("material.{}", NAMES[index - MATERIAL])
+    } else {
+        let (pt, sq) = ((index - PST) / 64, (index - PST) % 64);
+        let square = Square::new(sq as u8);
+        format!("pst.{}.{square}", NAMES[pt])
+    }
 }
 
 // --- the evaluation --------------------------------------------------------
@@ -164,31 +226,73 @@ pub fn phase(board: &Board) -> i32 {
     phase.min(PHASE_MAX)
 }
 
-/// The static evaluation of `board` from the side to move's point of view, in centipawns,
-/// strictly inside `(-MAX_EVAL, MAX_EVAL)`.
-#[must_use]
-pub fn evaluate(board: &Board) -> Score {
-    let mut mg = 0;
-    let mut eg = 0;
+/// What the evaluation's walk over the board reports to: each weight it reads, and how many
+/// times, from White's point of view. The search sums through [`evaluate`] and the tuner records
+/// through [`trace`], and both are one walk, so the two cannot disagree about what is evaluated.
+pub trait Sink {
+    /// Counts weight `index` `count` times, negative for Black.
+    fn add(&mut self, index: usize, count: i32);
+}
+
+/// The sink the search evaluates with: every reported weight, summed.
+struct Sum {
+    mg: i32,
+    eg: i32,
+}
+
+impl Sink for Sum {
+    #[inline(always)]
+    fn add(&mut self, index: usize, count: i32) {
+        let w = WEIGHTS[index];
+        self.mg += count * w.mg;
+        self.eg += count * w.eg;
+    }
+}
+
+/// The sink a tuner reads: the net count of each weight over both colours, and the phase. The
+/// evaluation before its clamp is these coefficients dotted with [`WEIGHTS`], blended by `phase`.
+#[derive(Clone, Debug)]
+pub struct Trace {
+    pub coefficients: [i32; WEIGHT_COUNT],
+    pub phase: i32,
+}
+
+impl Sink for Trace {
+    #[inline]
+    fn add(&mut self, index: usize, count: i32) {
+        self.coefficients[index] += count;
+    }
+}
+
+/// Every term of the evaluation, reported to `sink`; returns the phase, `0..=PHASE_MAX`.
+#[inline(always)]
+fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     let mut phase = 0;
     for pt in PieceType::ALL {
         let i = pt.index();
         for sq in board.pieces(Colour::White, pt) {
-            mg += MATERIAL_MG[i] + PST_MG[i][sq.index()];
-            eg += MATERIAL_EG[i] + PST_EG[i][sq.index()];
+            sink.add(MATERIAL + i, 1);
+            sink.add(PST + 64 * i + sq.index(), 1);
             phase += PHASE_WEIGHT[i];
         }
         for sq in board.pieces(Colour::Black, pt) {
-            let s = sq.flip_vertical().index();
-            mg -= MATERIAL_MG[i] + PST_MG[i][s];
-            eg -= MATERIAL_EG[i] + PST_EG[i][s];
+            sink.add(MATERIAL + i, -1);
+            sink.add(PST + 64 * i + sq.flip_vertical().index(), -1);
             phase += PHASE_WEIGHT[i];
         }
     }
-    let phase = phase.min(PHASE_MAX);
+    phase.min(PHASE_MAX)
+}
+
+/// The static evaluation of `board` from the side to move's point of view, in centipawns,
+/// strictly inside `(-MAX_EVAL, MAX_EVAL)`.
+#[must_use]
+pub fn evaluate(board: &Board) -> Score {
+    let mut sum = Sum { mg: 0, eg: 0 };
+    let phase = terms(board, &mut sum);
     // Truncating division: symmetric under negation, so the mirror of a position evaluates to
     // the exact negative.
-    let white = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX;
+    let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
     // A position with absurd material -- `from_fen` accepts sixty queens -- must still not
     // reach the mate scale.
     let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
@@ -198,8 +302,20 @@ pub fn evaluate(board: &Board) -> Score {
     }
 }
 
+/// The coefficient of every weight in the evaluation of `board`, from White's point of view
+/// whichever side is to move. For the tuner and its gate; the search never calls it.
+#[must_use]
+pub fn trace(board: &Board) -> Trace {
+    let mut t = Trace {
+        coefficients: [0; WEIGHT_COUNT],
+        phase: 0,
+    };
+    t.phase = terms(board, &mut t);
+    t
+}
+
 /// The middlegame and endgame piece-square values of a piece of `pt` on `sq`, from the point of
-/// view of the colour that owns it. For inspection and tests; the evaluation reads the tables
+/// view of the colour that owns it. For inspection and tests; the evaluation reads [`WEIGHTS`]
 /// directly.
 #[must_use]
 pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
@@ -207,5 +323,6 @@ pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
         Colour::White => sq.index(),
         Colour::Black => sq.flip_vertical().index(),
     };
-    (PST_MG[pt.index()][s], PST_EG[pt.index()][s])
+    let w = WEIGHTS[PST + 64 * pt.index() + s];
+    (w.mg, w.eg)
 }
