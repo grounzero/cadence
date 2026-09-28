@@ -304,7 +304,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("cadence texel: {e}");
             eprintln!(
-                "usage: cadence texel <data> [--holdout N] [--iterations N] [--rate R] \
+                "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
                  [--threads N] [--report N] [--k K] [--tune PREFIX]..."
             );
             ExitCode::from(2)
@@ -315,6 +315,7 @@ pub fn run(args: &[String]) -> ExitCode {
 fn tune_from_args(args: &[String]) -> Result<(), String> {
     let mut data = None;
     let mut holdout = 10usize;
+    let mut holdout_file = None;
     let mut k = None;
     let mut prefixes = Vec::new();
     let mut settings = Settings {
@@ -334,6 +335,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         let count = |name: &str, v: String| v.parse::<usize>().map_err(|_| format!("bad {name}"));
         match arg.as_str() {
             "--holdout" => holdout = count(arg, value(arg)?)?,
+            "--holdout-file" => holdout_file = Some(value(arg)?),
             "--iterations" => settings.iterations = count(arg, value(arg)?)?,
             "--rate" => settings.rate = number(arg, value(arg)?)?,
             "--threads" => settings.threads = count(arg, value(arg)?)?.max(1),
@@ -347,13 +349,19 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
     }
     let data = data.ok_or_else(|| "no data set named".to_string())?;
     let all = read(&data)?;
-    // Every `holdout`-th position is held out, so the split is a function of the file alone.
+    // A named holdout is used whole; otherwise every `holdout`-th position is held out, so the
+    // split is a function of the file alone.
     let (mut train, mut held) = (Vec::new(), Vec::new());
-    for (i, s) in all.into_iter().enumerate() {
-        if holdout > 0 && i % holdout == 0 {
-            held.push(s);
-        } else {
-            train.push(s);
+    if let Some(path) = &holdout_file {
+        train = all;
+        held = read(path)?;
+    } else {
+        for (i, s) in all.into_iter().enumerate() {
+            if holdout > 0 && i % holdout == 0 {
+                held.push(s);
+            } else {
+                train.push(s);
+            }
         }
     }
     if train.is_empty() {
