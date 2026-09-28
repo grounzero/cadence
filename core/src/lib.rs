@@ -24,6 +24,7 @@ pub mod movegen;
 pub mod mv;
 pub mod perft;
 pub mod position;
+pub mod rng;
 pub mod types;
 pub mod zobrist;
 

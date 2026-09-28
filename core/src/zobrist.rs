@@ -5,17 +5,8 @@
 //! agree.
 
 use crate::castling::CastlingRights;
+use crate::rng::splitmix64;
 use crate::types::{File, Piece, Square};
-
-/// The generator state after each draw. splitmix64: twelve lines, and its output is a bijection
-/// of a counter, so distinct draws are distinct until the counter wraps at 2^64.
-const fn splitmix64(state: u64) -> (u64, u64) {
-    let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    (z ^ (z >> 31), state)
-}
 
 /// Fixed for the life of the crate. Changing it changes every key, which is harmless to the
 /// engine and fatal to any stored table or datagen record that carried keys.

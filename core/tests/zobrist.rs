@@ -96,3 +96,13 @@ fn keys_are_stable_and_typed() {
         "a key with an empty high half"
     );
 }
+
+/// A fold of every key, pinned: an edit to the generator the keys are drawn from changes it. The
+/// figure was read off the tree before the generator moved into `rng`, which is what it guards.
+#[test]
+fn the_keys_are_the_ones_every_build_has_drawn() {
+    let fold = all_keys()
+        .iter()
+        .fold(0u64, |acc, (_, k)| acc.rotate_left(5) ^ k);
+    assert_eq!(fold, 0x7783_5b29_2791_1031, "fold {fold:#018x}");
+}
