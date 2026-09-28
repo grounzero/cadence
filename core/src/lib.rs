@@ -16,6 +16,7 @@ pub const MAX_PLY: usize = 256;
 pub mod attacks;
 pub mod bitboard;
 pub mod castling;
+pub mod chess960;
 pub mod dirty;
 pub mod features;
 pub mod fen;
