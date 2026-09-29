@@ -303,6 +303,20 @@ pub fn tune(
     settings: &Settings,
     out: &mut dyn Write,
 ) -> Vec<Real> {
+    let halves: Vec<[bool; 2]> = tuned.iter().map(|&t| [t, t]).collect();
+    tune_halves(samples, weights, &halves, k, settings, out)
+}
+
+/// [`tune`] with the middlegame and endgame half of each weight frozen or free separately. A frozen
+/// half is returned exactly as given.
+pub fn tune_halves(
+    samples: &[Sample],
+    weights: &[Real],
+    tuned: &[[bool; 2]],
+    k: impl Into<Scale>,
+    settings: &Settings,
+    out: &mut dyn Write,
+) -> Vec<Real> {
     const BETA1: f64 = 0.9;
     const BETA2: f64 = 0.999;
     const EPSILON: f64 = 1e-8;
@@ -318,8 +332,8 @@ pub fn tune(
         }
         b1 *= BETA1;
         b2 *= BETA2;
-        for i in (0..w.len()).filter(|&i| tuned[i]) {
-            for j in 0..2 {
+        for i in 0..w.len() {
+            for j in (0..2).filter(|&j| tuned[i][j]) {
                 let slope = grad[i][j];
                 first[i][j] = BETA1 * first[i][j] + (1.0 - BETA1) * slope;
                 second[i][j] = BETA2 * second[i][j] + (1.0 - BETA2) * slope * slope;
@@ -330,6 +344,33 @@ pub fn tune(
         }
     }
     w
+}
+
+/// How much of the training set each half of each weight rests on: the sum over positions of the
+/// coefficient's size times that half's share of the phase. A half resting on little data is fitted
+/// to a few positions, which is what `--min-weight` freezes.
+#[must_use]
+pub fn weight_mass(samples: &[Sample], threads: usize) -> Vec<Real> {
+    let max = f64::from(PHASE_MAX);
+    let parts = over_chunks(samples, threads, &|part: &[Sample]| {
+        let mut mass = vec![[0.0; 2]; WEIGHT_COUNT];
+        for s in part {
+            for &(i, c) in &s.coefficients {
+                let size = f64::from(c.unsigned_abs());
+                mass[usize::from(i)][0] += size * s.phase / max;
+                mass[usize::from(i)][1] += size * (max - s.phase) / max;
+            }
+        }
+        mass
+    });
+    let mut total = vec![[0.0; 2]; WEIGHT_COUNT];
+    for part in parts {
+        for (a, b) in total.iter_mut().zip(&part) {
+            a[0] += b[0];
+            a[1] += b[1];
+        }
+    }
+    total
 }
 
 /// Which weights a run may move: every weight whose name starts with one of `prefixes`, or every
@@ -372,7 +413,7 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("cadence texel: {e}");
             eprintln!(
                 "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
-                 [--threads N] [--report N] [--k K | --phase-k] [--tune PREFIX]..."
+                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--tune PREFIX]..."
             );
             ExitCode::from(2)
         }
@@ -400,6 +441,26 @@ fn split(
     Ok((train, held))
 }
 
+/// The halves a run moves: those `tuned` marks, less any resting on under `min_weight` of the
+/// training set. Returns the halves and one `sparse` line for each half the rule froze.
+fn freeze_sparse(tuned: &[bool], mass: &[Real], min_weight: f64) -> (Vec<[bool; 2]>, Vec<String>) {
+    let mut lines = Vec::new();
+    let halves = (0..WEIGHT_COUNT)
+        .map(|i| {
+            let mut half = [tuned[i], tuned[i]];
+            for (j, name) in ["mg", "eg"].into_iter().enumerate() {
+                if half[j] && mass[i][j] < min_weight {
+                    half[j] = false;
+                    let size = mass[i][j];
+                    lines.push(format!("sparse {} {name} {size:.1}", eval::weight_name(i)));
+                }
+            }
+            half
+        })
+        .collect();
+    (halves, lines)
+}
+
 /// The scaling a run holds fixed: the one given, or fitted once under the starting table.
 fn choose_k(
     k: Option<f64>,
@@ -422,6 +483,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
     let mut holdout_file = None;
     let mut k = None;
     let mut phase_k = false;
+    let mut min_weight = 0.0;
     let mut prefixes = Vec::new();
     let mut settings = Settings {
         iterations: 1000,
@@ -450,6 +512,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
             "--threads" => settings.threads = count(arg, value(arg)?)?.max(1),
             "--report" => settings.report = count(arg, value(arg)?)?,
             "--k" => k = Some(number(arg, value(arg)?)?),
+            "--min-weight" => min_weight = number(arg, value(arg)?)?,
             "--tune" => prefixes.push(value(arg)?),
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             path if data.is_none() => data = Some(path.to_string()),
@@ -491,7 +554,11 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         loss(&train, &start, k, t),
         loss(&held, &start, k, t)
     );
-    let end = tune(&train, &start, &tuned, k, &settings, &mut out);
+    let (halves, sparse) = freeze_sparse(&tuned, &weight_mass(&train, t), min_weight);
+    for line in &sparse {
+        let _ = writeln!(out, "{line}");
+    }
+    let end = tune_halves(&train, &start, &halves, k, &settings, &mut out);
     // The table the engine would read is the rounded one, so its loss is the one that counts.
     let rounded: Vec<Real> = end.iter().map(|w| [w[0].round(), w[1].round()]).collect();
     for (label, w) in [("after", &end), ("rounded", &rounded)] {

@@ -16,7 +16,7 @@ use cadence_engine::eval::{self, MATERIAL, evaluate};
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
     Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, initial_weights, loss, mask,
-    parse_line, sigmoid, tune,
+    parse_line, sigmoid, tune, tune_halves, weight_mass,
 };
 use support::Rng;
 
@@ -203,6 +203,66 @@ fn the_gradient_under_a_per_phase_k_is_the_derivative_of_the_loss() {
             (numeric - analytic).abs() <= 1e-6 * analytic.abs().max(1e-6),
             "weight {i} half {j}: numeric {numeric} analytic {analytic}"
         );
+    }
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the masses are sums of exact binary fractions of 24ths, so equality is the claim"
+)]
+fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
+    // A lone knight weighs one twenty-fourth of the phase: that much middlegame, the rest endgame.
+    let board = Board::from_fen("8/8/8/4k3/3N4/8/8/4K3 w - - 0 1").expect("fen");
+    let mass = weight_mass(&[Sample::new(&board, 1.0)], 1);
+    let name = |i: usize| eval::weight_name(i);
+    let find = |n: &str| (0..mass.len()).find(|&i| name(i) == n).expect(n);
+    for n in [
+        "material.knight",
+        "pst.knight.d4",
+        "pst.king.e1",
+        "pst.king.e4",
+    ] {
+        assert_eq!(mass[find(n)], [1.0 / 24.0, 23.0 / 24.0], "{n}");
+    }
+    assert_eq!(mass[find("pst.knight.e4")], [0.0, 0.0]);
+    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 4);
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "a frozen half is returned exactly as given, which is the property"
+)]
+fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
+    let start = initial_weights();
+    let mut truth = start.clone();
+    truth[MATERIAL + 1] = [400.0, 380.0];
+    let samples = labelled(&truth, 1.0);
+    let mut tuned = vec![[false; 2]; start.len()];
+    tuned[MATERIAL + 1] = [true, false];
+    let settings = Settings {
+        iterations: 200,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+    };
+    let end = tune_halves(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    assert_eq!(end[MATERIAL + 1][1], start[MATERIAL + 1][1]);
+    assert!(
+        end[MATERIAL + 1][0] > start[MATERIAL + 1][0] + 20.0,
+        "{:?}",
+        end[MATERIAL + 1]
+    );
+    for i in (0..start.len()).filter(|&i| i != MATERIAL + 1) {
+        assert_eq!(end[i], start[i], "{}", eval::weight_name(i));
     }
 }
 
