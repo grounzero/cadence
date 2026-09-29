@@ -189,7 +189,9 @@ fn the_gate_alone_takes_the_top_of_the_ladder() {
 /// from a level that is on, which is the failure a GUI would never see.
 #[test]
 fn a_level_refuses_while_more_than_one_line_is_reported() {
-    let plain = search(FENS[0], &[]);
+    // The same four lines with no level: MultiPV can change the best move at a fixed depth, so
+    // a refused level is measured against it and not against a single-line search.
+    let plain = search(FENS[0], &["setoption name MultiPV value 4"]);
     let on = level_on(MIN_ELO);
 
     let mut level_last = vec!["setoption name MultiPV value 4".to_string()];
