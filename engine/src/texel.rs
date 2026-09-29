@@ -11,7 +11,7 @@ use std::thread;
 
 use cadence_core::position::Board;
 
-use crate::eval::{self, PHASE_MAX, WEIGHT_COUNT, WEIGHTS};
+use crate::eval::{self, PHASE_MAX, PST, WEIGHT_COUNT, WEIGHTS};
 
 /// How many parts a sum over the data set is split into, whatever the thread count. Floating-point
 /// addition is not associative, so a fixed split summed in order is what makes a run repeat exactly.
@@ -291,6 +291,9 @@ pub struct Settings {
     pub threads: usize,
     /// Print the training loss every this many iterations; zero never.
     pub report: usize,
+    /// The ridge: this times the squared distance of each tuned half from where it started is
+    /// added to what the run minimises. Zero is no pull, and the reported losses never include it.
+    pub ridge: f64,
 }
 
 /// Runs Adam from `weights` for `settings.iterations` full-batch steps and returns the result. A
@@ -334,7 +337,7 @@ pub fn tune_halves(
         b2 *= BETA2;
         for i in 0..w.len() {
             for j in (0..2).filter(|&j| tuned[i][j]) {
-                let slope = grad[i][j];
+                let slope = grad[i][j] + 2.0 * settings.ridge * (w[i][j] - weights[i][j]);
                 first[i][j] = BETA1 * first[i][j] + (1.0 - BETA1) * slope;
                 second[i][j] = BETA2 * second[i][j] + (1.0 - BETA2) * slope * slope;
                 let mean = first[i][j] / (1.0 - b1);
@@ -342,8 +345,27 @@ pub fn tune_halves(
                 w[i][j] -= settings.rate * mean / (spread.sqrt() + EPSILON);
             }
         }
+        pin_king_level(&mut w, weights, tuned);
     }
     w
+}
+
+/// Holds the king table's mean, per half, where it started. Each side has exactly one king, so
+/// the level cancels in every evaluation and the data cannot place it; left free it drifts.
+fn pin_king_level(w: &mut [Real], start: &[Real], tuned: &[[bool; 2]]) {
+    let king = PST + 5 * 64..PST + 6 * 64;
+    for j in 0..2 {
+        let free: Vec<usize> = king.clone().filter(|&i| tuned[i][j]).collect();
+        if free.is_empty() {
+            continue;
+        }
+        let drift: f64 = king.clone().map(|i| w[i][j] - start[i][j]).sum::<f64>();
+        #[expect(clippy::cast_precision_loss, reason = "at most 64 squares")]
+        let each = drift / free.len() as f64;
+        for i in free {
+            w[i][j] -= each;
+        }
+    }
 }
 
 /// How much of the training set each half of each weight rests on: the sum over positions of the
@@ -413,7 +435,7 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("cadence texel: {e}");
             eprintln!(
                 "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
-                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--tune PREFIX]..."
+                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--ridge L] [--tune PREFIX]..."
             );
             ExitCode::from(2)
         }
@@ -477,7 +499,19 @@ fn choose_k(
     })
 }
 
-fn tune_from_args(args: &[String]) -> Result<(), String> {
+/// What `cadence texel` was asked for.
+struct Args {
+    data: String,
+    holdout: usize,
+    holdout_file: Option<String>,
+    k: Option<f64>,
+    phase_k: bool,
+    min_weight: f64,
+    prefixes: Vec<String>,
+    settings: Settings,
+}
+
+fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut data = None;
     let mut holdout = 10usize;
     let mut holdout_file = None;
@@ -490,6 +524,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         rate: 1.0,
         threads: 1,
         report: 100,
+        ridge: 0.0,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -513,13 +548,36 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
             "--report" => settings.report = count(arg, value(arg)?)?,
             "--k" => k = Some(number(arg, value(arg)?)?),
             "--min-weight" => min_weight = number(arg, value(arg)?)?,
+            "--ridge" => settings.ridge = number(arg, value(arg)?)?,
             "--tune" => prefixes.push(value(arg)?),
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             path if data.is_none() => data = Some(path.to_string()),
             extra => return Err(format!("unexpected argument {extra}")),
         }
     }
-    let data = data.ok_or_else(|| "no data set named".to_string())?;
+    Ok(Args {
+        data: data.ok_or_else(|| "no data set named".to_string())?,
+        holdout,
+        holdout_file,
+        k,
+        phase_k,
+        min_weight,
+        prefixes,
+        settings,
+    })
+}
+
+fn tune_from_args(args: &[String]) -> Result<(), String> {
+    let Args {
+        data,
+        holdout,
+        holdout_file,
+        k,
+        phase_k,
+        min_weight,
+        prefixes,
+        settings,
+    } = parse_args(args)?;
     let (train, held) = split(read(&data)?, holdout, holdout_file.as_deref())?;
     if train.is_empty() {
         return Err("no training positions".to_string());

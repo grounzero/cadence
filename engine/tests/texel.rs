@@ -12,7 +12,7 @@ mod support;
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal};
-use cadence_engine::eval::{self, MATERIAL, evaluate};
+use cadence_engine::eval::{self, MATERIAL, PST, evaluate};
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
     Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, initial_weights, loss, mask,
@@ -246,6 +246,7 @@ fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
         rate: 2.0,
         threads: 1,
         report: 0,
+        ridge: 0.0,
     };
     let end = tune_halves(
         &samples,
@@ -266,6 +267,89 @@ fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
     }
 }
 
+/// The planted knight of the test below, fitted under a ridge of `ridge`.
+fn knight_under_ridge(ridge: f64) -> Real {
+    let start = initial_weights();
+    let mut truth = start.clone();
+    truth[MATERIAL + 1] = [400.0, 380.0];
+    let samples = labelled(&truth, 1.0);
+    let settings = Settings {
+        iterations: 400,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge,
+    };
+    let tuned = mask(&["material.knight".to_string()]);
+    tune(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    )[MATERIAL + 1]
+}
+
+#[test]
+fn the_ridge_holds_a_weight_nearer_its_start_the_stronger_it_is() {
+    let start = initial_weights()[MATERIAL + 1];
+    let fitted: Vec<Real> = [0.0, 1e-7, 1e-6, 1e-4]
+        .iter()
+        .map(|&r| knight_under_ridge(r))
+        .collect();
+    for pair in fitted.windows(2) {
+        assert!(pair[1][0] < pair[0][0], "{fitted:?}");
+    }
+    assert!(fitted[0][0] > 390.0, "unridged {:?}", fitted[0]);
+    assert!(
+        (fitted[3][0] - start[0]).abs() < 5.0,
+        "held {:?}",
+        fitted[3]
+    );
+}
+
+#[test]
+fn the_king_tables_level_is_invisible_to_the_loss_and_is_held() {
+    let start = initial_weights();
+    let samples = labelled(&start, 1.0);
+    let mut lifted = start.clone();
+    for w in &mut lifted[PST + 5 * 64..PST + 6 * 64] {
+        w[0] += 37.0;
+        w[1] -= 21.0;
+    }
+    let (a, b) = (
+        loss(&samples, &start, 1.0, 1),
+        loss(&samples, &lifted, 1.0, 1),
+    );
+    assert!((a - b).abs() < 1e-12, "{a} {b}");
+
+    // Fit the king squares towards a truth whose king table is lifted and reshaped.
+    let mut truth = lifted.clone();
+    truth[PST + 5 * 64 + 6][0] += 60.0;
+    let samples = labelled(&truth, 1.0);
+    let settings = Settings {
+        iterations: 300,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge: 0.0,
+    };
+    let end = tune(
+        &samples,
+        &start,
+        &mask(&["pst.king".to_string()]),
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    let king = PST + 5 * 64..PST + 6 * 64;
+    for j in 0..2 {
+        let mean = |w: &[Real]| king.clone().map(|i| w[i][j]).sum::<f64>() / 64.0;
+        assert!((mean(&end) - mean(&start)).abs() < 1e-9, "half {j}");
+    }
+}
+
 #[test]
 fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
     let start = initial_weights();
@@ -279,6 +363,7 @@ fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
         rate: 2.0,
         threads: 1,
         report: 0,
+        ridge: 0.0,
     };
     let end = tune(
         &samples,
