@@ -100,6 +100,29 @@ pub fn initial_weights() -> Vec<Real> {
         .collect()
 }
 
+/// The sigmoid's scaling, a middlegame and an endgame value tapered by phase as the evaluation
+/// is. One number is the same scaling in every phase, which is what `From<f64>` builds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scale {
+    pub mg: f64,
+    pub eg: f64,
+}
+
+impl Scale {
+    /// The scaling at `phase`, `PHASE_MAX` the middlegame and zero the endgame. Written as the
+    /// endgame plus a share of the difference, so equal halves give back exactly the one number.
+    #[must_use]
+    pub fn at(self, phase: f64) -> f64 {
+        self.eg + (self.mg - self.eg) * phase / f64::from(PHASE_MAX)
+    }
+}
+
+impl From<f64> for Scale {
+    fn from(k: f64) -> Scale {
+        Scale { mg: k, eg: k }
+    }
+}
+
 /// The predicted score of an evaluation `e` for scaling `k`: `1 / (1 + 10^(-k e / 400))`.
 #[must_use]
 pub fn sigmoid(e: f64, k: f64) -> f64 {
@@ -143,13 +166,14 @@ fn over_chunks<T: Send>(
     clippy::cast_precision_loss,
     reason = "a sample count is far below 2^52"
 )]
-pub fn loss(samples: &[Sample], weights: &[Real], k: f64, threads: usize) -> f64 {
+pub fn loss(samples: &[Sample], weights: &[Real], k: impl Into<Scale>, threads: usize) -> f64 {
     if samples.is_empty() {
         return 0.0;
     }
+    let k = k.into();
     let parts = over_chunks(samples, threads, &|part: &[Sample]| {
         part.iter()
-            .map(|s| (s.result - sigmoid(s.evaluate(weights), k)).powi(2))
+            .map(|s| (s.result - sigmoid(s.evaluate(weights), k.at(s.phase))).powi(2))
             .sum::<f64>()
     });
     parts.iter().sum::<f64>() / samples.len() as f64
@@ -161,16 +185,23 @@ pub fn loss(samples: &[Sample], weights: &[Real], k: f64, threads: usize) -> f64
     clippy::cast_precision_loss,
     reason = "a sample count is far below 2^52"
 )]
-pub fn gradient(samples: &[Sample], weights: &[Real], k: f64, threads: usize) -> (f64, Vec<Real>) {
+pub fn gradient(
+    samples: &[Sample],
+    weights: &[Real],
+    k: impl Into<Scale>,
+    threads: usize,
+) -> (f64, Vec<Real>) {
     let count = samples.len().max(1) as f64;
-    let scale = k * std::f64::consts::LN_10 / 400.0;
+    let k = k.into();
     let max = f64::from(PHASE_MAX);
     let parts = over_chunks(samples, threads, &|part: &[Sample]| {
         let mut sum = 0.0;
         let mut grad = vec![[0.0; 2]; weights.len()];
         for s in part {
-            let predicted = sigmoid(s.evaluate(weights), k);
+            let at = k.at(s.phase);
+            let predicted = sigmoid(s.evaluate(weights), at);
             sum += (s.result - predicted).powi(2);
+            let scale = at * std::f64::consts::LN_10 / 400.0;
             // d(loss)/d(evaluation) for this sample, before the mean.
             let slope = 2.0 * (predicted - s.result) * predicted * (1.0 - predicted) * scale;
             let dmg = slope * s.phase / max;
@@ -217,6 +248,41 @@ pub fn fit_k(samples: &[Sample], weights: &[Real], threads: usize) -> f64 {
     f64::midpoint(lo, hi)
 }
 
+/// The middlegame and endgame scalings that minimise the loss under `weights`, each by
+/// golden-section search with the other held, alternated from the single [`fit_k`]. A fixed
+/// number of rounds, so a run repeats exactly.
+#[must_use]
+pub fn fit_phase_k(samples: &[Sample], weights: &[Real], threads: usize) -> Scale {
+    const ROUNDS: usize = 8;
+    let ratio = (5f64.sqrt() - 1.0) / 2.0;
+    let mut k = Scale::from(fit_k(samples, weights, threads));
+    for _ in 0..ROUNDS {
+        for half in 0..2 {
+            let with = |v: f64| {
+                if half == 0 {
+                    Scale { mg: v, eg: k.eg }
+                } else {
+                    Scale { mg: k.mg, eg: v }
+                }
+            };
+            let (mut lo, mut hi) = (0.0f64, 10.0f64);
+            for _ in 0..40 {
+                let a = hi - ratio * (hi - lo);
+                let b = lo + ratio * (hi - lo);
+                if loss(samples, weights, with(a), threads)
+                    < loss(samples, weights, with(b), threads)
+                {
+                    hi = b;
+                } else {
+                    lo = a;
+                }
+            }
+            k = with(f64::midpoint(lo, hi));
+        }
+    }
+    k
+}
+
 /// How a run moves the weights: Adam over the weights `tuned` marks, every other weight frozen.
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -233,13 +299,14 @@ pub fn tune(
     samples: &[Sample],
     weights: &[Real],
     tuned: &[bool],
-    k: f64,
+    k: impl Into<Scale>,
     settings: &Settings,
     out: &mut dyn Write,
 ) -> Vec<Real> {
     const BETA1: f64 = 0.9;
     const BETA2: f64 = 0.999;
     const EPSILON: f64 = 1e-8;
+    let k = k.into();
     let mut w = weights.to_vec();
     let mut first = vec![[0.0; 2]; w.len()];
     let mut second = vec![[0.0; 2]; w.len()];
@@ -305,11 +372,48 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("cadence texel: {e}");
             eprintln!(
                 "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
-                 [--threads N] [--report N] [--k K] [--tune PREFIX]..."
+                 [--threads N] [--report N] [--k K | --phase-k] [--tune PREFIX]..."
             );
             ExitCode::from(2)
         }
     }
+}
+
+/// The training and holdout sets. A named holdout is used whole; otherwise every `holdout`-th
+/// position is held out, so the split is a function of the file alone.
+fn split(
+    all: Vec<Sample>,
+    holdout: usize,
+    holdout_file: Option<&str>,
+) -> Result<(Vec<Sample>, Vec<Sample>), String> {
+    if let Some(path) = holdout_file {
+        return Ok((all, read(path)?));
+    }
+    let (mut train, mut held) = (Vec::new(), Vec::new());
+    for (i, s) in all.into_iter().enumerate() {
+        if holdout > 0 && i % holdout == 0 {
+            held.push(s);
+        } else {
+            train.push(s);
+        }
+    }
+    Ok((train, held))
+}
+
+/// The scaling a run holds fixed: the one given, or fitted once under the starting table.
+fn choose_k(
+    k: Option<f64>,
+    phase_k: bool,
+    train: &[Sample],
+    start: &[Real],
+    threads: usize,
+) -> Result<Scale, String> {
+    Ok(match (k, phase_k) {
+        (Some(_), true) => return Err("--k and --phase-k are exclusive".to_string()),
+        (Some(k), false) => Scale::from(k),
+        (None, false) => Scale::from(fit_k(train, start, threads)),
+        (None, true) => fit_phase_k(train, start, threads),
+    })
 }
 
 fn tune_from_args(args: &[String]) -> Result<(), String> {
@@ -317,6 +421,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
     let mut holdout = 10usize;
     let mut holdout_file = None;
     let mut k = None;
+    let mut phase_k = false;
     let mut prefixes = Vec::new();
     let mut settings = Settings {
         iterations: 1000,
@@ -326,6 +431,10 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
+        if arg == "--phase-k" {
+            phase_k = true;
+            continue;
+        }
         let mut value = |name: &str| {
             it.next()
                 .ok_or_else(|| format!("{name} takes a value"))
@@ -348,22 +457,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         }
     }
     let data = data.ok_or_else(|| "no data set named".to_string())?;
-    let all = read(&data)?;
-    // A named holdout is used whole; otherwise every `holdout`-th position is held out, so the
-    // split is a function of the file alone.
-    let (mut train, mut held) = (Vec::new(), Vec::new());
-    if let Some(path) = &holdout_file {
-        train = all;
-        held = read(path)?;
-    } else {
-        for (i, s) in all.into_iter().enumerate() {
-            if holdout > 0 && i % holdout == 0 {
-                held.push(s);
-            } else {
-                train.push(s);
-            }
-        }
-    }
+    let (train, held) = split(read(&data)?, holdout, holdout_file.as_deref())?;
     if train.is_empty() {
         return Err("no training positions".to_string());
     }
@@ -373,7 +467,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
     }
     let start = initial_weights();
     let t = settings.threads;
-    let k = k.unwrap_or_else(|| fit_k(&train, &start, t));
+    let k = choose_k(k, phase_k, &train, &start, t)?;
     let mut out = std::io::stdout().lock();
     let _ = writeln!(
         out,
@@ -386,7 +480,11 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         "tuned {} of {WEIGHT_COUNT} weights",
         tuned.iter().filter(|t| **t).count()
     );
-    let _ = writeln!(out, "k {k:.6}");
+    let _ = if phase_k {
+        writeln!(out, "k mg {:.6} eg {:.6}", k.mg, k.eg)
+    } else {
+        writeln!(out, "k {:.6}", k.mg)
+    };
     let _ = writeln!(
         out,
         "before train {:.8} holdout {:.8}",

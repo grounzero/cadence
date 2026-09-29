@@ -15,7 +15,8 @@ use cadence_core::{Colour, START_FEN, generate_legal};
 use cadence_engine::eval::{self, MATERIAL, evaluate};
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
-    Real, Sample, Settings, fit_k, gradient, initial_weights, loss, mask, parse_line, sigmoid, tune,
+    Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, initial_weights, loss, mask,
+    parse_line, sigmoid, tune,
 };
 use support::Rng;
 
@@ -136,6 +137,73 @@ fn k_is_recovered() {
     let samples = labelled(&weights, 1.3);
     let k = fit_k(&samples, &weights, 1);
     assert!((k - 1.3).abs() < 1e-3, "k {k}");
+}
+
+/// Samples labelled under a scaling that differs by phase, so `k` is the scaling that minimises
+/// the loss under `truth`.
+fn labelled_by_phase(truth: &[Real], k: Scale) -> Vec<Sample> {
+    boards()
+        .iter()
+        .map(|b| {
+            let e = Sample::new(b, 0.0).evaluate(truth);
+            Sample::new(b, sigmoid(e, k.at(f64::from(eval::phase(b)))))
+        })
+        .collect()
+}
+
+#[test]
+fn a_per_phase_k_is_recovered() {
+    let weights = initial_weights();
+    let planted = Scale { mg: 0.6, eg: 1.1 };
+    let samples = labelled_by_phase(&weights, planted);
+    let k = fit_phase_k(&samples, &weights, 1);
+    assert!((k.mg - planted.mg).abs() < 1e-3, "mg {}", k.mg);
+    assert!((k.eg - planted.eg).abs() < 1e-3, "eg {}", k.eg);
+    // A single k is not the planted one, which is what makes the two halves worth fitting.
+    let single = fit_k(&samples, &weights, 1);
+    assert!(loss(&samples, &weights, k, 1) < loss(&samples, &weights, single, 1));
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact equality is the property: a plain k must reproduce earlier runs bit for bit"
+)]
+fn one_number_is_the_same_scaling_in_every_phase() {
+    let weights = initial_weights();
+    let samples = labelled(&weights, 1.3);
+    let k = fit_phase_k(&samples, &weights, 1);
+    assert!(
+        (k.mg - 1.3).abs() < 1e-3 && (k.eg - 1.3).abs() < 1e-3,
+        "{k:?}"
+    );
+    for phase in [0.0, 7.0, 24.0] {
+        assert_eq!(Scale::from(0.8).at(phase), 0.8);
+    }
+    assert_eq!(
+        gradient(&samples, &weights, 0.8, 1),
+        gradient(&samples, &weights, Scale::from(0.8), 1)
+    );
+}
+
+#[test]
+fn the_gradient_under_a_per_phase_k_is_the_derivative_of_the_loss() {
+    let weights = initial_weights();
+    let k = Scale { mg: 0.6, eg: 1.1 };
+    let samples = labelled_by_phase(&weights, Scale { mg: 0.9, eg: 0.7 });
+    let (_, grad) = gradient(&samples, &weights, k, 1);
+    let h = 1e-3;
+    for (i, j) in [(MATERIAL + 1, 0), (MATERIAL + 1, 1), (MATERIAL + 3, 1)] {
+        let (mut up, mut down) = (weights.clone(), weights.clone());
+        up[i][j] += h;
+        down[i][j] -= h;
+        let numeric = (loss(&samples, &up, k, 1) - loss(&samples, &down, k, 1)) / (2.0 * h);
+        let analytic = grad[i][j];
+        assert!(
+            (numeric - analytic).abs() <= 1e-6 * analytic.abs().max(1e-6),
+            "weight {i} half {j}: numeric {numeric} analytic {analytic}"
+        );
+    }
 }
 
 #[test]
