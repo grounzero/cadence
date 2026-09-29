@@ -247,9 +247,18 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
     assert!(train.starts_with("# cadence datagen"));
     let kept = stats.train;
     assert_eq!(
-        stats.in_check + stats.noisy + stats.mate + kept,
+        stats.outside + stats.in_check + stats.noisy + stats.mate + kept,
         stats.visited
     );
+    // The window is counted from the records alone, so the extractor's count can be checked.
+    let outside: usize = records(&file)
+        .iter()
+        .map(|r| {
+            let n = r.moves.len();
+            n.min(extract::FIRST_PLY) + n.saturating_sub(extract::LAST_PLY + 1)
+        })
+        .sum();
+    assert_eq!(stats.outside, outside as u64);
     for dist in [&stats.phase, &stats.balance, &stats.ply] {
         assert_eq!(dist.iter().sum::<u64>(), kept);
     }
@@ -277,4 +286,21 @@ fn the_tuner_uses_a_named_holdout_whole() {
     assert!(out.status.success(), "{stdout}");
     let want = format!("positions train {} holdout {}", stats.train, stats.holdout);
     assert!(stdout.lines().any(|l| l == want), "{stdout}");
+}
+
+#[test]
+fn the_window_keeps_plies_eight_to_two_hundred_and_forty_inclusive() {
+    // Knights shuffling from the standard start: every position is quiet and none is in check.
+    let shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"];
+    let moves: Vec<String> = (0..300).map(|i| format!("{}:0", shuffle[i % 4])).collect();
+    let plies: Vec<&str> = (0..8).map(|i| shuffle[i % 4]).collect();
+    let line = format!(
+        "0 | 518 518 | {} | {} | 1/2-1/2 repetition | 0\n",
+        plies.join(" "),
+        moves.join(" ")
+    );
+    let (train, _, stats) = extract(line.as_bytes(), 0);
+    let kept = extract::LAST_PLY - extract::FIRST_PLY + 1;
+    assert_eq!(positions(&train).len(), kept);
+    assert_eq!(stats.outside, (300 - kept) as u64);
 }

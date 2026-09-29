@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Game records to labelled positions: `FEN | result` lines for `cadence texel`, split into a
-//! training set and a holdout by game number. A position is kept unless its side to move is in
-//! check, the move played from it is noisy, or its search reported a mate.
+//! training set and a holdout by game number. A position is kept if its ply is inside the window
+//! and it is not in check, its move is not noisy and its search reported no mate.
 
 use std::io::{BufRead, Write};
 
@@ -12,6 +12,12 @@ use super::game::{Ending, Outcome};
 use super::record::Record;
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
+
+/// The first ply of the game proper that is kept, the random plies not counted.
+pub const FIRST_PLY: usize = 8;
+
+/// The last ply of the game proper that is kept.
+pub const LAST_PLY: usize = 240;
 
 /// Material balance is described from -`BALANCE_CAP` to +`BALANCE_CAP` pawns, the ends holding
 /// everything past them.
@@ -29,6 +35,7 @@ pub struct Stats {
     pub games: u64,
     pub refused: u64,
     pub visited: u64,
+    pub outside: u64,
     pub in_check: u64,
     pub noisy: u64,
     pub mate: u64,
@@ -107,7 +114,9 @@ fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io
     let mut kept = 0;
     for (ply, &(m, score)) in record.moves.iter().enumerate() {
         stats.visited += 1;
-        if board.in_check() {
+        if !(FIRST_PLY..=LAST_PLY).contains(&ply) {
+            stats.outside += 1;
+        } else if board.in_check() {
             stats.in_check += 1;
         } else if m.is_noisy() {
             stats.noisy += 1;
@@ -190,8 +199,8 @@ impl Stats {
         )?;
         writeln!(
             out,
-            "visited {} in-check {} noisy {} mate {}",
-            self.visited, self.in_check, self.noisy, self.mate
+            "visited {} outside-plies-{FIRST_PLY}-{LAST_PLY} {} in-check {} noisy {} mate {}",
+            self.visited, self.outside, self.in_check, self.noisy, self.mate
         )?;
         writeln!(
             out,
