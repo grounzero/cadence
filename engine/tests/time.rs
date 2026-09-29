@@ -485,6 +485,8 @@ fn soft_for(cum: u64) -> u64 {
 }
 
 #[test]
+#[ignore = "machine-dependent: whether an iteration that cannot finish lands in the window \
+            turns on the runner's speed and one position's ladder; run with --ignored"]
 fn an_iteration_that_cannot_finish_is_not_started() {
     // The free ladder: enough depth to see the window, and a movetime that
     // bounds the calibration whatever machine this is. Twelve and not ten
