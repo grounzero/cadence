@@ -332,6 +332,12 @@ fn bestmove_on_a_position_with_no_legal_move_is_the_null_move() {
 /// and the test asserts that at least one of them produced a castling
 /// bestmove -- so a change in the move chooser that stops reaching the
 /// branch is noticed rather than silently passing.
+///
+/// **It sits exactly at its threshold under the fitted piece-square table**:
+/// four castling bestmoves against a minimum of four, where the hand-written
+/// table gave eight. The search is deterministic here, so a king-table change
+/// that moves one castle fails this on every machine, and that is the signal
+/// to tell it from a race: a race fails on some runners and not others.
 #[test]
 fn castling_bestmove_is_spelled_per_the_option() {
     let fens = [
