@@ -182,9 +182,11 @@ fn multicore_infinite_search_stops_cleanly() {
 /// half, and it is the half that depends on the helpers being scheduled at all.
 #[test]
 fn four_threads_out_node_one_at_a_fixed_depth() {
-    // Eight. Deeper inverts it -- by depth twelve the shared table saves the group more than
-    // the duplication costs it and four threads report fewer nodes than one -- and shallower
-    // leaves no window for a helper to reach its first publication on a small machine.
+    // Eight, on kiwipete. The start position stood here until the fitted piece-square table,
+    // under which its depth-eight tree is a few thousand nodes: on a three-core runner four
+    // threads then read equal to one, the helpers not yet scheduled, or fewer, the shared table
+    // saving more than the duplication costs, depending on scheduling. Kiwipete's tree is about
+    // 230,000 nodes and four threads read about 3.7 times one, far from both.
     const DEPTH: u32 = 8;
     let one = nodes_at_fixed_depth(1, DEPTH);
     let four = nodes_at_fixed_depth(4, DEPTH);
@@ -198,10 +200,14 @@ fn four_threads_out_node_one_at_a_fixed_depth() {
 /// The `nodes` field of the last `info depth <depth>` line of a fixed-depth search. Fixed depth
 /// rather than fixed time, because duplicated work scales with the number of workers however
 /// few cores they are timesharing.
+/// Kiwipete, whose depth-eight tree leaves the helpers room to contribute.
+const THREAD_POSITION: &str =
+    "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+
 fn nodes_at_fixed_depth(threads: usize, depth: u32) -> u64 {
     let option = format!("setoption name Threads value {threads}");
     let (_, lines) = Engine::go_within(
-        &[&option, "position startpos"],
+        &[&option, THREAD_POSITION],
         &format!("go depth {depth}"),
         std::time::Duration::from_secs(60),
     );
@@ -326,6 +332,12 @@ fn bestmove_on_a_position_with_no_legal_move_is_the_null_move() {
 /// and the test asserts that at least one of them produced a castling
 /// bestmove -- so a change in the move chooser that stops reaching the
 /// branch is noticed rather than silently passing.
+///
+/// **It sits exactly at its threshold under the fitted piece-square table**:
+/// four castling bestmoves against a minimum of four, where the hand-written
+/// table gave eight. The search is deterministic here, so a king-table change
+/// that moves one castle fails this on every machine, and that is the signal
+/// to tell it from a race: a race fails on some runners and not others.
 #[test]
 fn castling_bestmove_is_spelled_per_the_option() {
     let fens = [
