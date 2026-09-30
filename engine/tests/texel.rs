@@ -12,10 +12,11 @@ mod support;
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal};
-use cadence_engine::eval::{self, MATERIAL, evaluate};
+use cadence_engine::eval::{self, MATERIAL, PST, evaluate};
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
-    Real, Sample, Settings, fit_k, gradient, initial_weights, loss, mask, parse_line, sigmoid, tune,
+    Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, initial_weights, loss, mask,
+    parse_line, sigmoid, tune, tune_halves, weight_mass,
 };
 use support::Rng;
 
@@ -138,6 +139,217 @@ fn k_is_recovered() {
     assert!((k - 1.3).abs() < 1e-3, "k {k}");
 }
 
+/// Samples labelled under a scaling that differs by phase, so `k` is the scaling that minimises
+/// the loss under `truth`.
+fn labelled_by_phase(truth: &[Real], k: Scale) -> Vec<Sample> {
+    boards()
+        .iter()
+        .map(|b| {
+            let e = Sample::new(b, 0.0).evaluate(truth);
+            Sample::new(b, sigmoid(e, k.at(f64::from(eval::phase(b)))))
+        })
+        .collect()
+}
+
+#[test]
+fn a_per_phase_k_is_recovered() {
+    let weights = initial_weights();
+    let planted = Scale { mg: 0.6, eg: 1.1 };
+    let samples = labelled_by_phase(&weights, planted);
+    let k = fit_phase_k(&samples, &weights, 1);
+    assert!((k.mg - planted.mg).abs() < 1e-3, "mg {}", k.mg);
+    assert!((k.eg - planted.eg).abs() < 1e-3, "eg {}", k.eg);
+    // A single k is not the planted one, which is what makes the two halves worth fitting.
+    let single = fit_k(&samples, &weights, 1);
+    assert!(loss(&samples, &weights, k, 1) < loss(&samples, &weights, single, 1));
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact equality is the property: a plain k must reproduce earlier runs bit for bit"
+)]
+fn one_number_is_the_same_scaling_in_every_phase() {
+    let weights = initial_weights();
+    let samples = labelled(&weights, 1.3);
+    let k = fit_phase_k(&samples, &weights, 1);
+    assert!(
+        (k.mg - 1.3).abs() < 1e-3 && (k.eg - 1.3).abs() < 1e-3,
+        "{k:?}"
+    );
+    for phase in [0.0, 7.0, 24.0] {
+        assert_eq!(Scale::from(0.8).at(phase), 0.8);
+    }
+    assert_eq!(
+        gradient(&samples, &weights, 0.8, 1),
+        gradient(&samples, &weights, Scale::from(0.8), 1)
+    );
+}
+
+#[test]
+fn the_gradient_under_a_per_phase_k_is_the_derivative_of_the_loss() {
+    let weights = initial_weights();
+    let k = Scale { mg: 0.6, eg: 1.1 };
+    let samples = labelled_by_phase(&weights, Scale { mg: 0.9, eg: 0.7 });
+    let (_, grad) = gradient(&samples, &weights, k, 1);
+    let h = 1e-3;
+    for (i, j) in [(MATERIAL + 1, 0), (MATERIAL + 1, 1), (MATERIAL + 3, 1)] {
+        let (mut up, mut down) = (weights.clone(), weights.clone());
+        up[i][j] += h;
+        down[i][j] -= h;
+        let numeric = (loss(&samples, &up, k, 1) - loss(&samples, &down, k, 1)) / (2.0 * h);
+        let analytic = grad[i][j];
+        assert!(
+            (numeric - analytic).abs() <= 1e-6 * analytic.abs().max(1e-6),
+            "weight {i} half {j}: numeric {numeric} analytic {analytic}"
+        );
+    }
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the masses are sums of exact binary fractions of 24ths, so equality is the claim"
+)]
+fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
+    // A lone knight weighs one twenty-fourth of the phase: that much middlegame, the rest endgame.
+    let board = Board::from_fen("8/8/8/4k3/3N4/8/8/4K3 w - - 0 1").expect("fen");
+    let mass = weight_mass(&[Sample::new(&board, 1.0)], 1);
+    let name = |i: usize| eval::weight_name(i);
+    let find = |n: &str| (0..mass.len()).find(|&i| name(i) == n).expect(n);
+    for n in [
+        "material.knight",
+        "pst.knight.d4",
+        "pst.king.e1",
+        "pst.king.e4",
+    ] {
+        assert_eq!(mass[find(n)], [1.0 / 24.0, 23.0 / 24.0], "{n}");
+    }
+    assert_eq!(mass[find("pst.knight.e4")], [0.0, 0.0]);
+    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 4);
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "a frozen half is returned exactly as given, which is the property"
+)]
+fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
+    let start = initial_weights();
+    let mut truth = start.clone();
+    truth[MATERIAL + 1] = [400.0, 380.0];
+    let samples = labelled(&truth, 1.0);
+    let mut tuned = vec![[false; 2]; start.len()];
+    tuned[MATERIAL + 1] = [true, false];
+    let settings = Settings {
+        iterations: 200,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge: 0.0,
+    };
+    let end = tune_halves(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    assert_eq!(end[MATERIAL + 1][1], start[MATERIAL + 1][1]);
+    assert!(
+        end[MATERIAL + 1][0] > start[MATERIAL + 1][0] + 20.0,
+        "{:?}",
+        end[MATERIAL + 1]
+    );
+    for i in (0..start.len()).filter(|&i| i != MATERIAL + 1) {
+        assert_eq!(end[i], start[i], "{}", eval::weight_name(i));
+    }
+}
+
+/// The planted knight of the test below, fitted under a ridge of `ridge`.
+fn knight_under_ridge(ridge: f64) -> Real {
+    let start = initial_weights();
+    let mut truth = start.clone();
+    truth[MATERIAL + 1] = [400.0, 380.0];
+    let samples = labelled(&truth, 1.0);
+    let settings = Settings {
+        iterations: 400,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge,
+    };
+    let tuned = mask(&["material.knight".to_string()]);
+    tune(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    )[MATERIAL + 1]
+}
+
+#[test]
+fn the_ridge_holds_a_weight_nearer_its_start_the_stronger_it_is() {
+    let start = initial_weights()[MATERIAL + 1];
+    let fitted: Vec<Real> = [0.0, 1e-7, 1e-6, 1e-4]
+        .iter()
+        .map(|&r| knight_under_ridge(r))
+        .collect();
+    for pair in fitted.windows(2) {
+        assert!(pair[1][0] < pair[0][0], "{fitted:?}");
+    }
+    assert!(fitted[0][0] > 390.0, "unridged {:?}", fitted[0]);
+    assert!(
+        (fitted[3][0] - start[0]).abs() < 5.0,
+        "held {:?}",
+        fitted[3]
+    );
+}
+
+#[test]
+fn the_king_tables_level_is_invisible_to_the_loss_and_is_held() {
+    let start = initial_weights();
+    let samples = labelled(&start, 1.0);
+    let mut lifted = start.clone();
+    for w in &mut lifted[PST + 5 * 64..PST + 6 * 64] {
+        w[0] += 37.0;
+        w[1] -= 21.0;
+    }
+    let (a, b) = (
+        loss(&samples, &start, 1.0, 1),
+        loss(&samples, &lifted, 1.0, 1),
+    );
+    assert!((a - b).abs() < 1e-12, "{a} {b}");
+
+    // Fit the king squares towards a truth whose king table is lifted and reshaped.
+    let mut truth = lifted.clone();
+    truth[PST + 5 * 64 + 6][0] += 60.0;
+    let samples = labelled(&truth, 1.0);
+    let settings = Settings {
+        iterations: 300,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge: 0.0,
+    };
+    let end = tune(
+        &samples,
+        &start,
+        &mask(&["pst.king".to_string()]),
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    let king = PST + 5 * 64..PST + 6 * 64;
+    for j in 0..2 {
+        let mean = |w: &[Real]| king.clone().map(|i| w[i][j]).sum::<f64>() / 64.0;
+        assert!((mean(&end) - mean(&start)).abs() < 1e-9, "half {j}");
+    }
+}
+
 #[test]
 fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
     let start = initial_weights();
@@ -151,6 +363,7 @@ fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
         rate: 2.0,
         threads: 1,
         report: 0,
+        ridge: 0.0,
     };
     let end = tune(
         &samples,
