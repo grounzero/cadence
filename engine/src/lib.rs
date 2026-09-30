@@ -7,6 +7,7 @@
 
 pub mod bench;
 pub mod corrhist;
+pub mod datagen;
 pub mod eval;
 pub mod history;
 pub mod level;

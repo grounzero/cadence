@@ -405,6 +405,21 @@ impl Board {
         false
     }
 
+    /// Whether no sequence of legal moves can mate: bare kings, one knight or one bishop against
+    /// a bare king, or only bishops besides the kings and all on one square colour. KN v KN and
+    /// KB v KN are not in it, because a mate exists in each although neither side can force one.
+    #[must_use]
+    pub fn is_insufficient_material(&self) -> bool {
+        const DARK: Bitboard = Bitboard(0xAA55_AA55_AA55_AA55);
+        let others = self.occupied() & !self.by_type(PieceType::King);
+        if others.count() <= 1 {
+            let minors = self.by_type(PieceType::Knight) | self.by_type(PieceType::Bishop);
+            return (others & !minors).is_empty();
+        }
+        let bishops = self.by_type(PieceType::Bishop);
+        bishops == others && ((bishops & DARK).is_empty() || (bishops & !DARK).is_empty())
+    }
+
     /// The key at logical index `i` of the one sequence `history ++ states[..=ply]`. The only
     /// code that knows there are two containers.
     #[inline]

@@ -16,6 +16,7 @@ pub const MAX_PLY: usize = 256;
 pub mod attacks;
 pub mod bitboard;
 pub mod castling;
+pub mod chess960;
 pub mod dirty;
 pub mod features;
 pub mod fen;
@@ -24,6 +25,7 @@ pub mod movegen;
 pub mod mv;
 pub mod perft;
 pub mod position;
+pub mod rng;
 pub mod types;
 pub mod zobrist;
 
