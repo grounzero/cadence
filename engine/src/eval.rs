@@ -6,7 +6,7 @@
 //! sign.
 
 use cadence_core::position::Board;
-use cadence_core::{Colour, PieceType, Square};
+use cadence_core::{Bitboard, Colour, PieceType, Square, attacks};
 
 use crate::score::{MAX_EVAL, Score};
 
@@ -36,8 +36,21 @@ pub const MATERIAL: usize = 0;
 /// point of view.
 pub const PST: usize = MATERIAL + 6;
 
+/// Where the passed-pawn weights start in [`WEIGHTS`]: one per rank from its own side, second to
+/// seventh.
+pub const PASSED: usize = PST + 6 * 64;
+
+/// A pawn with no friendly pawn on an adjacent file.
+pub const ISOLATED: usize = PASSED + 6;
+
+/// Each pawn beyond the first of its colour on a file.
+pub const DOUBLED: usize = ISOLATED + 1;
+
+/// A pawn defended by a friendly pawn, or beside one on its rank.
+pub const CONNECTED: usize = DOUBLED + 1;
+
 /// How many weights the evaluation reads.
-pub const WEIGHT_COUNT: usize = PST + 6 * 64;
+pub const WEIGHT_COUNT: usize = CONNECTED + 1;
 
 /// Every number the evaluation reads, in one table a tuner can address by index. Material and the
 /// pawn and queen squares are hand-written; the knight, bishop, rook and king squares are fitted by
@@ -100,6 +113,9 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     p(-135,    0), p(-131,   29), p(-132,   37), p(-132,   31), p(-131,   35), p(-132,   36), p(-131,   33), p(-133,   10),
     p(-160,   -3), p(-160,    8), p(-160,   13), p(-160,   21), p(-160,   18), p(-160,   11), p(-160,   10), p(-160,   -5),
     p(-185,  -16), p(-185,   -9), p(-185,    1), p(-185,    3), p(-185,    3), p(-185,   -3), p(-185,  -10), p(-185,  -16),
+    // pawn structure, entering at zero: passed on ranks 2 to 7, isolated, doubled, connected
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {
@@ -118,6 +134,14 @@ pub fn weight_name(index: usize) -> String {
     assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
     if index < PST {
         format!("material.{}", NAMES[index - MATERIAL])
+    } else if index >= CONNECTED {
+        "connected".to_string()
+    } else if index >= DOUBLED {
+        "doubled".to_string()
+    } else if index >= ISOLATED {
+        "isolated".to_string()
+    } else if index >= PASSED {
+        format!("passed.r{}", index - PASSED + 2)
     } else {
         let (pt, sq) = ((index - PST) / 64, (index - PST) % 64);
         let square = Square::new(sq as u8);
@@ -194,7 +218,83 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
             phase += PHASE_WEIGHT[i];
         }
     }
+    pawn_structure(board, Colour::White, 1, sink);
+    pawn_structure(board, Colour::Black, -1, sink);
     phase.min(PHASE_MAX)
+}
+
+/// The squares a pawn of each colour on each square must find free of enemy pawns to be passed:
+/// ahead of it on its own file and both neighbours. Built at compile time.
+static PASSED_MASKS: [[Bitboard; 64]; 2] = passed_masks();
+
+const fn passed_masks() -> [[Bitboard; 64]; 2] {
+    let mut out = [[Bitboard(0); 64]; 2];
+    let mut sq = 0;
+    while sq < 64 {
+        let (file, rank) = (sq % 8, sq / 8);
+        let mut bits = [0u64; 2];
+        let mut f = if file > 0 { file - 1 } else { 0 };
+        while f <= file + 1 && f < 8 {
+            let mut r = 0;
+            while r < 8 {
+                if r > rank {
+                    bits[0] |= 1 << (8 * r + f);
+                }
+                if r < rank {
+                    bits[1] |= 1 << (8 * r + f);
+                }
+                r += 1;
+            }
+            f += 1;
+        }
+        out[0][sq] = Bitboard(bits[0]);
+        out[1][sq] = Bitboard(bits[1]);
+        sq += 1;
+    }
+    out
+}
+
+/// The files beside each file.
+const ADJACENT_FILES: [Bitboard; 8] = {
+    let mut out = [Bitboard(0); 8];
+    let mut f = 0;
+    while f < 8 {
+        let file = Bitboard::FILE_A.0 << f;
+        out[f] =
+            Bitboard(((file << 1) & !Bitboard::FILE_A.0) | ((file >> 1) & !Bitboard::FILE_H.0));
+        f += 1;
+    }
+    out
+};
+
+/// `colour`'s pawn-structure terms, reported with `sign`, one for White and minus one for Black.
+#[inline(always)]
+fn pawn_structure<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let own = board.pieces(colour, PieceType::Pawn);
+    let enemy = board.pieces(colour.flip(), PieceType::Pawn);
+    let beside = own.east() | own.west();
+    for sq in own {
+        let f = sq.file().index();
+        if (PASSED_MASKS[colour.index()][sq.index()] & enemy).is_empty() {
+            let rank = match colour {
+                Colour::White => sq.index() / 8,
+                Colour::Black => 7 - sq.index() / 8,
+            };
+            sink.add(PASSED + rank - 1, sign);
+        }
+        if (ADJACENT_FILES[f] & own).is_empty() {
+            sink.add(ISOLATED, sign);
+        }
+        if (attacks::pawn_attacks(colour.flip(), sq) & own).any() || beside.contains(sq) {
+            sink.add(CONNECTED, sign);
+        }
+    }
+    for f in 0..8 {
+        let on_file = (own & Bitboard(Bitboard::FILE_A.0 << f)).count();
+        if on_file > 1 {
+            sink.add(DOUBLED, sign * (i32::try_from(on_file).unwrap_or(8) - 1));
+        }
+    }
 }
 
 /// The static evaluation of `board` from the side to move's point of view, in centipawns,

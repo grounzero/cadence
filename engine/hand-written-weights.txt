@@ -390,3 +390,13 @@ pst.king.e8 -185 2
 pst.king.f8 -185 -4
 pst.king.g8 -185 -10
 pst.king.h8 -185 -16
+# Pawn structure, added after 817835f with no hand-written values: its prior is the zero it enters at.
+passed.r2 0 0
+passed.r3 0 0
+passed.r4 0 0
+passed.r5 0 0
+passed.r6 0 0
+passed.r7 0 0
+isolated 0 0
+doubled 0 0
+connected 0 0
