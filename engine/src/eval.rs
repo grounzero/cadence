@@ -53,20 +53,20 @@ pub const CONNECTED: usize = DOUBLED + 1;
 pub const WEIGHT_COUNT: usize = CONNECTED + 1;
 
 /// Every number the evaluation reads, in one table a tuner can address by index. Material and the
-/// pawn and queen squares are hand-written; the knight, bishop, rook and king squares are fitted by
+/// queen squares are hand-written; every other square and the pawn-structure terms are fitted by
 /// `cadence texel` to self-play results and carry no reason beyond the data.
 #[rustfmt::skip]
 pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     // material, hand-written: pawn, knight, bishop, rook, queen, king
     p( 100,  110), p( 320,  300), p( 330,  310), p( 500,  520), p( 900,  920), p(   0,    0),
-    // pawn, hand-written, rank 1 to rank 8, a-file first
+    // pawn, fitted, rank 1 to rank 8, a-file first
     p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
-    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
-    p(   0,    4), p(   0,    4), p(   2,    4), p(   6,    4), p(   6,    4), p(   2,    4), p(   0,    4), p(   0,    4),
-    p(   4,   10), p(   4,   10), p(   6,   10), p(  10,   10), p(  10,   10), p(   6,   10), p(   4,   10), p(   4,   10),
-    p(   8,   20), p(   8,   20), p(  10,   20), p(  14,   20), p(  14,   20), p(  10,   20), p(   8,   20), p(   8,   20),
-    p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40),
-    p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70),
+    p( -54,   -3), p( -40,  -26), p( -41,  -14), p( -41,  -13), p( -41,  -13), p( -38,  -16), p( -42,  -14), p( -54,   -1),
+    p( -49,  -13), p( -24,  -23), p( -29,  -33), p( -24,  -29), p( -24,  -38), p( -30,  -36), p( -25,  -19), p( -48,  -15),
+    p( -40,  -10), p( -24,  -21), p(  -7,  -36), p(  -4,  -47), p(  -9,  -47), p(  -6,  -35), p( -28,  -18), p( -40,   -9),
+    p( -20,    5), p(  -6,  -11), p(  10,  -28), p(  24,  -38), p(  14,  -47), p(  15,  -28), p(  -2,  -11), p( -27,    0),
+    p(  -2,   25), p(   9,   19), p(  26,    4), p(  32,   -2), p(  25,    0), p(  37,    4), p(  16,   32), p(  -7,   32),
+    p(  18,   79), p(  40,   78), p(  31,   68), p(  40,   62), p(  42,   51), p(  45,   67), p(  42,   85), p(  28,   93),
     p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
     // knight, fitted, rank 1 to rank 8, a-file first
     p( -53,  -62), p( -47,  -47), p( -48,  -37), p( -27,  -34), p( -28,  -30), p( -40,  -39), p( -43,  -46), p( -58,  -70),
@@ -113,9 +113,9 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     p(-135,    0), p(-131,   29), p(-132,   37), p(-132,   31), p(-131,   35), p(-132,   36), p(-131,   33), p(-133,   10),
     p(-160,   -3), p(-160,    8), p(-160,   13), p(-160,   21), p(-160,   18), p(-160,   11), p(-160,   10), p(-160,   -5),
     p(-185,  -16), p(-185,   -9), p(-185,    1), p(-185,    3), p(-185,    3), p(-185,   -3), p(-185,  -10), p(-185,  -16),
-    // pawn structure, entering at zero: passed on ranks 2 to 7, isolated, doubled, connected
-    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
-    p(   0,    0), p(   0,    0), p(   0,    0),
+    // pawn structure, fitted: passed on ranks 2 to 7, isolated, doubled, connected
+    p(   7,   -5), p(  -3,   12), p(  -7,   35), p(  15,   47), p(  41,   40), p(  45,   22),
+    p(  -6,   -6), p(  -6,  -20), p(   7,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {

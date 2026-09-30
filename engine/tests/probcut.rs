@@ -99,12 +99,12 @@ fn every_cut_is_a_reduced_search_that_ran() {
     }
 }
 
-/// The full window refuses the probe, and the refusal is seen deciding. A principal-variation
-/// node is where the exact score is wanted, so a bound from a shallow search is not an answer
-/// there; the counter proves such a node met every other condition and was still refused.
+/// The full window refuses the probe, because a principal-variation node wants the exact score
+/// and a shallow bound is not one. Searched on the Italian, since kiwipete was refused twice
+/// under one evaluation and never under the next.
 #[test]
 fn the_full_window_refuses_the_probe() {
-    searched(&support::standard_fen("kiwipete"), |s| {
+    searched(&fens()[0], |s| {
         assert!(
             s.probcut_refused_by_window() > 0,
             "no full-window node met the probe's other conditions, so this tree presented no case"
