@@ -16,7 +16,6 @@ mod support;
 
 use std::sync::atomic::AtomicBool;
 
-use cadence_core::START_FEN;
 use cadence_engine::score::{MATE_IN_MAX_PLY, mate_in};
 use cadence_engine::search::{Limits, bound_for, probcut_bound};
 use cadence_engine::tt::Bound;
@@ -43,8 +42,15 @@ fn searched(fen: &str, check: impl FnOnce(&cadence_engine::search::Search<'_>)) 
     check(&s);
 }
 
+/// Two middlegames. The start position stood here until the fitted piece-square table, and it
+/// cut exactly once at this depth under the hand-written one and not at all under the fitted
+/// one, so it was a knife-edge rather than a demonstration; this Italian cuts 113 times under the
+/// first and 167 under the second, and kiwipete 279 and 221.
 fn fens() -> [String; 2] {
-    [START_FEN.to_string(), support::standard_fen("kiwipete")]
+    [
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".to_string(),
+        support::standard_fen("kiwipete"),
+    ]
 }
 
 /// The rule happens: a middlegame search runs the probe and cuts on it.

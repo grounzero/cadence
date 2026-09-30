@@ -1278,6 +1278,12 @@ fn the_capture_sort_saves_nodes() {
 /// reproduces the table above to the node, which is the control saying
 /// nothing in the tree had moved under it, and restores a window of
 /// 0.71%.
+///
+/// **The fitted piece-square table re-based it a seventh time, and the sign
+/// was checked rather than assumed**: 307,806 nodes with every capture ahead
+/// of the killers against 305,746 with the losing ones behind them, a window
+/// of 0.67%. Both arms were taken on the same tree, the promoted one by
+/// flipping the sort's flag for the measurement only.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1295,8 +1301,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 248_029,
-        "{total} nodes against the 248,029 the same search took with every capture ahead of the killers"
+        total < 307_806,
+        "{total} nodes against the 307,806 the same search took with every capture ahead of the killers"
     );
 }
 

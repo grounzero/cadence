@@ -980,21 +980,26 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// is the SPRT's question and not this gate's. What this gate still refuses
 /// is a *window* moving them, which is unchanged: the array is re-measured
 /// on the shipped full-window build, as every re-baseline above was.
+///
+/// **The fitted piece-square table re-measured it again**, an evaluation
+/// change and not a window one: every score moved, and seven moves, `d7c8r`
+/// to `d7c8q` among them. The answers are the values the tuned table gives
+/// this tree, and whether they are better is the SPRT's question.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("b1c3", 13),
-    ("d5e6", -109),
-    ("b4f4", 33),
-    ("c4c5", -613),
-    ("d7c8r", 520),
-    ("g5f6", 108),
-    ("b1c3", 13),
-    ("d1e3", 4),
-    ("d2d4", 8),
-    ("d1e3", 8),
-    ("g1f2", 529),
-    ("f1h1", 522),
-    ("g1h1", 525),
-    ("a1a7", 532),
+    ("b1c3", 31),
+    ("d5e6", -96),
+    ("b4f4", 23),
+    ("c4c5", -542),
+    ("d7c8q", 531),
+    ("g5f6", 68),
+    ("b1c3", 31),
+    ("d1e3", -1),
+    ("g2g4", 25),
+    ("d1c3", 43),
+    ("h1h7", 553),
+    ("e1f2", 533),
+    ("g1g7", 536),
+    ("c1d2", 543),
 ];
 
 /// End to end: the narrower window has to be worth nodes.
