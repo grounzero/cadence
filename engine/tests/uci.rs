@@ -350,9 +350,16 @@ fn castling_bestmove_is_spelled_per_the_option() {
     for chess960 in [false, true] {
         for fen in fens {
             let value = if chess960 { "true" } else { "false" };
-            let out = talk(&format!(
-                "setoption name UCI_Chess960 value {value}\nposition fen {fen}\ngo depth 1\nquit\n"
-            ));
+            // Read to the bestmove before quitting: `quit` stops a search still running, so a
+            // `quit` piped in behind `go` made the move turn on whether depth one had finished.
+            let option = format!("setoption name UCI_Chess960 value {value}");
+            let position = format!("position fen {fen}");
+            let (_, lines) = Engine::go_within(
+                &[option.as_str(), position.as_str()],
+                "go depth 1",
+                support::SUBPROCESS_TIMEOUT,
+            );
+            let out = lines.join("\n");
             assert_bestmove_legal(&out, fen, chess960);
             let board = Board::from_fen(fen).expect("fen parses");
             let legal = generate_legal(&board);

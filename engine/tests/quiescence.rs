@@ -1167,7 +1167,9 @@ fn an_even_exchange_at_the_horizon_is_searched() {
 /// check searches its first evasion in the full window and the rest in one
 /// with no room for a better answer, so an evasion that turns out to be
 /// better is searched twice. Three of them are in one colour and one in
-/// the other: eleven nodes became fourteen and twelve. That difference is
+/// the other: eleven nodes became fourteen and twelve, and under the fitted
+/// piece-square table fifteen and thirteen, one more evasion in each colour
+/// improving on those before it. That difference is
 /// not a difference about check evasions. It is how many of them improved
 /// on the evasions tried before them, which is the order they are tried in
 /// and what they are worth, and a mirrored position is not searched in a
@@ -1177,7 +1179,7 @@ fn an_even_exchange_at_the_horizon_is_searched() {
 fn a_losing_evasion_is_searched_all_the_same() {
     for ((fen, _), expected) in both_colours(DEFENDED_BLOCKER, "a1a1")
         .into_iter()
-        .zip([14, 12])
+        .zip([15, 13])
     {
         let mut b = support::position(&fen);
         let r = search(&mut b, Limits::depth(1));
