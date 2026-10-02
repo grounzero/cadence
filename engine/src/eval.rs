@@ -52,13 +52,12 @@ pub const CONNECTED: usize = DOUBLED + 1;
 /// How many weights the evaluation reads.
 pub const WEIGHT_COUNT: usize = CONNECTED + 1;
 
-/// Every number the evaluation reads, in one table a tuner can address by index. Material and the
-/// queen squares are hand-written; every other square and the pawn-structure terms are fitted by
-/// `cadence texel` to self-play results and carry no reason beyond the data.
+/// Every number the evaluation reads, in one table a tuner can address by index. Every weight is
+/// fitted by `cadence texel` to self-play results and carries no reason beyond the data.
 #[rustfmt::skip]
 pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
-    // material, hand-written: pawn, knight, bishop, rook, queen, king
-    p( 100,  110), p( 320,  300), p( 330,  310), p( 500,  520), p( 900,  920), p(   0,    0),
+    // material, fitted: pawn, knight, bishop, rook, queen, king
+    p(  95,  104), p( 310,  282), p( 328,  295), p( 469,  520), p( 983,  946), p(   0,    0),
     // pawn, fitted, rank 1 to rank 8, a-file first
     p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
     p( -54,   -3), p( -40,  -26), p( -41,  -14), p( -41,  -13), p( -41,  -13), p( -38,  -16), p( -42,  -14), p( -54,   -1),
@@ -95,15 +94,15 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     p(  -1,    8), p(   5,    8), p(  20,   17), p(  25,    9), p(  22,    9), p(  27,    9), p(  -1,    7), p(   4,   11),
     p(  13,   -1), p(  29,   -1), p(  37,    2), p(  38,    0), p(  36,   -1), p(  46,    1), p(  26,    5), p(  22,    8),
     p(  -1,   19), p(   5,   14), p(   7,   16), p(  12,   18), p(   8,    8), p(  11,   20), p(  10,   22), p(   4,   30),
-    // queen, hand-written, rank 1 to rank 8, a-file first
-    p( -10,   -8), p(  -8,   -5), p(  -6,   -2), p(  -4,    1), p(  -4,    1), p(  -6,   -2), p(  -8,   -5), p( -10,   -8),
-    p(  -8,   -5), p(  -6,   -2), p(  -4,    1), p(  -2,    4), p(  -2,    4), p(  -4,    1), p(  -6,   -2), p(  -8,   -5),
-    p(  -6,   -2), p(  -4,    1), p(  -2,    4), p(   0,    7), p(   0,    7), p(  -2,    4), p(  -4,    1), p(  -6,   -2),
-    p(  -4,    1), p(  -2,    4), p(   0,    7), p(   2,   10), p(   2,   10), p(   0,    7), p(  -2,    4), p(  -4,    1),
-    p(  -4,    1), p(  -2,    4), p(   0,    7), p(   2,   10), p(   2,   10), p(   0,    7), p(  -2,    4), p(  -4,    1),
-    p(  -6,   -2), p(  -4,    1), p(  -2,    4), p(   0,    7), p(   0,    7), p(  -2,    4), p(  -4,    1), p(  -6,   -2),
-    p(  -8,   -5), p(  -6,   -2), p(  -4,    1), p(  -2,    4), p(  -2,    4), p(  -4,    1), p(  -6,   -2), p(  -8,   -5),
-    p( -10,   -8), p(  -8,   -5), p(  -6,   -2), p(  -4,    1), p(  -4,    1), p(  -6,   -2), p(  -8,   -5), p( -10,   -8),
+    // queen, fitted, rank 1 to rank 8, a-file first
+    p( -52,  -49), p( -48,  -33), p( -19,  -47), p( -22,  -46), p( -21,  -38), p( -25,  -44), p( -40,  -41), p( -52,  -37),
+    p( -39,  -20), p( -20,  -14), p( -23,   -2), p( -12,  -23), p( -11,   -8), p( -12,  -22), p( -25,   -6), p( -26,  -11),
+    p( -19,   -4), p( -22,   -2), p(  -7,   11), p( -18,    5), p( -15,    8), p( -11,   10), p(  -9,    5), p( -20,  -11),
+    p(  -9,    1), p( -14,   10), p(  -1,   17), p(  -4,   26), p(   6,   15), p(  -1,   12), p(  -1,   12), p( -12,    7),
+    p(  -1,   14), p(   2,   16), p(   4,   25), p(  24,   24), p(  26,   25), p(  17,   22), p(  15,   12), p(  -5,    9),
+    p(  16,    4), p(  20,   14), p(  43,   23), p(  41,   37), p(  38,   23), p(  31,   19), p(  15,   12), p(  12,   11),
+    p(   1,    4), p(  17,    7), p(   8,   16), p(  29,   23), p(   6,   19), p(  22,   16), p(   7,    3), p(   3,    3),
+    p(  -5,   -7), p(   3,    2), p(  13,    7), p(  10,   11), p(  15,   14), p(   4,    6), p(   3,   -1), p(  -4,   -6),
     // king, fitted, rank 1 to rank 8, a-file first
     p(   3,  -30), p(  27,  -36), p(   7,  -22), p( -13,  -23), p(  -8,  -19), p(  -4,  -32), p(  48,  -43), p(  30,  -44),
     p( -18,  -19), p( -24,   -6), p( -41,    0), p( -46,   -1), p( -56,    4), p( -49,    4), p( -39,   -7), p( -13,  -18),

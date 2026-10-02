@@ -989,21 +989,25 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// **The pawn-structure terms and the pawn table fitted beside them moved
 /// eight scores and six moves**, another evaluation change. The last four
 /// entries did not move at all.
+///
+/// **Fitted material and queen squares moved every score and eight moves**,
+/// `d7c8q` back to `d7c8r` among them, a tie between two promotions the queen
+/// recaptures alike.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("g1f3", 31),
-    ("d5e6", -137),
-    ("b4f4", 64),
-    ("c4c5", -416),
-    ("d7c8q", 554),
-    ("a1c1", 0),
-    ("g1f3", 31),
-    ("c2c4", 24),
-    ("d1c3", 24),
-    ("e1d3", 60),
-    ("h1h7", 553),
-    ("e1f2", 533),
-    ("g1g7", 536),
-    ("c1d2", 543),
+    ("d2d4", 36),
+    ("d5e6", -147),
+    ("b4f4", 58),
+    ("c4c5", -411),
+    ("d7c8r", 541),
+    ("g5f6", 113),
+    ("d2d4", 36),
+    ("c2c4", 32),
+    ("c2c4", 19),
+    ("e1f3", 68),
+    ("h1h7", 548),
+    ("e1d2", 530),
+    ("g1g7", 533),
+    ("a1a7", 536),
 ];
 
 /// End to end: the narrower window has to be worth nodes.
