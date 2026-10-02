@@ -91,6 +91,36 @@ pub fn parse_line(line: &str) -> Result<Option<(Board, f64)>, String> {
     Ok(Some((board, result)))
 }
 
+/// The hand-written table as it stood before any of it was fitted, one weight per line in index
+/// order. The ridge pulls toward it, so every fit is held near one reasoned table and not the last.
+const HAND_WRITTEN: &str = include_str!("../hand-written-weights.txt");
+
+/// [`HAND_WRITTEN`] as weights.
+///
+/// # Panics
+///
+/// If a line is malformed or out of index order. The file is checked in, so that is a broken tree.
+#[must_use]
+pub fn hand_written_weights() -> Vec<Real> {
+    let rows: Vec<Real> = HAND_WRITTEN
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .enumerate()
+        .map(|(i, line)| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(
+                fields.first().copied(),
+                Some(eval::weight_name(i).as_str()),
+                "{line}"
+            );
+            let value = |f: &str| f.parse::<f64>().unwrap_or_else(|_| panic!("{line}"));
+            [value(fields[1]), value(fields[2])]
+        })
+        .collect();
+    assert_eq!(rows.len(), WEIGHT_COUNT, "hand-written weights");
+    rows
+}
+
 /// Today's table, as the tuner's starting point.
 #[must_use]
 pub fn initial_weights() -> Vec<Real> {
@@ -291,9 +321,12 @@ pub struct Settings {
     pub threads: usize,
     /// Print the training loss every this many iterations; zero never.
     pub report: usize,
-    /// The ridge: this times the squared distance of each tuned half from where it started is
-    /// added to what the run minimises. Zero is no pull, and the reported losses never include it.
+    /// The ridge: this times the squared distance of each tuned half from the prior is added to
+    /// what the run minimises. Zero is no pull, and the reported losses never include it.
     pub ridge: f64,
+    /// The ridge's centre, or the starting weights where there is none. The command line always
+    /// passes [`hand_written_weights`], since the starting table is the last fit.
+    pub prior: Option<Vec<Real>>,
 }
 
 /// Runs Adam from `weights` for `settings.iterations` full-batch steps and returns the result. A
@@ -324,6 +357,7 @@ pub fn tune_halves(
     const BETA2: f64 = 0.999;
     const EPSILON: f64 = 1e-8;
     let k = k.into();
+    let centre = settings.prior.as_deref().unwrap_or(weights);
     let mut w = weights.to_vec();
     let mut first = vec![[0.0; 2]; w.len()];
     let mut second = vec![[0.0; 2]; w.len()];
@@ -337,7 +371,7 @@ pub fn tune_halves(
         b2 *= BETA2;
         for i in 0..w.len() {
             for j in (0..2).filter(|&j| tuned[i][j]) {
-                let slope = grad[i][j] + 2.0 * settings.ridge * (w[i][j] - weights[i][j]);
+                let slope = grad[i][j] + 2.0 * settings.ridge * (w[i][j] - centre[i][j]);
                 first[i][j] = BETA1 * first[i][j] + (1.0 - BETA1) * slope;
                 second[i][j] = BETA2 * second[i][j] + (1.0 - BETA2) * slope * slope;
                 let mean = first[i][j] / (1.0 - b1);
@@ -525,6 +559,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         threads: 1,
         report: 100,
         ridge: 0.0,
+        prior: Some(hand_written_weights()),
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -596,6 +631,13 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         train.len(),
         held.len()
     );
+    if settings.ridge > 0.0 {
+        let _ = writeln!(
+            out,
+            "ridge {} toward the hand-written table",
+            settings.ridge
+        );
+    }
     let _ = writeln!(
         out,
         "tuned {} of {WEIGHT_COUNT} weights",

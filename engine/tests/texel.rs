@@ -15,8 +15,8 @@ use cadence_core::{Colour, START_FEN, generate_legal};
 use cadence_engine::eval::{self, MATERIAL, PST, evaluate};
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
-    Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, initial_weights, loss, mask,
-    parse_line, sigmoid, tune, tune_halves, weight_mass,
+    Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, hand_written_weights,
+    initial_weights, loss, mask, parse_line, sigmoid, tune, tune_halves, weight_mass,
 };
 use support::Rng;
 
@@ -247,6 +247,7 @@ fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
         threads: 1,
         report: 0,
         ridge: 0.0,
+        prior: None,
     };
     let end = tune_halves(
         &samples,
@@ -279,6 +280,7 @@ fn knight_under_ridge(ridge: f64) -> Real {
         threads: 1,
         report: 0,
         ridge,
+        prior: None,
     };
     let tuned = mask(&["material.knight".to_string()]);
     tune(
@@ -334,6 +336,7 @@ fn the_king_tables_level_is_invisible_to_the_loss_and_is_held() {
         threads: 1,
         report: 0,
         ridge: 0.0,
+        prior: None,
     };
     let end = tune(
         &samples,
@@ -351,6 +354,71 @@ fn the_king_tables_level_is_invisible_to_the_loss_and_is_held() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the tables hold integers, so equality is exact"
+)]
+fn the_hand_written_table_is_the_one_before_any_square_was_fitted() {
+    let hand = hand_written_weights();
+    let compiled = initial_weights();
+    assert_eq!(hand.len(), compiled.len());
+    // Material and the pawn and queen tables were never fitted, so they agree with the build.
+    for i in 0..hand.len() {
+        let name = eval::weight_name(i);
+        if name.starts_with("material.")
+            || name.starts_with("pst.pawn")
+            || name.starts_with("pst.queen")
+        {
+            assert_eq!(hand[i], compiled[i], "{name}");
+        }
+    }
+    // The fitted squares hold their hand-written values, which the build no longer has.
+    let named = |n: &str| {
+        hand[(0..hand.len())
+            .find(|&i| eval::weight_name(i) == n)
+            .expect(n)]
+    };
+    assert_eq!(named("material.knight"), [320.0, 300.0]);
+    assert_eq!(named("pst.knight.e4"), [24.0, 16.0]);
+    assert_eq!(named("pst.king.g1"), [20.0, -10.0]);
+    let moved = (0..hand.len())
+        .flat_map(|i| [0, 1].map(|j| (i, j)))
+        .filter(|&(i, j)| hand[i][j] != compiled[i][j])
+        .count();
+    assert!(
+        moved > 400,
+        "only {moved} halves differ from the fitted build"
+    );
+}
+
+#[test]
+fn the_ridge_pulls_toward_the_prior_and_not_the_start() {
+    let start = initial_weights();
+    let samples = labelled(&start, 1.0);
+    let mut prior = start.clone();
+    prior[MATERIAL + 1] = [500.0, 480.0];
+    let settings = Settings {
+        iterations: 400,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge: 1e-3,
+        prior: Some(prior),
+    };
+    let tuned = mask(&["material.knight".to_string()]);
+    let end = tune(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    // The labels hold the knight where it starts and a strong ridge holds it at the prior.
+    assert!(end[MATERIAL + 1][0] > 480.0, "{:?}", end[MATERIAL + 1]);
+}
+
+#[test]
 fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
     let start = initial_weights();
     let mut truth = start.clone();
@@ -364,6 +432,7 @@ fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
         threads: 1,
         report: 0,
         ridge: 0.0,
+        prior: None,
     };
     let end = tune(
         &samples,
