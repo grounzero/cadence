@@ -28,6 +28,15 @@ const FENS: [&str; 4] = [
     "rn1qkbnr/pp2pppp/2p5/3pPb2/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 1 4",
 ];
 
+/// Four more for the sampling gate alone, taken from the bench list by a rule that reads no
+/// evaluation: the first four in file order off the check, with 30 legal moves and most material.
+const SAMPLING_FENS: [&str; 4] = [
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
+    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+];
+
 /// The depth every gate searches to. Seven: deep enough that the root lines
 /// separate, and a fraction of a second in debug.
 const GATE_DEPTH: u32 = 7;
@@ -88,6 +97,15 @@ fn level_on(elo: u32) -> [String; 2] {
         "setoption name UCI_LimitStrength value true".to_string(),
         format!("setoption name UCI_Elo value {elo}"),
     ]
+}
+
+/// `fen` with `later` added to its move number, which changes the sampler's draw
+/// and nothing about the search.
+fn with_later_move_number(fen: &str, later: u32) -> String {
+    let mut fields: Vec<String> = fen.split_whitespace().map(str::to_string).collect();
+    let number: u32 = fields[5].parse().expect("a move number");
+    fields[5] = (number + later).to_string();
+    fields.join(" ")
 }
 
 fn as_refs(lines: &[String]) -> Vec<&str> {
@@ -321,32 +339,43 @@ fn a_sampled_move_is_always_one_of_the_reported_candidates() {
 /// it is the only one the other gates here use, so a sampler that read a
 /// half-finished iteration would pass all of them and fire in no real game.
 ///
-/// Stated as a rate over positions rather than as one move, because sampling is
+/// Stated as a rate over draws rather than as one move, because sampling is
 /// allowed to return the best line and often should.
+///
+/// **Each position is searched at four move numbers**, because the draw is seeded
+/// by the position and the move number and nothing else reads the move number.
+/// Eight fixed draws is eight coins thrown once: an evaluation change once left
+/// level 1600 on its best line in all eight, a draw of well under one in a
+/// hundred from the gaps it had, while the same positions at other move numbers
+/// deviated about as often as those gaps predict. Thirty-two draws puts that
+/// event out of reach of the next evaluation change.
 #[test]
 fn a_level_samples_under_a_node_limit_as_well_as_a_fixed_depth() {
     for elo in rungs() {
         let mut deviated = 0;
         let mut counted = 0;
-        for fen in FENS {
-            let out = search_to_node_limit(fen, &as_refs(&level_on(elo)));
-            let seen = candidate_moves(&out);
-            if seen.len() < 2 {
-                continue;
-            }
-            counted += 1;
-            if played(&out) != seen[0] {
-                deviated += 1;
+        for fen in FENS.iter().chain(&SAMPLING_FENS) {
+            for later in [0, 10, 20, 30] {
+                let fen = with_later_move_number(fen, later);
+                let out = search_to_node_limit(&fen, &as_refs(&level_on(elo)));
+                let seen = candidate_moves(&out);
+                if seen.len() < 2 {
+                    continue;
+                }
+                counted += 1;
+                if played(&out) != seen[0] {
+                    deviated += 1;
+                }
             }
         }
         assert!(
             counted > 0,
-            "level {elo} reported fewer than two lines on every position, so the \
+            "level {elo} reported fewer than two lines on every draw, so the \
              node limit left it nothing to sample from"
         );
         assert!(
             deviated > 0,
-            "level {elo} played its best line on all {counted} positions under a \
+            "level {elo} played its best line on all {counted} draws under a \
              node limit, so the level is inert wherever an iteration is cut short"
         );
     }

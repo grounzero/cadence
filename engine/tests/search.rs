@@ -985,17 +985,21 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// change and not a window one: every score moved, and seven moves, `d7c8r`
 /// to `d7c8q` among them. The answers are the values the tuned table gives
 /// this tree, and whether they are better is the SPRT's question.
+///
+/// **The pawn-structure terms and the pawn table fitted beside them moved
+/// eight scores and six moves**, another evaluation change. The last four
+/// entries did not move at all.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("b1c3", 31),
-    ("d5e6", -96),
-    ("b4f4", 23),
-    ("c4c5", -542),
-    ("d7c8q", 531),
-    ("g5f6", 68),
-    ("b1c3", 31),
-    ("d1e3", -1),
-    ("g2g4", 25),
-    ("d1c3", 43),
+    ("g1f3", 31),
+    ("d5e6", -137),
+    ("b4f4", 64),
+    ("c4c5", -416),
+    ("d7c8q", 554),
+    ("a1c1", 0),
+    ("g1f3", 31),
+    ("c2c4", 24),
+    ("d1c3", 24),
+    ("e1d3", 60),
     ("h1h7", 553),
     ("e1f2", 533),
     ("g1g7", 536),

@@ -402,3 +402,81 @@ fn the_trace_dotted_with_the_weights_is_the_evaluation() {
     assert!(dfrc >= 500, "only {dfrc} DFRC positions");
     assert!(clamped >= 2, "the clamp bound on only {clamped} positions");
 }
+
+// Pawn structure
+// ---------------------------------------------------------------------------
+
+/// The pawn-structure coefficients of `fen`: passed on ranks 2 to 7, isolated, doubled,
+/// connected, White's count less Black's.
+fn pawn_terms(fen: &str) -> ([i32; 6], i32, i32, i32) {
+    use cadence_engine::eval::{CONNECTED, DOUBLED, ISOLATED, PASSED};
+    let t = trace(&board(fen));
+    let mut passed = [0; 6];
+    passed.copy_from_slice(&t.coefficients[PASSED..PASSED + 6]);
+    (
+        passed,
+        t.coefficients[ISOLATED],
+        t.coefficients[DOUBLED],
+        t.coefficients[CONNECTED],
+    )
+}
+
+#[test]
+fn each_pawn_term_counts_what_it_names() {
+    // A lone passer on d5: passed on its fifth rank, and isolated.
+    assert_eq!(
+        pawn_terms("k7/8/8/3P4/8/8/8/7K w - - 0 1"),
+        ([0, 0, 0, 1, 0, 0], 1, 0, 0)
+    );
+    // Black's lone passer on d4 is on its fifth rank too, so the count is the negative.
+    assert_eq!(
+        pawn_terms("k7/8/8/8/3p4/8/8/7K w - - 0 1"),
+        ([0, 0, 0, -1, 0, 0], -1, 0, 0)
+    );
+    // An enemy pawn ahead on an adjacent file stops a passer, and here each stops the other.
+    assert_eq!(pawn_terms("k7/2p5/8/3P4/8/8/8/7K w - - 0 1").0, [0; 6]);
+    // One behind does not: d5 is passed on its fifth rank and c3 on Black's sixth.
+    assert_eq!(
+        pawn_terms("k7/8/8/3P4/8/2p5/8/7K w - - 0 1").0,
+        [0, 0, 0, 1, -1, 0]
+    );
+    // Doubled on c2 and c3: one extra pawn on the file, both isolated, neither defended.
+    // Neither has an enemy pawn ahead, so both are passed, on ranks 2 and 3.
+    assert_eq!(
+        pawn_terms("k7/8/8/8/8/2P5/2P5/7K w - - 0 1"),
+        ([1, 1, 0, 0, 0, 0], 2, 1, 0)
+    );
+    // A phalanx on d4 and e4 is two connected pawns; e3 defends d4 and is not itself connected.
+    assert_eq!(pawn_terms("k7/8/8/8/3PP3/8/8/7K w - - 0 1").3, 2);
+    assert_eq!(pawn_terms("k7/8/8/8/3P4/4P3/8/7K w - - 0 1").3, 1);
+    // The defended pawns are counted and not the defender: e3 guards d4 and f4, which is two.
+    assert_eq!(pawn_terms("k7/8/8/8/3P1P2/4P3/8/7K w - - 0 1").3, 2);
+}
+
+#[test]
+fn a_mirrored_position_has_every_pawn_coefficient_negated() {
+    use cadence_engine::eval::{PASSED, WEIGHT_COUNT};
+    let mut rng = Rng::new(0x9A11_5700_0000_0001);
+    let mut checked = 0;
+    for fen in support::corpus_fens() {
+        let mut b = board(&fen);
+        for _ in 0..40 {
+            let legal = generate_legal(&b);
+            if legal.is_empty() {
+                break;
+            }
+            b.play(legal.as_slice()[rng.below(legal.len())]);
+            let (t, m) = (trace(&b), trace(&mirror(&b)));
+            for i in PASSED..WEIGHT_COUNT {
+                assert_eq!(
+                    t.coefficients[i],
+                    -m.coefficients[i],
+                    "{}",
+                    b.to_fen(FenStyle::Shredder)
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 1000, "only {checked} positions");
+}

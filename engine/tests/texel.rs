@@ -362,13 +362,10 @@ fn the_hand_written_table_is_the_one_before_any_square_was_fitted() {
     let hand = hand_written_weights();
     let compiled = initial_weights();
     assert_eq!(hand.len(), compiled.len());
-    // Material and the pawn and queen tables were never fitted, so they agree with the build.
+    // Material and the queen table were never fitted, so they agree with the build.
     for i in 0..hand.len() {
         let name = eval::weight_name(i);
-        if name.starts_with("material.")
-            || name.starts_with("pst.pawn")
-            || name.starts_with("pst.queen")
-        {
+        if name.starts_with("material.") || name.starts_with("pst.queen") {
             assert_eq!(hand[i], compiled[i], "{name}");
         }
     }

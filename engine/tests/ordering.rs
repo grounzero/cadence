@@ -1284,6 +1284,10 @@ fn the_capture_sort_saves_nodes() {
 /// of the killers against 305,746 with the losing ones behind them, a window
 /// of 0.67%. Both arms were taken on the same tree, the promoted one by
 /// flipping the sort's flag for the measurement only.
+///
+/// **The pawn-structure terms re-based it an eighth time, sign checked the
+/// same way**: 311,115 nodes with every capture ahead of the killers against
+/// 309,887 with the losing ones behind them, a window of 0.39%.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1301,8 +1305,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 307_806,
-        "{total} nodes against the 307,806 the same search took with every capture ahead of the killers"
+        total < 311_115,
+        "{total} nodes against the 311,115 the same search took with every capture ahead of the killers"
     );
 }
 

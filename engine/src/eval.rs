@@ -6,7 +6,7 @@
 //! sign.
 
 use cadence_core::position::Board;
-use cadence_core::{Colour, PieceType, Square};
+use cadence_core::{Bitboard, Colour, PieceType, Square, attacks};
 
 use crate::score::{MAX_EVAL, Score};
 
@@ -36,24 +36,37 @@ pub const MATERIAL: usize = 0;
 /// point of view.
 pub const PST: usize = MATERIAL + 6;
 
+/// Where the passed-pawn weights start in [`WEIGHTS`]: one per rank from its own side, second to
+/// seventh.
+pub const PASSED: usize = PST + 6 * 64;
+
+/// A pawn with no friendly pawn on an adjacent file.
+pub const ISOLATED: usize = PASSED + 6;
+
+/// Each pawn beyond the first of its colour on a file.
+pub const DOUBLED: usize = ISOLATED + 1;
+
+/// A pawn defended by a friendly pawn, or beside one on its rank.
+pub const CONNECTED: usize = DOUBLED + 1;
+
 /// How many weights the evaluation reads.
-pub const WEIGHT_COUNT: usize = PST + 6 * 64;
+pub const WEIGHT_COUNT: usize = CONNECTED + 1;
 
 /// Every number the evaluation reads, in one table a tuner can address by index. Material and the
-/// pawn and queen squares are hand-written; the knight, bishop, rook and king squares are fitted by
+/// queen squares are hand-written; every other square and the pawn-structure terms are fitted by
 /// `cadence texel` to self-play results and carry no reason beyond the data.
 #[rustfmt::skip]
 pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     // material, hand-written: pawn, knight, bishop, rook, queen, king
     p( 100,  110), p( 320,  300), p( 330,  310), p( 500,  520), p( 900,  920), p(   0,    0),
-    // pawn, hand-written, rank 1 to rank 8, a-file first
+    // pawn, fitted, rank 1 to rank 8, a-file first
     p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
-    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
-    p(   0,    4), p(   0,    4), p(   2,    4), p(   6,    4), p(   6,    4), p(   2,    4), p(   0,    4), p(   0,    4),
-    p(   4,   10), p(   4,   10), p(   6,   10), p(  10,   10), p(  10,   10), p(   6,   10), p(   4,   10), p(   4,   10),
-    p(   8,   20), p(   8,   20), p(  10,   20), p(  14,   20), p(  14,   20), p(  10,   20), p(   8,   20), p(   8,   20),
-    p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40), p(  16,   40),
-    p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70), p(  30,   70),
+    p( -54,   -3), p( -40,  -26), p( -41,  -14), p( -41,  -13), p( -41,  -13), p( -38,  -16), p( -42,  -14), p( -54,   -1),
+    p( -49,  -13), p( -24,  -23), p( -29,  -33), p( -24,  -29), p( -24,  -38), p( -30,  -36), p( -25,  -19), p( -48,  -15),
+    p( -40,  -10), p( -24,  -21), p(  -7,  -36), p(  -4,  -47), p(  -9,  -47), p(  -6,  -35), p( -28,  -18), p( -40,   -9),
+    p( -20,    5), p(  -6,  -11), p(  10,  -28), p(  24,  -38), p(  14,  -47), p(  15,  -28), p(  -2,  -11), p( -27,    0),
+    p(  -2,   25), p(   9,   19), p(  26,    4), p(  32,   -2), p(  25,    0), p(  37,    4), p(  16,   32), p(  -7,   32),
+    p(  18,   79), p(  40,   78), p(  31,   68), p(  40,   62), p(  42,   51), p(  45,   67), p(  42,   85), p(  28,   93),
     p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
     // knight, fitted, rank 1 to rank 8, a-file first
     p( -53,  -62), p( -47,  -47), p( -48,  -37), p( -27,  -34), p( -28,  -30), p( -40,  -39), p( -43,  -46), p( -58,  -70),
@@ -100,6 +113,9 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     p(-135,    0), p(-131,   29), p(-132,   37), p(-132,   31), p(-131,   35), p(-132,   36), p(-131,   33), p(-133,   10),
     p(-160,   -3), p(-160,    8), p(-160,   13), p(-160,   21), p(-160,   18), p(-160,   11), p(-160,   10), p(-160,   -5),
     p(-185,  -16), p(-185,   -9), p(-185,    1), p(-185,    3), p(-185,    3), p(-185,   -3), p(-185,  -10), p(-185,  -16),
+    // pawn structure, fitted: passed on ranks 2 to 7, isolated, doubled, connected
+    p(   7,   -5), p(  -3,   12), p(  -7,   35), p(  15,   47), p(  41,   40), p(  45,   22),
+    p(  -6,   -6), p(  -6,  -20), p(   7,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {
@@ -118,6 +134,14 @@ pub fn weight_name(index: usize) -> String {
     assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
     if index < PST {
         format!("material.{}", NAMES[index - MATERIAL])
+    } else if index >= CONNECTED {
+        "connected".to_string()
+    } else if index >= DOUBLED {
+        "doubled".to_string()
+    } else if index >= ISOLATED {
+        "isolated".to_string()
+    } else if index >= PASSED {
+        format!("passed.r{}", index - PASSED + 2)
     } else {
         let (pt, sq) = ((index - PST) / 64, (index - PST) % 64);
         let square = Square::new(sq as u8);
@@ -194,7 +218,83 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
             phase += PHASE_WEIGHT[i];
         }
     }
+    pawn_structure(board, Colour::White, 1, sink);
+    pawn_structure(board, Colour::Black, -1, sink);
     phase.min(PHASE_MAX)
+}
+
+/// The squares a pawn of each colour on each square must find free of enemy pawns to be passed:
+/// ahead of it on its own file and both neighbours. Built at compile time.
+static PASSED_MASKS: [[Bitboard; 64]; 2] = passed_masks();
+
+const fn passed_masks() -> [[Bitboard; 64]; 2] {
+    let mut out = [[Bitboard(0); 64]; 2];
+    let mut sq = 0;
+    while sq < 64 {
+        let (file, rank) = (sq % 8, sq / 8);
+        let mut bits = [0u64; 2];
+        let mut f = if file > 0 { file - 1 } else { 0 };
+        while f <= file + 1 && f < 8 {
+            let mut r = 0;
+            while r < 8 {
+                if r > rank {
+                    bits[0] |= 1 << (8 * r + f);
+                }
+                if r < rank {
+                    bits[1] |= 1 << (8 * r + f);
+                }
+                r += 1;
+            }
+            f += 1;
+        }
+        out[0][sq] = Bitboard(bits[0]);
+        out[1][sq] = Bitboard(bits[1]);
+        sq += 1;
+    }
+    out
+}
+
+/// The files beside each file.
+const ADJACENT_FILES: [Bitboard; 8] = {
+    let mut out = [Bitboard(0); 8];
+    let mut f = 0;
+    while f < 8 {
+        let file = Bitboard::FILE_A.0 << f;
+        out[f] =
+            Bitboard(((file << 1) & !Bitboard::FILE_A.0) | ((file >> 1) & !Bitboard::FILE_H.0));
+        f += 1;
+    }
+    out
+};
+
+/// `colour`'s pawn-structure terms, reported with `sign`, one for White and minus one for Black.
+#[inline(always)]
+fn pawn_structure<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let own = board.pieces(colour, PieceType::Pawn);
+    let enemy = board.pieces(colour.flip(), PieceType::Pawn);
+    let beside = own.east() | own.west();
+    for sq in own {
+        let f = sq.file().index();
+        if (PASSED_MASKS[colour.index()][sq.index()] & enemy).is_empty() {
+            let rank = match colour {
+                Colour::White => sq.index() / 8,
+                Colour::Black => 7 - sq.index() / 8,
+            };
+            sink.add(PASSED + rank - 1, sign);
+        }
+        if (ADJACENT_FILES[f] & own).is_empty() {
+            sink.add(ISOLATED, sign);
+        }
+        if (attacks::pawn_attacks(colour.flip(), sq) & own).any() || beside.contains(sq) {
+            sink.add(CONNECTED, sign);
+        }
+    }
+    for f in 0..8 {
+        let on_file = (own & Bitboard(Bitboard::FILE_A.0 << f)).count();
+        if on_file > 1 {
+            sink.add(DOUBLED, sign * (i32::try_from(on_file).unwrap_or(8) - 1));
+        }
+    }
 }
 
 /// The static evaluation of `board` from the side to move's point of view, in centipawns,
