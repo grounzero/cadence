@@ -993,21 +993,25 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// **Fitted material and queen squares moved every score and eight moves**,
 /// `d7c8q` back to `d7c8r` among them, a tie between two promotions the queen
 /// recaptures alike.
+///
+/// **The mobility tables moved every score but one and eight moves.** `d7c8r`
+/// stays, tied with `d7c8q` at -336 for Black searched to depth 8 after each;
+/// `e2d2` replaces `g5f6`, +43 for White at that depth against -56.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("d2d4", 36),
-    ("d5e6", -147),
+    ("d2d4", 38),
+    ("d5e6", -150),
     ("b4f4", 58),
-    ("c4c5", -411),
-    ("d7c8r", 541),
-    ("g5f6", 113),
-    ("d2d4", 36),
-    ("c2c4", 32),
-    ("c2c4", 19),
-    ("e1f3", 68),
-    ("h1h7", 548),
-    ("e1d2", 530),
-    ("g1g7", 533),
-    ("a1a7", 536),
+    ("c4c5", -492),
+    ("d7c8r", 240),
+    ("e2d2", 0),
+    ("d2d4", 38),
+    ("b2b3", 19),
+    ("f2f4", 5),
+    ("b2b3", 84),
+    ("h1h2", 527),
+    ("f1f4", 543),
+    ("g1g4", 542),
+    ("a1a8", 533),
 ];
 
 /// End to end: the narrower window has to be worth nodes.

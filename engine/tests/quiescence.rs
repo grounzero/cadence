@@ -502,15 +502,31 @@ fn the_skewer_is_what_it_claims() {
     }
 }
 
+/// Half a rook's endgame value averaged over its squares, read from the table so that a fit
+/// cannot move the score past the bar. Winning the queen scores about a rook and missing it about
+/// minus the queen's margin over the rook, so half a rook separates the two with room either way.
+fn half_a_rook() -> Score {
+    let rook = PieceType::Rook.index();
+    let table = &eval::WEIGHTS[eval::PST + 64 * rook..eval::PST + 64 * rook + 64];
+    let squares: i32 = table.iter().map(|w| w.eg).sum();
+    let value = eval::WEIGHTS[eval::MATERIAL + rook].eg + squares / 64;
+    value / 2
+}
+
 #[test]
 fn a_check_at_the_horizon_is_answered_with_every_evasion() {
+    let bar = half_a_rook();
     for (fen, key) in both_colours(SKEWER, "a1a8") {
         let mut b = support::position(&fen);
         let key = mv(&b, &key);
         for depth in 1..=2 {
             let r = search(&mut b, Limits::depth(depth));
             assert_eq!(r.best, key, "{fen}: depth {depth} played {:?}", r.best);
-            assert!(r.score > 500, "{fen}: depth {depth} scores {}", r.score);
+            assert!(
+                r.score > bar,
+                "{fen}: depth {depth} scores {} against {bar}",
+                r.score
+            );
         }
     }
 }

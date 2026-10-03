@@ -282,11 +282,13 @@ fn material_is_counted_and_ordered() {
 
     // Taking a Black piece off the start position favours White, by more
     // for a more valuable piece. The castling field is dropped so that
-    // removing a rook does not make the FEN inconsistent.
+    // removing a rook does not make the FEN inconsistent. The pawn is f7's
+    // because its removal frees no piece: a centre pawn's opens a bishop and
+    // the queen at the bottom of their mobility tables, which outweighs it.
     let base = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1";
     let gain = |sq: &str| white(&without(base, sq));
     let (pawn, knight, bishop, rook, queen) =
-        (gain("d7"), gain("b8"), gain("c8"), gain("a8"), gain("d8"));
+        (gain("f7"), gain("b8"), gain("c8"), gain("a8"), gain("d8"));
     assert!(pawn > 0, "a pawn up is worth {pawn}");
     assert!(pawn < knight, "pawn {pawn} vs knight {knight}");
     assert!(pawn < bishop, "pawn {pawn} vs bishop {bishop}");
@@ -296,7 +298,7 @@ fn material_is_counted_and_ordered() {
 
     // And the same from Black's side, by symmetry of the construction.
     let base_b = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b - - 0 1";
-    assert_eq!(white(&without(base_b, "d2")), -pawn);
+    assert_eq!(white(&without(base_b, "f2")), -pawn);
 }
 
 /// A piece's value in each phase averaged over where it can stand: material plus the mean of its
