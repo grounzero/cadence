@@ -579,7 +579,129 @@ fn every_knight_bishop_rook_and_queen_has_exactly_one_mobility_count() {
         "mobility.bishop.0"
     );
     assert_eq!(
-        weight_name(cadence_engine::eval::WEIGHT_COUNT - 1),
+        weight_name(cadence_engine::eval::ATTACKERS - 1),
         "mobility.queen.27"
     );
+}
+
+// King safety
+// ---------------------------------------------------------------------------
+
+/// The king-safety coefficients of `fen`, White's entry less Black's: the attack table, then the
+/// shield table.
+fn king_terms(fen: &str) -> (Vec<i32>, Vec<i32>) {
+    use cadence_engine::eval::{ATTACKERS, ATTACKERS_LEN, SHIELD, SHIELD_LEN};
+    let t = trace(&board(fen));
+    (
+        t.coefficients[ATTACKERS..ATTACKERS + ATTACKERS_LEN].to_vec(),
+        t.coefficients[SHIELD..SHIELD + SHIELD_LEN].to_vec(),
+    )
+}
+
+/// A table of `len` entries holding White's count `white` and Black's count `black`.
+fn counted(len: usize, white: usize, black: usize) -> Vec<i32> {
+    let mut out = vec![0; len];
+    out[white] += 1;
+    out[black] -= 1;
+    out
+}
+
+#[test]
+fn the_attack_table_counts_the_pieces_reaching_the_kings_zone() {
+    // White's king on g1 is on its back rank, so f3, g3 and h3 are in its zone, and Black's knight
+    // on e5 reaches f3 and nothing else of it.
+    assert_eq!(
+        king_terms("k7/8/8/4n3/8/8/8/6K1 w - - 0 1").0,
+        counted(5, 0, 1)
+    );
+    // On g2 the king is still on its back two ranks, so its zone reaches the fourth rank, where
+    // Black's rook on a4 attacks it.
+    assert_eq!(
+        king_terms("k7/8/8/8/r7/8/6K1/8 w - - 0 1").0,
+        counted(5, 0, 1)
+    );
+    // On g3 it is not, so the same rook a rank further up reaches nothing of it, while White's on
+    // b1 reaches the zone of Black's king, which runs down to the sixth rank.
+    assert_eq!(
+        king_terms("k7/8/8/r7/8/6K1/8/1R6 w - - 0 1").0,
+        counted(5, 1, 0)
+    );
+    // Pawns and kings are not attackers: Black's pawn on g4 and king on g3 reach the zone of
+    // White's king and count nothing, while White's knight on e1 reaches theirs.
+    assert_eq!(
+        king_terms("8/8/8/8/6p1/6k1/8/4N1K1 w - - 0 1").0,
+        counted(5, 1, 0)
+    );
+    // A piece counts once however many squares of the zone it reaches: the queen on g4 reaches
+    // g3, g2, f3 and h3, and with the knight on e5 that is two attackers.
+    assert_eq!(
+        king_terms("k7/8/8/4n3/6q1/8/6P1/6K1 w - - 0 1").0,
+        counted(5, 0, 2)
+    );
+}
+
+#[test]
+fn the_shield_table_counts_the_kings_own_pawns_ahead_on_three_files() {
+    // f2, g2 and h2 shield the king on g1; Black's king has nothing in front of it.
+    assert_eq!(
+        king_terms("k7/8/8/8/8/8/5PPP/6K1 w - - 0 1").1,
+        counted(5, 3, 0)
+    );
+    // Behind the king they do not, while a7 shields Black's.
+    assert_eq!(
+        king_terms("k7/p7/8/8/8/6K1/5PPP/8 w - - 0 1").1,
+        counted(5, 0, 1)
+    );
+    // Neither does an own pawn two files away nor an enemy pawn in front.
+    assert_eq!(
+        king_terms("k7/pp6/8/8/8/6p1/4P3/6K1 w - - 0 1").1,
+        counted(5, 0, 2)
+    );
+    // A doubled pawn counts twice, and a king on the edge has two files.
+    assert_eq!(
+        king_terms("k7/8/8/8/8/7P/6PP/7K w - - 0 1").1,
+        counted(5, 3, 0)
+    );
+    // The start position less f7 leaves Black's king on e8 with d7 and e7 against White's three,
+    // so the removal test's pawn carries a shield step as well as its own value.
+    assert_eq!(
+        king_terms("rnbqkbnr/ppppp1pp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1").1,
+        counted(5, 3, 2)
+    );
+}
+
+#[test]
+fn four_or_more_share_the_last_entry_of_each_table() {
+    // Five Black pieces reach the zone of White's king on g1: the queen on h4, the rook on f8, the
+    // bishop on c5 and both knights.
+    assert_eq!(
+        king_terms("k4r2/8/8/2b4n/4n2q/8/5PPP/6K1 w - - 0 1").0,
+        counted(5, 0, 4)
+    );
+    // Five pawns shield it, with the g- and h-pawns doubled.
+    assert_eq!(
+        king_terms("k7/8/8/8/8/6PP/5PPP/6K1 w - - 0 1").1,
+        counted(5, 4, 0)
+    );
+    // Twenty-four knights around a king, which only a FEN can hold, share the same entry.
+    assert_eq!(
+        king_terms("k7/2nnnnn1/1nn3nn/1n5n/1n2K2n/1n5n/1nn3nn/2nnnnn1 w - - 0 1").0,
+        counted(5, 0, 4)
+    );
+}
+
+#[test]
+fn every_king_has_exactly_one_count_in_each_king_safety_table() {
+    use cadence_engine::eval::{ATTACKERS, SHIELD, WEIGHT_COUNT, weight_name};
+    for fen in support::corpus_fens() {
+        let (attack, shield) = king_terms(&fen);
+        for table in [attack, shield] {
+            assert_eq!(table.iter().sum::<i32>(), 0, "{fen}");
+            assert!(table.iter().filter(|c| **c > 0).count() <= 1, "{fen}");
+            assert!(table.iter().all(|c| c.abs() <= 1), "{fen}");
+        }
+    }
+    assert_eq!(weight_name(ATTACKERS), "attackers.0");
+    assert_eq!(weight_name(SHIELD), "shield.0");
+    assert_eq!(weight_name(WEIGHT_COUNT - 1), "shield.4");
 }

@@ -467,3 +467,13 @@ mobility.queen.24 0 0
 mobility.queen.25 0 0
 mobility.queen.26 0 0
 mobility.queen.27 0 0
+attackers.0 0 0
+attackers.1 0 0
+attackers.2 0 0
+attackers.3 0 0
+attackers.4 0 0
+shield.0 0 0
+shield.1 0 0
+shield.2 0 0
+shield.3 0 0
+shield.4 0 0

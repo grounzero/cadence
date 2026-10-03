@@ -69,8 +69,25 @@ pub const MOBILITY_OFFSET: [usize; 6] = {
     out
 };
 
+/// Where the king-attack table starts in [`WEIGHTS`]: one entry per count of a side's knights,
+/// bishops, rooks and queens attacking the enemy king's zone.
+pub const ATTACKERS: usize = MOBILITY + MOBILITY_OFFSET[5] + MOBILITY_LEN[5];
+
+/// How many counts the king-attack table holds: none to four, four or more sharing the last. Four
+/// is where the training data thins below the tuner's floor, so a rarer count takes the last
+/// fitted entry rather than reading as an average one.
+pub const ATTACKERS_LEN: usize = 5;
+
+/// Where the pawn-shield table starts in [`WEIGHTS`]: one entry per count of a king's own pawns
+/// ahead of it on its file and the two beside it.
+pub const SHIELD: usize = ATTACKERS + ATTACKERS_LEN;
+
+/// How many counts the pawn-shield table holds: none to four, four or more sharing the last, for
+/// the attack table's reason.
+pub const SHIELD_LEN: usize = 5;
+
 /// How many weights the evaluation reads.
-pub const WEIGHT_COUNT: usize = MOBILITY + MOBILITY_OFFSET[5] + MOBILITY_LEN[5];
+pub const WEIGHT_COUNT: usize = SHIELD + SHIELD_LEN;
 
 /// Every number the evaluation reads, in one table a tuner can address by index. Every weight is
 /// fitted by `cadence texel` to self-play results and carries no reason beyond the data.
@@ -147,6 +164,10 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     p(  -9,   11), p(  -5,   17), p(  -2,   16), p(   2,   27), p(  10,   31), p(  10,   32), p(  20,   27), p(  25,   32),
     p(  25,   30), p(  30,   28), p(  27,   23), p(  30,   19), p(  22,    9), p(  13,  -10), p(   0,  -10), p(   0,  -25),
     p(   0,  -25), p(   0,  -28), p(   0,    0), p(   0,    0),
+    // king safety, at zero until fitted: attackers on the enemy king's zone 0 to 4, then pawns
+    // shielding the king 0 to 4, four or more sharing the last of each
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {
@@ -165,6 +186,10 @@ pub fn weight_name(index: usize) -> String {
     assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
     if index < PST {
         format!("material.{}", NAMES[index - MATERIAL])
+    } else if index >= SHIELD {
+        format!("shield.{}", index - SHIELD)
+    } else if index >= ATTACKERS {
+        format!("attackers.{}", index - ATTACKERS)
     } else if index >= MOBILITY {
         let at = index - MOBILITY;
         let pt = (1..5).rfind(|&pt| MOBILITY_OFFSET[pt] <= at).unwrap_or(1);
@@ -255,8 +280,10 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     }
     pawn_structure(board, Colour::White, 1, sink);
     pawn_structure(board, Colour::Black, -1, sink);
-    mobility(board, Colour::White, 1, sink);
-    mobility(board, Colour::Black, -1, sink);
+    piece_terms(board, Colour::White, 1, sink);
+    piece_terms(board, Colour::Black, -1, sink);
+    shield(board, Colour::White, 1, sink);
+    shield(board, Colour::Black, -1, sink);
     phase.min(PHASE_MAX)
 }
 
@@ -358,16 +385,79 @@ fn piece_attacks(board: &Board, colour: Colour, mut visit: impl FnMut(PieceType,
     }
 }
 
-/// `colour`'s mobility, reported with `sign`: for each knight, bishop, rook and queen, how many of
-/// the squares it attacks hold none of its own pieces and are not attacked by an enemy pawn.
+/// `colour`'s mobility and attack on the enemy king, reported with `sign`, from one walk over its
+/// pieces' attacks. Mobility counts each piece's attacked squares that hold none of its own pieces
+/// and no enemy pawn attack; the attack counts the pieces that reach the enemy king's zone.
 #[inline(always)]
-fn mobility<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
-    let enemy_pawns = board.pieces(colour.flip(), PieceType::Pawn);
-    let area = !board.by_colour(colour) & !attacks::pawn_attacks_bb(colour.flip(), enemy_pawns);
+fn piece_terms<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let enemy = colour.flip();
+    let enemy_pawns = board.pieces(enemy, PieceType::Pawn);
+    let area = !board.by_colour(colour) & !attacks::pawn_attacks_bb(enemy, enemy_pawns);
+    let zone = KING_ZONES[enemy.index()][board.king_square(enemy).index()];
+    let mut attackers = 0;
     piece_attacks(board, colour, |pt, reach| {
         let table = MOBILITY + MOBILITY_OFFSET[pt.index()];
         sink.add(table + (reach & area).count() as usize, sign);
+        attackers += usize::from((reach & zone).any());
     });
+    sink.add(ATTACKERS + attackers.min(ATTACKERS_LEN - 1), sign);
+}
+
+/// The squares whose attackers count against a king of each colour on each square: its own and the
+/// eight around it, and for a king on its back two ranks the three in front of those. Built at
+/// compile time.
+static KING_ZONES: [[Bitboard; 64]; 2] = king_zones();
+
+const fn king_zones() -> [[Bitboard; 64]; 2] {
+    let mut out = [[Bitboard(0); 64]; 2];
+    let mut sq = 0;
+    while sq < 64 {
+        let (file, rank) = (sq % 8, sq / 8);
+        let (low, high) = (
+            if file > 0 { file - 1 } else { 0 },
+            if file < 7 { file + 1 } else { 7 },
+        );
+        let mut around = 0u64;
+        let mut r = if rank > 0 { rank - 1 } else { 0 };
+        while r <= rank + 1 && r < 8 {
+            let mut f = low;
+            while f <= high {
+                around |= 1 << (8 * r + f);
+                f += 1;
+            }
+            r += 1;
+        }
+        // White's back two ranks are the first two and Black's the last two.
+        let fronts = [
+            if rank <= 1 { Some(rank + 2) } else { None },
+            if rank >= 6 { Some(rank - 2) } else { None },
+        ];
+        let mut colour = 0;
+        while colour < 2 {
+            let mut bits = around;
+            if let Some(front) = fronts[colour] {
+                let mut f = low;
+                while f <= high {
+                    bits |= 1 << (8 * front + f);
+                    f += 1;
+                }
+            }
+            out[colour][sq] = Bitboard(bits);
+            colour += 1;
+        }
+        sq += 1;
+    }
+    out
+}
+
+/// `colour`'s pawn shield, reported with `sign`: how many of its pawns stand ahead of its king on
+/// the king's file and the two beside it.
+#[inline(always)]
+fn shield<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let king = board.king_square(colour);
+    let ahead = PASSED_MASKS[colour.index()][king.index()];
+    let count = (board.pieces(colour, PieceType::Pawn) & ahead).count() as usize;
+    sink.add(SHIELD + count.min(SHIELD_LEN - 1), sign);
 }
 
 /// The static evaluation of `board` from the side to move's point of view, in centipawns,
