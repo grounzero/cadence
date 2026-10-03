@@ -142,9 +142,10 @@ pub fn reverse_futility_margin(tunables: &Tunables, depth: u32) -> Score {
     per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
-/// The bound a node may be returned at without being searched at all: its static evaluation
-/// less [`reverse_futility_margin`], where that still stands at or above `beta`. `None` is a
-/// node that has to be searched.
+/// `beta` where a node may be returned without being searched at all, its static evaluation
+/// less [`reverse_futility_margin`] still standing at or above `beta`, and `None` where it may
+/// not. The window's edge is returned rather than that evaluation, which is an unverified guess
+/// and, handed upstream as a fail-soft score, loosened every bound above it.
 #[must_use]
 pub fn reverse_futile(
     tunables: &Tunables,
@@ -153,7 +154,7 @@ pub fn reverse_futile(
     beta: Score,
 ) -> Option<Score> {
     let bound = eval?.saturating_sub(reverse_futility_margin(tunables, depth));
-    (!score::is_mate(beta) && bound >= beta).then_some(bound)
+    (!score::is_mate(beta) && bound >= beta).then_some(beta)
 }
 
 /// The shallowest node the capture probe runs at. **Chosen by a shadow measurement and not
