@@ -334,20 +334,18 @@ fn pawn_structure<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut 
     }
 }
 
-/// `colour`'s mobility, reported with `sign`: for each knight, bishop, rook and queen, how many of
-/// the squares it attacks hold none of its own pieces and are not attacked by an enemy pawn.
+/// Hands `visit` each knight, bishop, rook and queen of `colour` with every square it attacks under
+/// the board's full occupancy. It is the one walk over those attacks, and each term that reads them
+/// applies its own mask.
 #[inline(always)]
-fn mobility<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+fn piece_attacks(board: &Board, colour: Colour, mut visit: impl FnMut(PieceType, Bitboard)) {
     let occupied = board.occupied();
-    let enemy_pawns = board.pieces(colour.flip(), PieceType::Pawn);
-    let area = !board.by_colour(colour) & !attacks::pawn_attacks_bb(colour.flip(), enemy_pawns);
     for pt in [
         PieceType::Knight,
         PieceType::Bishop,
         PieceType::Rook,
         PieceType::Queen,
     ] {
-        let table = MOBILITY + MOBILITY_OFFSET[pt.index()];
         for sq in board.pieces(colour, pt) {
             let reach = match pt {
                 PieceType::Knight => attacks::knight_attacks(sq),
@@ -355,9 +353,21 @@ fn mobility<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
                 PieceType::Rook => attacks::rook_attacks(sq, occupied),
                 _ => attacks::queen_attacks(sq, occupied),
             };
-            sink.add(table + (reach & area).count() as usize, sign);
+            visit(pt, reach);
         }
     }
+}
+
+/// `colour`'s mobility, reported with `sign`: for each knight, bishop, rook and queen, how many of
+/// the squares it attacks hold none of its own pieces and are not attacked by an enemy pawn.
+#[inline(always)]
+fn mobility<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let enemy_pawns = board.pieces(colour.flip(), PieceType::Pawn);
+    let area = !board.by_colour(colour) & !attacks::pawn_attacks_bb(colour.flip(), enemy_pawns);
+    piece_attacks(board, colour, |pt, reach| {
+        let table = MOBILITY + MOBILITY_OFFSET[pt.index()];
+        sink.add(table + (reach & area).count() as usize, sign);
+    });
 }
 
 /// The static evaluation of `board` from the side to move's point of view, in centipawns,
