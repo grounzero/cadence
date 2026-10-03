@@ -1292,6 +1292,10 @@ fn the_capture_sort_saves_nodes() {
 /// **The mobility tables re-based it a ninth time, sign checked the same
 /// way**: 315,563 nodes with every capture ahead of the killers against
 /// 314,513 with the losing ones behind them, a window of 0.33%.
+///
+/// **The king-safety tables re-based it a tenth time, sign checked the same
+/// way**: 429,479 nodes with every capture ahead of the killers against
+/// 428,279 with the losing ones behind them, a window of 0.28%.
 #[test]
 fn demoting_the_losing_captures_saves_nodes() {
     let fens = deep_fens();
@@ -1309,8 +1313,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 315_563,
-        "{total} nodes against the 315,563 the same search took with every capture ahead of the killers"
+        total < 429_479,
+        "{total} nodes against the 429,479 the same search took with every capture ahead of the killers"
     );
 }
 
