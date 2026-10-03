@@ -16,10 +16,14 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-03
+
 ### Added
 
 - King safety: the evaluation now scores attacks near each king and the
   pawns sheltering it. The king's square table was retuned alongside it.
+
+Test 45: +28.46 (between +16.86 and +40.06).
 
 ### Changed
 
@@ -194,7 +198,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.4...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.5...main
+[0.5.5]: https://github.com/grounzero/cadence/compare/0.5.4...0.5.5
 [0.5.4]: https://github.com/grounzero/cadence/compare/0.5.3...0.5.4
 [0.5.3]: https://github.com/grounzero/cadence/compare/0.5.2...0.5.3
 [0.5.2]: https://github.com/grounzero/cadence/compare/0.5.1...0.5.2
