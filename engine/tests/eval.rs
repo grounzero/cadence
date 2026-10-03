@@ -293,17 +293,40 @@ fn material_is_counted_and_ordered() {
     assert!(knight < rook, "knight {knight} vs rook {rook}");
     assert!(bishop < rook, "bishop {bishop} vs rook {rook}");
     assert!(rook < queen, "rook {rook} vs queen {queen}");
-    // Roughly the classical scale, in centipawns. Wide bands: the point is
-    // that the numbers are in the right order of magnitude, not tuned.
-    assert!((60..=160).contains(&pawn), "pawn {pawn}");
-    assert!((250..=400).contains(&knight), "knight {knight}");
-    assert!((250..=400).contains(&bishop), "bishop {bishop}");
-    assert!((400..=650).contains(&rook), "rook {rook}");
-    assert!((750..=1200).contains(&queen), "queen {queen}");
 
     // And the same from Black's side, by symmetry of the construction.
     let base_b = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b - - 0 1";
     assert_eq!(white(&without(base_b, "d2")), -pawn);
+}
+
+/// A piece's value in each phase averaged over where it can stand: material plus the mean of its
+/// table, ranks 2 to 7 for the pawn and every square otherwise.
+fn effective(piece: usize) -> (i32, i32) {
+    use cadence_engine::eval::{MATERIAL, PST};
+    let (squares, n) = if piece == 0 { (8..56, 48) } else { (0..64, 64) };
+    let table = &WEIGHTS[PST + 64 * piece..PST + 64 * piece + 64];
+    let (mg, eg) = squares.fold((0, 0), |(mg, eg), s| (mg + table[s].mg, eg + table[s].eg));
+    let m = WEIGHTS[MATERIAL + piece];
+    (m.mg + mg / n, m.eg + eg / n)
+}
+
+#[test]
+fn every_piece_is_worth_roughly_its_classical_value_in_both_phases() {
+    // Wide bands on the classical scale, in centipawns: the point is the order of magnitude, not
+    // the distance from any one table. They read effective values rather than a removal from the
+    // start position, because a fitted table puts its largest penalties on the home squares.
+    let bands = [
+        ("pawn", 60..=160),
+        ("knight", 250..=400),
+        ("bishop", 250..=400),
+        ("rook", 400..=650),
+        ("queen", 750..=1200),
+    ];
+    for (piece, (name, band)) in bands.into_iter().enumerate() {
+        let (mg, eg) = effective(piece);
+        assert!(band.contains(&mg), "{name} middlegame {mg}");
+        assert!(band.contains(&eg), "{name} endgame {eg}");
+    }
 }
 
 #[test]
