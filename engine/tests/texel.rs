@@ -12,11 +12,14 @@ mod support;
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal};
-use cadence_engine::eval::{self, MATERIAL, PST, evaluate};
+use cadence_engine::eval::{
+    self, MATERIAL, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PST, evaluate,
+};
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
-    Real, Sample, Scale, Settings, fit_k, fit_phase_k, gradient, hand_written_weights,
-    initial_weights, loss, mask, parse_line, sigmoid, tune, tune_halves, weight_mass,
+    Real, Sample, Scale, Settings, fit_k, fit_phase_k, freeze_sparse, gradient,
+    hand_written_weights, initial_weights, loss, mask, parse_line, sigmoid, tune, tune_halves,
+    weight_mass,
 };
 use support::Rng;
 
@@ -222,11 +225,12 @@ fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
         "pst.knight.d4",
         "pst.king.e1",
         "pst.king.e4",
+        "mobility.knight.8",
     ] {
         assert_eq!(mass[find(n)], [1.0 / 24.0, 23.0 / 24.0], "{n}");
     }
     assert_eq!(mass[find("pst.knight.e4")], [0.0, 0.0]);
-    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 4);
+    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 5);
 }
 
 #[test]
@@ -444,4 +448,78 @@ fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
             assert_eq!(bits(a), bits(b), "{} moved", eval::weight_name(i));
         }
     }
+}
+
+#[test]
+fn a_mobility_tables_level_is_invisible_to_the_loss_and_is_held() {
+    // Every knight adds one to its material and one to its count, so moving the level between the
+    // two changes no evaluation.
+    let knight = MOBILITY + MOBILITY_OFFSET[1]..MOBILITY + MOBILITY_OFFSET[1] + MOBILITY_LEN[1];
+    let start = initial_weights();
+    let samples = labelled(&start, 1.0);
+    let mut lifted = start.clone();
+    for w in &mut lifted[knight.clone()] {
+        w[0] += 30.0;
+        w[1] += 12.0;
+    }
+    lifted[MATERIAL + 1][0] -= 30.0;
+    lifted[MATERIAL + 1][1] -= 12.0;
+    let (a, b) = (
+        loss(&samples, &start, 1.0, 1),
+        loss(&samples, &lifted, 1.0, 1),
+    );
+    assert!((a - b).abs() < 1e-12, "{a} {b}");
+
+    // Fit the knight's counts and squares towards a truth with a shaped count table.
+    let mut truth = start.clone();
+    for (n, i) in (0u8..).zip(knight.clone()) {
+        truth[i][0] = 6.0 * f64::from(n) - 20.0;
+        truth[i][1] = 4.0 * f64::from(n) - 10.0;
+    }
+    let samples = labelled(&truth, 1.0);
+    let settings = Settings {
+        iterations: 300,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge: 0.0,
+        prior: None,
+    };
+    let tuned = mask(&["mobility.knight".to_string(), "pst.knight".to_string()]);
+    let end = tune(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    for j in 0..2 {
+        let mean = |w: &[Real]| knight.clone().map(|i| w[i][j]).sum::<f64>();
+        assert!((mean(&end) - mean(&start)).abs() < 1e-9, "half {j}");
+    }
+    assert!(
+        knight
+            .clone()
+            .any(|i| (end[i][0] - start[i][0]).abs() > 1.0),
+        "the counts moved"
+    );
+}
+
+#[test]
+fn a_family_floor_overrides_the_run_floor_for_the_weights_it_names() {
+    let tuned = mask(&["mobility.knight".to_string(), "pst.knight".to_string()]);
+    let mut mass = vec![[5_000.0, 5_000.0]; tuned.len()];
+    mass[MOBILITY][1] = 20_000.0;
+    let floors = [("mobility".to_string(), 10_000.0)];
+    let (halves, sparse) = freeze_sparse(&tuned, &mass, 1_000.0, &floors);
+    // The squares rest on 5,000 against the run's 1,000 and move; the counts need 10,000.
+    assert_eq!(halves[PST + 64 + 27], [true, true]);
+    assert_eq!(halves[MOBILITY], [false, true]);
+    assert_eq!(halves[MOBILITY + 1], [false, false]);
+    assert!(sparse.contains(&"sparse mobility.knight.0 mg 5000.0".to_string()));
+    assert!(!sparse.iter().any(|l| l.contains("pst.")));
+    // Without the family floor the counts move like the squares.
+    let (halves, _) = freeze_sparse(&tuned, &mass, 1_000.0, &[]);
+    assert_eq!(halves[MOBILITY + 1], [true, true]);
 }

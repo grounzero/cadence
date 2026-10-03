@@ -49,8 +49,28 @@ pub const DOUBLED: usize = ISOLATED + 1;
 /// A pawn defended by a friendly pawn, or beside one on its rank.
 pub const CONNECTED: usize = DOUBLED + 1;
 
+/// Where the mobility tables start in [`WEIGHTS`]: one entry per count of usable squares, for the
+/// knight, bishop, rook and queen in turn.
+pub const MOBILITY: usize = CONNECTED + 1;
+
+/// How many counts each piece type's mobility table holds, by `PieceType::index`. The pawn and the
+/// king have none.
+pub const MOBILITY_LEN: [usize; 6] = [0, 9, 14, 15, 28, 0];
+
+/// Where each piece type's mobility table starts, counted from [`MOBILITY`]; the last entry is
+/// their total.
+pub const MOBILITY_OFFSET: [usize; 6] = {
+    let mut out = [0; 6];
+    let mut i = 1;
+    while i < 6 {
+        out[i] = out[i - 1] + MOBILITY_LEN[i - 1];
+        i += 1;
+    }
+    out
+};
+
 /// How many weights the evaluation reads.
-pub const WEIGHT_COUNT: usize = CONNECTED + 1;
+pub const WEIGHT_COUNT: usize = MOBILITY + MOBILITY_OFFSET[5] + MOBILITY_LEN[5];
 
 /// Every number the evaluation reads, in one table a tuner can address by index. Every weight is
 /// fitted by `cadence texel` to self-play results and carries no reason beyond the data.
@@ -115,6 +135,18 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     // pawn structure, fitted: passed on ranks 2 to 7, isolated, doubled, connected
     p(   7,   -5), p(  -3,   12), p(  -7,   35), p(  15,   47), p(  41,   40), p(  45,   22),
     p(  -6,   -6), p(  -6,  -20), p(   7,    0),
+    // mobility by count of usable squares, at zero until fitted: knight 0 to 8, bishop 0 to 13,
+    // rook 0 to 14, queen 0 to 27
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
+    p(   0,    0), p(   0,    0), p(   0,    0), p(   0,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {
@@ -133,6 +165,10 @@ pub fn weight_name(index: usize) -> String {
     assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
     if index < PST {
         format!("material.{}", NAMES[index - MATERIAL])
+    } else if index >= MOBILITY {
+        let at = index - MOBILITY;
+        let pt = (1..5).rfind(|&pt| MOBILITY_OFFSET[pt] <= at).unwrap_or(1);
+        format!("mobility.{}.{}", NAMES[pt], at - MOBILITY_OFFSET[pt])
     } else if index >= CONNECTED {
         "connected".to_string()
     } else if index >= DOUBLED {
@@ -219,6 +255,8 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     }
     pawn_structure(board, Colour::White, 1, sink);
     pawn_structure(board, Colour::Black, -1, sink);
+    mobility(board, Colour::White, 1, sink);
+    mobility(board, Colour::Black, -1, sink);
     phase.min(PHASE_MAX)
 }
 
@@ -292,6 +330,32 @@ fn pawn_structure<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut 
         let on_file = (own & Bitboard(Bitboard::FILE_A.0 << f)).count();
         if on_file > 1 {
             sink.add(DOUBLED, sign * (i32::try_from(on_file).unwrap_or(8) - 1));
+        }
+    }
+}
+
+/// `colour`'s mobility, reported with `sign`: for each knight, bishop, rook and queen, how many of
+/// the squares it attacks hold none of its own pieces and are not attacked by an enemy pawn.
+#[inline(always)]
+fn mobility<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let occupied = board.occupied();
+    let enemy_pawns = board.pieces(colour.flip(), PieceType::Pawn);
+    let area = !board.by_colour(colour) & !attacks::pawn_attacks_bb(colour.flip(), enemy_pawns);
+    for pt in [
+        PieceType::Knight,
+        PieceType::Bishop,
+        PieceType::Rook,
+        PieceType::Queen,
+    ] {
+        let table = MOBILITY + MOBILITY_OFFSET[pt.index()];
+        for sq in board.pieces(colour, pt) {
+            let reach = match pt {
+                PieceType::Knight => attacks::knight_attacks(sq),
+                PieceType::Bishop => attacks::bishop_attacks(sq, occupied),
+                PieceType::Rook => attacks::rook_attacks(sq, occupied),
+                _ => attacks::queen_attacks(sq, occupied),
+            };
+            sink.add(table + (reach & area).count() as usize, sign);
         }
     }
 }

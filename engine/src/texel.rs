@@ -11,7 +11,9 @@ use std::thread;
 
 use cadence_core::position::Board;
 
-use crate::eval::{self, PHASE_MAX, PST, WEIGHT_COUNT, WEIGHTS};
+use crate::eval::{
+    self, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PHASE_MAX, PST, WEIGHT_COUNT, WEIGHTS,
+};
 
 /// How many parts a sum over the data set is split into, whatever the thread count. Floating-point
 /// addition is not associative, so a fixed split summed in order is what makes a run repeat exactly.
@@ -379,25 +381,31 @@ pub fn tune_halves(
                 w[i][j] -= settings.rate * mean / (spread.sqrt() + EPSILON);
             }
         }
-        pin_king_level(&mut w, weights, tuned);
+        pin_levels(&mut w, weights, tuned);
     }
     w
 }
 
-/// Holds the king table's mean, per half, where it started. Each side has exactly one king, so
-/// the level cancels in every evaluation and the data cannot place it; left free it drifts.
-fn pin_king_level(w: &mut [Real], start: &[Real], tuned: &[[bool; 2]]) {
-    let king = PST + 5 * 64..PST + 6 * 64;
-    for j in 0..2 {
-        let free: Vec<usize> = king.clone().filter(|&i| tuned[i][j]).collect();
-        if free.is_empty() {
-            continue;
-        }
-        let drift: f64 = king.clone().map(|i| w[i][j] - start[i][j]).sum::<f64>();
-        #[expect(clippy::cast_precision_loss, reason = "at most 64 squares")]
-        let each = drift / free.len() as f64;
-        for i in free {
-            w[i][j] -= each;
+/// Holds the mean of the king table and of each mobility table, per half, where it started. The
+/// data cannot place the king's level, one king a side, nor split a piece's level between its
+/// count and its square, so either left free drifts.
+fn pin_levels(w: &mut [Real], start: &[Real], tuned: &[[bool; 2]]) {
+    let mobility = (1..5).map(|pt| {
+        let at = MOBILITY + MOBILITY_OFFSET[pt];
+        at..at + MOBILITY_LEN[pt]
+    });
+    for table in std::iter::once(PST + 5 * 64..PST + 6 * 64).chain(mobility) {
+        for j in 0..2 {
+            let free: Vec<usize> = table.clone().filter(|&i| tuned[i][j]).collect();
+            if free.is_empty() {
+                continue;
+            }
+            let drift: f64 = table.clone().map(|i| w[i][j] - start[i][j]).sum::<f64>();
+            #[expect(clippy::cast_precision_loss, reason = "at most 64 entries")]
+            let each = drift / free.len() as f64;
+            for i in free {
+                w[i][j] -= each;
+            }
         }
     }
 }
@@ -469,7 +477,7 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("cadence texel: {e}");
             eprintln!(
                 "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
-                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--ridge L] [--tune PREFIX]..."
+                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--min-weight-for PREFIX W]... [--ridge L] [--tune PREFIX]..."
             );
             ExitCode::from(2)
         }
@@ -497,18 +505,30 @@ fn split(
     Ok((train, held))
 }
 
-/// The halves a run moves: those `tuned` marks, less any resting on under `min_weight` of the
-/// training set. Returns the halves and one `sparse` line for each half the rule froze.
-fn freeze_sparse(tuned: &[bool], mass: &[Real], min_weight: f64) -> (Vec<[bool; 2]>, Vec<String>) {
+/// The halves a run moves: those `tuned` marks, less any resting on under its floor of the training
+/// set. A weight's floor is the last of `floors` whose prefix names it, else `min_weight`; returns
+/// the halves and one `sparse` line for each half frozen.
+#[must_use]
+pub fn freeze_sparse(
+    tuned: &[bool],
+    mass: &[Real],
+    min_weight: f64,
+    floors: &[(String, f64)],
+) -> (Vec<[bool; 2]>, Vec<String>) {
     let mut lines = Vec::new();
     let halves = (0..WEIGHT_COUNT)
         .map(|i| {
+            let weight = eval::weight_name(i);
+            let floor = floors
+                .iter()
+                .rfind(|(prefix, _)| weight.starts_with(prefix.as_str()))
+                .map_or(min_weight, |&(_, f)| f);
             let mut half = [tuned[i], tuned[i]];
             for (j, name) in ["mg", "eg"].into_iter().enumerate() {
-                if half[j] && mass[i][j] < min_weight {
+                if half[j] && mass[i][j] < floor {
                     half[j] = false;
                     let size = mass[i][j];
-                    lines.push(format!("sparse {} {name} {size:.1}", eval::weight_name(i)));
+                    lines.push(format!("sparse {weight} {name} {size:.1}"));
                 }
             }
             half
@@ -541,6 +561,7 @@ struct Args {
     k: Option<f64>,
     phase_k: bool,
     min_weight: f64,
+    floors: Vec<(String, f64)>,
     prefixes: Vec<String>,
     settings: Settings,
 }
@@ -552,6 +573,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut k = None;
     let mut phase_k = false;
     let mut min_weight = 0.0;
+    let mut floors = Vec::new();
     let mut prefixes = Vec::new();
     let mut settings = Settings {
         iterations: 1000,
@@ -583,6 +605,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--report" => settings.report = count(arg, value(arg)?)?,
             "--k" => k = Some(number(arg, value(arg)?)?),
             "--min-weight" => min_weight = number(arg, value(arg)?)?,
+            "--min-weight-for" => {
+                let prefix = value(arg)?;
+                floors.push((prefix, number(arg, value(arg)?)?));
+            }
             "--ridge" => settings.ridge = number(arg, value(arg)?)?,
             "--tune" => prefixes.push(value(arg)?),
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
@@ -597,6 +623,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         k,
         phase_k,
         min_weight,
+        floors,
         prefixes,
         settings,
     })
@@ -610,6 +637,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         k,
         phase_k,
         min_weight,
+        floors,
         prefixes,
         settings,
     } = parse_args(args)?;
@@ -654,7 +682,10 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         loss(&train, &start, k, t),
         loss(&held, &start, k, t)
     );
-    let (halves, sparse) = freeze_sparse(&tuned, &weight_mass(&train, t), min_weight);
+    for (prefix, floor) in &floors {
+        let _ = writeln!(out, "floor {prefix} {floor}");
+    }
+    let (halves, sparse) = freeze_sparse(&tuned, &weight_mass(&train, t), min_weight, &floors);
     for line in &sparse {
         let _ = writeln!(out, "{line}");
     }

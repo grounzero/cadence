@@ -20,7 +20,7 @@
 mod support;
 
 use cadence_core::position::Board;
-use cadence_core::{CastlingRights, Colour, FenStyle, START_FEN, generate_legal};
+use cadence_core::{CastlingRights, Colour, FenStyle, PieceType, START_FEN, generate_legal};
 use cadence_engine::eval::{PHASE_MAX, WEIGHTS, evaluate, phase, trace};
 use cadence_engine::score::{MAX_EVAL, Score};
 use support::{Rng, mirror, mirror_fen};
@@ -502,4 +502,82 @@ fn a_mirrored_position_has_every_pawn_coefficient_negated() {
         }
     }
     assert!(checked > 1000, "only {checked} positions");
+}
+
+// Mobility
+// ---------------------------------------------------------------------------
+
+/// The coefficient of `piece`'s mobility table at `count` in `fen`, White's pieces less Black's.
+fn mobility_at(fen: &str, piece: PieceType, count: usize) -> i32 {
+    use cadence_engine::eval::{MOBILITY, MOBILITY_OFFSET};
+    trace(&board(fen)).coefficients[MOBILITY + MOBILITY_OFFSET[piece.index()] + count]
+}
+
+#[test]
+fn each_mobility_table_counts_the_usable_squares() {
+    // A knight on d4 reaches eight squares; an enemy pawn on e6 takes f5 from it but is itself a
+    // square it can use, and its own pawn on c2 takes c2.
+    assert_eq!(
+        mobility_at("k7/8/8/8/3N4/8/8/7K w - - 0 1", PieceType::Knight, 8),
+        1
+    );
+    assert_eq!(
+        mobility_at("k7/8/4p3/8/3N4/8/8/7K w - - 0 1", PieceType::Knight, 7),
+        1
+    );
+    assert_eq!(
+        mobility_at("k7/8/4p3/8/3N4/8/2P5/7K w - - 0 1", PieceType::Knight, 6),
+        1
+    );
+    // A slider stops at the first piece, and an own one is not counted.
+    assert_eq!(
+        mobility_at("k7/8/8/8/8/8/8/B6K w - - 0 1", PieceType::Bishop, 7),
+        1
+    );
+    assert_eq!(
+        mobility_at("k7/8/8/8/3P4/8/8/B6K w - - 0 1", PieceType::Bishop, 2),
+        1
+    );
+    // An enemy king stops a rook and is counted; a Black piece counts against White.
+    assert_eq!(
+        mobility_at("7k/8/8/8/8/8/8/r6K w - - 0 1", PieceType::Rook, 14),
+        -1
+    );
+    // A queen alone in the centre fills the last entry of its table.
+    assert_eq!(
+        mobility_at("k7/8/8/8/3Q4/8/8/7K w - - 0 1", PieceType::Queen, 27),
+        1
+    );
+}
+
+#[test]
+fn every_knight_bishop_rook_and_queen_has_exactly_one_mobility_count() {
+    use cadence_engine::eval::{MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, weight_name};
+    for fen in support::corpus_fens() {
+        let b = board(&fen);
+        let t = trace(&b);
+        for pt in [
+            PieceType::Knight,
+            PieceType::Bishop,
+            PieceType::Rook,
+            PieceType::Queen,
+        ] {
+            let at = MOBILITY + MOBILITY_OFFSET[pt.index()];
+            let counted: i32 = t.coefficients[at..at + MOBILITY_LEN[pt.index()]]
+                .iter()
+                .sum();
+            let pieces = b.pieces(Colour::White, pt).count().cast_signed()
+                - b.pieces(Colour::Black, pt).count().cast_signed();
+            assert_eq!(counted, pieces, "{fen} {}", weight_name(at));
+        }
+    }
+    assert_eq!(weight_name(MOBILITY), "mobility.knight.0");
+    assert_eq!(
+        weight_name(MOBILITY + MOBILITY_OFFSET[2]),
+        "mobility.bishop.0"
+    );
+    assert_eq!(
+        weight_name(cadence_engine::eval::WEIGHT_COUNT - 1),
+        "mobility.queen.27"
+    );
 }
