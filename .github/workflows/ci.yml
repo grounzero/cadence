@@ -89,6 +89,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # check-changelog reads the tags, and the default one-commit
+          # checkout fetches none, which the check refuses rather than passes.
+          fetch-depth: 0
 
       # rust-toolchain.toml pins the version and the components; this makes
       # the install a visible step rather than something that happens inside
@@ -142,10 +146,11 @@ jobs:
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo clippy --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
 
-      - name: check-headers and check-boundary
+      - name: check-headers, check-boundary and check-changelog
         run: |
           cargo xtask check-headers
           cargo xtask check-boundary
+          cargo xtask check-changelog
 
       # check-boundary's punctuation and vocabulary rules are matchers with
       # false-positive cases they deliberately allow, and this crate is

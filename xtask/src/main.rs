@@ -62,6 +62,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("check-changelog") => check_changelog(),
         Some("install-hooks") => install_hooks(),
         Some("nps") => nps(&args.collect::<Vec<_>>()),
         Some(other) => {
@@ -83,6 +84,7 @@ fn usage() {
     eprintln!("  check-headers   verify every .rs file carries the GPL notice");
     eprintln!("  check-boundary  verify references resolve here, and punctuation and vocabulary");
     eprintln!("                  --staged: read the index rather than the working tree");
+    eprintln!("  check-changelog verify every version tag has a CHANGELOG.md entry");
     eprintln!("  install-hooks   point git at .githooks/ for this clone");
     eprintln!("  nps             measure the bench's speed the way the SPRT harness measures it");
     eprintln!();
@@ -170,8 +172,8 @@ fn header_defect(text: &str) -> Option<String> {
 //     here fails, whatever it is called, and the rule maintains itself as
 //     documents come and go.
 //   * `NAME.md` where NAME is all capitals is the root-document convention,
-//     and the only such document in this tree is `README.md`. Any other is
-//     a reference to a document that is not here.
+//     and the only such documents in this tree are [`ROOT_DOCUMENTS`]. Any
+//     other is a reference to a document that is not here.
 //   * No absolute `/Users/` path: a home path names a machine, not the
 //     repository.
 //   * No character outside ASCII except the ones on [`ALLOWED_NON_ASCII`],
@@ -336,6 +338,11 @@ const PLANNING_ALLOWED: &[(&str, &str)] = &[
     ("engine/src/eval.rs", "phase"),
     ("engine/tests/eval.rs", "phase"),
 ];
+
+/// The all-capitals `NAME.md` documents this tree holds, and so the only
+/// ones it may name. Adding one here is publishing a document, so it lands
+/// with the file it names.
+const ROOT_DOCUMENTS: &[&str] = &["README.md", "CHANGELOG.md"];
 
 /// Whether `c` can be part of a path-shaped token.
 const fn is_path_char(c: char) -> bool {
@@ -686,7 +693,7 @@ fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, 
             }
         }
         for token in caps_md_tokens(line) {
-            if token != "README.md" {
+            if !ROOT_DOCUMENTS.contains(&token) {
                 out.push((
                     at,
                     format!("`{token}` is not a document in this repository"),
@@ -786,6 +793,193 @@ fn check_boundary(source: Source) -> ExitCode {
     eprintln!("The boundary is one-way, the punctuation is ASCII outside the exempt list in");
     eprintln!("this file, and a deferral names its condition rather than a numbered step.");
     ExitCode::FAILURE
+}
+
+/// One `## [label]` heading in the changelog, with its line and any date.
+struct Heading {
+    line: usize,
+    label: String,
+    date: Option<String>,
+}
+
+/// The three numbers of an `x.y.z` version, or `None` for anything else.
+/// Digits only, so a `+1` or an empty part is not a version.
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3
+        || !parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    Some((
+        parts[0].parse().ok()?,
+        parts[1].parse().ok()?,
+        parts[2].parse().ok()?,
+    ))
+}
+
+/// Whether `s` has the shape `YYYY-MM-DD`.
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+}
+
+/// The `version` under `[workspace.package]` in the root manifest.
+fn workspace_version(manifest: &str) -> Option<String> {
+    let mut in_section = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_section = line == "[workspace.package]";
+        } else if in_section && line.split('=').next().map(str::trim) == Some("version") {
+            return line.split('"').nth(1).map(str::to_string);
+        }
+    }
+    None
+}
+
+/// What is wrong with `changelog` against the version tags and the workspace
+/// version. `[Unreleased]` is allowed first and checked against nothing,
+/// because it is ahead of every tag by design.
+fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut headings = Vec::new();
+    let mut links = Vec::new();
+    for (i, line) in changelog.lines().enumerate() {
+        if let Some(rest) = line.strip_prefix("## [") {
+            let Some((label, after)) = rest.split_once(']') else {
+                out.push(format!("line {}: a heading with no closing `]`", i + 1));
+                continue;
+            };
+            let date = after.strip_prefix(" - ").map(str::to_string);
+            if date.is_none() && !after.is_empty() {
+                out.push(format!(
+                    "line {}: `{line}` is not `## [version] - YYYY-MM-DD`",
+                    i + 1
+                ));
+            }
+            headings.push(Heading {
+                line: i + 1,
+                label: label.to_string(),
+                date,
+            });
+        } else if let Some((label, _)) = line.strip_prefix('[').and_then(|r| r.split_once("]: ")) {
+            links.push(label.to_string());
+        }
+    }
+
+    let mut previous: Option<(&Heading, (u64, u64, u64))> = None;
+    for (index, h) in headings.iter().enumerate() {
+        if !links.contains(&h.label) {
+            out.push(format!(
+                "line {}: `[{}]` has no link definition at the foot",
+                h.line, h.label
+            ));
+        }
+        if h.label == "Unreleased" {
+            if index != 0 || h.date.is_some() {
+                out.push(format!(
+                    "line {}: `[Unreleased]` must be the first heading, with no date",
+                    h.line
+                ));
+            }
+            continue;
+        }
+        let Some(v) = parse_version(&h.label) else {
+            out.push(format!(
+                "line {}: `{}` is not an x.y.z version",
+                h.line, h.label
+            ));
+            continue;
+        };
+        match &h.date {
+            Some(d) if is_iso_date(d) => {}
+            _ => out.push(format!(
+                "line {}: `{}` needs a date, `- YYYY-MM-DD`",
+                h.line, h.label
+            )),
+        }
+        if let Some((p, pv)) = previous {
+            if v >= pv {
+                out.push(format!(
+                    "line {}: `{}` is not older than `{}` above it",
+                    h.line, h.label, p.label
+                ));
+            } else if h.date > p.date {
+                out.push(format!(
+                    "line {}: `{}` is dated after `{}` above it",
+                    h.line, h.label, p.label
+                ));
+            }
+        }
+        if !tags.contains(&h.label) && h.label != version {
+            out.push(format!(
+                "line {}: `{}` is neither a tag nor the workspace version",
+                h.line, h.label
+            ));
+        }
+        previous = Some((h, v));
+    }
+
+    let has = |label: &str| headings.iter().any(|h| h.label == label);
+    for tag in tags.iter().filter(|t| parse_version(t).is_some()) {
+        if !has(tag) {
+            out.push(format!("tag `{tag}` has no `## [{tag}]` entry"));
+        }
+    }
+    if !has(version) {
+        out.push(format!(
+            "the workspace version `{version}` has no `## [{version}]` entry"
+        ));
+    }
+    out
+}
+
+/// Fail when a version tag or the workspace version has no changelog entry.
+/// No visible tags is a failure and not a pass, because a shallow checkout
+/// fetches none.
+fn check_changelog() -> ExitCode {
+    let root = repo_root();
+    let read =
+        |name: &str| std::fs::read_to_string(root.join(name)).map_err(|e| format!("{name}: {e}"));
+    let problems = (|| -> Result<Vec<String>, String> {
+        let changelog = read("CHANGELOG.md")?;
+        let version = workspace_version(&read("Cargo.toml")?)
+            .ok_or_else(|| "Cargo.toml: no `version` under `[workspace.package]`".to_string())?;
+        let tags: Vec<String> = String::from_utf8_lossy(&git(&root, &["tag", "--list"])?)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        if tags.is_empty() {
+            return Err("git lists no tags, so there is nothing to check against".to_string());
+        }
+        Ok(changelog_problems(&changelog, &tags, &version))
+    })();
+    match problems {
+        Ok(p) if p.is_empty() => {
+            println!("check-changelog: every version tag and the workspace version have an entry");
+            ExitCode::SUCCESS
+        }
+        Ok(p) => {
+            for problem in &p {
+                eprintln!("CHANGELOG.md: {problem}");
+            }
+            eprintln!("\ncheck-changelog: {} problem(s).", p.len());
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("xtask check-changelog: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Every regular file under `dir`, skipping `SKIP_DIRS`, `.DS_Store` and `.git`.
@@ -1353,6 +1547,20 @@ mod tests {
         }
     }
 
+    /// The root documents pass and any other all-capitals `NAME.md` is
+    /// refused. The refused name is invented, because a real private one
+    /// here would inventory what is withheld.
+    #[test]
+    fn root_documents_pass_and_other_capitals_md_do_not() {
+        for name in ROOT_DOCUMENTS {
+            let out = scan("README.md", &format!("See {name} for more."), &|_| true);
+            assert!(out.is_empty(), "{name}: {out:?}");
+        }
+        let out = scan("README.md", "See NOTES_X.md for more.", &|_| true);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].1.contains("is not a document"), "{}", out[0].1);
+    }
+
     /// The citation sign was the last row of [`ALLOWED_IN_PLACE`] and is now
     /// refused everywhere, so what a contributor meets is the plain message and
     /// the advice to write the word. Asserted because the advice is the whole
@@ -1508,5 +1716,113 @@ mod tests {
         assert_eq!(planning_label(line, "engine/src/eval.rs"), None);
         // The exemption is per word, not per file: the file is still checked.
         assert!(planning_label("// item 8", "engine/src/eval.rs").is_some());
+    }
+
+    fn tags(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    const GOOD: &str = "\
+# Changelog
+
+## [Unreleased]
+
+- Something not yet in a version.
+
+## [0.2.0] - 2026-02-01
+
+## [0.1.0] - 2026-01-01
+
+[Unreleased]: https://example.invalid/compare/0.2.0...main
+[0.2.0]: https://example.invalid/compare/0.1.0...0.2.0
+[0.1.0]: https://example.invalid/tree/0.1.0
+";
+
+    #[test]
+    fn a_changelog_with_every_tag_passes_and_unreleased_is_not_a_version() {
+        assert_eq!(
+            changelog_problems(GOOD, &tags(&["0.1.0", "0.2.0"]), "0.2.0"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_tag_with_no_entry_fails() {
+        let out = changelog_problems(GOOD, &tags(&["0.1.0", "0.2.0", "0.2.1"]), "0.2.0");
+        assert_eq!(
+            out,
+            vec!["tag `0.2.1` has no `## [0.2.1]` entry".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_cut_fails_until_its_entry_exists_and_passes_before_its_tag() {
+        let out = changelog_problems(GOOD, &tags(&["0.1.0", "0.2.0"]), "0.2.1");
+        assert_eq!(
+            out,
+            vec!["the workspace version `0.2.1` has no `## [0.2.1]` entry".to_string()]
+        );
+        let cut = GOOD
+            .replace("## [0.2.0]", "## [0.2.1] - 2026-03-01\n\n## [0.2.0]")
+            .replace("[0.2.0]: ", "[0.2.1]: https://example.invalid/x\n[0.2.0]: ");
+        assert_eq!(
+            changelog_problems(&cut, &tags(&["0.1.0", "0.2.0"]), "0.2.1"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn an_entry_for_a_version_that_is_neither_tagged_nor_current_fails() {
+        let out = changelog_problems(GOOD, &tags(&["0.1.0"]), "0.1.0");
+        assert_eq!(
+            out,
+            vec!["line 7: `0.2.0` is neither a tag nor the workspace version".to_string()]
+        );
+    }
+
+    #[test]
+    fn order_dates_links_and_the_place_of_unreleased_are_checked() {
+        let swapped = GOOD.replace("## [0.2.0] - 2026-02-01", "## [0.0.9] - 2026-02-01");
+        assert!(
+            changelog_problems(&swapped, &tags(&["0.1.0", "0.0.9"]), "0.1.0")
+                .iter()
+                .any(|p| p.contains("is not older than"))
+        );
+        let undated = GOOD.replace("## [0.1.0] - 2026-01-01", "## [0.1.0]");
+        assert!(
+            changelog_problems(&undated, &tags(&["0.1.0", "0.2.0"]), "0.2.0")
+                .iter()
+                .any(|p| p.contains("needs a date"))
+        );
+        let unlinked = GOOD.replace("[0.1.0]: https://example.invalid/tree/0.1.0\n", "");
+        assert!(
+            changelog_problems(&unlinked, &tags(&["0.1.0", "0.2.0"]), "0.2.0")
+                .iter()
+                .any(|p| p.contains("no link definition"))
+        );
+        let late = GOOD
+            .replace("## [Unreleased]\n", "")
+            .replace("[0.1.0]: https", "## [Unreleased]\n\n[0.1.0]: https");
+        assert!(
+            changelog_problems(&late, &tags(&["0.1.0", "0.2.0"]), "0.2.0")
+                .iter()
+                .any(|p| p.contains("must be the first heading"))
+        );
+    }
+
+    #[test]
+    fn the_workspace_version_is_read_from_its_own_section_only() {
+        let manifest =
+            "[package]\nversion = \"9.9.9\"\n\n[workspace.package]\nversion      = \"0.5.4\"\n";
+        assert_eq!(workspace_version(manifest).as_deref(), Some("0.5.4"));
+        assert_eq!(workspace_version("[package]\nversion = \"1.0.0\"\n"), None);
+    }
+
+    #[test]
+    fn a_version_is_three_runs_of_digits() {
+        assert_eq!(parse_version("0.4.10"), Some((0, 4, 10)));
+        for bad in ["0.4", "0.4.1.2", "0.+4.1", "v0.4.1", "0..1", "Unreleased"] {
+            assert_eq!(parse_version(bad), None, "{bad}");
+        }
     }
 }

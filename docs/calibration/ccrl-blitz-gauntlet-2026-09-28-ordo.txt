@@ -1,0 +1,12 @@
+
+   # PLAYER            :  RATING  ERROR  POINTS  PLAYED   (%)
+   1 Loki 3.0.0        :  2427.0   ----   264.5     400    66
+   2 Reckless 0.2.0    :  2352.0   ----   219.5     400    55
+   3 Fatalii 0.6.0     :  2318.0   ----   210.5     400    53
+   4 Cadence 0.4.8     :  2289.1   14.2  1000.0    2000    50
+   5 Tcheran 2.1       :  2228.0   ----   192.5     400    48
+   6 Smallbrain 1.1    :  2114.0   ----   113.0     400    28
+
+White advantage = 0.00 +/- 0.00
+Draw rate (equal opponents) = 21.82 % +/- 0.97
+
