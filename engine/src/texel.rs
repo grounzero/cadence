@@ -12,7 +12,8 @@ use std::thread;
 use cadence_core::position::Board;
 
 use crate::eval::{
-    self, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PHASE_MAX, PST, WEIGHT_COUNT, WEIGHTS,
+    self, ATTACKERS, ATTACKERS_LEN, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PHASE_MAX, PST,
+    SHIELD, SHIELD_LEN, WEIGHT_COUNT, WEIGHTS,
 };
 
 /// How many parts a sum over the data set is split into, whatever the thread count. Floating-point
@@ -386,15 +387,20 @@ pub fn tune_halves(
     w
 }
 
-/// Holds the mean of the king table and of each mobility table, per half, where it started. The
-/// data cannot place the king's level, one king a side, nor split a piece's level between its
-/// count and its square, so either left free drifts.
+/// Holds the mean of the king table, each mobility table and both king-safety tables, per half,
+/// where it started. The data cannot place a level that one entry a side cancels, nor split a
+/// piece's level between its count and its square, so any of them left free drifts.
 fn pin_levels(w: &mut [Real], start: &[Real], tuned: &[[bool; 2]]) {
     let mobility = (1..5).map(|pt| {
         let at = MOBILITY + MOBILITY_OFFSET[pt];
         at..at + MOBILITY_LEN[pt]
     });
-    for table in std::iter::once(PST + 5 * 64..PST + 6 * 64).chain(mobility) {
+    let king = [
+        PST + 5 * 64..PST + 6 * 64,
+        ATTACKERS..ATTACKERS + ATTACKERS_LEN,
+        SHIELD..SHIELD + SHIELD_LEN,
+    ];
+    for table in king.into_iter().chain(mobility) {
         for j in 0..2 {
             let free: Vec<usize> = table.clone().filter(|&i| tuned[i][j]).collect();
             if free.is_empty() {

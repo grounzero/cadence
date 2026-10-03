@@ -13,7 +13,8 @@ mod support;
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal};
 use cadence_engine::eval::{
-    self, MATERIAL, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PST, evaluate,
+    self, ATTACKERS, ATTACKERS_LEN, MATERIAL, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PST, SHIELD,
+    SHIELD_LEN, evaluate,
 };
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
@@ -216,6 +217,7 @@ fn the_gradient_under_a_per_phase_k_is_the_derivative_of_the_loss() {
 )]
 fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
     // A lone knight weighs one twenty-fourth of the phase: that much middlegame, the rest endgame.
+    // It reaches the zone of Black's king, so White's one attacker and Black's none carry it too.
     let board = Board::from_fen("8/8/8/4k3/3N4/8/8/4K3 w - - 0 1").expect("fen");
     let mass = weight_mass(&[Sample::new(&board, 1.0)], 1);
     let name = |i: usize| eval::weight_name(i);
@@ -226,11 +228,13 @@ fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
         "pst.king.e1",
         "pst.king.e4",
         "mobility.knight.8",
+        "attackers.0",
+        "attackers.1",
     ] {
         assert_eq!(mass[find(n)], [1.0 / 24.0, 23.0 / 24.0], "{n}");
     }
     assert_eq!(mass[find("pst.knight.e4")], [0.0, 0.0]);
-    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 5);
+    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 7);
 }
 
 #[test]
@@ -504,6 +508,67 @@ fn a_mobility_tables_level_is_invisible_to_the_loss_and_is_held() {
             .any(|i| (end[i][0] - start[i][0]).abs() > 1.0),
         "the counts moved"
     );
+}
+
+#[test]
+fn the_king_safety_tables_levels_are_invisible_to_the_loss_and_are_held() {
+    // Each side writes one entry of each table, White's added and Black's taken away, so a
+    // constant on a whole table changes no evaluation.
+    let tables = [
+        ATTACKERS..ATTACKERS + ATTACKERS_LEN,
+        SHIELD..SHIELD + SHIELD_LEN,
+    ];
+    let start = initial_weights();
+    let samples = labelled(&start, 1.0);
+    let mut lifted = start.clone();
+    for table in tables.clone() {
+        for w in &mut lifted[table] {
+            w[0] += 25.0;
+            w[1] -= 15.0;
+        }
+    }
+    let (a, b) = (
+        loss(&samples, &start, 1.0, 1),
+        loss(&samples, &lifted, 1.0, 1),
+    );
+    assert!((a - b).abs() < 1e-12, "{a} {b}");
+
+    // Fit both tables towards a truth that shapes them.
+    let mut truth = start.clone();
+    for table in tables.clone() {
+        for (n, i) in (0u8..).zip(table) {
+            truth[i][0] = 9.0 * f64::from(n) - 20.0;
+            truth[i][1] = 3.0 * f64::from(n) - 5.0;
+        }
+    }
+    let samples = labelled(&truth, 1.0);
+    let settings = Settings {
+        iterations: 300,
+        rate: 2.0,
+        threads: 1,
+        report: 0,
+        ridge: 0.0,
+        prior: None,
+    };
+    let tuned = mask(&["attackers".to_string(), "shield".to_string()]);
+    let end = tune(
+        &samples,
+        &start,
+        &tuned,
+        1.0,
+        &settings,
+        &mut std::io::sink(),
+    );
+    for table in tables {
+        for j in 0..2 {
+            let sum = |w: &[Real]| table.clone().map(|i| w[i][j]).sum::<f64>();
+            assert!((sum(&end) - sum(&start)).abs() < 1e-9, "{table:?} half {j}");
+        }
+        assert!(
+            table.clone().any(|i| (end[i][0] - start[i][0]).abs() > 1.0),
+            "{table:?} moved"
+        );
+    }
 }
 
 #[test]
