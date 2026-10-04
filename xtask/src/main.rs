@@ -183,6 +183,9 @@ fn header_defect(text: &str) -> Option<String> {
 //     list, ASCII.
 //   * No planning label: a planning noun with a number attached. Name the
 //     condition, not the phase.
+//   * No record citation: `ADR` as a word.
+//   * No finding citation in a comment: `F` and two or three digits, squares and
+//     `noqa:` codes aside.
 //
 // The last two were rules enforced by attention until 2026-08-25, and three
 // punctuation violations reached a tree in one week, each caught by somebody
@@ -338,6 +341,9 @@ const PLANNING_ALLOWED: &[(&str, &str)] = &[
     ("engine/src/eval.rs", "phase"),
     ("engine/tests/eval.rs", "phase"),
 ];
+
+/// These spell the citation rules out to enforce them; every other rule still reads them.
+const CITATION_RULE_FILES: &[&str] = &[".githooks/check-message-metadata"];
 
 /// The all-capitals `NAME.md` documents this tree holds, and so the only
 /// ones it may name. Adding one here is publishing a document, so it lands
@@ -572,6 +578,72 @@ fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
     None
 }
 
+/// Case-sensitive, because the letters occur inside lower-case words.
+fn record_citation(line: &str) -> Option<&str> {
+    for (at, _) in line.match_indices("ADR") {
+        if line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let after_word = at + 3;
+        let plural = usize::from(line[after_word..].starts_with('s'));
+        let rest = &line[after_word + plural..];
+        if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            continue;
+        }
+        let digits = rest.trim_start_matches(['-', ' ']);
+        let number = if digits.starts_with(|c: char| c.is_ascii_digit()) {
+            let gap = rest.len() - digits.len();
+            gap + digits
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(digits.len())
+        } else {
+            0
+        };
+        return Some(&line[at..after_word + plural + number]);
+    }
+    None
+}
+
+/// A Markdown or text file is all comment.
+fn comment_of<'a>(line: &'a str, rel: &str) -> Option<(usize, &'a str)> {
+    let ext = Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let marker = match ext.as_deref() {
+        Some("rs") => "//",
+        Some("md" | "txt") => return Some((0, line)),
+        Some("py" | "sh" | "toml" | "yml" | "yaml") => "#",
+        _ if rel.starts_with(".githooks/") => "#",
+        _ => return None,
+    };
+    line.find(marker).map(|at| (at, &line[at..]))
+}
+
+fn finding_citation<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
+    let (offset, comment) = comment_of(line, rel)?;
+    for (at, _) in comment.match_indices('F') {
+        if comment[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let rest = &comment[at + 1..];
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if !(2..=3).contains(&digits) {
+            continue;
+        }
+        if rest[digits..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        if comment[..at].trim_end().ends_with("noqa:") {
+            continue;
+        }
+        return Some(&line[offset + at..offset + at + 1 + digits]);
+    }
+    None
+}
+
 /// What a run reads: the files on disk, or the content `git commit` is about
 /// to record.
 ///
@@ -726,6 +798,25 @@ fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, 
                 format!(
                     "the planning label `{label}`. Name the condition instead: \
                      what has to be true, not which numbered step it was"
+                ),
+            ));
+        }
+        let spells_the_rule = CITATION_RULE_FILES.contains(&rel);
+        if let Some(cite) = record_citation(line).filter(|_| !spells_the_rule) {
+            out.push((
+                at,
+                format!(
+                    "the record citation `{cite}`. The record is not in this tree, \
+                     so write the reason it gave instead"
+                ),
+            ));
+        }
+        if let Some(cite) = finding_citation(line, rel).filter(|_| !spells_the_rule) {
+            out.push((
+                at,
+                format!(
+                    "the finding citation `{cite}`. The finding is not in this tree, \
+                     so write what it found instead"
                 ),
             ));
         }
@@ -1666,6 +1757,110 @@ mod tests {
         ] {
             assert!(planning_label(line, NOT_ALLOWED).is_some(), "{line} passed");
         }
+    }
+
+    #[test]
+    fn record_citations_are_caught_in_the_forms_they_are_written_in() {
+        for (line, cite) in [
+            (
+                "// Below the null move, which is ADR-0008's order",
+                "ADR-0008",
+            ),
+            ("// as ADR 3 says", "ADR 3"),
+            ("/// ADR0010 is the ruling", "ADR0010"),
+            ("// the ADRs agree on this", "ADRs"),
+            ("the reasoning is the one ADR-0002 asks for", "ADR-0002"),
+        ] {
+            assert_eq!(record_citation(line), Some(cite), "{line}");
+        }
+    }
+
+    #[test]
+    fn words_that_contain_the_letters_are_not_record_citations() {
+        for line in [
+            "// a quadratic term",
+            "let adr = 1;",
+            "// ADRESS is not a word this tree uses",
+            "// MADR is not a citation either",
+        ] {
+            assert_eq!(record_citation(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn finding_citations_are_caught_in_the_comments_they_are_written_in() {
+        for (rel, line, cite) in [
+            (
+                "engine/tests/tune.rs",
+                "/// that can be gated here, and F916 carries it.",
+                "F916",
+            ),
+            ("engine/src/x.rs", "let a = 1; // see F942", "F942"),
+            ("tools/x.py", "x = 1  # F910 has the instance", "F910"),
+            (
+                ".githooks/commit-msg",
+                "# F951 is why this is resolved from git",
+                "F951",
+            ),
+            ("README.md", "as F960 records", "F960"),
+        ] {
+            assert_eq!(finding_citation(line, rel), Some(cite), "{rel}: {line}");
+        }
+    }
+
+    #[test]
+    fn squares_lint_codes_and_code_are_not_finding_citations() {
+        for (rel, line) in [
+            // Squares are one digit.
+            (
+                "core/src/types.rs",
+                "    A1 = 0, B1 = 1, C1 = 2, D1 = 3, E1 = 4, F1 = 5,",
+            ),
+            (
+                "core/tests/a.rs",
+                "assert_eq!(b.attackers_to(Square::F5, occ), x); // F5 is a square",
+            ),
+            // A lint code.
+            (
+                "openbench/overlay/CadenceSite/settings.py",
+                "from OpenSite.settings import *  # noqa: F403",
+            ),
+            // Code, and a hex constant, are not comments.
+            ("engine/src/x.rs", "let f = Square::F906;"),
+            ("engine/src/x.rs", "// the mask is 0xF16"),
+            // A file whose comments this check cannot find.
+            ("engine/bench_positions.txt.json", "F916"),
+        ] {
+            assert_eq!(finding_citation(line, rel), None, "{rel}: {line}");
+        }
+    }
+
+    #[test]
+    fn a_planted_citation_fails_the_scan_beside_the_other_rules() {
+        let out = scan(
+            "engine/src/search/node.rs",
+            "// Below the null move, which is ADR-0008's order.\n// F916 carries it.\n",
+            &|_| true,
+        );
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(out[0].1.contains("ADR-0008"), "{out:?}");
+        assert!(out[1].1.contains("F916"), "{out:?}");
+    }
+
+    #[test]
+    fn the_message_gate_may_spell_the_citation_rules_and_nothing_else() {
+        let gate = scan(
+            ".githooks/check-message-metadata",
+            "# ADR and F916 are refused\n",
+            &|_| true,
+        );
+        assert!(gate.is_empty(), "{gate:?}");
+        let other = scan(
+            ".githooks/commit-msg",
+            "# ADR and F916 are refused\n",
+            &|_| true,
+        );
+        assert_eq!(other.len(), 2, "{other:?}");
     }
 
     #[test]

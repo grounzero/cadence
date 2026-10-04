@@ -57,7 +57,13 @@
 
 set -eu
 
-MSG_FILE="${1:?usage: check-message-metadata <message-file>}"
+# --record is the exception, so a caller that forgets it gets the stricter rule.
+MODE=engine
+if [ "${1:-}" = "--record" ]; then
+    MODE=record
+    shift
+fi
+MSG_FILE="${1:?usage: check-message-metadata [--record] <message-file>}"
 
 # The keys a trailer block may use, lower-cased. `Bench` is the bench
 # contract's declaration, and it is the only key this project's history has
@@ -122,6 +128,17 @@ if [ -n "$LINK" ]; then
     rc=1
 fi
 
+# One digit is a square, not a finding.
+if [ "$MODE" = engine ]; then
+    CITE=$(printf '%s\n' "$CLEAN" |
+        grep -nE '(^|[^A-Za-z0-9_])ADRs?([^A-Za-z_]|$)|(^|[^A-Za-z0-9_])F[0-9]{2,3}([^A-Za-z0-9_]|$)' |
+        head -n 1 || true)
+    if [ -n "$CITE" ]; then
+        echo "commit message: a record or finding citation on line $CITE" >&2
+        echo "            This tree does not hold the records, so write the reason instead." >&2
+        rc=1
+    fi
+fi
 if [ "$rc" -eq 0 ]; then
     exit 0
 fi
