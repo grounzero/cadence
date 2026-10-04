@@ -220,7 +220,7 @@ impl Search<'_> {
 
     /// Put the node's move list in the order it will be searched, and hand back the killers the
     /// caller needs again below. Three stages and one sort.
-    pub(super) fn order(
+    fn order(
         &self,
         board: &Board,
         legal: &mut MoveList,
@@ -237,7 +237,7 @@ impl Search<'_> {
     /// The transposition table at an interior node: the move a hit named, and the score to
     /// return where the stored bound answers this node's question outright. The move comes back
     /// whatever the depth says, which is why the two halves come back separately.
-    pub(super) fn probe(
+    fn probe(
         &self,
         board: &Board,
         key: u64,
@@ -264,7 +264,7 @@ impl Search<'_> {
     /// The null-window search of one move behind a node's first, reduced by as many plies as
     /// [`reduction`] and [`history_reduction`] allow. A reduced search that beats alpha is
     /// re-run at the full child depth before its answer is believed.
-    pub(super) fn late_move(
+    fn late_move(
         &mut self,
         board: &mut Position,
         child: u32,
@@ -293,7 +293,7 @@ impl Search<'_> {
     /// Refused in check, at a full window, on a mate-scale beta, below beta, at a position the
     /// null move itself reached, on a halfmove clock at the limit, and where the side to move
     /// has nothing but pawns beside the king ([`has_non_pawn_material`]).
-    pub(super) fn null_move(
+    fn null_move(
         &mut self,
         board: &mut Position,
         depth: u32,
@@ -332,7 +332,7 @@ impl Search<'_> {
     /// to the raised beta is screened by the quiescence search and then searched
     /// [`PROBCUT_REDUCTION`] plies shallower, and the first to stand at or above that bound cuts
     /// the node. `Some` is the cutoff, never on the mate scale; `None` means search the node.
-    pub(super) fn probcut(
+    fn probcut(
         &mut self,
         board: &mut Position,
         depth: u32,
