@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The rules that skip a move or a node outright, and the margins they read. A rule here never
-//! looks at what it skipped, which is what separates it from a reduction in `depth`.
+//! A skipped move is never looked at again; reductions, which a re-search can undo, are in `depth`.
 
 use cadence_core::position::Board;
 use cadence_core::{Move, PieceType};
@@ -11,19 +10,15 @@ use super::depth::REDUCTION_INDEX;
 use crate::score::{self, Score};
 use crate::tune::{MILLI, Tunable, Tunables};
 
-/// Whether the side to move has any piece beside its pawns and king. The null move's zugzwang
-/// guard, and the one condition there that is a chess claim rather than a search claim: passing
-/// is what a side in zugzwang wants and may not have, so the evidence a null move collects is
-/// inverted exactly there.
+/// The zugzwang guard: passing is what a side in zugzwang wants and may not have, so the null
+/// move's evidence is inverted exactly there.
 #[must_use]
 pub fn has_non_pawn_material(board: &Board) -> bool {
     let us = board.side_to_move();
     (board.by_colour(us) & !(board.by_type(PieceType::Pawn) | board.by_type(PieceType::King))).any()
 }
 
-/// Whether the side to move's position is improving: the static evaluation written at this ply
-/// against the one two plies back. `false` wherever either reading is missing, because a rule
-/// reading this flag wants "known to be getting better", and an unknown is not that.
+/// `false` where either reading is missing: an unknown is not known to be improving.
 #[must_use]
 pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
     let now = evals.get(ply).copied().flatten();
@@ -42,15 +37,12 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
 /// million inside, over the bench.
 const LMP_DEPTH: u32 = 8;
 
-/// What the count of moves a node searches grows by, in thousandths of a move per ply squared:
-/// the square of the remaining depth times this. **The weak end is the large one**: at zero the
-/// count is [`REDUCTION_INDEX`] and every quiet move behind the third is given up, while at two
-/// the count outruns the move lists and the rule reaches almost nothing.
+/// Thousandths of a move per ply squared. The weak end is the large one: at zero every quiet move
+/// behind the third is given up, at two the rule reaches almost nothing.
 pub(crate) const LMP_MULTIPLIER: i32 = MILLI / 2;
 
-/// How many moves a node at `depth` searches before the quiet moves behind them are given up.
-/// Total for [`futility_margin`]'s reason: the products saturate, and a multiplier of zero is a
-/// count of [`REDUCTION_INDEX`] rather than a division by zero.
+/// Total: the products saturate, and a multiplier of zero gives [`REDUCTION_INDEX`] rather than a
+/// division by zero.
 #[must_use]
 pub fn lmp_count(tunables: &Tunables, depth: u32) -> usize {
     let multiplier = u64::try_from(tunables.get(Tunable::LmpMultiplier)).unwrap_or(0);
@@ -79,25 +71,18 @@ pub fn lmp_skips(from: Option<usize>, m: Move, killers: [Move; 2], index: usize)
 /// right.
 const FUTILITY_DEPTH: u32 = 3;
 
-/// What the margin grows by per ply of remaining depth, in centipawns. **Linear rather than
-/// squared because the evidence is linear**: the material a search can win grows with the moves
-/// it has, not with their square.
+/// Centipawns per ply. Linear because the material a search can win grows with its moves, not their
+/// square.
 const FUTILITY_MARGIN: Score = 150;
 
-/// How far below alpha a node's static evaluation may sit and still have its quiet moves
-/// searched: [`FUTILITY_MARGIN`] per ply of `depth`.
 #[must_use]
 pub fn futility_margin(depth: u32) -> Score {
-    // Saturating, and total for that reason: no caller passes a depth outside the band, and a
-    // function that is only right for the arguments something happens to hand it is one a gate
-    // cannot pin. [`futile_node`] adds it to the evaluation with a saturating add for the same
-    // reason, so the pair cannot overflow at any depth at all.
+    // Saturating, so the function is total and a gate can pin it; [`futile_node`]'s saturating add
+    // keeps the pair from overflowing at any depth.
     FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
-/// Whether a node may skip quiet moves for the margin: its static evaluation plus
-/// [`futility_margin`] still does not reach `alpha`. Alpha on the mate scale refuses it, and in
-/// check `evals[ply]` is `None`, so the rule cannot read anything and cannot fire.
+/// Alpha on the mate scale refuses it; in check `eval` is `None`, so it cannot fire.
 #[must_use]
 pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
     let Some(eval) = eval else {
@@ -114,13 +99,10 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
     futile && index > 0 && !m.is_noisy()
 }
 
-/// What the margin a node is returned on grows by per ply of remaining depth, in centipawns.
-/// **It is the only thing bounding this rule**, because there is no depth limit here, so it is
-/// chosen where it bounds as well as where it sizes.
+/// Centipawns per ply. The rule has no depth limit, so this is its only bound and is chosen to
+/// bound as well as to size.
 pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 150;
 
-/// How far above `beta` a node's static evaluation must stand before the node is returned
-/// without being searched: the reverse futility margin `tunables` holds, per ply of `depth`.
 #[must_use]
 pub fn reverse_futility_margin(tunables: &Tunables, depth: u32) -> Score {
     // Saturating, for [`futility_margin`]'s reason.
@@ -128,10 +110,8 @@ pub fn reverse_futility_margin(tunables: &Tunables, depth: u32) -> Score {
     per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
-/// `beta` where a node may be returned without being searched at all, its static evaluation
-/// less [`reverse_futility_margin`] still standing at or above `beta`, and `None` where it may
-/// not. The window's edge is returned rather than that evaluation, which is an unverified guess
-/// and, handed upstream as a fail-soft score, loosened every bound above it.
+/// Returns `beta`, not the evaluation: that is an unverified guess, and as a fail-soft score it
+/// loosened every bound above it.
 #[must_use]
 pub fn reverse_futile(
     tunables: &Tunables,
@@ -143,24 +123,18 @@ pub fn reverse_futile(
     (!score::is_mate(beta) && bound >= beta).then_some(beta)
 }
 
-/// The shallowest node the capture probe runs at. **Chosen by a shadow measurement and not
-/// tuned**, with the reduction and the margin below, as the candidate whose cuts save most while
-/// disagreeing with the node's own search no more often than the null move's do.
+/// Chosen by a shadow measurement, not tuned, with the reduction and margin: the candidate whose
+/// cuts save most while disagreeing with the node's own search no more often than the null move's.
 const PROBCUT_DEPTH: u32 = 5;
 
-/// How much shallower than the node the probe searches a capture, the capture's own ply included.
-/// Chosen with [`PROBCUT_DEPTH`] and [`PROBCUT_MARGIN`] as one reading, so none of the three was
-/// picked with the other two unknown.
+/// The capture's own ply included. Chosen with `PROBCUT_DEPTH` and `PROBCUT_MARGIN` as one reading.
 pub const PROBCUT_REDUCTION: u32 = 4;
 
-/// How far above beta a capture's shallow search must stand before the node is cut, in
-/// centipawns. It is read against the tree the other margins leave, so any change to reverse
-/// futility's, futility's or late move pruning's reopens it.
+/// Read against the tree the other margins leave, so a change to reverse futility, futility or late
+/// move pruning reopens it.
 const PROBCUT_MARGIN: Score = 100;
 
-/// The raised beta a node's capture probe must beat, or `None` where the rule cannot run: no
-/// static reading, a full window, too shallow, or either bound on the mate scale. In check
-/// `eval` is `None`, so the rule cannot run there at all.
+/// In check `eval` is `None`, so the rule never runs there.
 #[must_use]
 pub fn probcut_bound(eval: Option<Score>, depth: u32, alpha: Score, beta: Score) -> Option<Score> {
     eval?;

@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The triangular table the search writes its best line into, one row per ply. Every item is
-//! `pub(super)` because the parent owns one and calls into it, which a private item would not
-//! allow.
-
 use cadence_core::{MAX_PLY, Move};
 
-/// The triangular principal-variation table: row `ply` holds the best line found from ply `ply`
-/// in the subtree being searched. Allocated once per search; `MAX_PLY` squared moves, 128 KiB,
-/// on the heap.
+/// Row `ply` holds the best line from that ply. `MAX_PLY` squared moves, 128 KiB, on the heap.
 pub(super) struct PvTable {
     rows: Box<[Move]>,
     len: [usize; MAX_PLY],
