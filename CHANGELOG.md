@@ -16,6 +16,16 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-04
+
+### Changed
+
+- Quiescence search: when the side to move can stop searching because its
+  position already looks good enough, it now reports the bound it was asked
+  about rather than its own estimate of the position.
+
+Test 47: +10.67 (between +4.19 and +17.15).
+
 ## [0.5.6] - 2026-10-04
 
 ### Changed
@@ -208,7 +218,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.6...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.7...main
+[0.5.7]: https://github.com/grounzero/cadence/compare/0.5.6...0.5.7
 [0.5.6]: https://github.com/grounzero/cadence/compare/0.5.5...0.5.6
 [0.5.5]: https://github.com/grounzero/cadence/compare/0.5.4...0.5.5
 [0.5.4]: https://github.com/grounzero/cadence/compare/0.5.3...0.5.4
