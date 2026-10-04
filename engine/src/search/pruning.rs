@@ -38,12 +38,8 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
     }
 }
 
-/// The deepest node at which a quiet move may be given up for its place in the order. **Eight,
-/// and what bounds it is where the reduction still has something to delete.** Over the bench
-/// positions the moves this rule would give up are ones the reduction searches at reduced depth
-/// in 94% of cases from depth four up; at depths nine and above there are 24,000 of them
-/// against 13.3 million inside the band, so the rule is off there because there is nothing
-/// there rather than because it is unsafe there.
+/// Above eight the reduction has almost nothing left to delete: 24,000 such moves against 13.3
+/// million inside, over the bench.
 const LMP_DEPTH: u32 = 8;
 
 /// What the count of moves a node searches grows by, in thousandths of a move per ply squared:
@@ -65,12 +61,8 @@ pub fn lmp_count(tunables: &Tunables, depth: u32) -> usize {
     REDUCTION_INDEX.saturating_add(usize::try_from(counted).unwrap_or(usize::MAX))
 }
 
-/// The index from which this node gives up its quiet moves, or `None` where the rule cannot
-/// fire here at all: past [`LMP_DEPTH`], at a node in check, or at a node with no move the
-/// count does not already admit. **In check is refused here and not left to the move.** Every
-/// legal move at such a node is an evasion and what a wrong skip loses there is a mate defence,
-/// which is the exemption this rule's asymmetry bears on hardest: [`reduction`] refuses the
-/// same node and can afford to be wrong, because a reduced search that beats alpha is re-run.
+/// Refused in check, where a wrong skip loses a mate defence and, unlike a reduction, is never
+/// re-searched.
 #[must_use]
 pub fn lmp_index(tunables: &Tunables, in_check: bool, depth: u32, moves: usize) -> Option<usize> {
     let count = lmp_count(tunables, depth);
@@ -83,10 +75,8 @@ pub fn lmp_skips(from: Option<usize>, m: Move, killers: [Move; 2], index: usize)
     from.is_some_and(|count| index >= count) && !m.is_noisy() && m != killers[0] && m != killers[1]
 }
 
-/// The deepest node at which a quiet move may be skipped for the margin. **Below the limit the
-/// rule is off, not weaker.** A node outside the band searches every move it generates, so the
-/// exemptions at [`futility_skips`] are the only thing that has to be right about the nodes
-/// inside it.
+/// Past it the rule is off rather than weaker, so only [`futility_skips`]'s exemptions have to be
+/// right.
 const FUTILITY_DEPTH: u32 = 3;
 
 /// What the margin grows by per ply of remaining depth, in centipawns. **Linear rather than

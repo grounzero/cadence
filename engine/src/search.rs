@@ -207,11 +207,7 @@ pub struct Search<'a> {
     futility_nodes: u64,
     futility_skipped: u64,
     futility_kept_check: u64,
-    /// How often a node was one this rule could act at, how many quiet moves it gave up there,
-    /// and how often it would have given one up and did not because the move gives check. **The
-    /// first two are not comparable with the margin's, and the reason is the order in the
-    /// loop.** The margin is asked first and keeps the moves it was already taking, so these
-    /// count what this rule *adds*.
+    /// What this rule adds over the margin, which is asked first.
     lmp_nodes: u64,
     lmp_skipped: u64,
     lmp_kept_check: u64,

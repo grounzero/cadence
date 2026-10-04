@@ -1,59 +1,7 @@
 #!/bin/sh
 #
-# What a commit message in this repository carries.
-#
-# The subject, the body, and a trailer block whose keys are on the list
-# below. That is the whole of it, and it is written as a permission rather
-# than a refusal because a permission needs no maintenance: a key nobody has
-# thought of yet is already outside the list, and the list grows only when
-# this repository finds a use for one.
-#
-# References in the body are named rather than linked. What this project
-# treats as durable is a decision ID, a release version, an archived binary
-# and a test number, none of which is a URL, and a link is a reference whose
-# target somebody else controls.
-#
-# Takes the message file as its only argument, the way a commit-msg hook is
-# called. It is called by that hook and by CI, from one file rather than two
-# copies of a rule, because a rule kept in two places ends up meaning two
-# things.
-#
-# Why a message needs its own check. `cargo xtask check-boundary` reads
-# tracked files, so a message is outside what it can see: a message is
-# neither a file nor a path. It is also the harder of the two to take back.
-# A file is corrected by the next commit; a message is corrected only by
-# rewriting history, which on a branch anyone has pulled is not a correction
-# at all. And it is published with the repository: it is what `git log`
-# shows a reader who has just cloned, and it outlives every later edit to
-# the tree it describes.
-#
-# What it cannot see is a closing line that is neither a trailer nor a link.
-# No pattern decides that one; whoever writes the message does, and the
-# reading happens before the commit exists rather than after.
-#
-# WHY IT READS THE WHOLE MESSAGE AND NOT ONLY THE TRAILER BLOCK. Two passes,
-# and both are kept. The first asks `git interpret-trailers` where the block
-# is and checks the keys it reports, which agrees with git and is the
-# argument for it. But git reads the last paragraph alone, so a
-# trailer-shaped line above that paragraph is outside what the first pass can
-# see at all, and a message whose last paragraph is prose has no trailer
-# block for it to inspect. The second pass reads every line instead. The
-# first is not thereby redundant: a lower-case key inside a genuine trailer
-# block is a shape the second pass does not look for.
-#
-# The second pass needs a shape that separates a trailer from a sentence that
-# wrapped at a colon, and the shape is capitalisation. That is measured
-# rather than assumed. Across the messages it was written against, every
-# trailer-shaped line with a lower-case key is prose that happened to break
-# there, and every real trailer is capitalised. The subject is exempt because
-# a subject is never a trailer, which is what admits a `build:` prefix on
-# line 1.
-#
-# The cost, stated rather than discovered: a body line that legitimately
-# opens `Word: ` is refused. "Measured: 34,680,021 nodes" at the start of a
-# line would fail, and the fix is to write the sentence differently. No
-# instance appears in what was measured; the rule is a bet that none is worth
-# more than what the second pass reaches.
+# Checks a commit message, which check-boundary does not read. A closing line
+# that is neither a trailer nor a link is left to the writer.
 
 set -eu
 
@@ -65,13 +13,13 @@ if [ "${1:-}" = "--record" ]; then
 fi
 MSG_FILE="${1:?usage: check-message-metadata [--record] <message-file>}"
 
+# An allowlist, so a key nobody has thought of is already refused.
 ALLOWED='bench'
 
 CLEAN=$(git stripspace --strip-comments < "$MSG_FILE")
 
-# `git interpret-trailers --parse` is what decides where the trailer block
-# starts, so this agrees with git rather than holding a second opinion about
-# where a message ends.
+# git's own parse, so this agrees with git, and it catches the lower-case keys
+# the pass below misses.
 KEYS=$(
     printf '%s\n' "$CLEAN" |
     git interpret-trailers --parse |
@@ -94,6 +42,8 @@ for key in $KEYS; do
     fi
 done
 
+# Every line but the subject, because git reads only the last paragraph; a
+# capitalised key is what separates a trailer from prose that wrapped at a colon.
 ANYWHERE=$(
     printf '%s\n' "$CLEAN" |
     tail -n +2 |
@@ -117,6 +67,7 @@ for key in $ANYWHERE; do
     fi
 done
 
+# Links are refused because their targets are someone else's to change.
 LINK=$(printf '%s\n' "$CLEAN" | grep -inE '[a-z][a-z0-9+.-]*://|www\.[a-z0-9-]+\.[a-z]' | head -n 1 || true)
 if [ -n "$LINK" ]; then
     echo "commit message: a link on line $LINK" >&2

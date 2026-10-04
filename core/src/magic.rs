@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Sliding-piece attacks by magic bitboards. **Magics are the only path.** There is no PEXT
-//! variant and no cargo feature for one: `_pext_u64` cannot be called from safe code, and this
-//! crate is `#![forbid(unsafe_code)]`.
+//! Sliding attacks by magic bitboards only: `_pext_u64` cannot be called from safe code.
 
 use crate::bitboard::Bitboard;
 use crate::types::Square;

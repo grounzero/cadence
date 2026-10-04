@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Board primitives. The one hard invariant lives on [`Square`]: **A1 = 0, LSB = A1, H8 = 63.**
-//! Magics, pawn shifts, `flip_vertical == sq ^ 56` and the NNUE feature index are all written
-//! against it.
+//! Board primitives.
 
 use core::fmt;
 use core::mem::{align_of, size_of};
@@ -386,8 +384,7 @@ impl Rank {
     }
 }
 
-/// LERF, rank-major. **HARD INVARIANT: A1 = 0, LSB = A1, H8 = 63.** Magics, pawn shifts,
-/// `flip_vertical == sq ^ 56` and the NNUE feature index all depend on it.
+/// A1 = 0, H8 = 63, rank-major: magics, pawn shifts, `sq ^ 56` and the feature index depend on it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Square(u8);

@@ -131,8 +131,7 @@ impl Move {
         self.0 == 0
     }
 
-    /// **False for castling.** The destination holds a friendly rook and the `Castle`
-    /// discriminant has the capture bit clear. SEE, MVV-LVA and qsearch all read this bit.
+    /// False for castling, whose destination holds a friendly rook.
     #[inline]
     #[must_use]
     pub const fn is_capture(self) -> bool {

@@ -90,9 +90,7 @@ pub(crate) struct Setup {
     pub layout: CastlingLayout,
 }
 
-/// A chess position, with the search state stack and the game key history. **No `Clone`.** The
-/// boxed state stack makes a copy quietly expensive (fine at position setup, catastrophic in a
-/// loop), so there is no derive to reach for by accident.
+/// No `Clone`: the boxed state stack makes a copy quietly expensive.
 pub struct Board {
     by_type: [Bitboard; 6],
     by_colour: [Bitboard; 2],

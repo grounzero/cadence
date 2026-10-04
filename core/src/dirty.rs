@@ -54,10 +54,7 @@ impl DirtyPiece {
     }
 }
 
-/// **Ordering contract: all `from` subtractions, then all `to` additions.** In DFRC castling a
-/// square can be a `to` in one entry and a `from` in another: king and rook swapping squares,
-/// or the king landing on the rook's origin. Within each pass the order is free; across the two
-/// it is not.
+/// Every `from` subtraction before any `to` addition: in DFRC castling one square can be both.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirtyPieces {
     entries: [DirtyPiece; MAX_DIRTY],

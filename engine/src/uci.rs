@@ -610,9 +610,8 @@ struct ParallelGo<'a> {
     tunables: Tunables,
 }
 
-/// Run `go` across `threads` searches and return the primary's move and line. The generation is
-/// advanced once here rather than once per worker, which is what `run_in_current_generation` is
-/// for. The shared node slots are what keep `nodes` and `nps` about the group.
+/// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
+/// about the group.
 fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let ParallelGo {
         board,

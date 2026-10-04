@@ -28,12 +28,8 @@ pub fn null_reduction(depth: u32) -> u32 {
     3 + depth / 3
 }
 
-/// The first index a late move's search may be shortened at, and the first a late move may be
-/// given up at. **One constant read by two rules, and the tie is the argument for
-/// [`lmp_count`]'s floor rather than a convenience.** A move inside this prefix is one the
-/// search will not shorten by a single ply on the strength of its rank; giving it up entirely
-/// on the same evidence is the larger claim, so the rule that cannot re-search takes its floor
-/// from the rule that can.
+/// Also the floor for giving a move up: the rule that cannot re-search claims no more than the one
+/// that can.
 pub const REDUCTION_INDEX: usize = 3;
 
 /// How many plies a late move's first search is shortened by: zero for the first
@@ -65,10 +61,7 @@ pub fn reduction(
     lmr_reduction(depth, index)
 }
 
-/// How many plies a late move whose base reduction is `base` is actually reduced by, once its
-/// history score is read. **It adjusts a reduction and never creates one.** A base of zero
-/// comes back zero, so every exemption [`reduction`] holds survives whatever the table says,
-/// and so does the depth threshold.
+/// Adjusts a reduction and never creates one, so every exemption in [`reduction`] holds.
 #[must_use]
 pub fn history_reduction(base: u32, history: i32) -> u32 {
     if base == 0 {

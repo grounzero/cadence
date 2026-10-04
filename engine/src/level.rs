@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The strength ladder: one target rating in, and a candidate count, a margin and
-//! a halving constant out, from a table compiled in rather than tuned. The table
-//! is deliberately absent from the tunable constants, because a tune that could
-//! move it would let a run change what the engine is rather than how well it
-//! searches.
-//!
-//! **Every quantity here is an integer and the sampler that reads them uses no
-//! float.** A softmax over `f64` is reproducible on one host and not obviously
-//! reproducible across two, because the last bit of `exp` belongs to whatever
-//! library the build linked, and a move choice that depends on that is the
-//! failure that does not reproduce under investigation.
+//! The strength ladder, compiled in so a tune cannot change what the engine is. Integers only:
+//! `exp` on `f64` is not reproducible across hosts.
 
 /// The bottom of the ladder, and the lowest number the option accepts.
 pub const MIN_ELO: u32 = 1000;
