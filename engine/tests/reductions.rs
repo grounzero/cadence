@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Late move reductions: a move far down a sorted list is first searched
-//! shallower than its siblings, and a reduced search that beats alpha is
-//! re-run at full depth before its answer is believed.
-//!
-//! What these gates demonstrate is that the reductions **happen** and that
-//! the **re-search fires**: the first counter proves later moves were
-//! searched at reduced depth somewhere real, and the second proves that a
-//! reduced fail-high was verified at full depth rather than trusted, which
-//! is the half of the mechanism that keeps a shallow misjudgement out of
-//! the score. Neither is "the code runs". The formula's own gates below
-//! pin the size of the reduction directly, without a search.
-//!
-//! The counters these gates read are written wherever the rule runs and
-//! read on no decision path, so a depth-limited search here reads no clock
-//! and the assertions are exact, not statistical.
+//! The reductions happen and the re-search fires, so a reduced fail-high is verified rather than
+//! trusted. The formula's size is pinned directly, and the counters are on no decision path, so the
+//! assertions are exact.
 
 mod support;
 
@@ -25,50 +13,19 @@ use cadence_core::{Move, START_FEN, generate_legal};
 use cadence_engine::search::{Limits, lmr_reduction, reduction};
 use support::table;
 
-/// The depth the gates search to.
-///
-/// **Eight, re-based when the history heuristic landed, and the reason is
-/// the mechanism rather than the arithmetic.** It was six over the start
-/// position and Kiwipete, which between them re-searched a handful of
-/// reduced fail-highs. Once the sort ranks the quiet band by history the
-/// re-search becomes rarer still, because that is the whole point of the
-/// ordering: a late quiet move that turns out to beat alpha is a move the
-/// sort misjudged, and the table is what stops it misjudging. Measured on
-/// the tree this landed on, both positions read zero re-searches at depth
-/// six, so the gate's rare half had stopped being exercised at all.
-///
-/// At eight, over the set below, the three positions re-search 10, 1 and
-/// 45 times. **A ceiling was not what died here and a ceiling is not what
-/// replaced it**: the assertion is still that the path is taken, and what
-/// moved is the depth and the set that take it.
+/// Deep enough that the history-ordered sort still misjudges some late quiet moves: at eight the
+/// set re-searches 10, 1 and 45 times.
 const GATE_DEPTH: u32 = 8;
 
-/// A quiet middlegame, added with the depth raise above. The start position
-/// and Kiwipete are both sharp enough that the ordering rarely misjudges a
-/// quiet move at all, and this is the shape of position where a late quiet
-/// move beating alpha is an ordinary event rather than a curiosity.
+/// Where a late quiet move beating alpha is ordinary, unlike the start position and Kiwipete.
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// The reductions happen, and the fail-highs are verified: a middlegame
-/// search reduces late moves, and somewhere in the set a reduced search
-/// beats alpha and is re-run at full depth.
-///
-/// Coverage first: each search completed the depth it was asked for, so
-/// the counters were read off finished trees. Then the property, in two
-/// halves that fail differently: reductions prove the conditions admit a
-/// shallower first search somewhere real, per position, and re-searches
-/// prove that a reduced search beating alpha is re-run at full depth,
-/// which is the mechanism's safety half. A rule wired in but never
-/// admitted passes neither; one that reduces but trusts the reduced
-/// answer passes only the first. The re-search is asserted over the set
-/// rather than per position, because it is the rare path by construction:
-/// the ordering exists so that a late quiet move almost never beats
-/// alpha, and Kiwipete at this depth reduces tens of thousands of moves
-/// while re-searching one.
+/// Reductions are asserted per position, re-searches over the set: the ordering exists so a late
+/// quiet move almost never beats alpha.
 #[test]
 fn a_middlegame_search_reduces_late_moves_and_verifies_fail_highs() {
     let mut researches = 0;
@@ -102,9 +59,7 @@ fn a_middlegame_search_reduces_late_moves_and_verifies_fail_highs() {
     );
 }
 
-/// The formula refuses to reduce where there is nothing to reduce: the
-/// first three moves of a node, and any node below depth three, whose
-/// child search is at most one ply from the quiescence search already.
+/// The first three moves, and any node below depth three, already at most a ply from quiescence.
 #[test]
 fn no_reduction_below_the_thresholds() {
     for depth in 0..3 {
@@ -127,9 +82,7 @@ fn no_reduction_below_the_thresholds() {
     }
 }
 
-/// Past the thresholds every reduction is at least one ply, and the size
-/// never falls as the depth or the index grows: a move further down the
-/// list, or a node with more tree below it, is never reduced less.
+/// Further down the list or deeper in the tree is never reduced less.
 #[test]
 fn the_reduction_is_monotone_past_the_thresholds() {
     for depth in 3..64 {
@@ -148,11 +101,8 @@ fn the_reduction_is_monotone_past_the_thresholds() {
     }
 }
 
-/// Every exemption refuses the reduction, pinned directly: the same move
-/// at the same depth and index reduces with no exemption in force and
-/// does not reduce under each one alone. Real moves from real lists, so
-/// `is_noisy` is exercised against the generator and not a hand-built
-/// encoding.
+/// The same move at the same depth and index reduces with no exemption and not under each. Real
+/// moves, so `is_noisy` is exercised against the generator.
 #[test]
 fn each_exemption_alone_refuses_the_reduction() {
     let none = [Move::NULL; 2];
@@ -183,9 +133,7 @@ fn each_exemption_alone_refuses_the_reduction() {
     assert_eq!(reduction(false, false, noisy, none, 8, 8), 0, "noisy");
 }
 
-/// The table in the formula's own comment, pinned cell by cell so the
-/// comment and the code cannot drift: one band-representative probe per
-/// cell, plus each band's edges on the diagonal.
+/// Pinned cell by cell, one probe per band plus each band's edges on the diagonal.
 #[test]
 fn the_documented_table_is_the_table() {
     let table: [(u32, &[(usize, u32)]); 4] = [

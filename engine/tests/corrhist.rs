@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The correction table: what it holds, what it refuses, and that it is a
-//! function of the code alone.
-//!
-//! The table records the running difference between a node's static
-//! evaluation and the score the search returned there, keyed by the pawn
-//! structure and the side to move, and offers it back the next time a
-//! position with that structure is evaluated. What a gate can pin is the
-//! arithmetic and the refusals: that the fold is a weighted mean at the
-//! stated weights, that it saturates rather than wrapping, that a fresh
-//! slot corrects by nothing, that the two sides do not share a slot, and
-//! that nothing here reads a clock or a float.
-//!
-//! What it cannot pin is whether the correction makes the engine stronger,
-//! which is the SPRT's job.
+//! What a gate can pin is the arithmetic and the refusals: a weighted mean at the stated weights,
+//! saturation, a fresh slot correcting by nothing, separate sides, no clock and no float. Whether
+//! it makes the engine stronger is the SPRT's question.
 
 use cadence_core::Colour;
 use cadence_engine::corrhist::{CorrectionHistory, GRAIN, MAX_CORRECTION, MAX_DELTA, MAX_WEIGHT};
@@ -23,9 +12,7 @@ use cadence_engine::corrhist::{CorrectionHistory, GRAIN, MAX_CORRECTION, MAX_DEL
 const KEY_A: u64 = 0x1234_5678_9abc_def0;
 const KEY_B: u64 = 0x0fed_cba9_8765_4321;
 
-/// Two properties of the constants themselves, checked when this file is
-/// compiled rather than when it is run. A grain of one would round a small
-/// persistent correction away, and a correction that reached the mate scale
+/// A grain of one would round a small correction away, and a correction reaching the mate scale
 /// could imply a mate that is not there.
 const _: () = assert!(GRAIN > 1);
 const _: () = assert!(MAX_CORRECTION < 1000);
@@ -139,11 +126,8 @@ fn the_correction_is_reported_in_centipawns_and_the_grain_is_internal() {
 
 #[test]
 fn the_fold_truncates_toward_zero_and_that_is_deliberate() {
-    // Both divisions floor, so a converged entry sits one unit below its
-    // target and a reported correction can be a centipawn short. The
-    // arithmetic is the arm the shadow measured and it is kept identical
-    // rather than rounded, because the measurement transfers only to what
-    // was measured.
+    // Both divisions floor, so a converged entry sits one unit short of its target. Kept identical
+    // to the arm the shadow measured, since the measurement transfers only to what was measured.
     let mut t = CorrectionHistory::new();
     for _ in 0..10_000 {
         t.update(KEY_A, Colour::White, 10, 64);
@@ -195,9 +179,8 @@ fn the_search_both_writes_and_reads_the_table() {
 
 #[test]
 fn a_search_is_still_a_function_of_the_position_and_the_depth() {
-    // The table lives in the per-thread `Search`, so two searches from
-    // fresh state must agree to the node. This is the property `bench`
-    // rests on and the one a correction is easiest to break.
+    // Per-thread state, so two searches from fresh state agree to the node, the property `bench`
+    // rests on.
     let a = search_to(START_FEN, DEPTH);
     let b = search_to(START_FEN, DEPTH);
     assert_eq!(a, b, "same position, same depth, same everything");
@@ -205,9 +188,7 @@ fn a_search_is_still_a_function_of_the_position_and_the_depth() {
 
 #[test]
 fn a_node_in_check_contributes_nothing() {
-    // The evaluation measures a position nobody is about to win material
-    // in, and a check contests exactly that, so such a node has no static
-    // reading to take a difference against.
+    // A node in check has no static reading to take a difference against.
     let (_, updates, _) = search_to("4k3/8/8/8/8/8/8/R3K2r w Q - 0 1", 2);
     let (_, deep, _) = search_to("4k3/8/8/8/8/8/8/R3K2r w Q - 0 1", DEPTH);
     assert!(
@@ -218,9 +199,8 @@ fn a_node_in_check_contributes_nothing() {
 
 #[test]
 fn the_correction_is_bounded_where_the_search_reads_it() {
-    // Whatever the table holds, what reaches a margin test is inside the
-    // stated bound; a correction incommensurable with the mate scale is
-    // the thing this refuses.
+    // Whatever the table holds, a margin test sees a correction inside the bound, off the mate
+    // scale.
     let mut t = CorrectionHistory::new();
     for _ in 0..100_000 {
         t.update(KEY_A, Colour::White, MAX_DELTA, MAX_WEIGHT as u32);
