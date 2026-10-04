@@ -1,51 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The static exchange evaluation, held to a second implementation that
-//! plays the exchange out on the board.
-//!
-//! **Why this one gets an oracle.** A wrong exchange evaluation is
-//! invisible. It does not crash, it does not change a perft count, and it
-//! does not fail a search gate: it quietly calls a winning capture losing,
-//! the search skips the capture, the engine plays a little worse, and every
-//! other test in this repository keeps passing. The only way to see it is
-//! to compute the same number a second way and compare. So the oracle here
-//! is not a list of expected values; it is a second implementation that
-//! shares nothing with the first but the value table and the definition.
-//! `see::see` keeps an attacker set and an occupancy and reveals x-rays by
-//! re-querying the sliders. The oracle makes the moves. It asks the legal
-//! generator what can recapture, plays the cheapest answer, asks again, and
-//! takes the move back, so pins, discovered checks and the king's safety
-//! are whatever `core` says they are and not whatever this file thinks
-//! they are. The two have to agree to the integer, on every legal move of
-//! every position in a corpus built to reach the cases that matter: x-rays
-//! through the capturer and through an en-passant victim, recapturers that
-//! are pinned at the root, recapturers that become pinned during the
-//! exchange, checks uncovered by a capture, promotions on the first move
-//! and on a recapture, and kings that may or may not take.
-//!
-//! **What the constructed positions add.** The corpus test says the two
-//! agree; it does not say either is right. The positions below each pin
-//! one mechanism to a number worked out by hand, in a pair: the position
-//! with the mechanism and the same position without it, so that the test
-//! fails if the mechanism is not modelled and fails differently if it is
-//! modelled wrongly. Every one is checked for what it claims before the
-//! function is asked, and every one is asked in both colours.
-//!
-//! **The tie-break is part of the definition.** "Least valuable" is by
-//! value, then by the order of `PieceType`, then by square, and the oracle
-//! picks the same way. Two pieces of one value can uncover different
-//! x-rays, so an oracle that picked differently would disagree for a
-//! reason that is neither implementation's fault. The king is worth zero
-//! and so goes first, and the corpus is what settled that: the function's
-//! first draft tried it last, as the usual convention does, and the oracle
-//! found a position where the king's capture wins a queen that a queen's
-//! capture gives straight back, because the king's move uncovers nothing
-//! and the queen's uncovers a bishop. Whether the least
-//! valuable piece is the *best* piece to recapture with is a separate
-//! question, and the corpus test measures it rather than asserting it: the
-//! oracle can also play every recapture and take the best, and the count
-//! of exchanges where that differs from the cheapest-first answer is
-//! printed, not gated.
+//! A wrong exchange value is invisible to every other test, so it is held to a second
+//! implementation that plays the exchange out through the legal generator. The constructed
+//! positions pin each mechanism to a hand-worked number with and without it, and least valuable
+//! means value, then `PieceType` order, then square, the king first at zero.
 
 mod support;
 
@@ -79,7 +37,7 @@ fn sq(s: &str) -> Square {
     Square::from_algebraic(s).unwrap_or_else(|| panic!("not a square: {s}"))
 }
 
-/// A UCI move under the colour mirror: the ranks flip, the files stay.
+/// The ranks flip, the files stay.
 fn mirror_uci(uci: &str) -> String {
     uci.chars()
         .map(|c| match c {
@@ -100,8 +58,7 @@ fn piece_type_at(b: &Board, s: Square) -> PieceType {
 // The oracle
 // ---------------------------------------------------------------------------
 
-/// What the corpus reached, counted by the oracle from what the generator
-/// handed it and not from anything the function under test reports.
+/// Counted by the oracle from the generator, not from the function under test.
 #[derive(Debug, Default)]
 struct Census {
     positions: usize,
@@ -147,9 +104,7 @@ fn gained(b: &Board, m: Move) -> i32 {
     victim + bonus
 }
 
-/// The side to move's best result on `to`: zero if it stops, or what the
-/// cheapest legal recapture gains less what the other side then gets. With
-/// `best`, every legal recapture is tried rather than the cheapest.
+/// With `best`, every legal recapture is tried rather than the cheapest.
 fn play_out(
     b: &mut Board,
     to: Square,
@@ -185,9 +140,8 @@ fn play_out(
         return 0;
     }
 
-    // Least valuable first: value, then piece-type order, then square. A
-    // pawn that promotes is four moves with one key, and the best of the
-    // four is taken.
+    // Least valuable first: value, then piece-type order, then square. A promoting pawn is four
+    // moves with one key, and the best is taken.
     let key = |m: &Move| {
         let pt = piece_type_at(b, m.from_sq());
         (value(pt), pt.index(), m.from_sq().index())
@@ -223,7 +177,7 @@ fn play_out(
     result.max(0)
 }
 
-/// The exchange value of `m`, played out. `b` comes back as it went in.
+/// `b` comes back as it went in.
 fn oracle(b: &mut Board, m: Move, best: bool, census: &mut Census) -> i32 {
     if !best {
         census.moves += 1;
@@ -252,9 +206,8 @@ fn oracle(b: &mut Board, m: Move, best: bool, census: &mut Census) -> i32 {
     g - reply
 }
 
-/// The function and the oracle on one move, both required to give
-/// `expected`. The failure message names which of the two disagreed with
-/// the hand-worked number, because the two failures mean different things.
+/// The failure names which of the two disagreed with the hand-worked number, because the two
+/// failures mean different things.
 fn check(b: &Board, uci: &str, expected: i32) {
     let m = mv(b, uci);
     let mut census = Census::default();
@@ -352,12 +305,9 @@ fn a_pinned_defender_does_not_recapture_and_a_blocker_on_the_pin_line_frees_it()
     check_both(freed, "f3d4", -200);
 }
 
-/// A pinned bishop may still capture along its pin. The move has to be
-/// quiet: a piece pinned at the root is the only piece on its line, so the
-/// square it captures on, being on that line, was empty. The queen steps
-/// onto the diagonal, the bishop takes it toward its pinner, and the
-/// pinner takes the bishop. A rule that refused every pinned piece would
-/// call the step free; it loses a queen for a bishop.
+/// The move has to be quiet: a piece pinned at the root is alone on its line, so the square it
+/// takes on was empty. A rule refusing every pinned piece calls the step free; it loses a queen for
+/// a bishop.
 #[test]
 fn a_pinned_piece_captures_along_its_pin_line() {
     let fen_w = "7k/8/8/4b3/8/8/1B6/K2Q4 w - - 0 1";
@@ -467,11 +417,8 @@ fn a_discovered_check_bars_every_recapture_but_the_kings() {
     check_both(without, "e4d6", -200);
 }
 
-/// Two black pieces stand on the e-file between a white rook and the black
-/// king, so neither is pinned. The knight recaptures first, and its leaving
-/// pins the bishop behind it, so the bishop's recapture is illegal. A pin
-/// mask taken from the root position does not see it and would let the
-/// bishop take the pawn.
+/// Neither black piece on the e-file is pinned until the knight recaptures and pins the bishop
+/// behind it. A pin mask taken from the root would let the bishop take.
 #[test]
 fn a_pin_that_arises_during_the_exchange_is_seen() {
     let fen_w = "4k3/4b3/4n3/2p5/1P6/1N6/8/4R2K w - - 0 1";
@@ -497,9 +444,8 @@ fn a_pin_that_arises_during_the_exchange_is_seen() {
     check_both(fen_w, "b3c5", 100);
 }
 
-/// A rook takes a knight defended by a queen, and a pawn guards the square.
-/// The queen could recapture and does not, because the pawn would take it.
-/// Without the pawn, it does.
+/// The queen could recapture and does not, because the pawn would take it; without the pawn, it
+/// does.
 #[test]
 fn the_side_to_move_may_decline() {
     let with = "3q3k/8/8/3n4/4P3/8/8/3R3K w - - 0 1";
@@ -550,12 +496,8 @@ const MENU: [PieceType; 7] = [
     PieceType::Queen,
 ];
 
-/// A random placement: two kings not touching, up to thirty other pieces
-/// with no pawn on a back rank, either side to move, and an en-passant
-/// square whenever the side not to move has a pawn that could just have
-/// double-pushed beside an enemy pawn. Rejected, with `None`, when the
-/// side not to move is in check: the function is specified over positions
-/// a game can reach, and legal play cannot reach one in that state.
+/// Rejected with `None` when the side not to move is in check: the function is specified over
+/// reachable positions.
 fn random_placement(rng: &mut Rng) -> Option<Board> {
     let mut cells: [Option<Piece>; 64] = [None; 64];
     let wk = Square::new(u8::try_from(rng.below(64)).expect("fits"));
@@ -652,11 +594,8 @@ fn random_placement(rng: &mut Rng) -> Option<Board> {
     if b.opponent_in_check() { None } else { Some(b) }
 }
 
-/// Every position the agreement runs over: the corpus; random walks from
-/// the start position, the DFRC arrays and the endgame seeds; and random
-/// placements, six thousand of them. The walks prefer a double push that lands beside an enemy
-/// pawn when one is available, half the time, so that en-passant captures
-/// are reached in numbers rather than by luck.
+/// Walks prefer a double push beside an enemy pawn half the time, so en-passant captures are
+/// reached in numbers.
 fn positions() -> Vec<Board> {
     let mut out: Vec<Board> = support::corpus_fens()
         .iter()
@@ -763,10 +702,8 @@ fn the_function_agrees_with_the_play_out_over_the_corpus_and_random_positions() 
          {best_higher} of those higher under free choice"
     );
 
-    // Coverage. Each floor is about half of what the corpus reached when
-    // it was written (24,080 positions, 411,512 moves, 41,163 captures),
-    // so a corpus that stops reaching a case fails here rather than
-    // passing vacuously.
+    // Each floor is about half of what the corpus reached when written, so a corpus that stops
+    // reaching a case fails rather than passing vacuously.
     assert!(census.positions >= 12_000, "{census:#?}");
     assert!(census.in_check_at_root >= 1_500, "{census:#?}");
     assert!(census.captures >= 20_000, "{census:#?}");
