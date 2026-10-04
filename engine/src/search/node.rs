@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One node of the main search and everything that searches back into it. `null_move`,
-//! `probcut` and `late_move` each call `negamax` again, which is why they live here and not
-//! beside their rules.
+//! `null_move`, `probcut` and `late_move` call `negamax` back, which is why they live here.
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_PLY, Move, MoveList, generate_legal, generate_noisy};
@@ -20,15 +18,11 @@ use crate::see;
 use crate::tt::Bound;
 
 impl Search<'_> {
-    /// One interior node of the main search, at the `ply` and `depth` given, searched with the
-    /// full window.
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
         self.node_window(board, depth, ply, -INFINITE, INFINITE)
     }
 
-    /// The same node, searched with the window given instead of the full one. The seam a null
-    /// window is reached through.
     #[must_use]
     pub fn node_window(
         &mut self,
@@ -38,15 +32,12 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Score {
-        // As though `depth` were the iteration's, so that the extension's ply cap means here
-        // what it means in a search rather than reading whatever the last iteration left
-        // behind.
+        // So the extension cap reads this depth, not what the last iteration left.
         self.root_depth = depth;
         self.negamax(board, depth, ply, alpha, beta)
     }
 
-    /// Negamax with alpha-beta, fail-soft. The value returned after an abort is meaningless and
-    /// is discarded by every caller.
+    /// Fail-soft. After an abort the value means nothing, and every caller discards it.
     pub(super) fn negamax(
         &mut self,
         board: &mut Position,
@@ -55,7 +46,7 @@ impl Search<'_> {
         mut alpha: Score,
         beta: Score,
     ) -> Score {
-        // The horizon: the quiescence search takes over, and counts the node.
+        // The quiescence search counts this node.
         if depth == 0 {
             return self.quiesce(board, ply, alpha, beta);
         }
@@ -66,40 +57,30 @@ impl Search<'_> {
             return DRAW;
         }
 
-        // A repeated position is a draw wherever it is met: twofold inside the tree, threefold
-        // against the game history.
         if board.is_repetition() {
             return DRAW;
         }
 
-        // The ply bound, above the sort because that is where the first read past the arrays
-        // would be. In release a read past their end is a bounds check rather than the
-        // assertion a debug build gets.
+        // Above the sort, where the first read past the arrays would be; release has only a bounds
+        // check.
         if ply >= MAX_PLY {
             return eval::evaluate(board);
         }
 
-        // The table, before the moves are generated: that saving is most of what it is for.
+        // Before generation: that saving is most of what the table is for.
         let key = board.key();
         let (tt_move, cutoff) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return score;
         }
 
-        // The static evaluation, written whether or not anything below reads it at this node:
-        // the stack is how a rule at ply `p` compares its own reading against the one at `p -
-        // 2`, so a hole here is a wrong answer there, not a saving. A node in check writes
-        // `None` rather than a number, because what the evaluation measures is a position
-        // nobody is about to win material in, and a check is exactly that claim being
-        // contested.
+        // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
         let us_eval = board.side_to_move();
         self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
-        // The margin, above the null move because the node's preamble runs the margin tests
-        // there and because below it the rule would be nothing but its own error case: see
-        // [`Search::reverse_futility`].
+        // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
             return bound;
         }
@@ -118,28 +99,20 @@ impl Search<'_> {
         if legal.is_empty() {
             return if in_check { mated_in(ply) } else { DRAW };
         }
-        // After the mate check: a mate delivered on the hundredth half-move is a mate, not a
-        // draw.
+        // After the mate check: mate on the hundredth half-move is mate.
         if board.halfmove_clock() >= 100 {
             return DRAW;
         }
-        // The history row is the side to move's, read here and again per move below, so `us` is
-        // taken once at the node rather than after a move has changed it.
         let us = board.side_to_move();
         let killers = self.order(board, &mut legal, tt_move, us, ply);
 
-        // The margin, read once with the node's own alpha. The interior node's preamble runs
-        // the margin tests beside the static evaluation and above the null move, and this sits
-        // below it instead: nothing between the two writes what the test reads, and this rule
-        // returns no score of its own, so the sequence is unaffected and what the placement
-        // saves is the test at every node the null move cuts.
+        // Below the null move, unlike the other margin tests: nothing between writes what it reads,
+        // so the placement saves the test at every node the null move cuts.
         let futile = futile_node(self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
 
-        // The count, read once against the list this node actually holds, because the rule is
-        // off at a node the count already admits whole. It sits beside the margin and not above
-        // it: the two act on one population and overlap over 43% of it, and whichever is asked
-        // first keeps the moves it takes.
+        // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
+        // asked first keeps the moves it takes.
         let give_up = lmp_index(&self.tunables, in_check, depth, legal.len());
         self.lmp_nodes += u64::from(give_up.is_some());
 
@@ -150,31 +123,25 @@ impl Search<'_> {
             if self.futile(board, futile, m, i) {
                 continue;
             }
-            // Before the move is made, which is the whole of what the rule buys: a move given
-            // up here costs the node its exemption tests and nothing else. It is also above the
-            // reduction rather than beside it, and the two are not alternatives at a node where
-            // both would fire -- the move is gone and [`reduction`] never sees it.
+            // Before the move is made, which is the whole saving; above the reduction, which never
+            // sees a move given up.
             if self.given_up(board, give_up, m, killers, i) {
                 continue;
             }
             board.make_move(m);
-            // The check extension, on the child's own state: `make_move` has just recomputed
-            // the checkers, so asking costs nothing that was not already spent. The same read
-            // is the reduction's check exemption below, so it is taken once and named.
+            // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
             let ext = extension(gives_check, ply + 1, self.root_depth);
             let child = depth - 1 + ext;
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
-                // The index decides whether this move is reduced at all and the score by how
-                // much; [`history_reduction`] has why those are not the same reading.
+                // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, killers, depth, i);
                 self.late_move(board, child, base, self.history.get(us, m), ply, alpha)
             };
-            // No re-search at or above beta, which is already the bound this node returns, and
-            // none at a node whose own window is a null one, where there is no room for a score
-            // to ask for one.
+            // None at or above beta, which is the bound already returned, and none at a null-window
+            // node.
             if i > 0 && !self.aborted && score > alpha && score < beta {
                 score = -self.negamax(board, child, ply + 1, -beta, -alpha);
             }
@@ -190,20 +157,16 @@ impl Search<'_> {
                     self.table.update(ply, m);
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
-                        // The moves it beat are the ones before it in the sorted list, and the
-                        // margin and the count above both skip moves inside it, so a quiet
-                        // cutoff debits moves that failed to cut and moves that were never
-                        // searched alike. Measured over the bench positions at 0.4.8 that is
-                        // 29.2% of the debits, and separating the two changes what the table
-                        // holds, which is a change with its own test.
+                        // The moves it beat include ones the margin and count skipped, so
+                        // unsearched moves are debited too: 29.2% of debits over the bench at
+                        // 0.4.8.
                         self.remember_history(us, &legal.as_slice()[..i], m, depth);
                         break;
                     }
                 }
             }
         }
-        // Fail-soft, so the bound follows the value and not the window it was found in. Nothing
-        // an aborted search computed is stored: the loop above returns before this line.
+        // Nothing an aborted search computed is stored: the loop returns before this.
         let bound = bound_for(best, original_alpha, beta);
         self.tt.store(
             key,
@@ -216,8 +179,6 @@ impl Search<'_> {
         best
     }
 
-    /// Put the node's move list in the order it will be searched, and hand back the killers the
-    /// caller needs again below. Three stages and one sort.
     fn order(
         &self,
         board: &Board,
@@ -232,9 +193,7 @@ impl Search<'_> {
         killers
     }
 
-    /// The transposition table at an interior node: the move a hit named, and the score to
-    /// return where the stored bound answers this node's question outright. The move comes back
-    /// whatever the depth says, which is why the two halves come back separately.
+    /// The move comes back whatever the depth says, so the two halves return separately.
     fn probe(
         &self,
         board: &Board,
@@ -259,9 +218,7 @@ impl Search<'_> {
         (hit.mv, cutoff.then_some(score))
     }
 
-    /// The null-window search of one move behind a node's first, reduced by as many plies as
-    /// [`reduction`] and [`history_reduction`] allow. A reduced search that beats alpha is
-    /// re-run at the full child depth before its answer is believed.
+    /// A reduced search that beats alpha is re-run at full depth before it is believed.
     fn late_move(
         &mut self,
         board: &mut Position,
@@ -287,10 +244,6 @@ impl Search<'_> {
         score
     }
 
-    /// Null-move pruning at one node: `Some` is the cutoff, `None` means search the node.
-    /// Refused in check, at a full window, on a mate-scale beta, below beta, at a position the
-    /// null move itself reached, on a halfmove clock at the limit, and where the side to move
-    /// has nothing but pawns beside the king ([`has_non_pawn_material`]).
     fn null_move(
         &mut self,
         board: &mut Position,
@@ -326,10 +279,8 @@ impl Search<'_> {
         None
     }
 
-    /// The capture probe at one node: a capture whose exchange could carry the static evaluation
-    /// to the raised beta is screened by the quiescence search and then searched
-    /// [`PROBCUT_REDUCTION`] plies shallower, and the first to stand at or above that bound cuts
-    /// the node. `Some` is the cutoff, never on the mate scale; `None` means search the node.
+    /// Each capture is screened by the quiescence search before the reduced search; a cutoff is
+    /// never on the mate scale.
     fn probcut(
         &mut self,
         board: &mut Position,

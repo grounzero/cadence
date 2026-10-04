@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The search below the horizon: out of check only the noisy moves, in check every evasion. It
-//! calls nothing else in the search but the clock, the node counter and itself.
+//! Out of check only noisy moves, in check every evasion.
 
 use cadence_core::{MAX_PLY, Move, generate_legal, generate_noisy};
 
@@ -13,9 +12,6 @@ use crate::score::{DRAW, INFINITE, Score, mated_in};
 use crate::see;
 
 impl Search<'_> {
-    /// The quiescence search. Out of check the side to move may stand pat, then every noisy
-    /// move is tried most valuable victim first, except those whose static exchange loses
-    /// material.
     pub(super) fn quiesce(
         &mut self,
         board: &mut Position,
@@ -45,13 +41,10 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            // Noisy evasions first, by victim; the quiet ones keep the order the generator
-            // emitted them in, behind all of those. No killers and no history: whether either
-            // ranks the quiet evasions usefully is unmeasured, and a second change.
+            // No killers and no history for the quiet evasions: whether they help is unmeasured.
             let generated_first = evasions.as_slice()[0];
             picker::sort_from(board, &mut evasions, 0, [Move::NULL; 2], &[]);
-            // The head is the move a cutoff here is bought with, so it is the element the
-            // counter reads. Both are written on no decision path.
+            // The head is what a cutoff here is bought with.
             self.evasion_lists += 1;
             if evasions.as_slice()[0] != generated_first {
                 self.evasion_lists_reordered += 1;
@@ -74,8 +67,7 @@ impl Search<'_> {
         };
 
         for m in moves.iter() {
-            // A losing capture is refused, out of check only: in check the list is the legal
-            // list and every entry answers the check.
+            // Out of check only: in check every move answers the check.
             if !in_check && see::see(board, m) < 0 {
                 continue;
             }
