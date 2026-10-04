@@ -1,36 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The transposition table: the slot codec, the replacement scheme, the
-//! `Hash` option, and what the table does to a search.
-//!
-//! A table has no oracle either. It cannot be perft'd, and every wrong
-//! version of it plays legal chess: a bound compared the wrong way round,
-//! a mate score stored at the root's scale, a slot returned without
-//! checking the key, all produce a search that finishes, reports a move
-//! and is worth less than it should be. So the gates here pin the things
-//! that define the structure and are observable without an opponent.
-//!
-//! Three of them are the load-bearing ones.
-//!
-//! **A torn read must fail validation.** The two words of a slot cannot be
-//! read as a pair, so the scheme is `key ^ data` beside `data` and the
-//! reader checks. That is testable without a race: the words of two
-//! different writes, combined, are what a race would produce.
-//!
-//! **The move must not change when the search is repeated.** This is a
-//! public search invariant, and the transposition table is the
-//! change most likely to break it, because it is the first thing that
-//! makes the same position return a different answer depending on what was
-//! searched before it. A gate for it is only worth having if it can fail,
-//! so it carries its own coverage assertion: the repeated search must be
-//! cheaper than the first by a factor, or the table was not warm and the
-//! stability being observed is nothing.
-//!
-//! **`bench` must clear between positions.** Otherwise the total depends
-//! on the order the positions are run in and the determinism contract is
-//! quietly gone. The gate compares every position's
-//! count against a standalone search of it and, so that the comparison is
-//! not vacuous, checks that an uncleared run really would differ.
+//! A table has no oracle: every wrong version plays legal chess. The load-bearing gates are that a
+//! torn read fails validation, that a repeated search is cheaper on a warm table, and that `bench`
+//! clears between positions.
 
 mod support;
 
@@ -52,7 +24,6 @@ use support::Rng;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// One search of `board` to `depth` against `tt`: move, score, nodes.
 fn search_with(board: &mut Position, depth: u32, tt: &Table) -> (Move, Score, u64) {
     let stop = AtomicBool::new(false);
     let mut sink = Vec::new();
@@ -65,23 +36,14 @@ fn table(mb: usize) -> Table {
     Table::new(mb).unwrap_or_else(|| panic!("a {mb} MB table"))
 }
 
-/// A table with no buckets: the search with no transposition table at all,
-/// which is the baseline every "what does the table change" gate needs.
+/// The search with no table at all, the baseline for what the table changes.
 fn no_table() -> Table {
     Table::with_buckets(0).expect("a table of no buckets")
 }
 
-/// The positions the search gates run over.
-///
-/// **Not the corpus**, and the reason is the depth. A table needs a main
-/// search with interior nodes for two paths to meet in: at depth three
-/// there are two ply of them and nothing transposes, and the measured
-/// saving over the whole bench is 45 nodes in 29 million. So these gates
-/// run at [`GATE_DEPTH`], and at that depth Kiwipete is 2.3 billion nodes
-/// and not a test. These are the endgame seeds, where few pieces make
-/// transpositions dense and trees small, with the start position, the
-/// third standard position, and the first and last DFRC arrays so that
-/// the castling half of the Zobrist key is in the gate too.
+/// Not the corpus: at depth three nothing transposes, and at `GATE_DEPTH` Kiwipete is 2.3 billion
+/// nodes. Endgame seeds make transpositions dense and trees small; the DFRC arrays put the castling
+/// half of the key in the gate.
 fn gate_fens() -> Vec<String> {
     let mut out: Vec<String> = support::ENDGAME_FENS
         .iter()
@@ -95,12 +57,9 @@ fn gate_fens() -> Vec<String> {
     out
 }
 
-/// The depth the search gates use. See [`gate_fens`] for why it is not
-/// three, and why the positions are the ones they are.
 const GATE_DEPTH: u32 = 7;
 
-/// A spread of results to pack: both ends of every field, a real move, a
-/// promotion, the null move, and a bit pattern that is not a move at all.
+/// Both ends of every field, a promotion, the null move, and a pattern that is not a move.
 fn packable() -> Vec<(Move, i16, u8, Bound)> {
     let moves = [
         Move::NULL,
@@ -153,9 +112,8 @@ fn an_entry_round_trips_through_the_two_words() {
     assert!(checked >= 1000, "only {checked} packings checked");
 }
 
-/// The high sixteen bits of the data word are unused and must stay zero:
-/// a static evaluation goes there when something reads one, and this is
-/// what makes that a deliberate change rather than a silent one.
+/// A static evaluation goes there when something reads one, and this makes that a deliberate
+/// change.
 #[test]
 fn the_unused_bits_of_a_slot_are_zero() {
     for (mv, score, depth, bound) in packable() {
@@ -166,10 +124,8 @@ fn the_unused_bits_of_a_slot_are_zero() {
     }
 }
 
-/// What a race produces: one word of one write beside one word of another.
-/// Every such pair must fail validation, for either key. And so must every
-/// single-bit corruption of an intact pair, which is the same check at its
-/// smallest.
+/// Two writes' words combined are what a race produces, so this is testable without one; every
+/// single-bit corruption of an intact pair must miss too.
 #[test]
 fn a_torn_read_is_rejected() {
     let mut rng = Rng::new(0xB01D_FACE);
@@ -184,8 +140,7 @@ fn a_torn_read_is_rejected() {
         let data_b = Entry::new(mv_b, sc_b, d_b, b_b, 4).to_bits();
         let (word0_a, word0_b) = (key_a ^ data_a, key_b ^ data_b);
 
-        // The premise: intact, both verify. Without this the rest of the
-        // test passes against a `verify` that always says no.
+        // Without this the rest passes against a `verify` that always says no.
         assert!(tt::verify(word0_a, data_a, key_a).is_some());
         assert!(tt::verify(word0_b, data_b, key_b).is_some());
 
@@ -221,9 +176,7 @@ fn a_torn_read_is_rejected() {
     assert_eq!(flipped, 8 * 128);
 }
 
-/// An untouched slot is two zero words. It must not read as a result for
-/// any key, the zero key included: the bound field is zero and zero is not
-/// a bound.
+/// The bound field is zero, and zero is not a bound.
 #[test]
 fn an_untouched_slot_is_never_a_hit() {
     let mut rng = Rng::new(0x0E11_0000);
@@ -246,9 +199,7 @@ fn an_untouched_slot_is_never_a_hit() {
 // The mate scale
 // ---------------------------------------------------------------------------
 
-/// A mate score is stored as the distance from the node that stored it, so
-/// an entry read from a different ply names the same mate. Stored at the
-/// root's scale it would report a mate that never arrives.
+/// Stored at the root's scale it would report a mate that never arrives.
 #[test]
 fn a_mate_score_is_stored_relative_to_its_node() {
     let mut checked = 0;
@@ -309,9 +260,8 @@ fn the_table_is_the_size_it_was_asked_for() {
     assert_eq!(no_table().bytes(), 0);
 }
 
-/// The point of declaring the option: setting it must move the allocation.
-/// An advertised option that is ignored is worse than an absent one,
-/// because the preset that names a size then means nothing.
+/// An ignored advertised option is worse than an absent one: the preset naming a size then means
+/// nothing.
 #[test]
 fn the_hash_option_changes_the_allocation() {
     let mut s = Session::new();
@@ -348,9 +298,8 @@ fn the_hash_option_changes_the_allocation() {
     assert_eq!(s.tt().bytes(), 2 << 20);
 }
 
-/// What a runner reads. `fastchess` warns once a game for an option it was
-/// told to set and the engine does not declare, and the `OpenBench` presets
-/// set both of these.
+/// `fastchess` warns once a game for an undeclared option it was told to set, and the `OpenBench`
+/// presets set both.
 #[test]
 fn uci_declares_hash_and_threads() {
     let out = support::talk("uci\nquit\n");
@@ -403,17 +352,13 @@ fn threads_is_stored_clamped_and_case_insensitive() {
 // Replacement and aging
 // ---------------------------------------------------------------------------
 
-/// Keys are not needed to be distinct in the bucket sense here: a table of
-/// one bucket puts everything in the same four slots, which is what makes
-/// the replacement scheme observable at all.
+/// Everything lands in the same four slots, which makes the replacement scheme observable.
 fn one_bucket() -> Table {
     Table::with_buckets(1).expect("a one-bucket table")
 }
 
-/// A probe answers for the key it was given or not at all. Without this
-/// stated directly it is only tested by accident, and a table that returns
-/// whatever is in the bucket is deterministic, so the search gates below
-/// -- which are about repeatability -- do not notice it.
+/// A table returning whatever is in the bucket is deterministic, so the repeatability gates below
+/// would not notice it.
 #[test]
 fn a_probe_returns_only_what_was_stored_for_that_key() {
     // A small table and many keys, so buckets are contended and a probe
@@ -472,8 +417,7 @@ fn a_bucket_holds_four_results_at_once() {
     }
 }
 
-/// A fifth result takes the shallowest slot, not an arbitrary one: the
-/// deep results are the expensive ones.
+/// The deep results are the expensive ones.
 #[test]
 fn the_shallowest_slot_is_the_one_replaced() {
     let t = one_bucket();
@@ -520,15 +464,9 @@ fn a_deeper_result_for_the_same_position_is_kept() {
     assert!(t.probe(key).is_some());
 }
 
-/// The equilibrium the four-slot bucket is for. A store always takes the
-/// least valuable slot, so a shallow result does displace a deep one --
-/// once. After that the shallow slot is itself the cheapest thing in the
-/// bucket and the next shallow store takes it back, so a bucket of deep
-/// results loses one slot to churn and keeps the other three.
-///
-/// The alternative, refusing a store worth less than everything present,
-/// was rejected: it makes a bucket sticky, and since the leaves are almost
-/// all of the tree, almost all stores would be refused.
+/// A shallow store displaces a deep one once, then takes back its own slot, so a deep bucket keeps
+/// three. Refusing low-value stores was rejected: leaves are almost all of the tree, so almost
+/// every store would be refused.
 #[test]
 fn a_shallow_result_takes_one_slot_of_a_deep_bucket_and_no_more() {
     let t = one_bucket();
@@ -560,10 +498,8 @@ fn a_shallow_result_takes_one_slot_of_a_deep_bucket_and_no_more() {
     );
 }
 
-/// Depth preference alone would let a bucket of deep results hold its
-/// slots for the rest of the game. Aging is what stops that: a generation
-/// is worth eight ply, so what a previous search left is cheap by
-/// comparison and the bucket turns over.
+/// Without aging a bucket of deep results holds its slots all game; a generation is worth eight
+/// ply.
 #[test]
 fn a_new_search_ages_what_is_already_there() {
     let deep_survivors = |generations: usize| -> usize {
@@ -628,60 +564,9 @@ fn clearing_empties_the_table_and_resets_the_generation() {
 // What the table does to a search
 // ---------------------------------------------------------------------------
 
-/// The premise for everything below: the table is reached, and it saves
-/// work. A gate that compares a search against itself proves nothing if
-/// the table is never consulted.
-///
-/// The baseline is a table of no buckets, which is the search with no
-/// table at all: measured over the bench positions it reproduces the
-/// previous engine's node count exactly, so the table is the only thing
-/// this change does.
-///
-/// **Per-position, since late move reductions landed, saving is the rule
-/// and not an invariant.** A table hit rotates its move to the head, every
-/// move behind it shifts down one index, and the reduction reads the
-/// index, so a hit now reshapes which moves are searched shallower as
-/// well as which are searched first, and on a position quiet enough that
-/// can cost more than the probe saves. Measured when the reductions
-/// landed: one of the sixteen, a DFRC start array, reads 11,748 nodes
-/// with the table against 8,512 without, and the other fifteen all save.
-/// So the assertion is fifteen of sixteen and the aggregate factor, not
-/// each position alone; if a second position ever crosses, that is a
-/// reading to take rather than a count to bump.
-///
-/// **Late move pruning crossed three entries, and the reading the
-/// paragraph above asked for is taken here rather than the count being
-/// bumped in silence.** They are a bare king and knight (709 nodes with the
-/// table against 569 without), the Kiwipete-like endgame `pos3` (10,465
-/// against 9,472) and one DFRC start array (3,548 against 2,820). On the
-/// champion all sixteen save, so this is the rule's doing and not drift in
-/// the set. **Which three they are is not stable either**: at a bolder
-/// count the crossers were the knight endgame and the start position under
-/// both castling notations, so what this gate can assert is the count and
-/// the identity of the crossers is not.
-///
-/// **The mechanism is the one the reductions paragraph names, with the
-/// index deciding existence instead of depth.** A hit rotates its move to
-/// the head, which moves every move that was ahead of it one place back;
-/// the reduction reads that index and searches a move one band shallower,
-/// and this rule reads it and deletes the move outright. So a probe now
-/// perturbs which moves *exist* at a node, and the perturbation propagates:
-/// a different set of moves searched is a different set of cutoffs, so
-/// different killers and a different history row at every sibling below.
-/// On a position with almost nothing to find -- two of these three have
-/// under three thousand nodes -- that costs more than the probe saves.
-///
-/// **What the gate has left is the aggregate**, which is unhurt and is
-/// where its force always was: 79,957 nodes against 1,311,497, a factor of
-/// sixteen against the two the assertion below demands. The per-position
-/// count is re-based to thirteen and is now on the same footing as
-/// `demoting_the_losing_captures_saves_nodes`, a constant that each pruning
-/// item moves; what would replace it is a set chosen for positions with
-/// enough tree to probe, which these two are not, and that is a design task
-/// rather than a constant.
-///
-/// **The mobility tables re-based it to twelve**: the aggregate read 139,093
-/// nodes against 1,909,491, a factor of 13.7, and four positions crossed.
+/// The baseline, a table of no buckets, reproduces the tableless engine's count exactly. A hit
+/// reorders what index-keyed reductions and pruning read, so per position saving is the rule and
+/// not an invariant; the aggregate carries the force.
 #[test]
 fn the_table_saves_nodes() {
     let mut cheaper = 0;
@@ -717,46 +602,10 @@ fn the_table_saves_nodes() {
     );
 }
 
-/// An entry says how deep the result under it was searched, and a probe
-/// cuts on that. One ply of overstatement is the classic off-by-one here
-/// and it is invisible from outside: the search still finishes, still
-/// reports a move, and is worth slightly less.
-///
-/// It is visible from inside. After a search to depth D nothing below the
-/// root was searched deeper than D-1, so no entry may claim more, and the
-/// root's own children must claim exactly that.
-///
-/// **Narrowed when the check extension landed, and it got sharper rather
-/// than looser.** "D-1 below the root" was the same arithmetic the search
-/// used to justify its stack safety with, and this is the third place it
-/// was written down. A root move that gives check is now searched at D, so
-/// its entry claims D. What replaces the old bound is not a weaker one: the
-/// depth a child is searched at is exactly D-1 when the move gave no check
-/// and exactly D when it did, both checked here against the child's own
-/// `in_check`, so this gate now also says the extension is one ply and
-/// fires on the checking moves and no others. Nothing anywhere may claim
-/// more than D, because a ply costs one and an extension gives back at most
-/// one.
-///
-/// **The coverage half is taken over the set rather than per position from
-/// 2026-09-01, and late move pruning is why.** The bound above is the claim
-/// and it is still asserted on every child of every position; what had to
-/// move is the assertion that the bound is being checked against something.
-/// On the champion every stored child sits at the depth its move entitled
-/// it to -- 16 of 16, 10 of 10, 22 of 22. Under this rule one position
-/// thins badly and the others do not: 14 of 16, **4 of 13**, 22 of 22, so
-/// a per-position majority fails on the middle one and the set as a whole
-/// stands at 40 of 51.
-///
-/// The mechanism is that a root child which clears the margin above the
-/// move loop returns before storing anything, so it keeps whatever a
-/// shallower iteration left in the table; this rule moves the alpha those
-/// margins are read against, so more children take that path. A stale
-/// shallow entry is not an overstatement and the gate's own claim is
-/// untouched by it. Aggregating is what every other coverage assertion in
-/// this file and in `tests/ordering.rs` already does, and the alternative
-/// was a per-position fraction that the next pruning item would move
-/// again.
+/// A child is stored at exactly D-1, or D where its move gave check, so this also pins the
+/// extension at one ply on checking moves only; nothing may claim more than D. Coverage is over the
+/// set, because a root child returning from the margins keeps a shallower iteration's entry, which
+/// is no overstatement.
 #[test]
 fn no_entry_claims_more_depth_than_was_searched() {
     let depth = 6u32;
@@ -803,39 +652,9 @@ fn no_entry_claims_more_depth_than_was_searched() {
     );
 }
 
-/// A repeated search reuses the table the first one filled.
-///
-/// **This gate had a second half and it is retired as of 2026-09-01: the
-/// same position searched again on a warm table had to give the same move
-/// and the same score.** That is a property this search does not have, and
-/// the finding is that it did not have it before late move pruning either.
-/// Measured over these sixteen positions at depths four to nine, ninety-six
-/// cells, counting a cell as unstable if any of five repeats moved: **the
-/// champion `0.4.6` breaks it in one cell**, a DFRC start array at depth
-/// eight, and this rule takes it to seven. The gate was passing because its
-/// own configuration -- one depth, this set -- does not contain the
-/// champion's cell.
-///
-/// **The mechanism is the one that retired `the_sort_changes_no_score` in
-/// `tests/ordering.rs`.** A warm table names a different move at a node, a
-/// hit rotates that move to the head, every move ahead of it moves one
-/// place back, and a rule keyed on the index gives up a different set. The
-/// reduction reads the index and searches a move shallower; this rule reads
-/// it and deletes the move. All seven of this tree's unstable cells are
-/// pawn and rook endgames, which is where there is least ordering for a
-/// rank to carry and so where a shifted rank costs most.
-///
-/// **What is kept is the half that still holds and was always the point of
-/// the other one**: the second search must be cheaper, or the table was
-/// cold and anything observed on it proved nothing. That assertion is
-/// unchanged and covers all sixteen positions.
-///
-/// **What is lost is a real property and it is worth naming plainly.**
-/// Nothing now says this engine answers the same question the same way
-/// twice inside one game, where the table persists across moves. That is
-/// ordinary for a search with a rank-keyed pruning rule and it is not
-/// ordinary for this record, which had the property and can no longer
-/// assert it.
+/// The second search must be cheaper, or the table was cold and nothing observed proved anything.
+/// Same-move stability across repeats is not asserted: index-keyed pruning breaks it, as it did on
+/// `0.4.6` in one cell.
 #[test]
 fn a_repeated_search_reuses_a_warm_table() {
     let fens = gate_fens();
@@ -861,10 +680,7 @@ fn a_repeated_search_reuses_a_warm_table() {
     );
 }
 
-/// A mate found through a warm table keeps its distance. Storing a mate
-/// score at the root's scale rather than the node's is the classic table
-/// bug, and it presents as an engine that announces mate in four, plays a
-/// move, and announces mate in four again.
+/// A mate stored at the root's scale presents as mate in four announced twice in a row.
 #[test]
 fn mate_distances_survive_a_warm_table() {
     // Mate in two, three plies, found at depth four (the mated side is
@@ -902,13 +718,8 @@ fn mate_distances_survive_a_warm_table() {
     }
 }
 
-/// Three searches of one position in one process, with `between` sent
-/// before the third: their node counts, in order.
-///
-/// Interactive rather than piped. `talk` sends `quit` with everything
-/// else, and `quit` -- correctly -- stops a search that is still running,
-/// so a piped session completes no iteration and prints no `info` line to
-/// read a node count off.
+/// Interactive rather than piped: `quit` stops a running search, so a piped session prints no
+/// `info` line to read.
 fn three_searches(setup: &str, between: &[&str]) -> Vec<u64> {
     let go = format!("go depth {GATE_DEPTH}");
     let mut engine = support::Engine::spawn();
@@ -935,9 +746,7 @@ fn three_searches(setup: &str, between: &[&str]) -> Vec<u64> {
     counts
 }
 
-/// `ucinewgame` empties the table, so the search after it costs what a
-/// first search costs. Driven through the binary, because that is where
-/// the command is handled and where a GUI sends it.
+/// Through the binary, where a GUI sends the command.
 #[test]
 fn ucinewgame_makes_the_next_search_cold() {
     let setup = format!("position fen {}", support::standard_fen("startpos"));
@@ -952,9 +761,7 @@ fn ucinewgame_makes_the_next_search_cold() {
     );
 }
 
-/// Setting `Hash` replaces the table, so it starts cold too, even when the
-/// size asked for is the size already in use. This is the other half of
-/// the option taking effect: a new size is a new table, not a resized one.
+/// Even at the size already in use: a new size is a new table, not a resized one.
 #[test]
 fn setting_hash_makes_the_next_search_cold() {
     let setup = format!("position fen {}", support::standard_fen("startpos"));
@@ -971,25 +778,12 @@ fn setting_hash_makes_the_next_search_cold() {
 // The bench seam
 // ---------------------------------------------------------------------------
 
-/// The depth the coverage half below runs its shared-table passes at.
-///
-/// **Nine, and it is deliberately not [`bench::DEPTH`], because that constant
-/// moves and this demonstration dies when it does.** A 16 MB table holds the
-/// whole 39-position run to depth eleven and saturates above it, so a second
-/// pass costs 4.5% to 10% of the first at depths seven to eleven, 78% at
-/// twelve, and 1.067 and 0.993 at thirteen and fourteen, where the sign is
-/// arbitrary and a third pass at thirteen reads 0.963. Nine sits three plies
-/// below where that starts to go, so a later depth raise cannot empty this
-/// gate with nothing saying so.
+/// Not `bench::DEPTH`, which moves: a 16 MB table holds the whole run to depth eleven and saturates
+/// above it, so nine sits three plies clear.
 const SEAM_DEPTH: u32 = 9;
 
-/// The TT is cleared between positions. Without this the total depends on
-/// position order and on whatever `go` ran before it.
-///
-/// Every position's count must therefore equal what that position costs on
-/// its own. The second half of the test is the coverage assertion: run the
-/// same positions without clearing and show that the total really does
-/// move, so that the first half is testing something.
+/// Each position's count must equal its standalone cost; the second half shows an uncleared run
+/// really moves, so the first is testing something.
 #[test]
 fn the_bench_clears_the_table_between_positions() {
     let report = bench::bench();
@@ -1009,10 +803,8 @@ fn the_bench_clears_the_table_between_positions() {
         assert_eq!(best, line.best, "{}", line.fen);
     }
 
-    // The coverage assertion, at [`SEAM_DEPTH`] rather than the bench's own
-    // and asserting a factor rather than a direction. A table that no longer
-    // holds the run makes the second pass neither cheaper nor dearer
-    // reliably, so a gate reading only the sign passes on a wobble.
+    // A factor rather than a direction: a table that no longer holds the run makes the second pass
+    // wobble either way.
     let shared = table(bench::HASH_MB);
     let pass = |shared: &Table| -> u64 {
         fens.iter()
@@ -1028,9 +820,7 @@ fn the_bench_clears_the_table_between_positions() {
     );
 }
 
-/// The table size the bench runs at is part of the determinism contract:
-/// it is compiled in, not passed on the command line, and the summary line
-/// says what it was.
+/// Compiled in, not passed, and the summary line says what it was.
 #[test]
 fn the_bench_records_the_table_size_it_ran_at() {
     const { assert!(bench::HASH_MB >= 1) };

@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Time management: the budget is a pure function of the limits, and the
-//! engine honours it.
-//!
-//! The allocation is tested as arithmetic first, over a grid of clocks,
-//! increments and moves-to-go: a budget exists exactly when something
-//! constrains the time; the hard limit never exceeds half of what is left
-//! after the overhead; more time or increment never shortens it; few moves
-//! to go lengthens it. Then "never lose on time" as a property of that
-//! arithmetic -- a game whose every move spends the whole hard budget does
-//! not run the clock out -- and finally against the binary, with a clock
-//! the test keeps itself.
+//! The allocation is tested as arithmetic over a grid, then never losing on time as a property of
+//! it, then against the binary with a clock the test keeps.
 
 mod support;
 
@@ -39,9 +30,7 @@ const TIMES: [u64; 9] = [1, 20, 21, 50, 100, 500, 1000, 8000, 3_600_000];
 const INCS: [u64; 5] = [0, 10, 80, 400, 1000];
 const MTG: [Option<u32>; 5] = [None, Some(1), Some(5), Some(20), Some(40)];
 
-/// Nothing constrains the time, so the clock is never read. "Nothing" is
-/// exactly "the `go` named no clock at all": see the test below for the case
-/// that used to be filed here and is not the same thing.
+/// Nothing means no clock named at all; a clock for the other side alone is the next test's case.
 #[test]
 fn no_constraint_means_no_budget() {
     for s in ["", "depth 6", "nodes 1000", "infinite", "depth 3 nodes 5"] {
@@ -53,22 +42,9 @@ fn no_constraint_means_no_budget() {
     assert_eq!(budget(&Limits::depth(7), Colour::White), None);
 }
 
-/// A `go` that named a clock always yields a budget, even when it did not
-/// name *ours*.
-///
-/// Regression: `None` used to mean two things:
-/// "nothing constrains the time", which is what `bench`, `go depth` and `go
-/// infinite` need and which makes the node count a function of the code
-/// alone, and "the GUI told us the opponent's clock and not our own", which
-/// is not a licence to search forever. Only the first is safe, and the
-/// engine took the second reading: `go wtime 1000 winc 10` with Black to
-/// move ran until `stop`.
-///
-/// The safe reading of a clock we were not told is zero, which is already
-/// the rule `Limits::parse` applies to a negative one -- a GUI sends that
-/// when a side has overstepped, and it reads as zero rather than as "no
-/// clock", so the search still hurries. Here it means soft and hard of zero:
-/// the first iteration is returned and no more.
+/// A clock we were not told reads as zero, the rule `Limits::parse` already applies to a negative
+/// one: the first iteration and no more. `None` here once let `go wtime 1000 winc 10` with Black to
+/// move run until `stop`.
 #[test]
 fn a_clock_for_the_other_side_only_is_a_budget_of_zero() {
     for (line, us) in [
@@ -183,10 +159,7 @@ fn few_moves_to_go_means_more_per_move() {
     assert!(one.hard >= forty.hard, "{one:?} vs {forty:?}");
 }
 
-/// Search time alone never exhausts the clock: a game of 1,000 moves whose
-/// every move spends the whole hard budget, from clocks large and small,
-/// stays positive. And with latency up to the overhead per move and an
-/// increment that covers it, the clock stays positive too.
+/// Including latency up to the overhead per move, covered by an increment.
 #[test]
 fn a_game_that_spends_every_hard_budget_does_not_run_out() {
     for &start in &[21u64, 100, 1000, 8000, 60_000] {
@@ -218,8 +191,7 @@ fn a_game_that_spends_every_hard_budget_does_not_run_out() {
 // Against the binary
 // ---------------------------------------------------------------------------
 
-/// `movetime` is honoured: the search uses most of it and does not overrun
-/// it by more than the generous allowance a slow CI runner needs.
+/// Within the allowance a slow CI runner needs.
 #[test]
 fn movetime_is_used_and_not_overrun() {
     let mut e = Engine::spawn();
@@ -259,10 +231,8 @@ fn a_clock_below_the_overhead_yields_a_move_at_once() {
     assert!(elapsed <= Duration::from_secs(1), "took {elapsed:?}");
 }
 
-/// A whole game on a clock the test keeps: 1000 ms + 20 ms each, measured
-/// as wall-clock around each `go`, pipe latency included. Neither side may
-/// run out. The game is played to its end or to a ply cap; the property is
-/// the clock, not the result.
+/// 1000 ms + 20 ms, timed around each `go` with pipe latency included. The property is the clock,
+/// not the result.
 #[test]
 fn a_game_on_the_clock_never_runs_out_of_time() {
     let mut e = Engine::spawn();
@@ -351,21 +321,13 @@ fn a_go_with_only_the_other_side_s_clock_comes_back() {
 // The iteration that is started and never finished
 // ---------------------------------------------------------------------------
 
-/// The position the waste is measured on: bench position 16, a middlegame,
-/// so the ladder is one this repository already searches and nothing here is
-/// chosen to make a number come out.
+/// Bench position 16, so nothing here is chosen to make a number come out.
 const MIDDLEGAME: &str = "r2q1rk1/1b1nbppp/pp1ppn2/8/2PNP3/1PN1B3/P2QBPPP/R4RK1 w - - 0 13";
 
-/// The table size the bench runs with, so the ladder is the shape the
-/// engine actually searches rather than one a starved table produces.
+/// So the ladder is the shape the engine searches, not one a starved table produces.
 const HASH_MB: usize = 16;
 
-/// One search of `MIDDLEGAME` under `limits`, against a table of its own.
-///
-/// Returns the elapsed milliseconds at the end of each completed iteration
-/// and the elapsed milliseconds at the move. In process, so no part of what
-/// is measured is a binary starting up -- the class of fault a timing test
-/// that measured process start-up already cost this project once.
+/// In process, so no part of the measurement is a binary starting up.
 fn ladder(limits: Limits) -> (Vec<u64>, u64) {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
@@ -377,9 +339,7 @@ fn ladder(limits: Limits) -> (Vec<u64>, u64) {
     (s.iterations_ms().to_vec(), returned)
 }
 
-/// The clock that spends `soft` on a move, in sudden death with no
-/// increment: `budget` takes a twenty-fifth of what is left after the
-/// overhead, and the half-clock cap is nowhere near the hard budget.
+/// Sudden death: `budget` takes a twenty-fifth of what is left after the overhead.
 fn clock_for(soft: u64) -> Limits {
     let wtime = 25 * soft + MOVE_OVERHEAD_MS;
     Limits {
@@ -388,27 +348,16 @@ fn clock_for(soft: u64) -> Limits {
     }
 }
 
-/// The hard budget the engine will actually use for that clock.
-///
-/// Read off `budget` rather than written here as a multiple of `soft`. The
-/// multiple is the allocation's to choose, and a copy of it in the gate goes
-/// on passing while asserting against a budget the search does not have,
-/// which is a gate that has stopped discriminating rather than one that
-/// fails. It is a copy today and this removes it before it is one that is
-/// wrong.
+/// Read off `budget`, not written as a multiple of `soft`: a copy of the allocation's choice would
+/// go on passing against a budget the search does not have.
 fn hard_for(soft: u64) -> u64 {
     budget(&clock_for(soft), Colour::White)
         .expect("a clock gives a budget")
         .hard
 }
 
-/// The seam the gate below reads: one elapsed reading per completed
-/// iteration, and none at all where there is no budget.
-///
-/// The second half is the bench contract at the recording site. A depth
-/// limit yields no budget, the clock is never read, and nothing is
-/// recorded; if that ever stops being true the node count has stopped being
-/// a function of the code alone.
+/// Under a depth limit nothing is recorded and no clock read, which is the bench contract at the
+/// recording site.
 #[test]
 fn the_ladder_is_recorded_under_a_clock_and_not_under_a_depth() {
     let (rungs, _) = ladder(Limits::depth(6));
@@ -424,84 +373,35 @@ fn the_ladder_is_recorded_under_a_clock_and_not_under_a_depth() {
     );
 }
 
-/// **The waste.** An iteration whose cost the search can already predict
-/// will not fit inside the hard budget must not be started: it runs to the
-/// hard limit and returns the move the last completed iteration had
-/// already produced.
-///
-/// The clock is derived from this machine and not written down, because a
-/// clock that puts one machine in the window puts another either side of
-/// it, and a gate for a condition that cannot be triggered passes without
-/// covering anything. So: measure the ladder here, find a depth whose
-/// successor cannot fit, and build the clock that lands on it. Two coverage
-/// assertions carry that:
-///
-/// - a depth in the window exists on this machine at all, from the free
-///   ladder;
-/// - and the search under that clock stopped for some reason other than
-///   the soft budget, from its own ladder. Without the second, a machine
-///   whose ladder had drifted 25% between the two runs would pass this by
-///   never reaching the window.
-///
-/// The property itself is scale-free and is read off the run that asserts
-/// it: the time spent after the last completed iteration may not exceed
-/// what that iteration itself cost. When the rule landed it was two and a
-/// half times it.
-///
-/// **The window can be closed, and a closed window is verified rather
-/// than failed.** The waste exists only where an iteration can cost more
-/// than the hard budget leaves: with hard at three times soft, that needs
-/// the next iteration to outweigh roughly 2.75 times everything searched
-/// so far, which the derivation behind the rule states as the window
-/// closing at a branching factor of three. Null-move pruning brought this
-/// tree's ladder under that everywhere on this machine, so the free
-/// ladder can present no depth to build the trial on. The gate then
-/// asserts the closure off the whole ladder, cap ignored, and passes with
-/// the ladder printed: a rung the calibration cap alone excluded still
-/// fails loudly, and any tree that reopens the window re-arms the trial
-/// by itself. What must not happen is the third option, a quiet pass that
-/// looked and found nothing to ask.
-/// The cheapest rung this gate will calibrate on, in milliseconds.
-///
-/// Below it the clock has no resolution to spare and the trial measures
-/// scheduling noise rather than the rule. The gate's precondition is a rung
-/// the clock can measure, and stating it is better than widening a margin
-/// until the noise fits underneath.
+/// Below it the trial measures scheduling noise rather than the rule.
 const MEASURABLE_MS: u64 = 8;
 
-/// The least headroom `soft` carries over the rung it was derived from, in
-/// milliseconds.
-///
-/// The quarter below is the intended margin and integer division takes it to
-/// zero under four milliseconds, which left the whole of the slack as the
-/// `+ 1`. This floor closes that whatever the rung, so a ladder that slips
-/// under `MEASURABLE_MS` in some later tree cannot produce degenerate slack.
+/// Integer division takes the quarter's margin to zero under four milliseconds; this floor keeps
+/// the slack whatever the rung.
 const MIN_HEADROOM_MS: u64 = 3;
 
-/// The soft budget a rung implies: a quarter of headroom, never less than
-/// [`MIN_HEADROOM_MS`].
 fn soft_for(cum: u64) -> u64 {
     cum + (cum / 4).max(MIN_HEADROOM_MS) + 1
 }
 
+/// An iteration predicted not to fit the hard budget must not be started: it runs to the limit and
+/// returns the move the last one already found. The clock is derived from this machine's ladder,
+/// and a closed window is verified over every rung rather than passed quietly.
 #[test]
 #[ignore = "machine-dependent: whether an iteration that cannot finish lands in the window \
             turns on the runner's speed and one position's ladder; run with --ignored"]
 fn an_iteration_that_cannot_finish_is_not_started() {
-    // The free ladder: enough depth to see the window, and a movetime that
-    // bounds the calibration whatever machine this is. Twelve and not ten
-    // from the fitted piece-square table, under which depth ten finished in
-    // 28 ms with no earlier rung reaching the measurable floor.
+    // Enough depth to see the window and a movetime bounding the calibration on any machine.
+    // Twelve, not ten: under the fitted table depth ten finished in 28 ms with no earlier rung
+    // measurable.
     let mut free = Limits::depth(12);
     free.movetime = Some(3_000);
     let (rungs, _) = ladder(free);
     assert!(rungs.len() >= 3, "no ladder to read: {rungs:?}");
 
-    // The window: the last completed iteration finished before `soft`, so
-    // the next is started, and it cannot finish before `hard`, which is
-    // three times `soft`. A quarter of headroom on `soft` so the clock
-    // survives the run-to-run variation between this ladder and the next.
-    // The deepest such depth, capped so the gate costs about a second.
+    // The last completed iteration finished before `soft` and the next cannot finish before `hard`,
+    // three times `soft`. A quarter of headroom on `soft` survives run-to-run variation; the
+    // deepest such depth, capped near a second.
     let mut window = None;
     for d in 1..rungs.len() {
         let cum = rungs[d - 1];
@@ -513,13 +413,8 @@ fn an_iteration_that_cannot_finish_is_not_started() {
         }
     }
     let Some((depth, soft)) = window else {
-        // The precondition's own coverage. `MEASURABLE_MS` excuses a rung
-        // from the assertion below, so a ladder whose every rung is under
-        // it would leave this branch asserting nothing at all and printing
-        // that the window is closed: the quiet pass this gate's doc says
-        // must not happen, arriving through the floor that was added to
-        // stop it failing wrongly. One rung has to clear the floor for the
-        // closure to have been checked over anything.
+        // `MEASURABLE_MS` excuses a rung below it, so one rung must clear it or the closure was
+        // checked over nothing.
         let measurable = (1..rungs.len())
             .filter(|&d| rungs[d - 1] >= MEASURABLE_MS)
             .count();
@@ -529,10 +424,7 @@ fn an_iteration_that_cannot_finish_is_not_started() {
              nothing: {rungs:?}"
         );
 
-        // The closed window, verified over every rung with the cost cap
-        // ignored: a rung the cap alone excluded is a trial this gate
-        // should have run and did not, and fails rather than passing over
-        // it.
+        // A rung the cost cap alone excluded is a trial this gate should have run, and fails.
         for d in 1..rungs.len() {
             let cum = rungs[d - 1];
             let next = rungs[d] - rungs[d - 1];
@@ -574,12 +466,8 @@ fn an_iteration_that_cannot_finish_is_not_started() {
     );
 }
 
-/// The rule as arithmetic, which is how the rest of this module is tested.
-///
-/// The ladder is the one measured on the middlegame position above, so the
-/// case the gate below covers end to end is pinned here as numbers too: at
-/// a hard budget of 576 ms, elapsed 153 with 9 two iterations back predicts
-/// 630 and the iteration is refused.
+/// Pinned as numbers on the middlegame's ladder: at a hard budget of 576 ms, elapsed 153 with 9 two
+/// iterations back predicts 630 and is refused.
 #[test]
 fn an_iteration_is_started_only_when_it_is_predicted_to_finish() {
     let clocked = |hard: u64| Budget {
@@ -604,8 +492,7 @@ fn an_iteration_is_started_only_when_it_is_predicted_to_finish() {
     assert!(started, "no hard budget in the range started an iteration");
 }
 
-/// Every way of not knowing answers "start it", so the search always has a
-/// move and the early iterations are never refused.
+/// So the search always has a move and the early iterations are never refused.
 #[test]
 fn the_rule_starts_an_iteration_whenever_it_cannot_predict() {
     let tight = Budget { soft: 1, hard: 3 };
@@ -617,10 +504,8 @@ fn the_rule_starts_an_iteration_whenever_it_cannot_predict() {
     assert!(another_iteration_fits(&[0, 40, 900], tight));
 }
 
-/// `movetime` makes the hard budget the soft one, and there the rule is
-/// inert: nothing later gets what this move does not spend, so an
-/// abandoned iteration costs nothing and refusing to start one only gives
-/// up the chance that the prediction was wrong.
+/// Under `movetime` nothing later gets what this move does not spend, so refusing only gives up the
+/// chance the prediction was wrong.
 #[test]
 fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
     let ladder = [0, 0, 0, 2, 9, 46, 153];
@@ -641,14 +526,10 @@ fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
 // The root move and score kept across iterations
 // ---------------------------------------------------------------------------
 
-// The state a rule that spends on how long the root move has stood reads,
-// and the state a rule reading the same shape off the score reads with it.
-// These gates say it is kept once per completed iteration and read back as
-// the run it is, not that a search holding it runs.
+// Kept once per completed iteration and read back as the run it is; no rule reading it is asserted
+// here.
 
-/// One search of `fen` under `limits`, handing the finished search and the
-/// move it returned to `read`. In process and against a table of its own,
-/// for the reason [`ladder`] is.
+/// In process and with its own table, for `ladder`'s reason.
 fn searched<T>(fen: &str, limits: Limits, read: impl FnOnce(&Search, Move) -> T) -> T {
     let stop = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
@@ -658,10 +539,8 @@ fn searched<T>(fen: &str, limits: Limits, read: impl FnOnce(&Search, Move) -> T)
     read(&s, best)
 }
 
-/// The run is the trailing one: every entry it covers holds the last move,
-/// and the entry before it does not. Stated as the two halves of that
-/// property rather than by recomputing the count, which would only assert
-/// that two copies of one loop agree.
+/// Stated as the two halves of the property, not by recomputing the count, which would only show
+/// two copies of one loop agree.
 fn assert_the_run_is_the_trailing_one(s: &Search) {
     let roots = s.iteration_roots();
     let run = s.stable_iterations();
@@ -684,14 +563,7 @@ fn assert_the_run_is_the_trailing_one(s: &Search) {
     );
 }
 
-/// One entry per completed iteration, under a clock and under a depth
-/// limit alike.
-///
-/// **This is where it parts from the ladder above.** An elapsed reading
-/// costs a clock read, so `iterations_ms` stays empty where there is no
-/// budget and the bench contract needs it to; a move and a score cost no
-/// clock read at all, so this is kept under every limit and the same
-/// assertion holds either side.
+/// Unlike the ladder this costs no clock read, so it is kept under every limit.
 #[test]
 fn the_root_of_every_completed_iteration_is_recorded() {
     searched(MIDDLEGAME, Limits::depth(6), |s, _| {
@@ -722,12 +594,8 @@ fn the_root_of_every_completed_iteration_is_recorded() {
     });
 }
 
-/// The last entry is the move and score the search returns.
-///
-/// This is the half that says the state is read correctly rather than
-/// merely kept: an entry written before the abort check, or written from
-/// the partial result of an iteration that was cut off, disagrees with what
-/// the caller is handed and nothing else in the suite would see it.
+/// An entry written before the abort check, or from a cut-off iteration, disagrees with what the
+/// caller is handed.
 #[test]
 fn the_last_entry_is_what_the_search_returns() {
     for limits in [Limits::depth(7), {
@@ -746,12 +614,8 @@ fn the_last_entry_is_what_the_search_returns() {
     }
 }
 
-/// An iteration that is abandoned leaves nothing behind.
-///
-/// Under `infinite` the loop has no budget to break on, so the only way out
-/// is the abort and the condition this gate wants holds by construction
-/// rather than by a clock coming out right; the coverage assertion is that
-/// an iteration completed at all before the flag went up.
+/// Under `infinite` only the abort exits, so the condition holds by construction; the coverage is
+/// that an iteration completed before the flag.
 #[test]
 fn an_abandoned_iteration_leaves_no_entry() {
     let stop = AtomicBool::new(false);
@@ -778,12 +642,8 @@ fn an_abandoned_iteration_leaves_no_entry() {
     });
 }
 
-/// A search that completes no iteration keeps nothing, and still returns a
-/// move.
-///
-/// The fallback move is the best root move fully searched, which is not an
-/// iteration's result and must not read as one: a run of one over it would
-/// tell a rule the root move had stood for an iteration when none finished.
+/// The fallback move is not an iteration's result, and a run of one over it would claim the root
+/// move stood an iteration.
 #[test]
 fn a_search_that_completes_no_iteration_keeps_nothing() {
     let stop = AtomicBool::new(true);
@@ -805,14 +665,8 @@ fn a_search_that_completes_no_iteration_keeps_nothing() {
 /// every iteration.
 const FORCED: &str = "7k/8/8/8/8/8/6q1/K7 w - - 0 1";
 
-/// The run counts the iterations that kept the move, and it is read on a
-/// position where the move changes and one where it cannot.
-///
-/// **The changing half carries the coverage.** A reader returning the whole
-/// length passes every assertion a stable position can make, so the gate
-/// requires a position in the set whose root move moved and fails with the
-/// entries printed when none did, rather than passing over a property it
-/// never met.
+/// A reader returning the whole length passes every stable position, so the set must hold one whose
+/// root move moved.
 #[test]
 fn the_run_counts_the_iterations_that_kept_the_move() {
     searched(FORCED, Limits::depth(6), |s, _| {
@@ -842,12 +696,8 @@ fn the_run_counts_the_iterations_that_kept_the_move() {
 const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
 const ENDING: &str = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
 
-/// One search's entries do not reach the next.
-///
-/// The killers, the history and the correction table are cleared at the
-/// head of a search and this is kept beside them, so a run carried over
-/// would tell the next move's rule the root had stood since a position it
-/// never saw.
+/// Cleared with the killers, history and correction table, so a carried run cannot claim the root
+/// stood since a position never seen.
 #[test]
 fn the_entries_do_not_survive_into_the_next_search() {
     let stop = AtomicBool::new(false);
@@ -873,9 +723,8 @@ fn the_entries_do_not_survive_into_the_next_search() {
     );
 }
 
-/// **`go ponder` reads no clock and answers nothing until it is told to.** It arrives with the
-/// clock on it, so the defect this replaced was a ponder parsing as an ordinary clocked search
-/// and returning a move on its own budget, which is a move the opponent has not asked for.
+/// It carries the clock, and once parsed as an ordinary clocked search it answered a move nobody
+/// had asked for.
 #[test]
 fn a_ponder_does_not_answer_on_its_own_budget() {
     let limits = Limits {
@@ -936,10 +785,8 @@ fn a_ponder_does_not_answer_on_its_own_budget() {
     );
 }
 
-/// **A `ponderhit` is answered whatever `Threads` is set to.** The flag reaches the search
-/// through `set_ponder_hit`, and a parallel `go` builds its own searches, so a primary that was
-/// not given the flag never leaves the ponder and plays on until `stop` -- which is a loss on
-/// time against a GUI, and which every test at the default `Threads` passes.
+/// A parallel `go` builds its own searches, so a primary without the flag plays on until `stop`: a
+/// loss on time that every default-`Threads` test passes.
 #[test]
 fn a_ponderhit_is_answered_at_more_than_one_thread() {
     let out = Engine::within(Duration::from_secs(30), || {
@@ -964,9 +811,8 @@ fn a_ponderhit_is_answered_at_more_than_one_thread() {
     );
 }
 
-/// **A `ponderhit` moves the clock origin to the moment it arrived.** The `time` an `info` line
-/// carries is elapsed from that origin, so the gap between it and the wall clock of the whole
-/// exchange is the pondering the budget no longer counts.
+/// The gap between an `info` line's `time` and the whole exchange's wall clock is the pondering the
+/// budget no longer counts.
 #[test]
 fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
     const PONDERED_MS: u64 = 700;
@@ -1005,9 +851,8 @@ fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
     );
 }
 
-/// **A ponder that is hit becomes an ordinary clocked search and answers on its own.** The hit
-/// is raised before the run here, so the whole search is the one a `ponderhit` leaves behind:
-/// it records a ladder, and it returns without anything raising `stop`.
+/// The hit is raised before the run, so the whole search is what a `ponderhit` leaves: it records a
+/// ladder and returns without `stop`.
 #[test]
 fn a_ponder_that_is_hit_becomes_a_clocked_search() {
     let stop = AtomicBool::new(false);
