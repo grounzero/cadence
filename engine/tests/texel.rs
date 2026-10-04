@@ -8,8 +8,8 @@ mod support;
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal};
 use cadence_engine::eval::{
-    self, ATTACKERS, ATTACKERS_LEN, MATERIAL, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PST, SHIELD,
-    SHIELD_LEN, evaluate,
+    self, ATTACKERS, ATTACKERS_LEN, MATERIAL, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PHASE_MAX,
+    PST, Rule, SCALE_FULL, SHIELD, SHIELD_LEN, WEIGHTS, evaluate, rule, trace,
 };
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::texel::{
@@ -582,4 +582,130 @@ fn a_family_floor_overrides_the_run_floor_for_the_weights_it_names() {
     // Without the family floor the counts move like the squares.
     let (halves, _) = freeze_sparse(&tuned, &mass, 1_000.0, &[]);
     assert_eq!(halves[MOBILITY + 1], [true, true]);
+}
+
+// The rules
+// ---------------------------------------------------------------------------
+
+/// Every placement of a few pieces on the given squares that is legal and that a rule reads.
+fn ruled() -> Vec<Board> {
+    let mut out = Vec::new();
+    for white_king in [2, 4, 10, 17, 26, 34, 43] {
+        for black_king in [48, 49, 56, 57, 58, 59, 60, 63] {
+            for pawn in [8, 16, 24, 32, 40, 9, 17, 25, 33, 15, 23, 31, 39] {
+                for extra in ["", "B@2", "B@11", "B@19"] {
+                    let mut pieces = vec![(white_king, 'K'), (black_king, 'k'), (pawn, 'P')];
+                    if let Some(at) = extra.strip_prefix("B@") {
+                        pieces.push((at.parse().expect("square"), 'B'));
+                    }
+                    let squares: Vec<usize> = pieces.iter().map(|p| p.0).collect();
+                    if (1..squares.len()).any(|i| squares[..i].contains(&squares[i])) {
+                        continue;
+                    }
+                    let mut fen = String::new();
+                    for rank in (0..8).rev() {
+                        let mut empty = 0;
+                        for file in 0..8 {
+                            match pieces.iter().find(|p| p.0 == rank * 8 + file) {
+                                Some(&(_, c)) => {
+                                    if empty > 0 {
+                                        fen.push_str(&empty.to_string());
+                                        empty = 0;
+                                    }
+                                    fen.push(c);
+                                }
+                                None => empty += 1,
+                            }
+                        }
+                        if empty > 0 {
+                            fen.push_str(&empty.to_string());
+                        }
+                        if rank > 0 {
+                            fen.push('/');
+                        }
+                    }
+                    for stm in ["w", "b"] {
+                        let Ok(b) = Board::from_fen(&format!("{fen} {stm} - - 0 1")) else {
+                            continue;
+                        };
+                        if !b.opponent_in_check() && rule(&b).is_some() {
+                            out.push(support::mirror(&b));
+                            out.push(b);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The search's arithmetic in wide integers, as it would be with `scale` in the rule's entry.
+fn integer(b: &Board, scale: i64) -> i64 {
+    let t = trace(b);
+    let (mut mg, mut eg) = (0i64, 0i64);
+    for (c, w) in t.coefficients.iter().zip(WEIGHTS.iter()) {
+        mg += i64::from(*c) * i64::from(w.mg);
+        eg += i64::from(*c) * i64::from(w.eg);
+    }
+    let (p, max) = (i64::from(t.phase), i64::from(PHASE_MAX));
+    (mg * p + eg * (max - p)) * scale / (max * i64::from(SCALE_FULL))
+}
+
+#[test]
+fn a_rules_scale_reaches_its_own_positions_and_truncates_as_the_search_would() {
+    let boards = ruled();
+    let weights = initial_weights();
+    let mut seen = [0usize; Rule::ALL.len()];
+    for b in &boards {
+        let own = rule(b).expect("ruled");
+        seen[own.index()] += 1;
+        let full = Sample::new(b, 0.5).evaluate(&weights);
+        for other in Rule::ALL.into_iter().filter(|r| *r != own) {
+            let mut s = Sample::new(b, 0.5);
+            s.set_scale(other, 0);
+            assert_eq!(s.evaluate(&weights).to_bits(), full.to_bits(), "{other:?}");
+        }
+        for scale in [0, 1, 17, 32, 63, SCALE_FULL] {
+            let mut s = Sample::new(b, 0.5);
+            s.set_scale(own, scale);
+            let e = s.evaluate(&weights);
+            assert_eq!(e.trunc() as i64, integer(b, i64::from(scale)), "{scale}");
+        }
+    }
+    assert!(seen.iter().all(|&n| n >= 100), "{seen:?}");
+}
+
+#[test]
+fn the_gradient_under_a_rule_scale_is_the_derivative_of_the_loss() {
+    let weights = initial_weights();
+    let mut samples: Vec<Sample> = ruled()
+        .iter()
+        .map(|b| {
+            let e = Sample::new(b, 0.0).evaluate(&weights);
+            Sample::new(b, sigmoid(e - 40.0, 1.1))
+        })
+        .collect();
+    for s in &mut samples {
+        for r in Rule::ALL {
+            s.set_scale(r, 24);
+        }
+    }
+    let (_, grad) = gradient(&samples, &weights, 1.1, 1);
+    for index in [MATERIAL, MATERIAL + 2, PST + 8 * 3, PST + 64 * 2 + 2] {
+        for half in 0..2 {
+            let h = 1e-3;
+            let (mut up, mut down) = (weights.clone(), weights.clone());
+            up[index][half] += h;
+            down[index][half] -= h;
+            let numeric = (loss(&samples, &up, 1.1, 1) - loss(&samples, &down, 1.1, 1)) / (2.0 * h);
+            let analytic = grad[index][half];
+            let scale = numeric.abs().max(analytic.abs()).max(1e-12);
+            assert!(
+                (numeric - analytic).abs() / scale < 1e-4,
+                "{} half {half}: numeric {numeric:e} analytic {analytic:e}",
+                eval::weight_name(index)
+            );
+        }
+    }
 }

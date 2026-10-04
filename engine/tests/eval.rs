@@ -8,7 +8,9 @@ mod support;
 
 use cadence_core::position::Board;
 use cadence_core::{CastlingRights, Colour, FenStyle, PieceType, START_FEN, generate_legal};
-use cadence_engine::eval::{PHASE_MAX, WEIGHTS, evaluate, phase, trace};
+use cadence_engine::eval::{
+    PHASE_MAX, RULE_SCALES, Rule, SCALE_FULL, WEIGHTS, evaluate, phase, rule, trace,
+};
 use cadence_engine::score::{MAX_EVAL, Score};
 use support::{Rng, mirror, mirror_fen};
 
@@ -346,7 +348,8 @@ fn from_trace(b: &Board) -> i64 {
     }
     let p = i64::from(t.phase);
     let max = i64::from(PHASE_MAX);
-    (mg * p + eg * (max - p)) / max
+    let scale = i64::from(t.rule.map_or(SCALE_FULL, |r| RULE_SCALES[r.index()]));
+    (mg * p + eg * (max - p)) * scale / (max * i64::from(SCALE_FULL))
 }
 
 #[test]
@@ -795,4 +798,89 @@ fn the_side_to_move_reaches_the_evaluation_only_through_tempo() {
         checked += 1;
     }
     assert!(checked >= 5000, "only {checked} positions");
+}
+
+// The rules
+// ---------------------------------------------------------------------------
+
+/// The FEN, the rule it should read, and the same with files a and h exchanged.
+fn file_mirror(fen: &str) -> String {
+    let (placement, rest) = fen.split_once(' ').expect("fen");
+    let rows: Vec<String> = placement
+        .split('/')
+        .map(|row| {
+            let mut cells = Vec::new();
+            for c in row.chars() {
+                match c.to_digit(10) {
+                    Some(n) => cells.extend(std::iter::repeat_n('1', n as usize)),
+                    None => cells.push(c),
+                }
+            }
+            cells.reverse();
+            let mut out = String::new();
+            let mut empty = 0;
+            for c in cells {
+                if c == '1' {
+                    empty += 1;
+                } else {
+                    if empty > 0 {
+                        out.push_str(&empty.to_string());
+                        empty = 0;
+                    }
+                    out.push(c);
+                }
+            }
+            if empty > 0 {
+                out.push_str(&empty.to_string());
+            }
+            out
+        })
+        .collect();
+    format!("{} {rest}", rows.join("/"))
+}
+
+#[test]
+fn each_rule_reads_its_positions_and_no_others() {
+    let cases: &[(&str, Option<Rule>)] = &[
+        // The defending king in the rook pawn's corner, either side to move.
+        ("k7/8/1K6/P7/8/8/8/8 w - - 0 1", Some(Rule::DrawnKpk)),
+        ("k7/8/1K6/P7/8/8/8/8 b - - 0 1", Some(Rule::DrawnKpk)),
+        // The attacking king on a key square: a win, so no rule.
+        ("4k3/8/4K3/8/4P3/8/8/8 w - - 0 1", None),
+        ("4k3/8/4K3/8/4P3/8/8/8 b - - 0 1", None),
+        // A dark-squared bishop cannot cover a8, and the defending king is on it or beside it.
+        ("k7/8/8/P7/8/8/8/2B1K3 w - - 0 1", Some(Rule::WrongBishop)),
+        ("8/1k6/8/P7/P7/8/8/2B1K3 b - - 0 1", Some(Rule::WrongBishop)),
+        ("k7/8/8/P7/8/8/3B4/2B1K3 w - - 0 1", Some(Rule::WrongBishop)),
+        // The right bishop, a king too far, a second file, a defending pawn, or a knight.
+        ("k7/8/8/P7/8/8/8/3BK3 w - - 0 1", None),
+        ("4k3/8/8/P7/8/8/8/2B1K3 w - - 0 1", None),
+        ("k7/8/8/P7/1P6/8/8/2B1K3 w - - 0 1", None),
+        ("k7/7p/8/P7/8/8/8/2B1K3 w - - 0 1", None),
+        ("k7/8/8/P7/8/8/8/2BNK3 w - - 0 1", None),
+        // A bishop pair always holds the right colour.
+        ("k7/8/8/P7/8/8/8/2BBK3 w - - 0 1", None),
+    ];
+    for &(fen, want) in cases {
+        for f in [fen.to_string(), file_mirror(fen)] {
+            assert_eq!(rule(&board(&f)), want, "{f}");
+            assert_eq!(rule(&support::mirror(&board(&f))), want, "mirror of {f}");
+        }
+    }
+}
+
+#[test]
+fn a_recognised_position_is_evaluated_through_its_scale() {
+    // The scales are full until a fit sets them, so recognising a position changes nothing yet.
+    assert_eq!(RULE_SCALES, [SCALE_FULL; Rule::ALL.len()]);
+    for fen in [
+        "k7/8/1K6/P7/8/8/8/8 w - - 0 1",
+        "8/1k6/8/P7/P7/8/8/2B1K3 b - - 0 1",
+        "7k/8/8/7P/8/8/8/3BK3 w - - 0 1",
+    ] {
+        for b in [board(fen), support::mirror(&board(fen))] {
+            assert!(trace(&b).rule.is_some(), "{fen}");
+            assert_eq!(from_trace(&b), i64::from(white(&b)), "{fen}");
+        }
+    }
 }
