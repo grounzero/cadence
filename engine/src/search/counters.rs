@@ -78,10 +78,6 @@ impl Search<'_> {
         self.futility_kept_check
     }
 
-    /// How many nodes the margin returned without searching, and how many it would have
-    /// returned and did not because the node had the full window. How often a node admitted
-    /// this rule, how many quiet moves it gave up there, and how often a move that would have
-    /// been given up was kept for giving check.
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
         self.lmp_nodes
@@ -114,6 +110,7 @@ impl Search<'_> {
         self.reverse_futility_cutoffs
     }
 
+    /// Nodes the margin would have returned but for the full window.
     #[must_use]
     pub fn reverse_futility_refused_by_window(&self) -> u64 {
         self.reverse_futility_refused_window
@@ -162,8 +159,7 @@ impl Search<'_> {
         &self.history
     }
 
-    /// The depth of the last completed iteration; zero before any. Elapsed milliseconds at the
-    /// end of each completed iteration, in order.
+    /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
         &self.iterations
@@ -192,6 +188,7 @@ impl Search<'_> {
             .count()
     }
 
+    /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {
         self.completed_depth
