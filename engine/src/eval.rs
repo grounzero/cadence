@@ -72,7 +72,18 @@ pub const SHIELD: usize = ATTACKERS + ATTACKERS_LEN;
 /// Four or more share the last, for `ATTACKERS_LEN`'s reason.
 pub const SHIELD_LEN: usize = 5;
 
-pub const WEIGHT_COUNT: usize = SHIELD + SHIELD_LEN;
+/// Per rook: on a file holding no pawn, then on one holding only the other side's.
+pub const ROOK_FILE: usize = SHIELD + SHIELD_LEN;
+
+pub const ROOK_FILE_LEN: usize = 2;
+
+/// A bishop on each colour, so two on one colour after a promotion are not a pair.
+pub const BISHOP_PAIR: usize = ROOK_FILE + ROOK_FILE_LEN;
+
+/// The only weight whose coefficient depends on whose move it is: one for the side to move.
+pub const TEMPO: usize = BISHOP_PAIR + 1;
+
+pub const WEIGHT_COUNT: usize = TEMPO + 1;
 
 /// Fitted by `cadence texel` to self-play results; a weight carries no reason beyond the data.
 #[rustfmt::skip]
@@ -152,6 +163,10 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     // 0 to 4, four or more sharing the last of each
     p( -41,    0), p( -40,    6), p( -10,  -23), p(  32,    2), p(  60,   15),
     p( -48,   28), p( -16,    8), p(   8,  -10), p(  33,  -26), p(  22,    0),
+    // not yet fitted: a rook on an open file, then a semi-open one; the bishop pair; tempo
+    p(   0,    0), p(   0,    0),
+    p(   0,    0),
+    p(   0,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {
@@ -167,6 +182,12 @@ pub fn weight_name(index: usize) -> String {
     assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
     if index < PST {
         format!("material.{}", NAMES[index - MATERIAL])
+    } else if index >= TEMPO {
+        "tempo".to_string()
+    } else if index >= BISHOP_PAIR {
+        "bishoppair".to_string()
+    } else if index >= ROOK_FILE {
+        ["rookfile.open", "rookfile.semiopen"][index - ROOK_FILE].to_string()
     } else if index >= SHIELD {
         format!("shield.{}", index - SHIELD)
     } else if index >= ATTACKERS {
@@ -261,6 +282,14 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     piece_terms(board, Colour::Black, -1, sink);
     shield(board, Colour::White, 1, sink);
     shield(board, Colour::Black, -1, sink);
+    rooks_and_bishops(board, Colour::White, 1, sink);
+    rooks_and_bishops(board, Colour::Black, -1, sink);
+    // Inside the walk and not added after `evaluate`'s flip, or the trace could not see it.
+    let mover = match board.side_to_move() {
+        Colour::White => 1,
+        Colour::Black => -1,
+    };
+    sink.add(TEMPO, mover);
     phase.min(PHASE_MAX)
 }
 
@@ -418,6 +447,24 @@ const fn king_zones() -> [[Bitboard; 64]; 2] {
         sq += 1;
     }
     out
+}
+
+const DARK: Bitboard = Bitboard(0xAA55_AA55_AA55_AA55);
+
+#[inline(always)]
+fn rooks_and_bishops<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
+    let own = board.pieces(colour, PieceType::Pawn);
+    let pawns = board.by_type(PieceType::Pawn);
+    for sq in board.pieces(colour, PieceType::Rook) {
+        let file = sq.file().bb();
+        if (own & file).is_empty() {
+            sink.add(ROOK_FILE + usize::from((pawns & file).any()), sign);
+        }
+    }
+    let bishops = board.pieces(colour, PieceType::Bishop);
+    if (bishops & DARK).any() && (bishops & !DARK).any() {
+        sink.add(BISHOP_PAIR, sign);
+    }
 }
 
 #[inline(always)]

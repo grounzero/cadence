@@ -210,7 +210,8 @@ fn the_gradient_under_a_per_phase_k_is_the_derivative_of_the_loss() {
 )]
 fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
     // A lone knight weighs one twenty-fourth of the phase: that much middlegame, the rest endgame.
-    // It reaches the zone of Black's king, so White's one attacker and Black's none carry it too.
+    // It reaches the zone of Black's king, so White's one attacker and Black's none carry it too,
+    // and so does tempo, which every position carries.
     let board = Board::from_fen("8/8/8/4k3/3N4/8/8/4K3 w - - 0 1").expect("fen");
     let mass = weight_mass(&[Sample::new(&board, 1.0)], 1);
     let name = |i: usize| eval::weight_name(i);
@@ -223,11 +224,12 @@ fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
         "mobility.knight.8",
         "attackers.0",
         "attackers.1",
+        "tempo",
     ] {
         assert_eq!(mass[find(n)], [1.0 / 24.0, 23.0 / 24.0], "{n}");
     }
     assert_eq!(mass[find("pst.knight.e4")], [0.0, 0.0]);
-    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 7);
+    assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 8);
 }
 
 #[test]
