@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The static exchange evaluation: what a move wins or loses on the square it lands on, once
-//! every recapture has been answered. The side to move plays `m`; from then on each side either
-//! stops or captures with its least valuable piece that can legally do so, a pawn promoting to
-//! a queen where that capture reaches the last rank.
+//! Each side either stops or captures with its least valuable legal piece, a pawn reaching the last
+//! rank promoting to a queen.
 
 use cadence_core::attacks;
 use cadence_core::position::Board;
 use cadence_core::types::Rank;
 use cadence_core::{Bitboard, Colour, Move, PieceType, Square};
 
-/// Material by piece type, in the exchange's own units: pawn 100, knight and bishop 300, rook
-/// 500, queen 900. The king is zero, which makes it the first piece to recapture with and is
-/// never read into a result (see the module doc).
+/// The king is zero, so it recaptures first, and is never read into a result.
 pub const VALUES: [i32; 6] = [100, 300, 300, 500, 900, 0];
 
-// The cheapest-first scan in `cheapest_legal` walks `PieceType` order and stops at the first
-// legal attacker, which is the least valuable one only while the table is non-decreasing along
-// that order. Pinned here so that retuning a value cannot quietly change which piece
-// recaptures.
+// `cheapest_legal` scans in `PieceType` order, which finds the least valuable attacker only while
+// this is non-decreasing.
 const _: () = assert!(
     VALUES[0] <= VALUES[1]
         && VALUES[1] <= VALUES[2]
@@ -26,19 +20,17 @@ const _: () = assert!(
         && VALUES[3] <= VALUES[4]
 );
 
-/// The exchange value of a piece of type `pt`, from [`VALUES`].
 #[inline]
 #[must_use]
 pub const fn value(pt: PieceType) -> i32 {
     VALUES[pt.index()]
 }
 
-/// The most captures one exchange can hold: the first move, then at most one by every other
-/// piece on the board, each leaving the occupancy as it captures and never returning to it.
+/// The first move, then at most one by every other piece, each lifted from the occupancy as it
+/// captures.
 const MAX_CAPTURES: usize = 32;
 
-/// The piece types that recapture by the pin rule, cheapest first. The king is not among them:
-/// it is tried before all of them, on its own terms, by [`cheapest_legal`].
+/// The king is tried before all of them, on its own terms, by [`cheapest_legal`].
 const RECAPTURERS: [PieceType; 5] = [
     PieceType::Pawn,
     PieceType::Knight,
@@ -47,13 +39,11 @@ const RECAPTURERS: [PieceType; 5] = [
     PieceType::Queen,
 ];
 
-/// The static exchange value of `m` in `board`, per the module doc: positive when the side to
-/// move comes out of the exchange on `m`'s square ahead, negative when it comes out behind,
-/// zero for a castle.
+/// Positive when the side to move comes out ahead, zero for a castle.
 ///
 /// # Panics
 ///
-/// If `m.from_sq()` is empty, which no legal move's is.
+/// If `m.from_sq()` is empty.
 #[must_use]
 pub fn see(board: &Board, m: Move) -> i32 {
     if m.is_castle() {
@@ -67,14 +57,12 @@ pub fn see(board: &Board, m: Move) -> i32 {
         .expect("see: no piece on the from square")
         .piece_type();
 
-    // What each capture takes, the first move's at index zero. `occ` is the board's occupancy
-    // with every piece that has captured lifted from it, which is what reveals the x-rays.
+    // `occ` has every piece that has captured lifted from it, which reveals the x-rays.
     let mut taken = [0i32; MAX_CAPTURES];
     let mut n = 1;
     let mut occ = board.occupied().without(from).with(to);
 
-    // The first move is the only one that can be en passant, a quiet move or an underpromotion,
-    // so it is laid out by hand.
+    // Only the first move can be en passant, quiet or an underpromotion, so it is laid out by hand.
     let mut victim = board.piece_at(to).map_or(0, |p| value(p.piece_type()));
     let mut ep_victim = None;
     if m.is_en_passant() {
@@ -90,8 +78,7 @@ pub fn see(board: &Board, m: Move) -> i32 {
         taken[0] += value(on_square) - value(PieceType::Pawn);
     }
 
-    // Both colours' attackers of the square under the lifted occupancy, which already sees
-    // through the capturer's origin.
+    // The lifted occupancy already sees through the capturer's origin.
     let mut attackers = board.attackers_to(to, occ) & occ;
     let their_king = board.king_square(side.flip());
     let mut discovered = uncovers(board, side, their_king, from, to, occ)
@@ -131,9 +118,7 @@ pub fn see(board: &Board, m: Move) -> i32 {
     taken[0] - reply
 }
 
-/// The least valuable piece of `side` that attacks `to` and may legally take on it, with its
-/// type, or `None` when nothing may. Under a discovered check nothing but the king can take,
-/// because nothing else answers it.
+/// Under a discovered check only the king can take, because nothing else answers it.
 fn cheapest_legal(
     board: &Board,
     side: Colour,
@@ -163,9 +148,7 @@ fn cheapest_legal(
     None
 }
 
-/// Whether `piece`, of `side` with its king on `king`, is pinned against taking on `to` under
-/// `occ`: it stands alone between its king and an enemy slider on the line, and `to` is off
-/// that line.
+/// Alone between its king and an enemy slider on the line, with `to` off that line.
 fn pinned(
     board: &Board,
     side: Colour,
@@ -184,8 +167,7 @@ fn pinned(
     sliders_along(board, side.flip(), piece, king, occ).any()
 }
 
-/// Whether `side`'s king on `king` may take on `to`: no enemy piece attacks the square now, and
-/// none does through the king's own square once it has left it.
+/// Nothing attacks the square now, nor through the king's own square once it has left.
 fn king_may_take(
     board: &Board,
     side: Colour,
@@ -201,8 +183,7 @@ fn king_may_take(
     sliders_along(board, them, to, king, occ.without(king)).is_empty()
 }
 
-/// Whether a piece of `side` leaving `vacated` has uncovered a check on the enemy king at
-/// `their_king` from a slider other than whatever now stands on `to`.
+/// From a slider other than whatever now stands on `to`.
 fn uncovers(
     board: &Board,
     side: Colour,
@@ -216,9 +197,7 @@ fn uncovers(
         .any()
 }
 
-/// The sliders of `c` that a slider on `a` would see along the line through `a` and `b` under
-/// `occ`, in either direction, the first piece each way included: rooks and queens on a rank or
-/// file, bishops and queens on a diagonal. Empty when `a` and `b` share no line.
+/// The first piece each way included; empty when `a` and `b` share no line.
 fn sliders_along(board: &Board, c: Colour, a: Square, b: Square, occ: Bitboard) -> Bitboard {
     let line = attacks::ray(a, b);
     if line.is_empty() {
@@ -239,9 +218,7 @@ fn sliders_along(board: &Board, c: Colour, a: Square, b: Square, occ: Bitboard) 
     seen & line & set & occ
 }
 
-/// The sliders of either colour that a piece of type `pt` leaving its square has let through to
-/// `to`: the diagonals behind a pawn or bishop, the lines behind a rook, both behind a queen. A
-/// knight stands on no line through the square; a king's departure ends the exchange.
+/// A knight stands on no line through the square; a king's departure ends the exchange.
 fn revealed(board: &Board, to: Square, occ: Bitboard, pt: PieceType) -> Bitboard {
     let queens = board.by_type(PieceType::Queen);
     let mut out = Bitboard::EMPTY;

@@ -1,43 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Static evaluation: material and piece-square tables, tapered. Integer throughout and
-//! symmetric by construction: the tables are written from White's side and read through a
-//! vertical flip for Black, so the evaluation of a position and of its mirror differ only in
-//! sign.
+//! Integer and symmetric by construction: tables are written from White's side and flipped for
+//! Black, so a position and its mirror differ only in sign.
 
 use cadence_core::position::Board;
 use cadence_core::{Bitboard, Colour, PieceType, Square, attacks};
 
 use crate::score::{MAX_EVAL, Score};
 
-/// The game phase scale. `PHASE_MAX` is the start position's full complement of minor and major
-/// pieces; zero is a pawn ending.
+/// The start position's minor and major pieces; zero is a pawn ending.
 pub const PHASE_MAX: i32 = 24;
 
-/// Phase weight per piece type: knights and bishops one, rooks two, queens four. Two of each
-/// minor, two rooks and a queen per side is 24.
 const PHASE_WEIGHT: [i32; 6] = [0, 1, 1, 2, 4, 0];
 const _: () = assert!(
     2 * (2 * PHASE_WEIGHT[1] + 2 * PHASE_WEIGHT[2] + 2 * PHASE_WEIGHT[3] + PHASE_WEIGHT[4])
         == PHASE_MAX
 );
 
-/// A middlegame and an endgame value: the unit every weight of the evaluation is stored in.
+/// The unit every weight is stored in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pair {
     pub mg: i32,
     pub eg: i32,
 }
 
-/// Where material starts in [`WEIGHTS`]: one entry per piece type, by `PieceType::index`.
+/// One per piece type, by `PieceType::index`.
 pub const MATERIAL: usize = 0;
 
-/// Where the piece-square tables start in [`WEIGHTS`]: `64 * piece type + square`, White's
-/// point of view.
+/// `64 * piece type + square`, from White's side.
 pub const PST: usize = MATERIAL + 6;
 
-/// Where the passed-pawn weights start in [`WEIGHTS`]: one per rank from its own side, second to
-/// seventh.
+/// One per rank from its own side, second to seventh.
 pub const PASSED: usize = PST + 6 * 64;
 
 /// A pawn with no friendly pawn on an adjacent file.
@@ -49,16 +42,13 @@ pub const DOUBLED: usize = ISOLATED + 1;
 /// A pawn defended by a friendly pawn, or beside one on its rank.
 pub const CONNECTED: usize = DOUBLED + 1;
 
-/// Where the mobility tables start in [`WEIGHTS`]: one entry per count of usable squares, for the
-/// knight, bishop, rook and queen in turn.
+/// One per count of usable squares: knight, bishop, rook, queen in turn.
 pub const MOBILITY: usize = CONNECTED + 1;
 
-/// How many counts each piece type's mobility table holds, by `PieceType::index`. The pawn and the
-/// king have none.
+/// By `PieceType::index`.
 pub const MOBILITY_LEN: [usize; 6] = [0, 9, 14, 15, 28, 0];
 
-/// Where each piece type's mobility table starts, counted from [`MOBILITY`]; the last entry is
-/// their total.
+/// From [`MOBILITY`]; the last entry is the total.
 pub const MOBILITY_OFFSET: [usize; 6] = {
     let mut out = [0; 6];
     let mut i = 1;
@@ -69,27 +59,22 @@ pub const MOBILITY_OFFSET: [usize; 6] = {
     out
 };
 
-/// Where the king-attack table starts in [`WEIGHTS`]: one entry per count of a side's knights,
-/// bishops, rooks and queens attacking the enemy king's zone.
+/// One per count of a side's knights, bishops, rooks and queens attacking the enemy king's zone.
 pub const ATTACKERS: usize = MOBILITY + MOBILITY_OFFSET[5] + MOBILITY_LEN[5];
 
-/// How many counts the king-attack table holds: none to four, four or more sharing the last. Four
-/// is where the training data thins below the tuner's floor, so a rarer count takes the last
-/// fitted entry rather than reading as an average one.
+/// Four or more share the last: the training data thins below the tuner's floor there, so a rarer
+/// count takes the last fitted entry rather than an average one.
 pub const ATTACKERS_LEN: usize = 5;
 
-/// Where the pawn-shield table starts in [`WEIGHTS`]: one entry per count of a king's own pawns
-/// ahead of it on its file and the two beside it.
+/// One per count of a king's own pawns ahead of it on its file and the two beside it.
 pub const SHIELD: usize = ATTACKERS + ATTACKERS_LEN;
 
-/// How many counts the pawn-shield table holds: none to four, four or more sharing the last, for
-/// the attack table's reason.
+/// Four or more share the last, for `ATTACKERS_LEN`'s reason.
 pub const SHIELD_LEN: usize = 5;
 
 pub const WEIGHT_COUNT: usize = SHIELD + SHIELD_LEN;
 
-/// Every number the evaluation reads, in one table a tuner can address by index. Every weight is
-/// fitted by `cadence texel` to self-play results and carries no reason beyond the data.
+/// Fitted by `cadence texel` to self-play results; a weight carries no reason beyond the data.
 #[rustfmt::skip]
 pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     // material, fitted: pawn, knight, bishop, rook, queen, king
@@ -173,12 +158,9 @@ const fn p(mg: i32, eg: i32) -> Pair {
     Pair { mg, eg }
 }
 
-/// The name a weight is reported under: `material.knight` or `pst.knight.d4`. For the tuner
-/// and its output; nothing on a search path reads it.
-///
 /// # Panics
 ///
-/// If `index` is not below [`WEIGHT_COUNT`]. That is a caller naming a weight that does not exist.
+/// If `index` is not below [`WEIGHT_COUNT`].
 #[must_use]
 pub fn weight_name(index: usize) -> String {
     const NAMES: [&str; 6] = ["pawn", "knight", "bishop", "rook", "queen", "king"];
@@ -210,8 +192,6 @@ pub fn weight_name(index: usize) -> String {
 
 // --- the evaluation --------------------------------------------------------
 
-/// The game phase of `board`, `0..=PHASE_MAX`: the phase weights of every piece on the board,
-/// both colours, saturating at `PHASE_MAX`. Pawns and kings do not count.
 #[must_use]
 pub fn phase(board: &Board) -> i32 {
     let mut phase = 0;
@@ -222,15 +202,13 @@ pub fn phase(board: &Board) -> i32 {
     phase.min(PHASE_MAX)
 }
 
-/// What the evaluation's walk over the board reports to: each weight it reads, and how many
-/// times, from White's point of view. The search sums through [`evaluate`] and the tuner records
-/// through [`trace`], and both are one walk, so the two cannot disagree about what is evaluated.
+/// [`evaluate`] and [`trace`] run one walk, so the search and the tuner cannot disagree about what
+/// is evaluated.
 pub trait Sink {
-    /// Counts weight `index` `count` times, negative for Black.
+    /// Negative for Black.
     fn add(&mut self, index: usize, count: i32);
 }
 
-/// The sink the search evaluates with: every reported weight, summed.
 struct Sum {
     mg: i32,
     eg: i32,
@@ -245,8 +223,8 @@ impl Sink for Sum {
     }
 }
 
-/// The sink a tuner reads: the net count of each weight over both colours, and the phase. The
-/// evaluation before its clamp is these coefficients dotted with [`WEIGHTS`], blended by `phase`.
+/// The evaluation before its clamp is these coefficients dotted with [`WEIGHTS`], blended by
+/// `phase`.
 #[derive(Clone, Debug)]
 pub struct Trace {
     pub coefficients: [i32; WEIGHT_COUNT],
@@ -260,7 +238,7 @@ impl Sink for Trace {
     }
 }
 
-/// Every term of the evaluation, reported to `sink`; returns the phase, `0..=PHASE_MAX`.
+/// Returns the phase.
 #[inline(always)]
 fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     let mut phase = 0;
@@ -286,8 +264,7 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     phase.min(PHASE_MAX)
 }
 
-/// The squares a pawn of each colour on each square must find free of enemy pawns to be passed:
-/// ahead of it on its own file and both neighbours. Built at compile time.
+/// Ahead on its own file and both neighbours: a pawn is passed if no enemy pawn stands there.
 static PASSED_MASKS: [[Bitboard; 64]; 2] = passed_masks();
 
 const fn passed_masks() -> [[Bitboard; 64]; 2] {
@@ -329,7 +306,7 @@ const ADJACENT_FILES: [Bitboard; 8] = {
     out
 };
 
-/// `colour`'s pawn-structure terms, reported with `sign`, one for White and minus one for Black.
+/// `sign` is one for White, minus one for Black.
 #[inline(always)]
 fn pawn_structure<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
     let own = board.pieces(colour, PieceType::Pawn);
@@ -359,9 +336,7 @@ fn pawn_structure<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut 
     }
 }
 
-/// Hands `visit` each knight, bishop, rook and queen of `colour` with every square it attacks under
-/// the board's full occupancy. It is the one walk over those attacks, and each term that reads them
-/// applies its own mask.
+/// The one walk over those attacks, under full occupancy; each term applies its own mask.
 #[inline(always)]
 fn piece_attacks(board: &Board, colour: Colour, mut visit: impl FnMut(PieceType, Bitboard)) {
     let occupied = board.occupied();
@@ -383,9 +358,8 @@ fn piece_attacks(board: &Board, colour: Colour, mut visit: impl FnMut(PieceType,
     }
 }
 
-/// `colour`'s mobility and attack on the enemy king, reported with `sign`, from one walk over its
-/// pieces' attacks. Mobility counts each piece's attacked squares that hold none of its own pieces
-/// and no enemy pawn attack; the attack counts the pieces that reach the enemy king's zone.
+/// Mobility counts attacked squares holding none of the piece's own side and no enemy pawn attack;
+/// the attack term counts pieces reaching the enemy king's zone.
 #[inline(always)]
 fn piece_terms<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
     let enemy = colour.flip();
@@ -401,9 +375,8 @@ fn piece_terms<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) 
     sink.add(ATTACKERS + attackers.min(ATTACKERS_LEN - 1), sign);
 }
 
-/// The squares whose attackers count against a king of each colour on each square: its own and the
-/// eight around it, and for a king on its back two ranks the three in front of those. Built at
-/// compile time.
+/// The king's square and the eight around it, plus the three in front of those for a king on its
+/// back two ranks.
 static KING_ZONES: [[Bitboard; 64]; 2] = king_zones();
 
 const fn king_zones() -> [[Bitboard; 64]; 2] {
@@ -425,7 +398,6 @@ const fn king_zones() -> [[Bitboard; 64]; 2] {
             }
             r += 1;
         }
-        // White's back two ranks are the first two and Black's the last two.
         let fronts = [
             if rank <= 1 { Some(rank + 2) } else { None },
             if rank >= 6 { Some(rank - 2) } else { None },
@@ -448,8 +420,6 @@ const fn king_zones() -> [[Bitboard; 64]; 2] {
     out
 }
 
-/// `colour`'s pawn shield, reported with `sign`: how many of its pawns stand ahead of its king on
-/// the king's file and the two beside it.
 #[inline(always)]
 fn shield<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
     let king = board.king_square(colour);
@@ -458,8 +428,7 @@ fn shield<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
     sink.add(SHIELD + count.min(SHIELD_LEN - 1), sign);
 }
 
-/// The static evaluation of `board` from the side to move's point of view, in centipawns,
-/// strictly inside `(-MAX_EVAL, MAX_EVAL)`.
+/// From the side to move's point of view, strictly inside `(-MAX_EVAL, MAX_EVAL)`.
 #[must_use]
 pub fn evaluate(board: &Board) -> Score {
     let mut sum = Sum { mg: 0, eg: 0 };
@@ -467,8 +436,7 @@ pub fn evaluate(board: &Board) -> Score {
     // Truncating division: symmetric under negation, so the mirror of a position evaluates to
     // the exact negative.
     let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
-    // A position with absurd material -- `from_fen` accepts sixty queens -- must still not
-    // reach the mate scale.
+    // `from_fen` accepts sixty queens, which must still not reach the mate scale.
     let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
     match board.side_to_move() {
         Colour::White => white,
@@ -476,8 +444,7 @@ pub fn evaluate(board: &Board) -> Score {
     }
 }
 
-/// The coefficient of every weight in the evaluation of `board`, from White's point of view
-/// whichever side is to move. For the tuner and its gate; the search never calls it.
+/// From White's point of view whichever side is to move. The search never calls it.
 #[must_use]
 pub fn trace(board: &Board) -> Trace {
     let mut t = Trace {
@@ -488,8 +455,7 @@ pub fn trace(board: &Board) -> Trace {
     t
 }
 
-/// The middlegame and endgame piece-square values of a piece of `pt` on `sq`, from the point of
-/// view of the colour that owns it. For inspection and tests; the evaluation reads [`WEIGHTS`]
+/// From the owner's point of view. For inspection and tests; the evaluation reads [`WEIGHTS`]
 /// directly.
 #[must_use]
 pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
