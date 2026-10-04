@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Position state: `Board`, `StateInfo`, make/unmake. The mutation choke point.
-
 use crate::attacks;
 use crate::bitboard::Bitboard;
 use crate::castling::{CastleSide, CastlingLayout, CastlingRights, ci};
@@ -14,44 +12,28 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::mem::{align_of, size_of};
 
-/// Copy-make: the irreversible part of a position, snapshotted per ply. Everything else is
-/// derived from the `Move` on the way back out, so `unmake_move` decrements a cursor and does
-/// no hashing.
+/// The irreversible state, one per ply, so `unmake_move` only decrements a cursor.
 #[derive(Clone, Copy)]
 pub struct StateInfo {
-    /// The Zobrist key of the position. `zobrist` states what is mixed in and when.
     pub key: u64,
-    /// The pawn-structure key: the piece-square keys of the pawns only. Maintained now, read by
-    /// nothing until an evaluation exists; kept because it is what puts this struct on exactly
-    /// one cache line.
     pub pawn_key: u64,
     pub rights: CastlingRights,
-    /// Set after every double pawn push, whether or not a capture is possible. The Zobrist ep
-    /// key is mixed in only when one is.
+    /// Set after every double push; the key mixes it in only when a capture is possible.
     pub ep: OptSquare,
     pub halfmove: u8,
-    /// The piece the move into this state captured; `None` for a non-capture, and the *pawn*
-    /// for en passant.
+    /// The pawn, for en passant.
     pub captured: Option<Piece>,
-    /// Plies since the last null move, or since the position was set up. Bounds the repetition
-    /// scan: a null move flips the side to move without a real move, so a position on the far
-    /// side of one is not a repetition of a position on the near side even when the keys agree.
+    /// Bounds the repetition scan: a position across a null move is not a repetition even when the
+    /// keys agree.
     pub plies_from_null: u16,
-    /// Pieces of the side **not** to move giving check to the side to move.
     pub checkers: Bitboard,
-    /// `blockers[c]`: pieces of **either** colour that stand alone between an enemy slider and
-    /// `c`'s king. Those of colour `c` are `c`'s pinned pieces; those of the other colour are
-    /// its discovered-check candidates.
+    /// Either colour: `c`'s own are pinned, the other side's are discovered-check candidates.
     pub blockers: [Bitboard; 2],
-    /// `pinners[c]`: the sliders of the other colour that have exactly one piece between them
-    /// and `c`'s king (the sliders behind `blockers[c]`).
     pub pinners: [Bitboard; 2],
 }
 
 impl StateInfo {
-    /// The state of no position. `OptSquare` has no `Default` and gets none (a default "absent"
-    /// square is exactly the kind of value that ends up standing in for a real one), so the
-    /// stack is built from this constant.
+    /// `OptSquare` has no `Default`, by design, so the stack starts from this.
     pub const EMPTY: StateInfo = StateInfo {
         key: 0,
         pawn_key: 0,
@@ -67,19 +49,13 @@ impl StateInfo {
 }
 
 // --- layout guards --------------------------------------------------------
-// Exactly one 64-byte cache line, and that is the rule being applied rather than "minimise
-// bytes": `state()` is on the hottest path in the engine, so every question about this struct
-// resolves against the line and not the byte count. What must not happen is dropping
-// `pawn_key`, which has no reader yet and is kept because without it the struct is 56 bytes and
-// straddles two lines.
+// One 64-byte cache line: `state()` is on the hottest path.
 const _: () = assert!(size_of::<StateInfo>() == 64);
 const _: () = assert!(align_of::<StateInfo>() == 8);
 
-// The per-ply stack is `[StateInfo; MAX_PLY + 1]`: 16 KiB, comfortably L2-resident.
+// The stack stays L2-resident at 16 KiB.
 const _: () = assert!(size_of::<StateInfo>() * (crate::MAX_PLY + 1) == 16_448);
 
-/// What the FEN parser hands over: the placement and the irreversible state, already validated.
-/// `Board::from_setup` does the rest.
 pub(crate) struct Setup {
     pub mailbox: [Option<Piece>; 64],
     pub stm: Colour,
@@ -94,30 +70,22 @@ pub(crate) struct Setup {
 pub struct Board {
     by_type: [Bitboard; 6],
     by_colour: [Bitboard; 2],
-    /// `Option<Piece>` niche-packs, so this is 64 bytes.
     mailbox: [Option<Piece>; 64],
     stm: Colour,
     fullmove: u16,
-    /// Index into `states`: the current search ply.
     ply: u16,
-    /// Immutable for the life of the position; never in the undo record.
+    /// Fixed for the life of the position, so never in the undo record.
     layout: CastlingLayout,
-    /// The search stack, indexed by ply. Bounded by `MAX_PLY`.
     states: Box<[StateInfo; crate::MAX_PLY + 1]>,
-    /// Zobrist keys of the game so far, growing only on real game moves. Separate from `states`
-    /// because a game outlives the search stack: `MAX_PLY` bounds search depth, not game
-    /// length; a game routinely outgrows it.
+    /// Separate from `states` because a game can outgrow `MAX_PLY`.
     history: Vec<u64>,
 }
 
 impl Board {
     // --- construction -----------------------------------------------------
 
-    /// Build a position from validated parts. The key, the pawn key, the checkers and the pin
-    /// sets are computed here; the parser only places.
     pub(crate) fn from_setup(setup: &Setup) -> Board {
-        // Built on the heap directly rather than materialised as a 16 KiB stack array and
-        // moved. Once per position, at setup.
+        // Straight onto the heap, not a 16 KiB stack array moved there.
         let states: Box<[StateInfo; crate::MAX_PLY + 1]> =
             match alloc::vec![StateInfo::EMPTY; crate::MAX_PLY + 1]
                 .into_boxed_slice()
@@ -159,7 +127,6 @@ impl Board {
 
     // --- accessors --------------------------------------------------------
 
-    /// The current per-ply snapshot.
     #[inline]
     #[must_use]
     pub fn state(&self) -> &StateInfo {
@@ -171,23 +138,19 @@ impl Board {
         &mut self.states[self.ply as usize]
     }
 
-    /// The Zobrist key, maintained incrementally.
     #[inline]
     #[must_use]
     pub fn key(&self) -> u64 {
         self.state().key
     }
 
-    /// The pawn-structure key, maintained incrementally.
     #[inline]
     #[must_use]
     pub fn pawn_key(&self) -> u64 {
         self.state().pawn_key
     }
 
-    /// The Zobrist key recomputed from the board, ignoring the incremental one entirely,
-    /// including the rule that the en-passant key is mixed in only when a capture is available.
-    /// Exists for the fuzz test and for `debug_assert`s.
+    /// From scratch, for the fuzz test and `debug_assert`s.
     #[must_use]
     pub fn recompute_key(&self) -> u64 {
         let mut key = 0;
@@ -235,7 +198,6 @@ impl Board {
         self.by_colour[c.index()]
     }
 
-    /// Both colours of one piece type.
     #[inline]
     #[must_use]
     pub fn by_type(&self, pt: PieceType) -> Bitboard {
@@ -256,9 +218,7 @@ impl Board {
 
     /// # Panics
     ///
-    /// If `c` has no king. `from_fen` guarantees exactly one and no move can remove it, which
-    /// is the whole invariant and is why this returns a `Square` rather than an `OptSquare`
-    /// every caller on the hot path would have to unwrap.
+    /// If `c` has no king, which `from_fen` and legal play rule out.
     #[inline]
     #[must_use]
     pub fn king_square(&self, c: Colour) -> Square {
@@ -267,9 +227,6 @@ impl Board {
             .expect("a position always holds one king of each colour")
     }
 
-    /// The pieces giving check to the side to move. The count is what move generation branches
-    /// on: at two or more, no capture and no interposition can resolve both, and generation
-    /// must restrict to king moves.
     #[inline]
     #[must_use]
     pub fn checkers(&self) -> Bitboard {
@@ -282,8 +239,7 @@ impl Board {
         self.state().checkers.any()
     }
 
-    /// Whether the side **not** to move is in check. No position reachable by legal play is
-    /// like this: it says the side to move could take a king.
+    /// Never true in a position legal play reaches.
     #[must_use]
     pub fn opponent_in_check(&self) -> bool {
         let them = self.stm.flip();
@@ -291,22 +247,18 @@ impl Board {
             .any()
     }
 
-    /// Pieces of either colour standing alone between an enemy slider and `c`'s king.
-    /// `blockers(c) & by_colour(c)` are `c`'s pinned pieces.
     #[inline]
     #[must_use]
     pub fn blockers(&self, c: Colour) -> Bitboard {
         self.state().blockers[c.index()]
     }
 
-    /// The enemy sliders with exactly one piece between them and `c`'s king.
     #[inline]
     #[must_use]
     pub fn pinners(&self, c: Colour) -> Bitboard {
         self.state().pinners[c.index()]
     }
 
-    /// The en-passant square, if the last move was a double pawn push.
     #[inline]
     #[must_use]
     pub fn ep_square(&self) -> Option<Square> {
@@ -319,68 +271,55 @@ impl Board {
         self.state().rights
     }
 
-    /// The castling geometry, fixed at position setup.
     #[inline]
     #[must_use]
     pub fn layout(&self) -> &CastlingLayout {
         &self.layout
     }
 
-    /// Plies since the last capture or pawn move.
     #[inline]
     #[must_use]
     pub fn halfmove_clock(&self) -> u8 {
         self.state().halfmove
     }
 
-    /// The move number, incremented after each Black move.
     #[inline]
     #[must_use]
     pub fn fullmove_number(&self) -> u16 {
         self.fullmove
     }
 
-    /// The current search ply: how many moves have been made without being unmade since setup.
     #[inline]
     #[must_use]
     pub fn ply(&self) -> usize {
         self.ply as usize
     }
 
-    /// Zobrist keys of the positions the game passed through before this one, oldest first.
-    /// Empty for a position set up from a FEN.
+    /// Oldest first; empty after a FEN.
     #[inline]
     #[must_use]
     pub fn game_history(&self) -> &[u64] {
         &self.history
     }
 
-    /// Plies since the last null move, or since setup if there has been none. See
-    /// [`StateInfo::plies_from_null`].
     #[inline]
     #[must_use]
     pub fn plies_from_null(&self) -> usize {
         self.state().plies_from_null as usize
     }
 
-    /// Whether the current position is a repetition: **twofold within the search tree,
-    /// threefold against the game history**. One backward scan in two-ply steps over the
-    /// logical key sequence `history ++ states[..=ply]`, bounded by the halfmove clock and by
-    /// `plies_from_null`.
+    /// Twofold inside the search tree, threefold against the game history.
     #[must_use]
     pub fn is_repetition(&self) -> bool {
         let cur = self.key();
         let root = self.history.len();
         let current = root + self.ply as usize;
 
-        // Nothing before the last irreversible move can recur, and nothing across a null move
-        // counts: a null move flips the side to move without a real move, so a line through one
-        // can land on an earlier position's key without the game having repeated anything.
+        // Nothing before an irreversible move recurs, and nothing across a null move counts.
         let bound = core::cmp::min(self.state().halfmove as usize, self.plies_from_null());
 
         let mut before_root = 0u32;
-        // Step 2: the side to move is in the key, so positions an odd number of plies apart
-        // never compare equal.
+        // The side to move is in the key, so odd distances never match.
         let mut d = 2;
         while d <= bound && d <= current {
             let i = current - d;
@@ -398,9 +337,7 @@ impl Board {
         false
     }
 
-    /// Whether no sequence of legal moves can mate: bare kings, one knight or one bishop against
-    /// a bare king, or only bishops besides the kings and all on one square colour. KN v KN and
-    /// KB v KN are not in it, because a mate exists in each although neither side can force one.
+    /// KN v KN and KB v KN are not dead: a mate exists, though neither side can force it.
     #[must_use]
     pub fn is_insufficient_material(&self) -> bool {
         const DARK: Bitboard = Bitboard(0xAA55_AA55_AA55_AA55);
@@ -413,8 +350,7 @@ impl Board {
         bishops == others && ((bishops & DARK).is_empty() || (bishops & !DARK).is_empty())
     }
 
-    /// The key at logical index `i` of the one sequence `history ++ states[..=ply]`. The only
-    /// code that knows there are two containers.
+    /// The only code that knows the sequence is two containers.
     #[inline]
     fn key_at(&self, i: usize) -> u64 {
         let h = self.history.len();
@@ -427,9 +363,8 @@ impl Board {
 
     // --- attacks ----------------------------------------------------------
 
-    /// Attackers of BOTH colours to `sq` under a CALLER-SUPPLIED occupancy. The occupancy
-    /// parameter is not a convenience: it is what makes castling legality (king and rook
-    /// lifted), king-evasion legality (king lifted) and SEE correct.
+    /// Both colours, under the caller's occupancy, which castling, evasion and SEE each lift pieces
+    /// from.
     #[must_use]
     pub fn attackers_to(&self, sq: Square, occ: Bitboard) -> Bitboard {
         // A White pawn attacks `sq` from the squares a Black pawn on `sq` would attack, and
@@ -446,12 +381,8 @@ impl Board {
             | (attacks::bishop_attacks(sq, occ) & (self.by_type(PieceType::Bishop) | queens))
     }
 
-    /// The castling-legality predicate: the right exists, `must_be_empty` is empty, and no
-    /// square of the king's path is attacked with **both the king and the castling rook
-    /// lifted** from the occupancy. Lifting the rook is necessary, not tidy: in
-    /// `4k3/8/8/8/8/8/8/rRK5 w B` White is not in check because its own b1 rook blocks the a1
-    /// rook, and castling would move that rook to d1 and leave the king on c1 exposed along the
-    /// rank.
+    /// With king and rook both lifted: in `4k3/8/8/8/8/8/8/rRK5 w B` the castling rook is what
+    /// shields the king from a1.
     #[must_use]
     pub fn can_castle(&self, c: Colour, s: CastleSide) -> bool {
         let i = ci(c, s);
@@ -478,9 +409,7 @@ impl Board {
         true
     }
 
-    /// Whether `m` gives check to the opponent. Computed as "is their king attacked by our
-    /// pieces after the move", on updated piece sets and occupancy, without touching the board:
-    /// two slider lookups plus the leapers.
+    /// Without making the move.
     ///
     /// # Panics
     ///
@@ -545,12 +474,11 @@ impl Board {
 
     // --- make / unmake ----------------------------------------------------
 
-    /// Play `m`, returning the accumulator delta. Infallible: the caller guarantees `m` came
-    /// from `generate_legal`.
+    /// `m` must come from `generate_legal`.
     ///
     /// # Panics
     ///
-    /// If `from` is empty, or if the search stack is full (`MAX_PLY`).
+    /// If `from` is empty or the stack is full.
     pub fn make_move(&mut self, m: Move) -> DirtyPieces {
         let us = self.stm;
         let them = us.flip();
@@ -559,14 +487,13 @@ impl Board {
         let mover = self.mailbox[from.index()].expect("make_move: no piece on the from square");
         let old = *self.state();
 
-        // The ep key was mixed in for the old ep square iff we could take; undo that before the
-        // board changes.
+        // The old ep key comes out before the board changes.
         let mut key = old.key;
         if let Some(ep) = old.ep.get() {
             key ^= self.ep_key(ep, us);
         }
 
-        // Push the snapshot. From here the helpers XOR into the new slot.
+        // From here the helpers XOR into the new slot.
         self.ply += 1;
         *self.state_mut() = StateInfo {
             key,
@@ -590,8 +517,7 @@ impl Board {
             let (kf, rf) = (from, to);
             let kt = self.layout.king_to[i].get().expect("castling: king_to");
             let rt = self.layout.rook_to[i].get().expect("castling: rook_to");
-            // Both origins cleared before either destination is set: the king may land on the
-            // rook's origin, the rook on the king's, or the two may swap.
+            // Both origins cleared first: king and rook may land on each other's squares.
             self.remove_piece(king, kf);
             self.remove_piece(rook, rf);
             self.put_piece(king, kt);
@@ -657,9 +583,6 @@ impl Board {
         dirty
     }
 
-    /// Undo the last move. Decrements the state cursor and reverses the placement `m` already
-    /// encodes.
-    ///
     /// # Panics
     ///
     /// In debug builds, if nothing has been made.
@@ -676,7 +599,7 @@ impl Board {
             let rook = Piece::new(us, PieceType::Rook);
             let kt = self.layout.king_to[i].get().expect("castling: king_to");
             let rt = self.layout.rook_to[i].get().expect("castling: rook_to");
-            // Both destinations cleared before either origin is set.
+            // Destinations first, as make clears origins first.
             self.remove_piece(king, kt);
             self.remove_piece(rook, rt);
             self.put_piece(king, from);
@@ -706,14 +629,11 @@ impl Board {
         self.ply -= 1;
     }
 
-    /// Play `m` as a **game** move rather than a search move. The current key is pushed onto
-    /// the game history and the position after `m` becomes the root of the search stack:
-    /// `ply()` is zero again and `game_history()` is one longer.
+    /// A game move: the key joins the history and the result becomes the root.
     ///
     /// # Panics
     ///
-    /// In debug builds, if called with search moves still on the stack: a game move is a root
-    /// operation.
+    /// In debug builds, if search moves are still made.
     pub fn play(&mut self, m: Move) {
         debug_assert_eq!(self.ply, 0, "play with search moves on the stack");
         let key = self.key();
@@ -724,9 +644,7 @@ impl Board {
         self.history.push(key);
     }
 
-    /// A copy of this position: placement, state stack at its current ply, and game history.
-    /// Named rather than `Clone` because the boxed state stack makes the copy quietly expensive
-    /// -- 16 KiB plus the history.
+    /// Named rather than `Clone`, because the copy is 16 KiB and the history.
     #[must_use]
     pub fn duplicate(&self) -> Board {
         Board {
@@ -742,12 +660,9 @@ impl Board {
         }
     }
 
-    /// Pass the move: flip the side to move, clear the en-passant square. The delta is always
-    /// empty.
-    ///
     /// # Panics
     ///
-    /// If the search stack is full.
+    /// If the stack is full.
     pub fn make_null_move(&mut self) -> DirtyPieces {
         let us = self.stm;
         let old = *self.state();
@@ -789,8 +704,7 @@ impl Board {
     }
 
     // --- the mutation choke point -----------------------------------------
-    // These three are the only code in the crate that touches `by_type`, `by_colour`,
-    // `mailbox`, or the running key. They keep the four in step.
+    // The only code that touches the piece sets, the mailbox and the running key.
 
     #[inline]
     fn put_piece(&mut self, p: Piece, sq: Square) {
@@ -851,10 +765,8 @@ impl Board {
 
     // --- derived state ----------------------------------------------------
 
-    /// The Zobrist ep key for `ep`, or zero when no pawn of `capturer` can take on it. That
-    /// zero is what keeps the key a function of the position rather than of the move that
-    /// reached it, and this is the one function both the incremental update and `recompute_key`
-    /// call.
+    /// Zero when no pawn can take, which keeps the key a function of the position; `recompute_key`
+    /// calls this too.
     #[inline]
     fn ep_key(&self, ep: Square, capturer: Colour) -> u64 {
         // A `capturer` pawn attacks `ep` from the squares an opposing pawn on `ep` would
@@ -868,16 +780,12 @@ impl Board {
         }
     }
 
-    /// Checkers for the side to move, and blockers/pinners for both kings.
     fn compute_check_info(&mut self) {
         let us = self.stm;
         let occ = self.occupied();
         let ksq = self.king_square(us);
-        // The enemy king is *not* excluded, though it can only be in this set when the two
-        // kings are adjacent, which no legal play reaches. "Attacked by the enemy king" is what
-        // king safety means one line down in `movegen`, and the independent generator the
-        // cross-check is run against decides legality the same way, by playing the move and
-        // asking whether anything of theirs attacks our king.
+        // The enemy king is not excluded: adjacent kings are unreachable, and the cross-check generator
+        // decides legality the same way.
         let checkers = self.attackers_to(ksq, occ) & self.by_colour(us.flip());
         let white = self.slider_blockers(Colour::White);
         let black = self.slider_blockers(Colour::Black);
@@ -887,11 +795,7 @@ impl Board {
         st.pinners = [white.1, black.1];
     }
 
-    /// `(blockers, pinners)` for `c`'s king: for each enemy slider aligned with the king on an
-    /// empty board, the pieces between them under the real occupancy; exactly one piece there
-    /// makes it a blocker and the slider a pinner. Full occupancy, so a slider standing behind
-    /// a checking slider counts the checker as its blocker, which is what the remove-and-retest
-    /// definition says.
+    /// Full occupancy, so a slider behind a checking slider counts the checker as its blocker.
     fn slider_blockers(&self, c: Colour) -> (Bitboard, Bitboard) {
         let ksq = self.king_square(c);
         let them = c.flip();
@@ -914,7 +818,7 @@ impl Board {
     }
 }
 
-/// The Shredder FEN, which is the whole position and unambiguous.
+/// Shredder FEN, the unambiguous spelling.
 impl fmt::Debug for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Board({})", self.to_fen(crate::fen::FenStyle::Shredder))

@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The accumulator delta produced by `make_move`.
-
 use crate::types::{OptSquare, Piece, Square};
 use core::mem::{align_of, size_of};
 
-/// Capacity for every piece change one legal move can produce.
 pub const MAX_DIRTY: usize = 4;
 
-/// The reachable maximum: moving piece, capture, castling rook. The extra slot is headroom, and
-/// is what lazy updates would need once they coalesce plies.
+/// Moving piece, capture, castling rook; the fourth slot is headroom.
 pub const MAX_DIRTY_REACHABLE: usize = 3;
 
-/// One piece's movement, in the form the accumulator consumes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirtyPiece {
     pub piece: Piece,
@@ -31,7 +26,7 @@ impl DirtyPiece {
         }
     }
 
-    /// A piece that left the board: a capture victim, or a pawn that promoted.
+    /// A capture victim, or a pawn that promoted.
     #[inline]
     #[must_use]
     pub const fn removed(piece: Piece, from: Square) -> DirtyPiece {
@@ -42,7 +37,7 @@ impl DirtyPiece {
         }
     }
 
-    /// A piece that appeared: the promoted piece.
+    /// The promoted piece.
     #[inline]
     #[must_use]
     pub const fn added(piece: Piece, to: Square) -> DirtyPiece {
@@ -62,7 +57,6 @@ pub struct DirtyPieces {
 }
 
 impl DirtyPieces {
-    /// No entries. What a null move returns, and what `make_move` starts from.
     pub const EMPTY: DirtyPieces = DirtyPieces {
         entries: [DirtyPiece {
             piece: Piece::WPawn,
@@ -72,15 +66,12 @@ impl DirtyPieces {
         len: 0,
     };
 
-    /// Append an entry. Bounds-checked, not masked: a fifth entry panics and names this line
-    /// rather than overwriting the first.
-    ///
     /// # Panics
     ///
-    /// If the delta already holds `MAX_DIRTY` entries.
+    /// If the delta already holds `MAX_DIRTY` entries; bounds-checked so it names the line rather
+    /// than overwriting.
     #[inline]
     pub fn push(&mut self, entry: DirtyPiece) {
-        // Indexing checks the bound; the panic names this line.
         self.entries[usize::from(self.len)] = entry;
         self.len += 1;
     }
@@ -97,8 +88,7 @@ impl DirtyPieces {
         self.len == 0
     }
 
-    /// The populated entries, in emission order. Emission order is **not** application order:
-    /// every `from` subtraction must be applied before any `to` addition.
+    /// Emission order, which is not application order.
     #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[DirtyPiece] {
@@ -107,9 +97,7 @@ impl DirtyPieces {
 }
 
 // --- layout guards --------------------------------------------------------
-// 13 bytes, alignment 1. The threshold that matters is 16: at or below it both AAPCS64 and SysV
-// return the aggregate in registers rather than through memory, and `make_move` returns one of
-// these at every node.
+// At most 16 bytes, so both ABIs return it in registers from `make_move`.
 const _: () = assert!(size_of::<DirtyPiece>() == 3);
 const _: () = assert!(align_of::<DirtyPiece>() == 1);
 const _: () = assert!(size_of::<DirtyPieces>() == 13);

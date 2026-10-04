@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A set of squares. No chess knowledge above "bits": the shifts know which file wraps, and
-//! nothing else.
+//! No chess knowledge beyond which file a shift wraps.
 
 use core::fmt;
 use core::mem::{align_of, size_of};
@@ -9,7 +8,6 @@ use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, 
 
 use crate::types::{Colour, File, Rank, Square};
 
-/// Bit `n` is the square with index `n`, so bit 0 is A1 and bit 63 is H8.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Hash)]
 #[repr(transparent)]
 pub struct Bitboard(pub u64);
@@ -65,8 +63,6 @@ impl Bitboard {
         self.0 == 0
     }
 
-    /// At least one square. The negation of [`Bitboard::is_empty`], named so that `if bb.any()`
-    /// reads as it means.
     #[inline]
     #[must_use]
     pub const fn any(self) -> bool {
@@ -85,7 +81,7 @@ impl Bitboard {
         self.0 & sq.bb().0 != 0
     }
 
-    /// The lowest square in the set, without removing it.
+    /// Without removing it.
     #[inline]
     #[must_use]
     pub const fn lsb(self) -> Option<Square> {
@@ -125,9 +121,7 @@ impl Bitboard {
         self.0 ^= sq.bb().0;
     }
 
-    /// Removes the lowest square from the set and returns it. Deliberately not `const`: it
-    /// takes `&mut self`, and it is the one place a [`Square`] is built from
-    /// `trailing_zeros()`, which is the whole reason `Square` is a newtype rather than an enum.
+    /// The one place a `Square` is built from `trailing_zeros()`.
     #[inline]
     pub fn pop_lsb(&mut self) -> Option<Square> {
         if self.0 == 0 {
@@ -139,8 +133,7 @@ impl Bitboard {
     }
 
     // --- shifts -----------------------------------------------------------
-    // The only place the file wrap is known. East/west shifts mask off the edge file first, so
-    // a set never wraps onto the next rank.
+    // East and west mask the edge file first, so a set never wraps onto the next rank.
 
     #[inline]
     #[must_use]
@@ -190,7 +183,6 @@ impl Bitboard {
         Bitboard((self.0 & !Self::FILE_A.0) >> 9)
     }
 
-    /// One rank towards the opponent: north for White, south for Black.
     #[inline]
     #[must_use]
     pub const fn forward(self, c: Colour) -> Bitboard {
@@ -258,7 +250,7 @@ impl BitXorAssign for Bitboard {
 
 // --- iteration -------------------------------------------------------------
 
-/// Squares of a set, lowest first.
+/// Lowest first.
 pub struct Squares(Bitboard);
 
 impl Iterator for Squares {
@@ -290,8 +282,6 @@ impl IntoIterator for Bitboard {
 
 // --- display ---------------------------------------------------------------
 
-/// An 8×8 grid, rank 8 at the top, `x` for a set square and `.` for a clear one, followed by
-/// the hex value.
 impl fmt::Debug for Bitboard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for r in (0..8).rev() {

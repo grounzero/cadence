@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! splitmix64, as one step and as a seeded stream: the Zobrist keys are drawn from it at compile
-//! time and self-play draws its openings from it. Changing either output changes every key and
-//! every generated game, which is why the first outputs of a fixed seed are pinned by a test.
+//! Feeds the Zobrist keys and self-play openings, so its first outputs are pinned by a test.
 
-/// One draw: the output and the state after it. Its output is a bijection of a counter, so
-/// distinct draws are distinct until the counter wraps at 2^64.
+/// A bijection of a counter, so draws are distinct until it wraps.
 #[must_use]
 pub const fn splitmix64(state: u64) -> (u64, u64) {
     let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -15,8 +12,7 @@ pub const fn splitmix64(state: u64) -> (u64, u64) {
     (z ^ (z >> 31), state)
 }
 
-/// A seeded stream of splitmix64 draws. The same seed gives the same stream on every build and
-/// every target, which is what a reproducible dataset rests on.
+/// The same seed gives the same stream on every target.
 #[derive(Clone, Debug)]
 pub struct Rng {
     state: u64,
@@ -34,12 +30,11 @@ impl Rng {
         out
     }
 
-    /// A draw in `0..n`, by the high half of a widening multiply. Its bias is under `n` in 2^64,
-    /// which no count this is used for can see.
+    /// Bias under `n` in 2^64.
     ///
     /// # Panics
     ///
-    /// If `n` is zero. There is no draw from an empty range.
+    /// If `n` is zero.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "the high half of a product with a usize is below that usize"
