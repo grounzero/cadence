@@ -3,8 +3,8 @@
 //! The search, and what bounds it. `Limits` is the parsed `go` command.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::time::Instant;
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, to_uci};
@@ -1144,64 +1144,6 @@ impl<'a> Search<'a> {
             }
         }
         best
-    }
-
-    /// Whether a limit or the stop flag ends the search here, at any node from the first; the
-    /// clock only every `CLOCK_INTERVAL` nodes, and only when there is a budget.
-    fn out_of_time(&mut self) -> bool {
-        if self.aborted {
-            return true;
-        }
-        if self.stop.load(Ordering::Relaxed) {
-            self.aborted = true;
-            return true;
-        }
-        if self.limits.infinite {
-            return false;
-        }
-        if let Some(n) = self.limits.nodes
-            && self.reported_nodes() >= n
-        {
-            self.aborted = true;
-            return true;
-        }
-        if self.nodes & (CLOCK_INTERVAL - 1) == 0 {
-            // On the interval that already exists rather than on one of its own: a hit that
-            // waited for the end of a deep iteration would spend the clock it just took.
-            self.absorb_ponder_hit();
-            if let Some(b) = self.budget
-                && self.elapsed_ms() >= b.hard
-            {
-                self.aborted = true;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Take a `ponderhit` if one has arrived: the search stops pondering, the clock runs from
-    /// this moment, and the iteration ladder starts again. The ladder is cleared because an
-    /// entry measured from the ponder's origin, read against the new one, gives a branching
-    /// factor below one and starts an iteration on it.
-    fn absorb_ponder_hit(&mut self) {
-        if !self.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
-            return;
-        }
-        self.pondering = false;
-        self.start = Instant::now();
-        self.iterations.clear();
-        self.budget = self.budget_on_hit;
-    }
-
-    /// Hold the finished search until `stop`, in the two states that say so. `go infinite` and
-    /// a ponder nobody has hit both mean "do not answer until told", and a ponder that returned
-    /// early would be answering a question the opponent has not yet asked.
-    fn wait_if_open_ended(&self) {
-        if self.limits.infinite || self.pondering {
-            while !self.stop_requested() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        }
     }
 
     /// Name the root move about to be searched, and its place in the root list, once the search
