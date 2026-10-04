@@ -16,6 +16,16 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-04
+
+### Changed
+
+- Reverse futility: when the search skips a position that looks too good
+  for the side to move to need searching, it now reports the bound it was
+  asked about rather than its own estimate of the position.
+
+Test 46: +17.55 (between +8.78 and +26.34).
+
 ## [0.5.5] - 2026-10-03
 
 ### Added
@@ -198,7 +208,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.5...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.6...main
+[0.5.6]: https://github.com/grounzero/cadence/compare/0.5.5...0.5.6
 [0.5.5]: https://github.com/grounzero/cadence/compare/0.5.4...0.5.5
 [0.5.4]: https://github.com/grounzero/cadence/compare/0.5.3...0.5.4
 [0.5.3]: https://github.com/grounzero/cadence/compare/0.5.2...0.5.3
