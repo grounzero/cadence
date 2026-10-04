@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence-tools`: magic generation.
-//!
-//! One subcommand today, `magics`. Subcommand dispatch is a `match` on the
-//! first argument, the same shape as the engine binary, so a second is a row
-//! in [`SUBCOMMANDS`] and an arm beside it. Nothing here ships; it is the
-//! workbench.
+//! Nothing here ships. Dispatch is a `match` on the first argument, so a subcommand is a row in
+//! [`SUBCOMMANDS`] and an arm beside it.
 
 #![forbid(unsafe_code)]
 

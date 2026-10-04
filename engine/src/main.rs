@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence`: the UCI binary. Argument handling is a `match` on `args().nth(1)` and will stay
-//! one.
+//! Argument handling is a `match` on `args().nth(1)` and will stay one.
 
 #![forbid(unsafe_code)]
 
@@ -9,7 +8,7 @@ use std::process::ExitCode;
 
 use cadence_engine::{bench, datagen, perft, texel, tune, uci};
 
-/// The subcommand table. `cadence` with no subcommand speaks UCI on stdin.
+/// `cadence` with no subcommand speaks UCI on stdin.
 const SUBCOMMANDS: &[(&str, &str)] = &[
     (
         "perft",

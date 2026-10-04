@@ -1,24 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence-tools magics [seed]`: search for the magic numbers `core` bakes
-//! into its sliding-attack tables, and print them as Rust source.
-//!
-//! Self-contained on purpose. This tool depends on nothing in `core`'s magic
-//! module, so it can regenerate the numbers that module is built from without
-//! that module compiling, and so that the generator and the tables share no
-//! code that could be wrong in the same way. The ray-walk here is the third
-//! independent copy in the repository: `core` has one for const-evaluating
-//! the tables, the gate has one as its oracle, and this one produces the
-//! constants both of those are checked against.
-//!
-//! The method is the standard trial search: sparse random 64-bit candidates,
-//! each verified against every occupancy subset of the square's relevant mask
-//! for index collisions that map two different attack sets to one slot.
-//! Plain magics with `shift = 64 - popcount(mask)`, no overlapping, no fancy
-//! shifts: the tables are 102,400 + 5,248 entries and live in `.rodata`.
-//!
-//! Deterministic: the seed is printed in the output header, so the same seed
-//! reproduces the same numbers.
+//! Shares no code with `core`'s magic module or the gate's oracle, so the three ray-walks cannot be
+//! wrong the same way, and it can regenerate numbers that module will not compile without. The seed
+//! is printed in the output header, so it reproduces the same numbers.
 
 use std::fmt::Write as _;
 
@@ -39,8 +23,8 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// A sparse candidate: the AND of three draws leaves roughly one bit in eight
-    /// set, which is the density that tends to hash well.
+    /// The AND of three draws leaves about one bit in eight set, the density that tends to hash
+    /// well.
     fn sparse(&mut self) -> u64 {
         self.next() & self.next() & self.next()
     }
@@ -51,8 +35,7 @@ fn bit(f: i32, r: i32) -> Option<u64> {
         .then(|| 1u64 << (u8::try_from(r * 8 + f).expect("in range")))
 }
 
-/// Attacks from `sq` under `occ`: walk each direction to the edge, including
-/// the first occupied square.
+/// The first occupied square included.
 fn attacks(sq: u32, occ: u64, dirs: &[(i32, i32)]) -> u64 {
     let (f0, r0) = (
         i32::try_from(sq % 8).expect("fits"),
@@ -73,8 +56,7 @@ fn attacks(sq: u32, occ: u64, dirs: &[(i32, i32)]) -> u64 {
     out
 }
 
-/// The relevant occupancy: the empty-board rays minus their last square in
-/// each direction, since a blocker on the edge changes nothing.
+/// Edge squares dropped: a blocker there changes nothing.
 fn mask(sq: u32, dirs: &[(i32, i32)]) -> u64 {
     let (f0, r0) = (
         i32::try_from(sq % 8).expect("fits"),
@@ -92,7 +74,6 @@ fn mask(sq: u32, dirs: &[(i32, i32)]) -> u64 {
     out
 }
 
-/// One square's search result.
 struct Found {
     magic: u64,
     tries: u64,
@@ -104,7 +85,6 @@ fn search(sq: u32, dirs: &[(i32, i32)], rng: &mut Rng) -> Found {
     let shift = 64 - bits;
     let size = 1usize << bits;
 
-    // Every subset of the mask and its attack set, once.
     let mut occs = Vec::with_capacity(size);
     let mut refs = Vec::with_capacity(size);
     let mut occ = 0u64;
