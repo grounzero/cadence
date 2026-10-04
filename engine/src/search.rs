@@ -911,66 +911,6 @@ impl<'a> Search<'a> {
         score
     }
 
-    /// Whether the move at `index` of a node the margin admitted is skipped without being
-    /// searched. `gives_check` is asked last, because it is the only expensive question here
-    /// and only a move that would otherwise be skipped has to answer it.
-    fn futile(&mut self, board: &Board, futile: bool, m: Move, index: usize) -> bool {
-        if !futility_skips(futile, m, index) {
-            return false;
-        }
-        if board.gives_check(m) {
-            self.futility_kept_check += 1;
-            return false;
-        }
-        self.futility_skipped += 1;
-        true
-    }
-
-    /// Whether the move at `index` of a node [`lmp_index`] admitted is given up without being
-    /// searched. `gives_check` is asked last, for [`Search::futile`]'s reason, and it is the
-    /// whole cost of the rule at a move it does give up.
-    fn given_up(
-        &mut self,
-        board: &Board,
-        from: Option<usize>,
-        m: Move,
-        killers: [Move; 2],
-        index: usize,
-    ) -> bool {
-        if !lmp_skips(from, m, killers, index) {
-            return false;
-        }
-        if board.gives_check(m) {
-            self.lmp_kept_check += 1;
-            return false;
-        }
-        self.lmp_skipped += 1;
-        true
-    }
-
-    /// Reverse futility at one node: where the static evaluation stands
-    /// [`reverse_futility_margin`] above beta, the node is returned at beta without generating
-    /// a move. `Some` is beta; `None` means search the node.
-    fn reverse_futility(
-        &mut self,
-        board: &Board,
-        depth: u32,
-        ply: usize,
-        alpha: Score,
-        beta: Score,
-    ) -> Option<Score> {
-        let bound = reverse_futile(&self.tunables, self.evals[ply], depth, beta)?;
-        if board.halfmove_clock() >= 100 {
-            return None;
-        }
-        if beta != alpha + 1 {
-            self.reverse_futility_refused_window += 1;
-            return None;
-        }
-        self.reverse_futility_cutoffs += 1;
-        Some(bound)
-    }
-
     /// Null-move pruning at one node: `Some` is the cutoff, `None` means search the node.
     /// Refused in check, at a full window, on a mate-scale beta, below beta, at a position the
     /// null move itself reached, on a halfmove clock at the limit, and where the side to move
