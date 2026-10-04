@@ -1,26 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Playing down: a target rating picks a candidate count, a margin and a halving
-//! constant from a compiled-in table, and the move emitted is sampled from the
-//! root lines that survive the margin rather than being the best one.
-//!
-//! What these gates demonstrate is that the number **cannot reach the search**
-//! unless the boolean gate is on, that a level once on **changes the move**
-//! rather than being accepted and ignored, and that the choice is **reproducible
-//! from the position**, which is the property an investigation needs and the one
-//! a process-seeded generator would destroy.
-//!
-//! The inertness gate is the one the whole option is built under, and it is
-//! stated as a node count rather than a move, because a move can agree by
-//! accident and a node count cannot.
+//! The number cannot reach the search unless the boolean is on, a level changes the move, and the
+//! choice is reproducible from the position. Inertness is stated as a node count, because a move
+//! can agree by accident and a node count cannot.
 
 mod support;
 
 use cadence_engine::level::{self, MAX_ELO, MIN_ELO};
 use support::{Engine, talk};
 
-/// Positions the gates search. Middlegames rather than the start, so each root
-/// holds enough moves for a candidate set and enough spread for a margin to bind.
+/// Middlegames, so each root holds enough moves for a candidate set and enough spread for a margin
+/// to bind.
 const FENS: [&str; 4] = [
     "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
     "r2q1rk1/1b1nbppp/pp1ppn2/8/2PNP3/1PN1B3/P2QBPPP/R4RK1 w - - 0 12",
@@ -37,24 +27,18 @@ const SAMPLING_FENS: [&str; 4] = [
     "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
 ];
 
-/// The depth every gate searches to. Seven: deep enough that the root lines
-/// separate, and a fraction of a second in debug.
+/// Deep enough that the root lines separate, a fraction of a second in debug.
 const GATE_DEPTH: u32 = 7;
 
-/// The node budget the abort gate searches under. Enough to pass several
-/// iterations and never enough to finish the one it is cut off in, which is the
-/// condition every limit but a fixed depth puts the search under.
+/// Several iterations and never enough to finish the one it cuts off, as every limit but fixed
+/// depth does.
 const GATE_NODES: u64 = 300_000;
 
-/// Every rung of the compiled-in ladder, which is what a gate walks when it has
-/// to hold at every value rather than at one.
 fn rungs() -> Vec<u32> {
     level::LADDER.iter().map(|rung| rung.elo).collect()
 }
 
-/// One search of `fen` to [`GATE_DEPTH`], with `setup` sent before it. Through
-/// the line-at-a-time driver rather than one write, because a `quit` queued
-/// behind a `go` stops the search before it has reported anything.
+/// Line at a time, because a `quit` queued behind a `go` stops the search before it reports.
 fn search(fen: &str, setup: &[&str]) -> Vec<String> {
     let mut lines: Vec<&str> = setup.to_vec();
     let position = format!("position fen {fen}");
@@ -67,7 +51,6 @@ fn search(fen: &str, setup: &[&str]) -> Vec<String> {
     out
 }
 
-/// The move on the `bestmove` line of one search.
 fn played(out: &[String]) -> String {
     let Some(rest) = out.iter().find_map(|l| l.strip_prefix("bestmove ")) else {
         panic!("no bestmove line in {out:?}")
@@ -78,7 +61,7 @@ fn played(out: &[String]) -> String {
         .to_string()
 }
 
-/// One search of `fen` under [`GATE_NODES`], which aborts its last iteration.
+/// Which aborts its last iteration.
 fn search_to_node_limit(fen: &str, setup: &[&str]) -> Vec<String> {
     let mut lines: Vec<&str> = setup.to_vec();
     let position = format!("position fen {fen}");
@@ -91,7 +74,6 @@ fn search_to_node_limit(fen: &str, setup: &[&str]) -> Vec<String> {
     out
 }
 
-/// The setup that turns a level on, which every behaviour gate below sends.
 fn level_on(elo: u32) -> [String; 2] {
     [
         "setoption name UCI_LimitStrength value true".to_string(),
@@ -99,8 +81,7 @@ fn level_on(elo: u32) -> [String; 2] {
     ]
 }
 
-/// `fen` with `later` added to its move number, which changes the sampler's draw
-/// and nothing about the search.
+/// Changes the sampler's draw and nothing about the search.
 fn with_later_move_number(fen: &str, later: u32) -> String {
     let mut fields: Vec<String> = fen.split_whitespace().map(str::to_string).collect();
     let number: u32 = fields[5].parse().expect("a move number");
@@ -112,7 +93,7 @@ fn as_refs(lines: &[String]) -> Vec<&str> {
     lines.iter().map(String::as_str).collect()
 }
 
-/// The `nodes` field of the last iteration line, which is the whole search's count.
+/// The whole search's count.
 fn nodes(out: &[String]) -> u64 {
     out.iter()
         .filter(|l| l.starts_with("info depth"))
@@ -145,8 +126,7 @@ fn candidate_moves(out: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Both options, declared the way a GUI and the bridge already understand: a
-/// boolean gate and a number, which are deliberately different kinds of thing.
+/// A boolean gate and a number, deliberately different kinds of thing.
 #[test]
 fn uci_advertises_the_strength_pair() {
     let out = talk("uci\nquit\n");
@@ -164,9 +144,7 @@ fn uci_advertises_the_strength_pair() {
     );
 }
 
-/// **The gate the whole option is built under.** With the boolean false, no value
-/// of the number may move the node count or the move, so the search a rating
-/// list and the regression detector play is the search this file cannot reach.
+/// With the boolean false no value of the number may move the node count or the move.
 #[test]
 fn the_number_is_inert_at_every_value_while_the_gate_is_off() {
     for fen in FENS {
@@ -188,9 +166,7 @@ fn the_number_is_inert_at_every_value_while_the_gate_is_off() {
     }
 }
 
-/// The gate on its own is not a level either: it needs a number, and the number
-/// it defaults to is the top of the ladder, which samples from two lines at the
-/// narrowest margin the table holds.
+/// The number defaults to the top of the ladder, two lines at the narrowest margin.
 #[test]
 fn the_gate_alone_takes_the_top_of_the_ladder() {
     let out = search(FENS[0], &["setoption name UCI_LimitStrength value true"]);
@@ -202,13 +178,10 @@ fn the_gate_alone_takes_the_top_of_the_ladder() {
     );
 }
 
-/// A level engages only where the root reports one line, in both orders, and the
-/// refusal is spoken rather than silent. A silent refusal is indistinguishable
-/// from a level that is on, which is the failure a GUI would never see.
+/// In both orders, and spoken: a silent refusal looks like a level that is on.
 #[test]
 fn a_level_refuses_while_more_than_one_line_is_reported() {
-    // The same four lines with no level: MultiPV can change the best move at a fixed depth, so
-    // a refused level is measured against it and not against a single-line search.
+    // MultiPV can change the best move at a fixed depth, so a refused level is measured against it.
     let plain = search(FENS[0], &["setoption name MultiPV value 4"]);
     let on = level_on(MIN_ELO);
 
@@ -242,10 +215,8 @@ fn a_level_refuses_while_more_than_one_line_is_reported() {
     );
 }
 
-/// A level engages only on one thread, in both orders, and says so. Above one
-/// the search is not reproducible run to run, so a level there would keep the
-/// option and lose the property the option is for. **This is the configuration
-/// the bot actually runs**, which is why it is a refusal and not a caveat.
+/// Above one thread the search is not reproducible, so a level there loses the property the option
+/// is for. This is the configuration the bot runs, hence a refusal rather than a caveat.
 #[test]
 fn a_level_refuses_beside_more_than_one_thread() {
     let on = level_on(MIN_ELO);
@@ -279,8 +250,7 @@ fn a_level_refuses_beside_more_than_one_thread() {
     );
 }
 
-/// A level must change what the engine plays. An option accepted and ignored
-/// passes every other gate here, so this is the one that says it does something.
+/// An option accepted and ignored passes every other gate here.
 #[test]
 fn the_lowest_level_plays_a_move_the_search_did_not_prefer() {
     let on = level_on(MIN_ELO);
@@ -294,9 +264,7 @@ fn the_lowest_level_plays_a_move_the_search_did_not_prefer() {
     );
 }
 
-/// The same position at the same level yields the same move, because the seed is
-/// the position rather than the process. This is what makes a complaint about a
-/// move reproducible, and it is why a process-seeded generator is refused.
+/// The seed is the position, not the process, so a complaint about a move is reproducible.
 #[test]
 fn the_same_position_and_level_yield_the_same_move() {
     let on = level_on(MIN_ELO);
@@ -312,9 +280,7 @@ fn the_same_position_and_level_yield_the_same_move() {
     }
 }
 
-/// A sampled move is one the search scored, never one it did not look at. The
-/// candidate count bounds how bad the choice can be, which is the whole of the
-/// worst case this policy has.
+/// The candidate count bounds how bad the choice can be.
 #[test]
 fn a_sampled_move_is_always_one_of_the_reported_candidates() {
     for fen in FENS {
@@ -334,21 +300,9 @@ fn a_sampled_move_is_always_one_of_the_reported_candidates() {
     }
 }
 
-/// **A level samples under a limit that aborts, which is every limit a game is
-/// played under.** Fixed depth is the one that completes its last iteration, and
-/// it is the only one the other gates here use, so a sampler that read a
-/// half-finished iteration would pass all of them and fire in no real game.
-///
-/// Stated as a rate over draws rather than as one move, because sampling is
-/// allowed to return the best line and often should.
-///
-/// **Each position is searched at four move numbers**, because the draw is seeded
-/// by the position and the move number and nothing else reads the move number.
-/// Eight fixed draws is eight coins thrown once: an evaluation change once left
-/// level 1600 on its best line in all eight, a draw of well under one in a
-/// hundred from the gaps it had, while the same positions at other move numbers
-/// deviated about as often as those gaps predict. Thirty-two draws puts that
-/// event out of reach of the next evaluation change.
+/// Every limit a game is played under aborts, and a sampler reading a half-finished iteration would
+/// pass every fixed-depth gate. Four move numbers per position give thirty-two draws, since eight
+/// once left level 1600 on its best line by a chance under one in a hundred.
 #[test]
 fn a_level_samples_under_a_node_limit_as_well_as_a_fixed_depth() {
     for elo in rungs() {
@@ -381,9 +335,8 @@ fn a_level_samples_under_a_node_limit_as_well_as_a_fixed_depth() {
     }
 }
 
-/// A level must report the lines it sampled among, whatever cut the search
-/// short. The board reads them to show the candidates and mark the one taken,
-/// and a truncated set is a different set from the one the move came from.
+/// The board shows the candidates and marks the one taken, and a truncated set is not the set the
+/// move came from.
 #[test]
 fn a_level_reports_its_full_candidate_set_under_a_node_limit() {
     for elo in rungs() {
@@ -399,11 +352,8 @@ fn a_level_reports_its_full_candidate_set_under_a_node_limit() {
     }
 }
 
-/// The table is monotone in what the engine can see, which is the candidate count
-/// and the margin. **It is deliberately not monotone in the halving constant**:
-/// the ladder's monotone quantity is expected centipawn loss, and the count and
-/// the margin move underneath it, so a rung that samples from fewer lines needs a
-/// flatter distribution to lose the same amount.
+/// Deliberately not monotone in the halving constant: the ladder's monotone quantity is expected
+/// centipawn loss.
 #[test]
 fn the_policy_table_is_monotone_in_the_level() {
     let rungs = rungs();
@@ -432,9 +382,7 @@ fn the_policy_table_is_monotone_in_the_level() {
     }
 }
 
-/// A number between two rungs resolves to a rung rather than to nothing. The
-/// interface takes one number and the table holds five, so every value in the
-/// declared range has to land somewhere.
+/// The interface takes one number and the table holds five, so every value has to land somewhere.
 #[test]
 fn every_value_in_the_declared_range_resolves_to_a_rung() {
     for elo in (MIN_ELO..=MAX_ELO).step_by(50) {

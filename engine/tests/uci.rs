@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Drives the real binary over a pipe. The UCI surface is the one interface
-//! a GUI sees, and it is not exercised by anything that links the crate as a
-//! library, so the plumbing -- `go` on its own thread, `stop` raising the
-//! flag and waiting for `bestmove`, `isready` answered mid-search, `quit`
-//! during a search -- is tested as a subprocess or not at all.
-//!
-//! The handlers themselves are tested as functions in `position_handler.rs`
-//! and `bestmove.rs`; what is checked here is that the right line comes out
-//! of the pipe, in the right order, and that the process comes back.
+//! The UCI plumbing is tested as a subprocess or not at all: nothing linking the crate as a library
+//! exercises it. The handlers are tested as functions in `position_handler.rs` and `bestmove.rs`.
 
 mod support;
 
@@ -22,10 +15,8 @@ use support::{Engine, bestmove, bestmoves, talk, talk_bytes};
 fn uci_reports_identity() {
     let out = talk("uci\nquit\n");
     let lines: Vec<&str> = out.lines().collect();
-    // Against `version::VERSION` and not the package version: what is being
-    // checked is that whatever this build calls itself is what comes out of
-    // the pipe. A dev build reports the commit, and a GUI reading this line
-    // is how anyone tells two of them apart.
+    // Against `version::VERSION`, not the package version: a dev build reports its commit, which is
+    // how a GUI tells two builds apart.
     assert!(
         lines.contains(&format!("id name Cadence {}", cadence_engine::version::VERSION).as_str()),
         "no id name line in {lines:?}"
@@ -41,9 +32,7 @@ fn uci_reports_identity() {
     );
 }
 
-/// Cute Chess and other GUIs gate Chess960 games on the engine declaring
-/// the option. An engine that parses FRC perfectly but does not announce it
-/// cannot be given an FRC game at all.
+/// Cute Chess and other GUIs give a Chess960 game only to an engine that declares the option.
 #[test]
 fn uci_advertises_uci_chess960() {
     let out = talk("uci\nquit\n");
@@ -81,8 +70,7 @@ fn quit_stops_reading() {
 
 #[test]
 fn end_of_input_exits_cleanly() {
-    // No commands at all: the banner, then exit 0. This is the smoke test CI
-    // relies on.
+    // No commands: the banner, then exit 0, the smoke test CI relies on.
     let out = talk("");
     assert!(out.starts_with("Cadence "), "no banner in {out:?}");
 }
@@ -98,10 +86,8 @@ fn unknown_subcommand_is_a_usage_error() {
     assert!(err.contains("unknown subcommand"), "{err:?}");
 }
 
-/// A byte that is not UTF-8 must not end the session. `BufRead::lines` turns
-/// it into an `Err`, and an earlier loop treated that as end of input: exit
-/// 0, no message, and a GUI reporting a crash with nothing to attribute it
-/// to -- the worst shape a fault can have.
+/// `BufRead::lines` turns a non-UTF-8 byte into an `Err`, which an earlier loop read as end of
+/// input: exit 0, no message, a crash a GUI cannot attribute.
 #[test]
 fn invalid_utf8_does_not_end_the_session() {
     let out = talk_bytes(b"\xff\nisready\nquit\n");
@@ -111,9 +97,7 @@ fn invalid_utf8_does_not_end_the_session() {
     );
 }
 
-/// The same byte inside a value a GUI might actually send: a Latin-1 path.
-/// The option is not understood and is ignored; the session survives and
-/// the next command is answered.
+/// The option is not understood and is ignored; the session survives.
 #[test]
 fn latin1_in_a_setoption_value_is_tolerated() {
     let out = talk_bytes(b"setoption name EvalFile value /home/Jos\xe9/net.bin\nisready\nquit\n");
@@ -127,8 +111,7 @@ fn latin1_in_a_setoption_value_is_tolerated() {
 // go / stop / bestmove
 // ---------------------------------------------------------------------------
 
-/// The `bestmove` of `out` parses against the legal moves of `fen` and is
-/// spelled the way `to_uci` spells it under `chess960`.
+/// Spelled the way `to_uci` spells it under `chess960`.
 fn assert_bestmove_legal(out: &str, fen: &str, chess960: bool) {
     let mv = bestmove(out);
     let board = Board::from_fen(fen).expect("fen parses");
@@ -174,19 +157,13 @@ fn multicore_infinite_search_stops_cleanly() {
     assert!(out.lines().any(|line| line == "readyok"), "{out:?}");
 }
 
-/// A host that runs the parallel path with one worker stops passing. Strictly greater and not a
-/// ratio: a lone search at a fixed depth is deterministic, so a group that contributed nothing
-/// reports *exactly* the single-thread count, and any real helper makes it larger.
-///
-/// The summation itself is asserted in `search.rs`, deterministically. This is the end-to-end
-/// half, and it is the half that depends on the helpers being scheduled at all.
+/// Strictly greater, not a ratio: a group that contributed nothing reports exactly the
+/// single-thread count. The summation is asserted deterministically in `search.rs`; this half
+/// depends on the helpers being scheduled.
 #[test]
 fn four_threads_out_node_one_at_a_fixed_depth() {
-    // Eight, on kiwipete. The start position stood here until the fitted piece-square table,
-    // under which its depth-eight tree is a few thousand nodes: on a three-core runner four
-    // threads then read equal to one, the helpers not yet scheduled, or fewer, the shared table
-    // saving more than the duplication costs, depending on scheduling. Kiwipete's tree is about
-    // 230,000 nodes and four threads read about 3.7 times one, far from both.
+    // Kiwipete at depth eight is about 230,000 nodes, where four threads read about 3.7 times one;
+    // the start position's tree was too small to separate them on a three-core runner.
     const DEPTH: u32 = 8;
     let one = nodes_at_fixed_depth(1, DEPTH);
     let four = nodes_at_fixed_depth(4, DEPTH);
@@ -197,13 +174,12 @@ fn four_threads_out_node_one_at_a_fixed_depth() {
     );
 }
 
-/// The `nodes` field of the last `info depth <depth>` line of a fixed-depth search. Fixed depth
-/// rather than fixed time, because duplicated work scales with the number of workers however
-/// few cores they are timesharing.
 /// Kiwipete, whose depth-eight tree leaves the helpers room to contribute.
 const THREAD_POSITION: &str =
     "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
 
+/// Fixed depth rather than time, because duplicated work scales with the workers however few
+/// cores they share.
 fn nodes_at_fixed_depth(threads: usize, depth: u32) -> u64 {
     let option = format!("setoption name Threads value {threads}");
     let (_, lines) = Engine::go_within(
@@ -259,8 +235,7 @@ fn go_after_a_moves_list_searches_the_position_reached() {
     );
 }
 
-/// `go infinite` must not return on its own. `stop` brings the `bestmove`,
-/// and `isready` is answered in between without ending the search.
+/// `isready` is answered without ending the search.
 #[test]
 fn go_infinite_then_stop_yields_a_bestmove_and_isready_is_answered_meanwhile() {
     let out = talk("position startpos\ngo infinite\nisready\nstop\nquit\n");
@@ -280,8 +255,7 @@ fn go_infinite_then_stop_yields_a_bestmove_and_isready_is_answered_meanwhile() {
 
 #[test]
 fn quit_during_an_infinite_search_exits() {
-    // No stop: quit must end the search and the process. The subprocess
-    // helper fails the test if the process does not come back.
+    // The subprocess helper fails the test if the process does not come back.
     let out = talk("position startpos\ngo infinite\nquit\n");
     // Whether a bestmove is printed on quit is not specified; if one is, it
     // is legal.
@@ -322,22 +296,9 @@ fn bestmove_on_a_position_with_no_legal_move_is_the_null_move() {
     }
 }
 
-/// Castling spelled per `UCI_Chess960`: king-takes-rook when it is on,
-/// king-to-destination when it is off and unambiguous.
-///
-/// Whichever move the engine picks, the spelling must be the one `to_uci`
-/// gives under the option value in force, and `assert_bestmove_legal`
-/// checks that for every position here, castle or not. A castle is what
-/// exercises the branch, so the positions are ones where castling is legal
-/// and the test asserts that at least one of them produced a castling
-/// bestmove -- so a change in the move chooser that stops reaching the
-/// branch is noticed rather than silently passing.
-///
-/// **It sits exactly at its threshold under the fitted piece-square table**:
-/// four castling bestmoves against a minimum of four, where the hand-written
-/// table gave eight. The search is deterministic here, so a king-table change
-/// that moves one castle fails this on every machine, and that is the signal
-/// to tell it from a race: a race fails on some runners and not others.
+/// A castle is what exercises the branch, so at least one castling bestmove is required. It sits at
+/// its threshold, four of four, and the search is deterministic, so a failure on every machine is a
+/// king-table change and one on some runners a race.
 #[test]
 fn castling_bestmove_is_spelled_per_the_option() {
     let fens = [
@@ -349,10 +310,8 @@ fn castling_bestmove_is_spelled_per_the_option() {
         "4k2r/8/8/8/8/8/8/4K3 b k - 0 1",
         "4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1",
         "r3k2r/8/8/8/8/8/8/4K3 b kq - 0 1",
-        // The bare-king positions above are endgames, where the evaluation
-        // rightly prefers centralising the king to castling it; these four
-        // have enough material on the board that castling is what the
-        // search chooses, standard and DFRC, both colours.
+        // With enough material that castling is what the search chooses, standard and DFRC, both
+        // colours.
         "r2qk2r/pppppppp/2n2n2/8/8/2N2N2/PPPPPPPP/R2QK2R w Kk - 0 1",
         "r2qk2r/pppppppp/2n2n2/8/8/2N2N2/PPPPPPPP/R2QK2R b Kk - 0 1",
         "nnrkqbbr/pppppppp/8/8/8/8/PPPPPPPP/NNRKQBBR w HChc - 0 1",
@@ -362,8 +321,8 @@ fn castling_bestmove_is_spelled_per_the_option() {
     for chess960 in [false, true] {
         for fen in fens {
             let value = if chess960 { "true" } else { "false" };
-            // Read to the bestmove before quitting: `quit` stops a search still running, so a
-            // `quit` piped in behind `go` made the move turn on whether depth one had finished.
+            // Read to the bestmove before quitting: `quit` stops a running search, so the move
+            // would turn on whether depth one had finished.
             let option = format!("setoption name UCI_Chess960 value {value}");
             let position = format!("position fen {fen}");
             let (_, lines) = Engine::go_within(
@@ -412,23 +371,9 @@ fn go_after_an_illegal_move_searches_where_the_replay_stopped() {
     );
 }
 
-/// A `go` on a position no legal play can reach comes back with a move, and
-/// the process is still there to be asked for another.
-///
-/// Regression: the side not to move being in check made generation offer
-/// the king capture, `make_move` remove the king, and the
-/// recomputed check info ask for a king that was no longer on the board.
-/// With `panic = "abort"` in the release profile the whole process went,
-/// SIGABRT, mid-search.
-///
-/// Driven with `Engine::go_within` rather than `talk`, and that is
-/// load-bearing twice over. `talk` pipes `quit` in with everything else,
-/// `quit` stops a running search, and a search stopped before it makes its
-/// first root move does not reach the fault at all: the bug reproduces only
-/// when the search is allowed to run. And the deadline is not decoration --
-/// against the unfixed engine this test *hangs* rather than fails, because
-/// the test profile does not abort on panic, so the search thread unwinds
-/// and dies while the UCI loop reads on.
+/// The side not to move in check once made generation offer the king capture and abort the process
+/// mid-search. `Engine::go_within`, because `talk`'s piped `quit` stops the search before the
+/// fault, and the deadline because the unfixed engine hangs rather than fails in the test profile.
 #[test]
 fn go_on_a_position_with_the_side_not_to_move_in_check_returns_a_move() {
     for fen in [
@@ -457,22 +402,15 @@ fn go_on_a_position_with_the_side_not_to_move_in_check_returns_a_move() {
 // The info fields a watcher reads
 // ---------------------------------------------------------------------------
 
-/// The value `name` carries on a UCI `info` line, parsed.
-///
-/// Token position and not a byte offset, because that is how a GUI reads one
-/// and it is what lets a field be inserted without moving the others.
+/// By token position, as a GUI reads it, so a field can be inserted without moving the others.
 fn field<T: std::str::FromStr>(line: &str, name: &str) -> Option<T> {
     let toks: Vec<&str> = line.split_whitespace().collect();
     let at = toks.iter().position(|t| *t == name)?;
     toks.get(at + 1)?.parse().ok()
 }
 
-/// Every iteration line carries a `seldepth`, and it is never below the
-/// `depth` beside it.
-///
-/// The second assertion is what stops the field being `depth` under another
-/// name: quiescence searches past the horizon, so a real reading is strictly
-/// deeper on most iterations and this one demands it on at least one.
+/// Quiescence searches past the horizon, so on at least one iteration `seldepth` must exceed
+/// `depth`, or it is `depth` under another name.
 #[test]
 fn iteration_lines_carry_a_seldepth_the_quiescence_search_pushes_past_the_depth() {
     let out = Engine::go(&["position startpos"], "go depth 10").join("\n");
@@ -501,12 +439,7 @@ fn iteration_lines_carry_a_seldepth_the_quiescence_search_pushes_past_the_depth(
     );
 }
 
-/// `hashfull` is a permill, it never falls inside one search, and
-/// `ucinewgame` puts it back.
-///
-/// Rising and falling are both asserted because either alone passes against
-/// a constant: a field wired to zero never falls, and one wired to the depth
-/// never returns.
+/// Both rising and falling are asserted, because either alone passes against a constant.
 #[test]
 fn hashfull_rises_within_a_search_and_ucinewgame_puts_it_back() {
     let permills = |lines: &[String]| -> Vec<u32> {
@@ -549,14 +482,8 @@ fn hashfull_rises_within_a_search_and_ucinewgame_puts_it_back() {
     engine.quit();
 }
 
-/// A clocked search past [`cadence_engine::search::CURRMOVE_AFTER_MS`] names
-/// the root move it is on; a node-limited search over the same tree names
-/// none.
-///
-/// The pair is one test because the second half is only worth anything
-/// against a first half that fired: the node limit is taken from the clocked
-/// run, so the two searches cost the same and the difference between them is
-/// the limit rather than the machine.
+/// The node limit is taken from the clocked run, so the two cost the same and differ only in the
+/// limit.
 #[test]
 fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
     let watched = cadence_engine::search::CURRMOVE_AFTER_MS * 2;
@@ -565,9 +492,8 @@ fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
         &format!("go movetime {watched}"),
         std::time::Duration::from_secs(60),
     );
-    // The one thing `bench` cannot say anything about: these lines are
-    // written down a live pipe while the clock runs, and a search that
-    // overshoots its movetime writing them loses games rather than nodes.
+    // Written down a live pipe while the clock runs, which `bench` cannot see: a search that
+    // overshoots its movetime writing them loses games.
     assert!(
         elapsed < std::time::Duration::from_millis(watched * 2),
         "a {watched} ms search took {elapsed:?} while naming its root moves"
@@ -605,9 +531,7 @@ fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
         );
         numbers.push(number);
     }
-    // The number is a place in the root list, so it climbs through an
-    // iteration and the only value it may fall to is the next iteration's
-    // first.
+    // A place in the root list: it climbs, and may fall only to the next iteration's first.
     for pair in numbers.windows(2) {
         assert!(
             pair[1] > pair[0] || pair[1] == 1,
@@ -633,11 +557,7 @@ fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
     );
 }
 
-/// The `info depth` lines of `out`, with `nps` and `time` dropped.
-///
-/// Both are wall-clock readings and belong to the run rather than to the
-/// tree, so two searches of the same tree agree on everything else and on
-/// neither of these.
+/// Both are wall-clock readings of the run, not the tree.
 fn iteration_lines(out: &[String]) -> Vec<String> {
     out.iter()
         .filter(|l| l.starts_with("info depth "))
@@ -658,11 +578,7 @@ fn iteration_lines(out: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The score on an `info` line as a number that orders the way the protocol
-/// reads it.
-///
-/// A mate score is worth more than any centipawn score of the same sign, so
-/// it maps outside the centipawn range rather than being compared against it.
+/// A mate maps outside the centipawn range, worth more than any score of the same sign.
 fn score_key(line: &str) -> i64 {
     let toks: Vec<&str> = line.split_whitespace().collect();
     let at = toks
@@ -682,12 +598,7 @@ fn score_key(line: &str) -> i64 {
     }
 }
 
-/// `MultiPV` is declared as a spin bounded by the longest move list the
-/// generator can return.
-///
-/// The maximum is [`cadence_core::MAX_MOVES`] because a root asked for more
-/// lines than it has moves reports the moves it has. The default is one, and
-/// that is the value every rating list and every test plays under.
+/// The maximum is `MAX_MOVES`, since a root asked for more lines reports the moves it has.
 #[test]
 fn uci_advertises_multipv() {
     let out = talk("uci\nquit\n");
@@ -701,13 +612,8 @@ fn uci_advertises_multipv() {
     );
 }
 
-/// At `MultiPV 1` the engine emits what it emits with the option never set,
-/// line for line and node for node.
-///
-/// This is the condition the whole option is built under: the default is what
-/// every rating list and every SPRT plays, so a line that moves here is a
-/// defect rather than a cost. The `multipv` field is absent from both,
-/// because a single line has no second to number.
+/// The default is what every rating list and SPRT plays, so a line that moves here is a defect. A
+/// single line carries no `multipv` field.
 #[test]
 fn multipv_one_emits_exactly_what_the_option_never_set_emits() {
     let untouched = Engine::go(&["position startpos"], "go depth 10");
@@ -727,11 +633,7 @@ fn multipv_one_emits_exactly_what_the_option_never_set_emits() {
     }
 }
 
-/// Above one, every iteration reports the number of lines asked for, each a
-/// distinct legal root move, in descending score order.
-///
-/// The lines are numbered from one and the numbering restarts each iteration,
-/// which is what a GUI reads to keep the panel in place.
+/// Numbered from one and restarting each iteration, which a GUI reads to keep the panel in place.
 #[test]
 fn multipv_above_one_reports_distinct_legal_moves_in_descending_order() {
     let wanted = 4;
@@ -785,11 +687,8 @@ fn multipv_above_one_reports_distinct_legal_moves_in_descending_order() {
     }
 }
 
-/// Asking for more lines than the position has root moves reports the moves
-/// it has, and asking for more than one costs nodes.
-///
-/// The second half is what stops the option being accepted and ignored: a
-/// second root move is a second search, so the count has to rise.
+/// A second root move is a second search, so the count has to rise, or the option is accepted and
+/// ignored.
 #[test]
 fn multipv_is_bounded_by_the_root_moves_and_costs_nodes_above_one() {
     let board = Board::from_fen(START_FEN).expect("the start position");
@@ -823,12 +722,8 @@ fn multipv_is_bounded_by_the_root_moves_and_costs_nodes_above_one() {
 // Ponder
 // ---------------------------------------------------------------------------
 
-/// A GUI ponders only against an engine that declares the option, so the
-/// declaration is what makes `go ponder` reachable at all.
-///
-/// Off by default: pondering doubles the thinking one side gets, which is why
-/// every rating list disables it, and the default is the condition every SPRT
-/// plays under.
+/// The declaration makes `go ponder` reachable. Off by default, as every rating list and SPRT
+/// plays.
 #[test]
 fn uci_advertises_ponder() {
     let out = talk("uci\nquit\n");
@@ -845,13 +740,7 @@ fn uci_advertises_ponder() {
     assert!(at < uciok, "the Ponder option is declared after uciok");
 }
 
-/// With `Ponder` off the engine emits what it emits with the option never
-/// set, line for line.
-///
-/// The default is what every rating list and every SPRT plays, so the ponder
-/// move must not reach the wire under it: the non-regression is a statement
-/// about the plumbing costing nothing when the option is not taken, and a
-/// token added to every `bestmove` would be outside what it measured.
+/// The ponder token must not reach the wire under the default every rating list and SPRT plays.
 #[test]
 fn ponder_off_emits_exactly_what_the_option_never_set_emits() {
     let untouched = Engine::go(&["position startpos"], "go depth 10");
@@ -874,12 +763,8 @@ fn ponder_off_emits_exactly_what_the_option_never_set_emits() {
     }
 }
 
-/// The move offered to ponder on is the second move of the principal
-/// variation the search just printed, spelled in the position it is played
-/// in.
-///
-/// That is the move the engine expects the opponent to play, so it is the one
-/// position worth thinking about while the clock is theirs.
+/// The move the engine expects the opponent to play, the one position worth thinking about on their
+/// clock.
 #[test]
 fn the_ponder_move_is_the_second_move_of_the_principal_variation() {
     let lines = Engine::go(
@@ -900,8 +785,7 @@ fn the_ponder_move_is_the_second_move_of_the_principal_variation() {
         "the bestmove line does not carry the pv's second move"
     );
 
-    // And it is a legal reply, which is what "spelled in the position it is
-    // played in" means: the root's move list cannot spell it.
+    // The root's move list cannot spell it.
     let mut board = Board::from_fen(START_FEN).expect("the start position");
     board.play(parse_uci(&generate_legal(&board), &pv[0]).expect("the best move is legal"));
     assert!(

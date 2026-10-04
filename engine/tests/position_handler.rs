@@ -1,18 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `position` handler, as a function.
-//!
-//! `position [startpos | fen <fen>] [moves <m>...]` rebuilds the session's
-//! board from scratch: parse the FEN, then match each move against the
-//! generated legal list and play it as a game move (matched,
-//! never constructed from the string). The tests here drive
-//! `Session::handle_line` directly and read the board back, which is what
-//! the library split exists for.
-//!
-//! The round trips are genuine: a walker makes random moves on a board of
-//! its own, spells each one with `to_uci` under the option value the session
-//! has been given, and the session must arrive at the walker's position --
-//! FEN, key and history -- having seen only the strings.
+//! The round trips are genuine: a walker spells its random moves with `to_uci` under the session's
+//! option value, and the session must reach the walker's FEN, key and history from the strings
+//! alone.
 
 mod support;
 
@@ -25,9 +15,7 @@ fn shredder(board: &Board) -> String {
     board.to_fen(FenStyle::Shredder)
 }
 
-/// Walk `plies` random game moves from `fen`, returning the moves as UCI
-/// strings spelled for `chess960`, the keys of every position left behind,
-/// and the final board.
+/// As UCI strings spelled for `chess960`, with the keys of every position left behind.
 fn walk(fen: &str, seed: u64, plies: usize, chess960: bool) -> (Vec<String>, Vec<u64>, Board) {
     let mut board = Board::from_fen(fen).expect("walk seed parses");
     let mut rng = Rng::new(seed);
@@ -161,8 +149,7 @@ fn position_replaces_rather_than_appends() {
     );
 }
 
-/// A move that is not legal -- or not a move at all -- stops the replay at
-/// the last position reached. Nothing panics, and the session goes on.
+/// Nothing panics, and the session goes on.
 #[test]
 fn an_illegal_move_stops_the_replay_without_ending_the_session() {
     for (line, want_history) in [
@@ -204,8 +191,7 @@ fn a_bad_fen_leaves_the_previous_position_in_place() {
 // Castling: both spellings, both option values
 // ---------------------------------------------------------------------------
 
-/// After `line`, the session's board equals `fen` after `castle` -- found in
-/// the legal list by its king-takes-rook spelling -- has been played.
+/// The castle found in the legal list by its king-takes-rook spelling.
 fn assert_castles(chess960: bool, fen: &str, castle_ktr: &str, line_moves: &str) {
     let mut want = Board::from_fen(fen).expect("castling fen parses");
     let legal = generate_legal(&want);
@@ -323,12 +309,8 @@ fn setoption_uci_chess960_is_read_case_insensitively_and_persists() {
 // ---------------------------------------------------------------------------
 // State after bad input: defined, observable, and never half-applied
 // ---------------------------------------------------------------------------
-//
-// The failure being guarded against is a half-applied position -- a board
-// and a history that disagree. After an illegal move the board is exactly
-// where the replay stopped and the history is exactly the moves applied;
-// after a malformed FEN nothing has changed at all. In both cases the next
-// `go` is legal in the position the board shows.
+// After an illegal move the board and history stop exactly where the replay did; after a malformed
+// FEN nothing changes. Either way the next `go` is legal in the position the board shows.
 
 use std::sync::atomic::AtomicBool;
 
@@ -336,8 +318,7 @@ use cadence_core::parse_uci;
 use cadence_engine::position::Position;
 use cadence_engine::search::Limits;
 
-/// The position reached by replaying `moves` from `fen` with `play`, built
-/// independently of the handler.
+/// Built independently of the handler.
 fn replayed(fen: &str, moves: &[&str]) -> Board {
     let mut board = Board::from_fen(fen).expect("fen parses");
     for m in moves {
@@ -365,8 +346,7 @@ fn assert_same_position(got: &Board, want: &Board, context: &str) {
     );
 }
 
-/// The search, run on a duplicate of the session's board, returns a move
-/// legal in the position the board shows.
+/// On a duplicate of the session's board.
 fn assert_go_is_legal_here(s: &Session, context: &str) {
     let mut board = Position::new(s.board().duplicate());
     let stop = AtomicBool::new(false);
