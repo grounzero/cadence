@@ -1024,9 +1024,8 @@ impl<'a> Search<'a> {
     }
 
     /// Reverse futility at one node: where the static evaluation stands
-    /// [`reverse_futility_margin`] above beta, the node is returned at the bound its own
-    /// arithmetic established, without generating a move. `Some` is that bound; `None` means
-    /// search the node.
+    /// [`reverse_futility_margin`] above beta, the node is returned at beta without generating
+    /// a move. `Some` is beta; `None` means search the node.
     fn reverse_futility(
         &mut self,
         board: &Board,

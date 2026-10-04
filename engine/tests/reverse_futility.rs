@@ -222,32 +222,23 @@ fn the_margin_is_the_documented_margin() {
     }
 }
 
-/// What comes back is the quantity the condition established, and it is at
-/// or above beta whenever anything comes back at all.
-///
-/// Two properties in one sweep, and they fail differently. Returning the
-/// evaluation instead of the evaluation less the margin passes the second
-/// and fails the first, which is the mistake worth gating: it would claim
-/// back the whole margin the rule discounted in order to fire.
+/// A cut returns `beta` itself, and it fires exactly where the evaluation less the margin
+/// still reaches `beta`. Returning either evaluation fails the sweep, and so does a strict
+/// comparison, since the sweep lands on the threshold exactly.
 #[test]
-fn the_bound_is_the_quantity_the_condition_established() {
+fn a_cut_returns_beta_where_the_margin_clears_it() {
     let mut fired = 0;
     for depth in 1..8 {
         for eval in [-2_000, -150, 0, 150, 450, 1_000, 5_000] {
             for beta in [-1_000, -150, 0, 150, 900] {
-                let Some(bound) = reverse_futile(DEFAULT, Some(eval), depth, beta) else {
-                    continue;
-                };
+                let clears = eval - reverse_futility_margin(DEFAULT, depth) >= beta;
+                let cut = reverse_futile(DEFAULT, Some(eval), depth, beta);
                 assert_eq!(
-                    bound,
-                    eval - reverse_futility_margin(DEFAULT, depth),
+                    cut,
+                    clears.then_some(beta),
                     "depth {depth}, eval {eval}, beta {beta}"
                 );
-                assert!(
-                    bound >= beta,
-                    "depth {depth}, eval {eval}: {bound} came back below beta {beta}"
-                );
-                fired += 1;
+                fired += usize::from(clears);
             }
         }
     }
