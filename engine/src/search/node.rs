@@ -108,8 +108,8 @@ impl Search<'_> {
             return score;
         }
 
-        // Below the null move, which is ADR-0008's order: this is the one preamble rule that
-        // trusts a reduced search of a real move rather than a static reading or a pass.
+        // Last in the preamble: the static readings run first and the null move's pass after
+        // them, and this is the one rule that trusts a reduced search of a real move.
         if let Some(score) = self.probcut(board, depth, ply, alpha, beta) {
             return score;
         }

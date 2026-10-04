@@ -212,14 +212,10 @@ fn the_spsa_subcommand_refuses_arguments() {
     assert!(out.is_empty(), "printed a block anyway: {out:?}");
 }
 
-/// **A float's bounds live in the block and nowhere else**, which is the half of FINDINGS F116
-/// that can be gated here. A `type string` declaration carries no minimum and no maximum, so the
-/// drift gate above has nothing to compare for a float, and the only place a reader can see the
-/// range is the line `cadence spsa` prints.
-///
-/// What this cannot gate is a block edited by hand after it is printed: the engine clamps such a
-/// value in silence, and nothing in this tree sees the form. That half is a creation step, and
-/// F116 carries it.
+/// A float's bounds live in the block `cadence spsa` prints and nowhere else: its `type string`
+/// declaration carries no minimum or maximum, so the drift gate above has nothing to compare. A
+/// block edited by hand after it is printed is clamped by the engine in silence, and nothing in
+/// this tree can see that.
 #[test]
 fn a_floats_bounds_are_in_the_block_because_its_declaration_has_none() {
     for p in PARAMS.iter().filter(|p| p.kind == Kind::Float) {
