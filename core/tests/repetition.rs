@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Repetition detection: twofold inside the search tree, threefold against
-//! the game history, bounded by the null-move counter.
-//!
-//! The positions are kings alone, because every king move is reversible and
-//! a king can triangulate (e1-d1-d2-e1: three moves, back where it started),
-//! which is what makes a line with an odd number of real moves reach the
-//! same placement -- the shape a null move needs in order to produce a false
-//! repetition, and therefore the shape that shows the bound working.
-//!
-//! "Before the root" is built with `play`, as the UCI `position` handler
-//! builds it; "inside the tree" with `make_move` and `make_null_move`.
+//! Kings alone, because a king can triangulate: an odd number of real moves reaching the same
+//! placement is the shape a null move needs for a false repetition. Before the root is built with
+//! `play`, as `position` builds it; inside the tree with `make_move` and `make_null_move`.
 
 mod support;
 
@@ -146,9 +138,7 @@ fn a_different_side_to_move_is_a_different_position() {
 // Threefold against the history
 // ---------------------------------------------------------------------------
 
-/// Two occurrences before the root and one inside the tree: three in all,
-/// and the scan has to cross from the state stack into the history to see
-/// it. This is the case a scan bounded at the root cannot detect.
+/// The scan must cross from the state stack into the history; a scan bounded at the root misses it.
 #[test]
 fn two_occurrences_before_the_root_and_one_in_the_tree_is_threefold() {
     // history = [P0, A, B, C, P0]; the root is A (Ke2, Black to move).
@@ -167,9 +157,7 @@ fn two_occurrences_before_the_root_and_one_in_the_tree_is_threefold() {
     );
 }
 
-/// One occurrence before the root is only a twofold, which is not a draw.
-/// The second occurrence inside the tree then makes it one -- by the in-tree
-/// rule, which needs nothing from the history.
+/// The second occurrence inside the tree then makes it one, by the in-tree rule.
 #[test]
 fn one_occurrence_before_the_root_is_not_yet_a_repetition() {
     // history = [P0]; the root is A.
@@ -201,11 +189,8 @@ fn the_root_itself_can_be_the_third_occurrence() {
 // The null-move bound
 // ---------------------------------------------------------------------------
 
-/// The same two occurrences before the root as above, reached inside the
-/// tree through a null move: NOT a repetition. A null move lets one side
-/// move twice running, so the line Kd8, Ke1, Kd7, (null), Ke8 lands on P0's
-/// placement with White to move after five plies -- the keys agree, and
-/// nothing about the game does.
+/// A null move lets one side move twice, so Kd8, Ke1, Kd7, null, Ke8 lands on P0's placement with
+/// White to move: the keys agree and nothing about the game does.
 #[test]
 fn occurrences_separated_by_a_null_move_are_not_a_repetition() {
     let mut board = after("e1e2 e8e7 e2e1 e7e8 e1e2");
@@ -219,11 +204,8 @@ fn occurrences_separated_by_a_null_move_are_not_a_repetition() {
     );
 }
 
-/// In-tree twofold across a null move: the king triangulates on one side
-/// of the null and not on the other, returning to the root's placement and
-/// side to move in six plies. Without the bound the scan sees the root at
-/// distance six and calls it a repetition; with it, the scan stops at the
-/// null move.
+/// Without the bound the scan sees the root at distance six; with it, the scan stops at the null
+/// move.
 #[test]
 fn a_return_to_the_root_across_a_null_move_is_not_a_repetition() {
     let mut board = Board::from_fen(P0).expect("P0 parses");
@@ -259,16 +241,9 @@ fn unmaking_the_null_move_restores_the_scan() {
 // Through the walk: no false positives
 // ---------------------------------------------------------------------------
 
-/// Along random games from the corpus positions, `is_repetition` agrees with
-/// a literal count over the full key sequence: true iff the current key
-/// occurs at or after the root among the earlier keys, or at least twice
-/// before the root -- restricted to the reversible tail. The walk makes
-/// no null moves, so the counter never binds.
-///
-/// Random moves almost never repeat: a return needs both sides to undo, and
-/// a uniform walk drifts. So three times in four a side plays the reverse
-/// of its own last move when that is legal, and both sides oscillate. The
-/// coverage is asserted, per branch, not assumed.
+/// A literal count over the full key sequence, restricted to the reversible tail; no null moves, so
+/// the counter never binds. Each side reverses its last move three times in four, because a uniform
+/// walk drifts and almost never repeats.
 #[test]
 fn the_scan_agrees_with_a_literal_count_along_random_games() {
     let mut rng = support::generative::Rng::new(0x5EED);

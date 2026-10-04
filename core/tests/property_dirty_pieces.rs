@@ -1,33 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `DirtyPieces` verified in feature space.
-//!
-//! This test closes a gap that otherwise surfaces only when a network fails
-//! to train. `make_move` returns a
-//! `DirtyPieces`; perft ignores it; the stores that build it are
-//! dead-store-eliminable once `make_move` inlines. So it can be **entirely
-//! unwritten**, or written wrongly, and every node count in the corpus still
-//! verifies. Nothing else in this repository reads it until an accumulator
-//! exists, and nothing can until there is a network for it to feed.
-//!
-//! Verified in feature space rather than by mailbox diff, because the mailbox
-//! is what `make_move` already maintains and comparing a thing to itself
-//! proves nothing. The 768-dimensional occupancy vector is what the network
-//! actually consumes, and the delta has to be correct *in that space*.
-//!
-//! Three assertions, and the second is the one that catches DFRC castling:
-//!
-//! 1. Applying the delta (**all `from` subtractions, then all `to`
-//!    additions**) to the pre-move vector yields the post-move vector.
-//! 2. No intermediate value leaves `{0, 1}`. A naive replay that applies each
-//!    entry completely, subtract-then-add per piece, puts a piece onto a
-//!    square a later entry is about to vacate: against a mailbox that
-//!    silently clobbers, against this vector it produces a `2` or a `-1`.
-//!    28.7% of DFRC castles move only one of the two pieces, so this is not a
-//!    corner case.
-//! 3. The inverse delta restores the pre-move vector.
-//!
-//! Both perspectives, because the flip is half of what `feature_index` does.
+//! Perft ignores `DirtyPieces`, so it can be unwritten or wrong with every node count still green.
+//! Checked in feature space, where a per-piece replay onto a square another entry vacates gives a 2
+//! or a -1: 28.7% of DFRC castles move only one piece.
 
 mod support;
 
@@ -141,9 +116,7 @@ fn dirty_pieces_reproduce_the_feature_space_delta() {
     }
 }
 
-/// A null move must produce an empty delta, and it is the **only** move that
-/// may: castling where neither piece moves is unreachable, proved
-/// exhaustively over all 960 arrays.
+/// Castling where neither piece moves is unreachable, proved over all 960 arrays.
 #[test]
 fn only_a_null_move_produces_an_empty_delta() {
     let seeds = generate::walk_seeds();

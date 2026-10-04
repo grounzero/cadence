@@ -1,26 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `magic` and `attacks`.
-//!
-//! **Exhaustive, not sampled.** For every square, every occupancy subset of
-//! the slider's relevant mask is looked up and compared with a naive
-//! ray-walk. That is 64 × 4,096 rook lookups and 64 × 512 bishop lookups,
-//! and it is the whole domain of a magic table: a magic that collides on one
-//! subset is wrong for one specific occupancy pattern, which random sampling
-//! finds late or never and an exhaustive walk finds now.
-//!
-//! The oracle computes its own relevant mask. If it read the crate's mask and
-//! the crate's mask were missing a square, the subsets enumerated would never
-//! set that square and the collision it causes would go untested. Squares
-//! outside the mask are additionally filled at random on top of each subset,
-//! because a lookup must ignore them and the table cannot know that unless
-//! the mask is right.
-//!
-//! The oracle is `(file, rank)` stepping in plain integers, sharing nothing
-//! with the shifts in `bitboard` or the tables in `attacks`.
-//!
-//! `BETWEEN` and `RAY` are checked over all 4,096 pairs against the naive
-//! open segment and the naive full line, plus symmetry.
+//! Exhaustive: a magic that collides on one occupancy is found now, not late or never by sampling.
+//! The oracle computes its own relevant mask, so a square missing from the crate's is still
+//! enumerated, and squares outside the mask get noise the lookup must ignore.
 
 use cadence_core::attacks;
 use cadence_core::bitboard::Bitboard;
@@ -63,7 +45,7 @@ fn at(f: i8, r: i8) -> Option<u64> {
         .then(|| 1u64 << (u8::try_from(r * 8 + f).expect("in range")))
 }
 
-/// Walk each direction until the edge, including the first occupied square.
+/// The first occupied square included.
 fn walk(sq: Square, occ: u64, dirs: &[(i8, i8)]) -> u64 {
     let (f0, r0) = coords(sq);
     let mut out = 0u64;
@@ -89,8 +71,7 @@ fn leaps(sq: Square, deltas: &[(i8, i8)]) -> u64 {
         .fold(0, |acc, bit| acc | bit)
 }
 
-/// The relevant-occupancy mask: the empty-board rays with the edge squares
-/// removed, because a blocker on the last square of a ray changes nothing.
+/// Edge squares dropped: a blocker there changes nothing.
 fn relevant_mask(sq: Square, dirs: &[(i8, i8)]) -> u64 {
     let (f0, r0) = coords(sq);
     let mut out = 0u64;
@@ -121,7 +102,6 @@ fn subsets(mask: u64) -> Vec<u64> {
     out
 }
 
-/// A cheap deterministic generator for the noise outside the mask.
 fn splitmix(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
@@ -159,9 +139,7 @@ fn check_slider(
                 Bitboard(occ),
                 Bitboard(want)
             );
-            // Squares outside the mask must not matter. Fill them at random
-            // and the answer must not move; a mask missing a square would
-            // fail here for the occupancy that sets it.
+            // A mask missing a square fails here for the occupancy that sets it.
             let noise = splitmix(&mut rng) & !mask;
             let noisy = occ | noise;
             let want_noisy = walk(sq, noisy, dirs);
@@ -217,9 +195,7 @@ fn queen_attacks_are_the_union_of_rook_and_bishop() {
     }
 }
 
-/// The empty-board totals are a fixed property of the geometry: 896 rook
-/// squares (14 per square) and 560 bishop squares. A wrong table that is
-/// internally consistent still has to match these.
+/// A wrong table that is internally consistent still has to match these.
 #[test]
 fn empty_board_slider_totals_match_the_geometry() {
     let rook: u32 = Square::all()

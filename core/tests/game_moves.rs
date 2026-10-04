@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Game moves, as opposed to search moves, and position duplication.
-//!
-//! `Board` keeps two key sequences: the search stack, indexed by ply and
-//! bounded by `MAX_PLY`, and the game history, which grows only on real game
-//! moves and is not bounded by anything. `make_move` pushes the
-//! former. `play` is the operation that advances the latter: it is what the
-//! UCI `position` handler calls for each move in a `moves` list, and it is the
-//! only way a key ever reaches `game_history()`.
-//!
-//! `duplicate` is the named, documented copy of a position (the search
-//! thread's own `Board`, made once per `go`), and it has to carry everything:
-//! the placement, the state stack at its current ply, and the history.
+//! `play` is the only way a key reaches `game_history()`, which no `MAX_PLY` bounds. `duplicate`
+//! must carry the placement, the state stack at its ply, and the history.
 
 mod support;
 
@@ -30,15 +20,8 @@ fn random_move(board: &Board, rng: &mut Rng) -> Option<Move> {
     }
 }
 
-/// Play `plies` random game moves with `play`, and the same moves with
-/// `make_move` on a second board that is never unmade. At every step the
-/// two boards must agree on the whole position, the played board must sit
-/// at ply zero, and its history must be exactly the keys of the positions
-/// it has left behind, oldest first.
-///
-/// The `make_move` board is the search stack and stops at `MAX_PLY`; the
-/// played board does not, and past that point it is checked against a key
-/// recomputed from the placement instead.
+/// The played board must stay at ply zero with a history of exactly the keys it left, oldest first.
+/// Past `MAX_PLY` it is checked against a key recomputed from the placement instead.
 fn walk_and_check(fen: &str, seed: u64, plies: usize) -> usize {
     let mut played = Board::from_fen(fen).expect("fen parses");
     let mut made = Board::from_fen(fen).expect("fen parses");
@@ -84,9 +67,7 @@ fn play_advances_the_game_history_and_keeps_the_root_at_ply_zero() {
     }
 }
 
-/// The search stack is `MAX_PLY + 1` deep. A game is not. A walk of more
-/// than `MAX_PLY` game moves must not run out of anything: a history bounded
-/// by the stack is exactly the bug the two-sequence split exists to prevent.
+/// A history bounded by the stack is the bug the two-sequence split exists to prevent.
 #[test]
 fn game_history_is_not_bounded_by_max_ply() {
     let target = MAX_PLY + 60;
@@ -162,8 +143,7 @@ fn duplicate_is_equal_and_independent() {
     assert_eq!(fingerprint(&copy), before);
 }
 
-/// The copy carries the whole state stack, not just the current slot: a
-/// duplicate taken mid-line can unmake its way back to the root.
+/// So a duplicate taken mid-line can unmake back to the root.
 #[test]
 fn duplicate_carries_the_search_stack() {
     let mut board = Board::from_fen(START_FEN).expect("startpos parses");

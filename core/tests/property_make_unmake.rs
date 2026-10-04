@@ -1,24 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `unmake_move` restores everything, and the incremental key is real.
-//!
-//! Two properties in one walk, and only one of them has teeth.
-//!
-//! "`unmake` restores the key" is nearly tautological under copy-make: the key
-//! is part of the per-ply snapshot being restored, so it comes back whether or
-//! not it was ever correct. The half that bites is the second assertion:
-//! the incrementally maintained key equalling a from-scratch recomputation at
-//! **every node**, which is only a real invariant because all board mutation
-//! goes through one set of helpers that update the bitboards, the mailbox and
-//! the key together. If the key can only change where the board changes, then
-//! a disagreement means the board changed somewhere it should not have.
-//!
-//! The mailbox and the twelve piece bitboards are fingerprinted separately for
-//! the same reason: the failure being hunted is the two disagreeing, and a
-//! fingerprint derived from one of them cannot see it.
-//!
-//! Nothing in perft finds either of these. Perft counts leaves; a board that
-//! is corrupt and then correctly restored counts the same leaves.
+//! Unmake restoring the key is nearly tautological under copy-make; the key matching a
+//! recomputation at every node bites, because all mutation goes through helpers that update board
+//! and key together. Perft sees neither: a board corrupted and then correctly restored counts the
+//! same leaves.
 
 mod support;
 
@@ -46,8 +31,7 @@ fn unmake_restores_the_position_and_the_key_is_recomputable() {
         let mut line: Vec<String> = Vec::new();
 
         for ply in 0..MAX_PLIES_PER_WALK {
-            // The half with teeth, asserted at every node rather than only at
-            // the ends of the walk.
+            // Asserted at every node, not only at the walk's ends.
             assert_eq!(
                 board.key(),
                 board.recompute_key(),

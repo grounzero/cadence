@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `mv`.
-//!
-//! Encode/decode over all 4,096 from/to pairs × every constructor, plus the
-//! truth table for the flag predicates. The round trip alone would pass a
-//! flag numbering in which castling reads as a capture, and "`is_capture` is
-//! false for castling" is the most load-bearing property of the numbering:
-//! SEE, MVV-LVA and qsearch all read that bit. So the predicates are checked
-//! per constructor, not inferred from the round trip.
-//!
-//! `castle_side` is derived from the two files, never stored, and is checked
-//! for every same-rank pair.
-//!
-//! `MoveList` is filled to its full capacity of 256, because a `u8` length
-//! wraps to zero there and reports an empty list; the corpus's 218-move
-//! position cannot reach that, which is why it is checked here.
+//! The round trip alone would pass a numbering in which castling reads as a capture, so the
+//! predicates are checked per constructor. `MoveList` is filled to 256, where a `u8` length would
+//! wrap to zero, which the corpus's 218-move position cannot reach.
 
 use cadence_core::castling::CastleSide;
 use cadence_core::mv::{MAX_MOVES, Move, MoveList, parse_uci, to_uci};
@@ -47,7 +35,6 @@ impl Kind {
     }
 }
 
-/// Every constructor, paired with what it claims to build.
 #[derive(Clone, Copy, Debug)]
 struct Shape {
     name: &'static str,
@@ -157,9 +144,7 @@ fn shapes() -> Vec<Shape> {
     out
 }
 
-/// Every from/to pair. `from == to` is included: the encoding must round-trip
-/// it even though no real move has it, because `from_bits` accepts any
-/// pattern.
+/// `from == to` included: `from_bits` accepts any pattern.
 fn all_pairs() -> impl Iterator<Item = (Square, Square)> {
     Square::all().flat_map(|f| Square::all().map(move |t| (f, t)))
 }
@@ -212,9 +197,7 @@ fn every_constructor_round_trips_over_all_4096_pairs() {
     assert_eq!(seen.len(), 13 * 4096);
 }
 
-/// `from_bits` is total over `u16`, and `to_bits` inverts it, the reserved
-/// flag values included, because the transposition table stores whatever it
-/// was given.
+/// Reserved flags included, because the table stores whatever it was given.
 #[test]
 fn from_bits_is_total_and_to_bits_inverts_it() {
     for bits in 0..=u16::MAX {
@@ -266,7 +249,7 @@ fn flag_predicates_match_the_constructor_for_every_shape() {
     }
 }
 
-/// The three named properties, stated on their own so a failure names them.
+/// Stated on their own so a failure names them.
 #[test]
 fn castling_is_not_a_capture_and_en_passant_is() {
     let castle = Move::new_castle(Square::E1, Square::H1);
@@ -456,10 +439,8 @@ fn debug_names_the_squares_and_the_flag() {
     );
 }
 
-/// The GUI-facing spelling needs the legal move list. Three hand-built lists
-/// cover the three branches: an ordinary castle spells as king-to-destination
-/// unless the king does not move at all, or a quiet king move to that same
-/// destination is also legal.
+/// An ordinary castle spells as king-to-destination unless the king does not move or a quiet king
+/// move to that destination is also legal.
 #[test]
 fn standard_spelling_of_castling_depends_on_the_position() {
     // Standard array: e1h1 castle, no other king move to g1. Non-960 says

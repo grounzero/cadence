@@ -1,25 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `fen`: the parser checked against the placement field, not
-//! against its own emitter.
-//!
-//! `from_fen(to_fen(x)) == x` is a self-consistency check. A parser that
-//! consistently mis-assigns the castling rook files round-trips perfectly and
-//! fails three steps later as "DFRC perft is wrong". So this gate reads the
-//! placement field itself (its own eight-rank expansion, nothing from the
-//! crate) and asserts what the parsed layout must agree with:
-//!
-//! - each `rook_from[i]` holds a rook of the right colour in the placement;
-//! - `king_from[c]` is the king's square, strictly between the two rooks;
-//! - `rights.has(c, s)` implies `rook_from[ci(c, s)]` is set, the invariant
-//!   `Board::can_castle`'s square lookups depend on;
-//! - both notations of the same position parse to the same rights, layout
-//!   and key;
-//! - a right for a rook that is not there is `FenError::Castling` at parse
-//!   time, not a panic in move generation.
-//!
-//! The round trip stays (it catches emission bugs) and lives in
-//! `property_fen_roundtrip`.
+//! A round trip passes a parser that consistently mis-assigns the castling rook files, so this
+//! reads the placement field itself and checks the parsed layout against it. A right for a missing
+//! rook must be `FenError::Castling` at parse time, not a panic in move generation.
 
 mod support;
 
@@ -29,8 +12,7 @@ use cadence_core::position::Board;
 use cadence_core::types::{Colour, File, OptSquare, Piece, PieceType, Rank, Square};
 use support::generative as generate;
 
-/// The placement field expanded into a mailbox by this test, independently
-/// of the crate's parser.
+/// Independently of the crate's parser.
 fn placement(fen: &str) -> [Option<Piece>; 64] {
     let field = fen.split_whitespace().next().expect("placement field");
     let mut out = [None; 64];
@@ -66,8 +48,7 @@ fn as_xfen(shredder: &str) -> String {
     fields.join(" ")
 }
 
-/// Everything this gate asserts about one parsed position whose castling field
-/// grants all four rights.
+/// For a castling field granting all four rights.
 fn assert_layout_matches_placement(label: &str, fen: &str) {
     let board =
         Board::from_fen(fen).unwrap_or_else(|e| panic!("{label}: rejected ({e:?})\n  {fen}"));
@@ -136,9 +117,7 @@ fn every_start_array_parses_to_rooks_that_are_actually_there() {
     }
 }
 
-/// `KQkq` and the Shredder file letters describe the same rights for every
-/// start array, and the parsed positions are identical: same rights, same
-/// layout, same key, same fingerprint.
+/// Same rights, layout, key and fingerprint.
 #[test]
 fn both_notations_parse_a_start_array_identically() {
     for (n, fen) in generate::all_960_start_fens().into_iter().enumerate() {
@@ -165,9 +144,7 @@ fn both_notations_parse_a_start_array_identically() {
             generate::fingerprint(&xfen),
             "array {n}: fingerprint"
         );
-        // And the emitters produce the strings the two notations require:
-        // Shredder is the file letters, X-FEN is KQkq for a start array
-        // (no rook stands outside a castling rook).
+        // X-FEN is `KQkq` for a start array: no rook stands outside a castling rook.
         assert_eq!(
             shredder.to_fen(FenStyle::Shredder),
             fen,
@@ -181,8 +158,7 @@ fn both_notations_parse_a_start_array_identically() {
     }
 }
 
-/// The corpus section 7 rows: the two spellings are the same position, and the
-/// fallback row proves X-FEN names the file only where it must.
+/// The fallback row proves X-FEN names the file only where it must.
 #[test]
 fn corpus_notation_rows_parse_to_the_same_position() {
     for f in support::fen_notations() {
@@ -207,8 +183,6 @@ fn corpus_notation_rows_parse_to_the_same_position() {
 // The rights ⇒ rook_from invariant, and rejection
 // ---------------------------------------------------------------------------
 
-/// `rights.has(c, s)` implies `rook_from[ci(c, s)].is_some()`, over every
-/// position the corpus names.
 #[test]
 fn a_held_right_always_has_a_rook_square() {
     let mut fens: Vec<String> = support::standard_positions()

@@ -1,25 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Self-checks on the generative machinery.
-//!
-//! These pass today. They assert nothing about the engine: they assert that
-//! the position generator the property tests rely on produces the positions it
-//! claims to, which is what makes those tests' failures meaningful rather than
-//! an artefact of a broken generator.
-//!
-//! The same argument as the corpus integrity tests, applied to generated data
-//! instead of read data.
+//! These make the property tests' failures meaningful rather than an artefact of a broken
+//! generator.
 
 mod support;
 
 use support::generative as generate;
 
-/// The Scharnagl decoder against every index the corpus names (twenty arrays,
-/// two indices each, including 0, 518 and 959).
-///
-/// This is the only external check available on the decoder. If it agrees with
-/// the corpus on forty independently computed back ranks including both
-/// extremes and the standard array, it is right.
+/// The only external check on the decoder: forty back ranks including 0, 518 and 959.
 #[test]
 fn scharnagl_matches_the_corpus() {
     for a in support::dfrc_arrays() {
@@ -32,11 +20,8 @@ fn scharnagl_matches_the_corpus() {
     }
 }
 
-/// 960 distinct arrays, each with the king strictly between its rooks.
-///
-/// The betweenness is not decoration: `castle_side` is *derived* from
-/// `rook_file > king_file` rather than stored, and that derivation is only
-/// sound because it holds in all 960.
+/// The betweenness is load-bearing: `castle_side` is derived from `rook_file > king_file`, sound
+/// only because it holds in all 960.
 #[test]
 fn all_960_arrays_are_distinct_and_well_formed() {
     let fens = generate::all_960_start_fens();
@@ -88,8 +73,7 @@ fn all_960_arrays_are_distinct_and_well_formed() {
     }
 }
 
-/// The RNG is deterministic and seed-separated, so a failing property test can
-/// be re-run on the seed that failed.
+/// So a failing property test can be re-run on its seed.
 #[test]
 fn rng_is_deterministic_and_seed_separated() {
     let a: Vec<u64> = (0..8).map(|_| generate::Rng::new(1).next_u64()).collect();

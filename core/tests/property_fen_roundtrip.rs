@@ -1,21 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! FEN round-trip, in both notations.
-//!
-//! `from_fen(to_fen(p)) == p` for every position the corpus names and all 960
-//! start arrays, in X-FEN and in Shredder.
-//!
-//! Round-tripping is a weak property on its own (a parser that consistently
-//! mis-assigns the castling rook files round-trips perfectly), which is why
-//! the build order gates FEN parsing against the placement field as well.
-//! What this catches is the other half: an emitter that loses information.
-//! Emitting `KQkq` for a DFRC array whose rooks are not on the a- and h-files
-//! throws the rook squares away, and the position that comes back is a
-//! different one with a legal-looking FEN.
-//!
-//! The comparison is on the full fingerprint, not on the FEN string, so a
-//! round trip that happens to produce the same text from a different board
-//! does not pass.
+//! What a round trip catches is an emitter that loses information, as `KQkq` for a DFRC array with
+//! rooks off the a- and h-files does. Compared on the full fingerprint, so the same text from a
+//! different board does not pass.
 
 mod support;
 
