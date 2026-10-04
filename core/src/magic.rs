@@ -215,7 +215,6 @@ static BISHOP_TABLE: [u64; BISHOP_TABLE_SIZE] = build_table(&BISHOP_MAGICS, &BIS
 // Lookups
 // ---------------------------------------------------------------------------
 
-/// Squares a rook on `sq` attacks under `occ`, the first blocker in each direction included.
 #[inline]
 #[must_use]
 pub(crate) fn rook_attacks(sq: Square, occ: Bitboard) -> Bitboard {
@@ -223,7 +222,6 @@ pub(crate) fn rook_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     Bitboard(ROOK_TABLE[m.offset + slider_hash(occ.0, m.mask, m.multiplier, m.shift)])
 }
 
-/// Squares a bishop on `sq` attacks under `occ`, the first blocker in each direction included.
 #[inline]
 #[must_use]
 pub(crate) fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {

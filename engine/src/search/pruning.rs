@@ -77,10 +77,7 @@ pub fn lmp_index(tunables: &Tunables, in_check: bool, depth: u32, moves: usize) 
     (!in_check && depth <= LMP_DEPTH && moves > count).then_some(count)
 }
 
-/// Whether the move at `index` of a node [`lmp_index`] admitted is a candidate to be given up
-/// without being searched: never a noisy move, never a killer, and never inside the count. The
-/// check exemption is the caller's, because it is the one question here that costs anything,
-/// which is [`futility_skips`]'s division of the same work.
+/// The check exemption is the caller's.
 #[must_use]
 pub fn lmp_skips(from: Option<usize>, m: Move, killers: [Move; 2], index: usize) -> bool {
     from.is_some_and(|count| index >= count) && !m.is_noisy() && m != killers[0] && m != killers[1]
@@ -121,9 +118,7 @@ pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
         && eval.saturating_add(futility_margin(depth)) <= alpha
 }
 
-/// Whether the move at `index` of a node [`futile_node`] admitted is a candidate to be skipped
-/// without being searched: never the node's first move, and never a noisy one. The check
-/// exemption is the caller's, because it is the one question here that costs anything.
+/// The check exemption is the caller's.
 #[must_use]
 pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
     futile && index > 0 && !m.is_noisy()
@@ -138,7 +133,7 @@ pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 150;
 /// without being searched: the reverse futility margin `tunables` holds, per ply of `depth`.
 #[must_use]
 pub fn reverse_futility_margin(tunables: &Tunables, depth: u32) -> Score {
-    // Saturating, and total for that reason, like [`futility_margin`].
+    // Saturating, for [`futility_margin`]'s reason.
     let per_ply = tunables.get(Tunable::ReverseFutilityMargin);
     per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
@@ -188,9 +183,8 @@ pub fn probcut_bound(eval: Option<Score>, depth: u32, alpha: Score, beta: Score)
 }
 
 impl Search<'_> {
-    /// Whether the move at `index` of a node the margin admitted is skipped without being
-    /// searched. `gives_check` is asked last, because it is the only expensive question here
-    /// and only a move that would otherwise be skipped has to answer it.
+    /// `gives_check` last: it is the only expensive question, and only a move about to be skipped
+    /// has to answer it.
     pub(super) fn futile(&mut self, board: &Board, futile: bool, m: Move, index: usize) -> bool {
         if !futility_skips(futile, m, index) {
             return false;
@@ -203,9 +197,7 @@ impl Search<'_> {
         true
     }
 
-    /// Whether the move at `index` of a node [`lmp_index`] admitted is given up without being
-    /// searched. `gives_check` is asked last, for [`Search::futile`]'s reason, and it is the
-    /// whole cost of the rule at a move it does give up.
+    /// `gives_check` last, as in [`Search::futile`].
     pub(super) fn given_up(
         &mut self,
         board: &Board,
@@ -225,9 +217,6 @@ impl Search<'_> {
         true
     }
 
-    /// Reverse futility at one node: where the static evaluation stands
-    /// [`reverse_futility_margin`] above beta, the node is returned at beta without generating
-    /// a move. `Some` is beta; `None` means search the node.
     pub(super) fn reverse_futility(
         &mut self,
         board: &Board,

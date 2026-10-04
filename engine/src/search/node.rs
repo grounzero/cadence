@@ -164,8 +164,6 @@ impl Search<'_> {
             let gives_check = board.in_check();
             let ext = extension(gives_check, ply + 1, self.root_depth);
             let child = depth - 1 + ext;
-            // The first move gets the window this node was given and every move behind it the
-            // narrower question. The module doc has the window, what it buys and what it costs.
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
