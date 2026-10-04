@@ -115,7 +115,6 @@ fn balance(b: &Board, c: Colour) -> i32 {
     total
 }
 
-/// The side to move's legal captures.
 fn captures(b: &Board) -> Vec<Move> {
     generate_legal(b)
         .iter()
@@ -123,7 +122,6 @@ fn captures(b: &Board) -> Vec<Move> {
         .collect()
 }
 
-/// The side to move's legal captures of a piece of type `pt`.
 fn captures_of(b: &Board, pt: PieceType) -> Vec<Move> {
     captures(b)
         .into_iter()

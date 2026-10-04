@@ -18,7 +18,6 @@
 
 mod support;
 
-/// Section 1 gives six positions, each with a FEN and a run of depths from 1.
 #[test]
 fn corpus_section_1_is_six_positions_with_contiguous_depths() {
     let positions = support::standard_positions();
@@ -117,7 +116,6 @@ fn corpus_holds_the_completion_gate_values() {
     );
 }
 
-/// Section 2 is twenty arrays, each to depth 5, with distinct index pairs.
 #[test]
 fn corpus_section_2_is_twenty_distinct_arrays_to_depth_5() {
     let arrays = support::dfrc_arrays();
@@ -411,7 +409,6 @@ fn corpus_fen_notation_rows_differ_only_in_the_castling_field() {
     }
 }
 
-/// A capture can only ever remove rights, never grant them.
 #[test]
 fn corpus_rights_captures_only_remove_rights() {
     let rows = support::rights_captures();
@@ -457,7 +454,6 @@ fn corpus_ep_evasion_destination_is_outside_the_mask() {
     }
 }
 
-/// The capacity position must actually be at the bound.
 #[test]
 fn corpus_capacity_position_is_at_the_move_bound() {
     let c = support::move_capacity();

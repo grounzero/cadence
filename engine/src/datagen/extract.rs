@@ -26,7 +26,6 @@ pub const BALANCE_CAP: i32 = 9;
 /// Game plies are described in bands of this many, the last band holding everything past it.
 pub const PLY_BAND: usize = 10;
 
-/// How many ply bands there are.
 pub const PLY_BANDS: usize = 30;
 
 /// What one extraction saw, and what it kept, by region of the game.

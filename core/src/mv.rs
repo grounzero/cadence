@@ -375,7 +375,6 @@ impl MoveList {
         self.as_slice().iter().copied()
     }
 
-    /// Whether the list contains `m`.
     #[must_use]
     pub fn contains(&self, m: Move) -> bool {
         self.as_slice().contains(&m)

@@ -166,7 +166,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
         assert_eq!(board.key(), board.recompute_key(), "{ctx}: key after make");
         assert_eq!(board.state().captured, victim, "{ctx}: captured");
 
-        // Clocks.
         let irreversible = mover.piece_type() == PieceType::Pawn || m.is_capture();
         assert_eq!(
             board.halfmove_clock(),
@@ -247,7 +246,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
             v == after_mailbox,
             "{ctx}: delta does not reach the post-move mailbox"
         );
-        // Shape per move type.
         let expected_len = if m.is_castle() {
             let i = ci(us, m.castle_side());
             usize::from(layout.king_from[us.index()] != layout.king_to[i])
@@ -278,7 +276,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
         );
     }
 
-    // The null move.
     let dirty = board.make_null_move();
     assert!(dirty.is_empty(), "{label}: null move delta");
     assert_eq!(

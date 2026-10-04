@@ -113,31 +113,26 @@ impl Session {
         }
     }
 
-    /// The current position.
     #[must_use]
     pub fn board(&self) -> &Board {
         &self.board
     }
 
-    /// The `UCI_Chess960` option.
     #[must_use]
     pub fn chess960(&self) -> bool {
         self.chess960
     }
 
-    /// The `MultiPV` option.
     #[must_use]
     pub fn multipv(&self) -> usize {
         self.multipv
     }
 
-    /// The `Ponder` option.
     #[must_use]
     pub fn ponder(&self) -> bool {
         self.ponder
     }
 
-    /// The `Threads` option.
     #[must_use]
     pub fn threads(&self) -> usize {
         self.threads
@@ -149,7 +144,6 @@ impl Session {
         &self.tunables
     }
 
-    /// The transposition table this session is playing with.
     #[must_use]
     pub fn tt(&self) -> &Table {
         &self.tt

@@ -662,7 +662,6 @@ fn the_sort_is_a_permutation_of_the_list_it_was_given() {
     assert!(checked > 1000, "{checked}");
 }
 
-/// Descending rank, everywhere in the list.
 #[test]
 fn the_list_comes_out_in_descending_rank_order() {
     let mut positions = 0;

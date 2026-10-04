@@ -23,7 +23,6 @@ pub enum Colour {
 impl Colour {
     pub const ALL: [Colour; 2] = [Colour::White, Colour::Black];
 
-    /// The other side.
     #[inline]
     #[must_use]
     pub const fn flip(self) -> Colour {
@@ -287,7 +286,6 @@ impl File {
         self as usize
     }
 
-    /// Every square on this file.
     #[inline]
     #[must_use]
     pub const fn bb(self) -> Bitboard {
@@ -354,7 +352,6 @@ impl Rank {
         self as usize
     }
 
-    /// Every square on this rank.
     #[inline]
     #[must_use]
     pub const fn bb(self) -> Bitboard {

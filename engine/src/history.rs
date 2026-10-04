@@ -93,7 +93,6 @@ impl History {
         &self.rows[start..start + SPAN]
     }
 
-    /// What `side` has been getting out of `m`.
     #[must_use]
     pub fn get(&self, side: Colour, m: Move) -> i32 {
         self.rows[side.index() * SPAN + m.from_to()]

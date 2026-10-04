@@ -66,7 +66,6 @@ impl Limits {
         limits
     }
 
-    /// A fixed-depth search.
     #[must_use]
     pub fn depth(depth: u32) -> Limits {
         Limits {
@@ -75,7 +74,6 @@ impl Limits {
         }
     }
 
-    /// Search until `stop`.
     #[must_use]
     pub fn infinite() -> Limits {
         Limits {

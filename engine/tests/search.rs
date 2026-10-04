@@ -171,12 +171,10 @@ fn the_binary_gives_the_same_answer_in_two_processes() {
 // Mates
 // ---------------------------------------------------------------------------
 
-/// Whether the side to move is mated.
 fn is_mated(b: &Board) -> bool {
     b.in_check() && generate_legal(b).is_empty()
 }
 
-/// The side to move's moves that mate at once.
 fn mates_in_one(b: &mut Position) -> Vec<Move> {
     let mut out = Vec::new();
     for m in generate_legal(b).iter() {

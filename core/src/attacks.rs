@@ -107,7 +107,6 @@ pub fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     magic::bishop_attacks(sq, occ)
 }
 
-/// `rook_attacks | bishop_attacks`.
 #[inline]
 #[must_use]
 pub fn queen_attacks(sq: Square, occ: Bitboard) -> Bitboard {

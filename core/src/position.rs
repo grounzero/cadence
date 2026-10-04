@@ -208,7 +208,6 @@ impl Board {
         key
     }
 
-    /// The pawn key recomputed from the board.
     #[must_use]
     pub fn recompute_pawn_key(&self) -> u64 {
         let mut key = 0;
@@ -226,7 +225,6 @@ impl Board {
         self.stm
     }
 
-    /// Every occupied square.
     #[inline]
     #[must_use]
     pub fn occupied(&self) -> Bitboard {
@@ -246,14 +244,12 @@ impl Board {
         self.by_type[pt.index()]
     }
 
-    /// The squares held by one piece type of one colour.
     #[inline]
     #[must_use]
     pub fn pieces(&self, c: Colour, pt: PieceType) -> Bitboard {
         self.by_colour[c.index()] & self.by_type[pt.index()]
     }
 
-    /// The piece on `sq`, if any.
     #[inline]
     #[must_use]
     pub fn piece_at(&self, sq: Square) -> Option<Piece> {
@@ -282,7 +278,6 @@ impl Board {
         self.state().checkers
     }
 
-    /// Whether the side to move is in check.
     #[inline]
     #[must_use]
     pub fn in_check(&self) -> bool {

@@ -86,7 +86,6 @@ pub const SHIELD: usize = ATTACKERS + ATTACKERS_LEN;
 /// the attack table's reason.
 pub const SHIELD_LEN: usize = 5;
 
-/// How many weights the evaluation reads.
 pub const WEIGHT_COUNT: usize = SHIELD + SHIELD_LEN;
 
 /// Every number the evaluation reads, in one table a tuner can address by index. Every weight is
@@ -318,7 +317,6 @@ const fn passed_masks() -> [[Bitboard; 64]; 2] {
     out
 }
 
-/// The files beside each file.
 const ADJACENT_FILES: [Bitboard; 8] = {
     let mut out = [Bitboard(0); 8];
     let mut f = 0;

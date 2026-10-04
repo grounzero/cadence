@@ -60,7 +60,6 @@ impl Position {
         self.board.play(m);
     }
 
-    /// Take the null move back.
     #[inline]
     pub fn unmake_null_move(&mut self) {
         self.board.unmake_null_move();

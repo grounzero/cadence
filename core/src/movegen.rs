@@ -180,7 +180,6 @@ fn pawns<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
             }
         }
 
-        // Captures.
         for to in attacks::pawn_attacks(c.us, from) & c.enemy & allowed {
             if promo_rank.contains(to) {
                 for p in PromoPiece::ALL {

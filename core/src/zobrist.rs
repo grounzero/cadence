@@ -62,7 +62,6 @@ const fn build() -> Tables {
 
 static TABLES: Tables = build();
 
-/// The key for `piece` standing on `sq`.
 #[inline]
 #[must_use]
 pub fn piece(piece: Piece, sq: Square) -> u64 {

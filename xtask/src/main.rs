@@ -24,7 +24,6 @@ const HEADER: &str = "// SPDX-License-Identifier: GPL-3.0-or-later";
 /// compiled it, which check-boundary would otherwise flag).
 const SKIP_DIRS: &[&str] = &[".git", "target", "__pycache__"];
 
-/// The hooks `install-hooks` expects to find in `.githooks/`.
 const HOOKS: &[&str] = &["commit-msg", "pre-commit"];
 
 /// Concurrent copies to run at once: the `-T` an SPRT worker is started with.
@@ -142,8 +141,6 @@ fn check_headers() -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `None` if the header is correct, otherwise a one-line description of what
-/// is wrong with it.
 fn header_defect(text: &str) -> Option<String> {
     match text.lines().next() {
         Some(line) if line == HEADER => None,
@@ -219,7 +216,6 @@ fn header_defect(text: &str) -> Option<String> {
 /// One row per character, so admitting another is a row rather than a new
 /// mechanism. [`ALLOWED_IN_PLACE`] is the table.
 struct InPlace {
-    /// The character.
     c: char,
     /// Path prefixes where it is allowed. A prefix, so a directory works.
     paths: &'static [&'static str],
@@ -248,8 +244,6 @@ struct InPlace {
 /// rebuilding it would cost the argument again.
 const ALLOWED_IN_PLACE: &[InPlace] = &[];
 
-/// The characters from [`ALLOWED_IN_PLACE`] that `rel` is one of the places
-/// for.
 fn in_place_allowances(rel: &str) -> Vec<char> {
     ALLOWED_IN_PLACE
         .iter()
@@ -258,7 +252,6 @@ fn in_place_allowances(rel: &str) -> Vec<char> {
         .collect()
 }
 
-/// The entry for `c`, if it is a character allowed only in named places.
 fn in_place_entry(c: char) -> Option<&'static InPlace> {
     ALLOWED_IN_PLACE.iter().find(|entry| entry.c == c)
 }
@@ -350,7 +343,6 @@ const CITATION_RULE_FILES: &[&str] = &[".githooks/check-message-metadata"];
 /// with the file it names.
 const ROOT_DOCUMENTS: &[&str] = &["README.md", "CHANGELOG.md"];
 
-/// Whether `c` can be part of a path-shaped token.
 const fn is_path_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')
 }
@@ -372,12 +364,9 @@ fn docs_tokens(line: &str) -> Vec<&str> {
     out
 }
 
-/// Every `NAME.md` token in `line` whose NAME is entirely capitals, digits
-/// and underscores: the root-document naming convention.
 fn caps_md_tokens(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for (at, _) in line.match_indices(".md") {
-        // `.md` must end the token.
         if line[at + 3..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
             continue;
         }
@@ -385,7 +374,6 @@ fn caps_md_tokens(line: &str) -> Vec<&str> {
             .rfind(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
             .map_or(0, |i| i + c_len(&line[..at], i));
         let name = &line[name_start..at];
-        // At least two characters of all-caps name, at a word boundary.
         let bounded =
             name_start == 0 || !line[..name_start].ends_with(|c: char| is_path_char(c) && c != '/');
         if name.len() >= 2 && bounded {
@@ -395,7 +383,6 @@ fn caps_md_tokens(line: &str) -> Vec<&str> {
     out
 }
 
-/// The byte length of the character starting at `i` in `s`.
 fn c_len(s: &str, i: usize) -> usize {
     s[i..].chars().next().map_or(1, char::len_utf8)
 }
@@ -408,18 +395,13 @@ fn c_len(s: &str, i: usize) -> usize {
 /// spelling for something that is not standing in for anything. So these are
 /// named rather than quoted, and told to go rather than to be replaced.
 struct Invisible {
-    /// What to call it in the report, in place of the character itself.
     name: &'static str,
-    /// What to do with it.
     advice: &'static str,
 }
 
-/// Delete it. The advice for a character that is not standing in for
-/// anything: it has no ASCII spelling because it has no reading.
 const DELETE: &str = "nothing: delete it. It is invisible and stands in for nothing, \
                       so there is no ASCII spelling to find";
 
-/// The advice for a character that *is* standing in for a space.
 const PLAIN_SPACE: &str = "an ordinary space. This one is invisible and is not one, \
                            which is why it survived being read";
 
@@ -658,7 +640,6 @@ enum Source {
     Index,
 }
 
-/// `git` in the repository root, or `Err` with something a hook can print.
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = Command::new("git")
         .current_dir(root)
@@ -687,7 +668,6 @@ fn nul_separated(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Every path in the index.
 fn index_paths(root: &Path) -> Result<Vec<String>, String> {
     Ok(nul_separated(&git(root, &["ls-files", "--cached", "-z"])?))
 }
@@ -712,7 +692,6 @@ fn staged_changes(root: &Path) -> Result<Vec<String>, String> {
     Ok(nul_separated(&git(root, &args)?))
 }
 
-/// `(relative path, content)` for everything one run reads.
 fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     match source {
@@ -886,7 +865,6 @@ fn check_boundary(source: Source) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// One `## [label]` heading in the changelog, with its line and any date.
 struct Heading {
     line: usize,
     label: String,
@@ -911,7 +889,6 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     ))
 }
 
-/// Whether `s` has the shape `YYYY-MM-DD`.
 fn is_iso_date(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 10
@@ -924,7 +901,6 @@ fn is_iso_date(s: &str) -> bool {
         })
 }
 
-/// The `version` under `[workspace.package]` in the root manifest.
 fn workspace_version(manifest: &str) -> Option<String> {
     let mut in_section = false;
     for line in manifest.lines().map(str::trim) {
@@ -1213,7 +1189,6 @@ fn parse_nps_args(args: &[String]) -> Result<NpsArgs, String> {
     Ok(out)
 }
 
-/// One round: `copies` benches at once, retaining both divisor and contention data.
 fn run_round(binary: &Path, copies: usize) -> Result<Round, String> {
     let children: Vec<_> = (0..copies)
         .map(|_| {
@@ -1281,8 +1256,6 @@ fn round_spread_percent(round: &Round) -> f64 {
     100.0 * (round.max_nps - round.min_nps) as f64 / round.mean_nps as f64
 }
 
-/// What the table means, printed once before it. Split out of [`nps`] so
-/// that the function left behind is the measurement and its checks.
 fn print_preamble(args: &NpsArgs) {
     println!(
         "{} copies at once, {} pairs, the shape the OpenBench worker measures in:",
@@ -1301,7 +1274,6 @@ fn print_preamble(args: &NpsArgs) {
     );
 }
 
-/// One row of the table: a round's mean, min, max, spread and node count.
 #[expect(
     clippy::cast_precision_loss,
     reason = "nps is displayed, and decides nothing here"
@@ -1429,7 +1401,6 @@ fn nps(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// What a given reference would deliver against what was just measured.
 #[expect(
     clippy::cast_precision_loss,
     reason = "nps and time controls are displayed, and decide nothing here"
@@ -1671,12 +1642,6 @@ mod tests {
         }
     }
 
-    /// The seven invisibles that actually arrive in pasted prose -- the space
-    /// that does not break, the hyphen that does not print, the zero-width
-    /// space, the two joiners and the non-joiner, and the byte-order mark --
-    /// plus the bidi overrides that make a line read as something other than
-    /// what it holds, and the replacement character that means the bytes were
-    /// not UTF-8.
     #[test]
     fn every_invisible_that_actually_arrives_is_named() {
         for (c, expected) in [

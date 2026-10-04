@@ -58,7 +58,6 @@ impl CastlingRights {
         1 << ci(c, s)
     }
 
-    /// Both of `c`'s bits.
     #[inline]
     #[must_use]
     pub const fn both(c: Colour) -> u8 {
@@ -71,7 +70,6 @@ impl CastlingRights {
         self.0 & Self::bit(c, s) != 0
     }
 
-    /// Whether `c` holds either right.
     #[inline]
     #[must_use]
     pub const fn any(self, c: Colour) -> bool {

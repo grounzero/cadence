@@ -215,7 +215,6 @@ impl Table {
         })
     }
 
-    /// How many buckets there are.
     #[must_use]
     pub fn buckets(&self) -> usize {
         self.buckets.len()
@@ -269,13 +268,11 @@ impl Table {
         self.generation.store(next, Ordering::Relaxed);
     }
 
-    /// The current generation.
     #[must_use]
     pub fn generation(&self) -> u8 {
         self.generation.load(Ordering::Relaxed)
     }
 
-    /// The result stored for `key`, if there is one.
     #[must_use]
     pub fn probe(&self, key: u64) -> Option<Hit> {
         let bucket = self.bucket(key)?;

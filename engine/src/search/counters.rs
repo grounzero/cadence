@@ -15,19 +15,16 @@ use crate::score::{self, Score};
 use crate::tt::Bound;
 
 impl Search<'_> {
-    /// Nodes searched so far.
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.nodes
     }
 
-    /// How many null moves the last search tried.
     #[must_use]
     pub fn null_attempts(&self) -> u64 {
         self.null_attempts
     }
 
-    /// How many of those produced a cutoff.
     #[must_use]
     pub fn null_cutoffs(&self) -> u64 {
         self.null_cutoffs

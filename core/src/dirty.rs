@@ -21,7 +21,6 @@ pub struct DirtyPiece {
 }
 
 impl DirtyPiece {
-    /// A piece that moved from `from` to `to`.
     #[inline]
     #[must_use]
     pub const fn moved(piece: Piece, from: Square, to: Square) -> DirtyPiece {

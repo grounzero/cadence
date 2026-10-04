@@ -39,14 +39,12 @@ impl Bitboard {
     pub const RANK_7: Bitboard = Bitboard(Self::RANK_1.0 << 48);
     pub const RANK_8: Bitboard = Bitboard(Self::RANK_1.0 << 56);
 
-    /// Every square on `file`.
     #[inline]
     #[must_use]
     pub const fn file(file: File) -> Bitboard {
         Bitboard(Self::FILE_A.0 << (file as u8))
     }
 
-    /// Every square on `rank`.
     #[inline]
     #[must_use]
     pub const fn rank(rank: Rank) -> Bitboard {
@@ -55,7 +53,6 @@ impl Bitboard {
 
     // --- queries ----------------------------------------------------------
 
-    /// The number of squares in the set.
     #[inline]
     #[must_use]
     pub const fn count(self) -> u32 {
@@ -76,7 +73,6 @@ impl Bitboard {
         self.0 != 0
     }
 
-    /// At least two squares.
     #[inline]
     #[must_use]
     pub const fn more_than_one(self) -> bool {
@@ -102,14 +98,12 @@ impl Bitboard {
 
     // --- construction -----------------------------------------------------
 
-    /// This set with `sq` added.
     #[inline]
     #[must_use]
     pub const fn with(self, sq: Square) -> Bitboard {
         Bitboard(self.0 | sq.bb().0)
     }
 
-    /// This set with `sq` removed.
     #[inline]
     #[must_use]
     pub const fn without(self, sq: Square) -> Bitboard {

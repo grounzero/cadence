@@ -46,7 +46,6 @@ fn slot_order_is_the_fen_token_order() {
     assert_eq!(CastlingRights::both(Colour::Black), 0b1100);
 }
 
-/// Every one of the sixteen values, every predicate.
 #[test]
 fn rights_predicates_over_all_sixteen_values() {
     for bits in 0..16u8 {

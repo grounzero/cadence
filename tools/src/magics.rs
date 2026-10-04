@@ -98,7 +98,6 @@ struct Found {
     tries: u64,
 }
 
-/// Search for a magic for `sq`.
 fn search(sq: u32, dirs: &[(i32, i32)], rng: &mut Rng) -> Found {
     let mask = mask(sq, dirs);
     let bits = mask.count_ones();
