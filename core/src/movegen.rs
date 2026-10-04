@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Legal move generation. Legal, not pseudo-legal: nothing downstream filters this list, and
-//! the corpus asserts against it directly.
+//! Legal, not pseudo-legal: nothing downstream filters the list.
 
 use crate::attacks;
 use crate::bitboard::Bitboard;
@@ -10,8 +9,6 @@ use crate::mv::{Move, MoveList};
 use crate::position::Board;
 use crate::types::{PieceType, PromoPiece, Rank, Square};
 
-/// What every generator below reads: the position's summary for the side to move, computed
-/// once.
 struct Ctx {
     us: crate::types::Colour,
     them: crate::types::Colour,
@@ -20,28 +17,24 @@ struct Ctx {
     ksq: Square,
     checkers: Bitboard,
     pinned: Bitboard,
-    /// Where a non-king piece may land: `!own` in a quiet position, the checker plus the
-    /// squares between it and the king in single check.
+    /// In single check, the checker and the squares between it and the king.
     targets: Bitboard,
 }
 
-/// Every legal move in `board`, in no defined order.
+/// In no defined order.
 #[must_use]
 pub fn generate_legal(board: &Board) -> MoveList {
     generate::<false>(board)
 }
 
-/// The noisy moves of `board` -- captures, en-passant captures and promotions -- as the
-/// subsequence of [`generate_legal`] for which [`Move::is_noisy`] holds, **in that list's
-/// order**. In check, the noisy evasions.
+/// The noisy subsequence of [`generate_legal`], in its order.
 #[must_use]
 pub fn generate_noisy(board: &Board) -> MoveList {
     generate::<true>(board)
 }
 
-/// Both generators. `NOISY` restricts every branch to its captures and promotions; the branches
-/// are walked in the same order either way, which is what makes the noisy list a subsequence of
-/// the legal one.
+/// Both generators walk the branches in one order, which is what makes the noisy list a
+/// subsequence.
 fn generate<const NOISY: bool>(board: &Board) -> MoveList {
     let mut list = MoveList::new();
     let us = board.side_to_move();
@@ -51,13 +44,9 @@ fn generate<const NOISY: bool>(board: &Board) -> MoveList {
     let enemy = board.by_colour(them);
     let ksq = board.king_square(us);
     let checkers = board.checkers();
-    // A king is never a target, and this is the one line the whole property rests on. In a
-    // position reachable by legal play the enemy king is not attacked by the side to move, so
-    // no move onto it was ever generated and the mask removes nothing: the move lists, and
-    // therefore perft and bench, are unchanged.
+    // A king is never a target; in legal play the mask removes nothing.
     let not_a_king = !board.pieces(them, PieceType::King);
 
-    // King moves, always, with the king lifted from the occupancy.
     let occ_without_king = occ.without(ksq);
     let king_targets = (if NOISY { enemy } else { !own }) & not_a_king;
     for to in attacks::king_attacks(ksq) & king_targets {
@@ -66,8 +55,7 @@ fn generate<const NOISY: bool>(board: &Board) -> MoveList {
         }
     }
 
-    // Double check: nothing but the king can help. The branch is right for any count above one,
-    // and it used to assert that the count was exactly two.
+    // Double check: only the king can help.
     if checkers.more_than_one() {
         return list;
     }
@@ -86,9 +74,7 @@ fn generate<const NOISY: bool>(board: &Board) -> MoveList {
         } & not_a_king,
     };
 
-    // Castling, only out of a quiet position, and never noisy: the destination holds our own
-    // rook. `can_castle` lifts both the king and the rook; nothing here reuses the king-lifted
-    // occupancy.
+    // Never noisy: the destination holds our own rook.
     if !NOISY && checkers.is_empty() {
         let layout = board.layout();
         for s in CastleSide::ALL {
@@ -108,10 +94,7 @@ fn generate<const NOISY: bool>(board: &Board) -> MoveList {
     list
 }
 
-/// Knights and sliders. A pinned knight has no move at all; a pinned slider stays on the line
-/// through the king.
 fn pieces<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
-    // A piece's noisy moves are its moves onto enemy squares.
     let targets = if NOISY {
         c.targets & c.enemy
     } else {
@@ -143,8 +126,7 @@ fn pieces<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
     }
 }
 
-/// Pushes, captures, promotions and en passant. Noisy: a push only when it promotes, no double
-/// push, every capture, every en passant.
+/// Noisy: promoting pushes, captures and en passant.
 fn pawns<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
     let promo_rank = Bitboard::rank(Rank::Eight.relative(c.us));
     let start_rank = Bitboard::rank(Rank::Two.relative(c.us));
@@ -160,7 +142,6 @@ fn pawns<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
         let allowed = c.targets & pin_line;
         let from_bb = from.bb();
 
-        // Pushes. The single push must be empty; the double push needs both.
         let single = from_bb.forward(c.us) & !c.occ;
         if let Some(to) = single.lsb() {
             if allowed.contains(to) {
@@ -190,18 +171,15 @@ fn pawns<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
             }
         }
 
-        // En passant: verified by explicit occupancy test, never by mask.
+        // En passant is verified by occupancy, never by mask.
         if let Some(ep) = ep
             && attacks::pawn_attacks(c.us, from).contains(ep)
         {
             let captured = Square::new(ep.index() as u8 ^ 8);
-            // In check, the capture helps only if the captured pawn is the checker: its
-            // destination is neither the checker's square nor on `between`, so the target mask
-            // is silent on it.
+            // In check it helps only if the captured pawn is the checker, which the target mask cannot see.
             let resolves_check = c.checkers.is_empty() || c.checkers == captured.bb();
             if resolves_check {
-                // Both pawns off the rank, the capturer landed. Only sliders need retesting:
-                // nothing else can be uncovered.
+                // Only sliders can be uncovered.
                 let occ2 = c.occ.without(from).without(captured).with(ep);
                 let exposed = (attacks::rook_attacks(c.ksq, occ2) & their_rq)
                     | (attacks::bishop_attacks(c.ksq, occ2) & their_bq);

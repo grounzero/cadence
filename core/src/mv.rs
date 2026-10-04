@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Move encoding, the move list, and UCI spelling. What is fixed here is the 16-bit layout and
-//! the two properties the rest of the engine reads off it: `is_capture` is one `AND` and is
-//! **false for castling**, and `is_noisy` is one `AND` against `0xC000`.
-
 use alloc::string::String;
 use core::fmt::{self, Write as _};
 use core::mem::{align_of, size_of};
@@ -11,15 +7,13 @@ use core::mem::{align_of, size_of};
 use crate::castling::CastleSide;
 use crate::types::{File, PromoPiece, Square};
 
-/// `from` occupies the low bits so that the 12-bit butterfly index used by the history
-/// heuristic is a mask rather than a shift-and-multiply, and so that "is this move noisy" is
-/// one `AND` against `0xC000`. The all-zero pattern is the null move.
+/// `from` in the low bits makes the history index a mask; flags in the top bits make "noisy" one
+/// `AND`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Move(u16);
 
-/// The flag nibble. **A construction vocabulary, not a decoding one**: nothing recovers a
-/// `MoveFlag` from a `Move`, and nothing should.
+/// For construction only: nothing decodes a `MoveFlag` from a `Move`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum MoveFlag {
@@ -40,17 +34,15 @@ pub enum MoveFlag {
     PromoCapQ = 0b1111,
 }
 
-/// The 12-bit butterfly index: `from | to << 6`.
 const FROM_TO: u16 = 0x0FFF;
-/// Bit 14 of the encoding: set for every capturing flag and no other.
+/// Set for every capturing flag and no other.
 const CAPTURE_BIT: u16 = 0x4000;
-/// Bit 15 of the encoding: set for every promoting flag and no other.
+/// Set for every promoting flag and no other.
 const PROMOTION_BIT: u16 = 0x8000;
-/// Capture or promotion: the qsearch and SEE gate, one `AND`.
 const NOISY_MASK: u16 = CAPTURE_BIT | PROMOTION_BIT;
 
 impl Move {
-    /// `a1a1`, quiet: a pattern no real move can have.
+    /// A pattern no real move has.
     pub const NULL: Move = Move(0);
 
     #[inline]
@@ -58,7 +50,6 @@ impl Move {
         Move((from.index() as u16) | ((to.index() as u16) << 6) | ((flag as u16) << 12))
     }
 
-    /// The flag nibble as a number. Private: `MoveFlag` is not decoded.
     #[inline]
     const fn flag_bits(self) -> u16 {
         self.0 >> 12
@@ -81,13 +72,13 @@ impl Move {
         Move::encode(from, to, MoveFlag::Capture)
     }
 
-    /// `to` is the destination (the ep square), **not** the captured pawn's square.
+    /// `to` is the ep square, not the captured pawn's.
     #[must_use]
     pub const fn new_en_passant(from: Square, to: Square) -> Move {
         Move::encode(from, to, MoveFlag::EnPassant)
     }
 
-    /// King-takes-rook: `to` is **our own rook's** square.
+    /// King takes rook: `to` is our own rook's square.
     #[must_use]
     pub const fn new_castle(king_from: Square, rook_from: Square) -> Move {
         Move::encode(king_from, rook_from, MoveFlag::Castle)
@@ -118,7 +109,6 @@ impl Move {
         Square::new(((self.0 >> 6) & 63) as u8)
     }
 
-    /// `from | to << 6`, in `0..4096`. The butterfly index.
     #[inline]
     #[must_use]
     pub const fn from_to(self) -> usize {
@@ -144,14 +134,12 @@ impl Move {
         self.0 & PROMOTION_BIT != 0
     }
 
-    /// `is_capture || is_promotion`, as one `AND`.
     #[inline]
     #[must_use]
     pub const fn is_noisy(self) -> bool {
         self.0 & NOISY_MASK != 0
     }
 
-    /// True for a castling move, which is encoded king-takes-rook.
     #[inline]
     #[must_use]
     pub const fn is_castle(self) -> bool {
@@ -180,9 +168,8 @@ impl Move {
         }
     }
 
-    /// Kingside iff the rook stands on a higher file than the king. Derived, never stored: the
-    /// king is strictly between its rooks in all 960 start arrays and rights die when it moves,
-    /// so the files decide.
+    /// Kingside if the rook's file is higher: the king is always between its rooks while it can
+    /// castle.
     #[inline]
     #[must_use]
     pub const fn castle_side(self) -> CastleSide {
@@ -194,23 +181,19 @@ impl Move {
         }
     }
 
-    /// The raw encoding, for the transposition table and datagen.
     #[inline]
     #[must_use]
     pub const fn to_bits(self) -> u16 {
         self.0
     }
 
-    /// The inverse of [`Move::to_bits`]. Any 16-bit pattern is accepted, including the three
-    /// reserved flag values; the caller owns what it stored.
+    /// Any pattern, reserved flags included.
     #[inline]
     #[must_use]
     pub const fn from_bits(bits: u16) -> Move {
         Move(bits)
     }
 
-    /// The king-takes-rook spelling: `from ++ to ++ promo?`. This is what `UCI_Chess960 = true`
-    /// emits, and it is a pure function of the move.
     #[must_use]
     pub fn to_uci_chess960(self) -> String {
         if self.is_null() {
@@ -225,9 +208,7 @@ impl Move {
     }
 }
 
-/// `e1h1[Castle]`, `e7e8q[PromoQ]`, `0000[Null]`. The flag nibble is named so a wrong flag
-/// reads as a wrong flag rather than as a wrong square, and a reserved nibble is named as
-/// reserved rather than misread as a real one.
+/// Names the flag, so a wrong flag reads as one rather than as a wrong square.
 impl fmt::Debug for Move {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_null() {
@@ -253,10 +234,8 @@ impl fmt::Debug for Move {
     }
 }
 
-// Deliberately absent, and to stay absent: `Display`, because formatting a move needs the board
-// and castling spells as king-takes-rook or king-to-destination depending on `UCI_Chess960`.
-// And `Ord`/`PartialOrd`, whose existence invites `list.sort()` in the move picker, where
-// ordering by raw bits is meaningless.
+// No `Display`, because spelling a castle needs the board, and no `Ord`, because bit order means
+// nothing to a sort.
 
 const _: () = assert!(size_of::<Move>() == 2);
 const _: () = assert!(size_of::<Option<Move>>() == 4);
@@ -266,10 +245,8 @@ const _: () = assert!(FROM_TO == 0x0FFF && NOISY_MASK == 0xC000);
 // UCI
 // ---------------------------------------------------------------------------
 
-/// Format a move for a GUI. Takes the legal move list because the non-960 spelling needs it:
-/// castling is emitted as king-to-destination (`e1g1`) unless a quiet king move to that same
-/// destination is *also* legal (or the king does not move at all, so `g1g1` would not be a UCI
-/// string), in which case it falls back to king-takes-rook.
+/// Castles as king-to-destination unless that spelling also names a legal quiet move, or the king
+/// does not move.
 #[must_use]
 pub fn to_uci(m: Move, legal: &MoveList, chess960: bool) -> String {
     if !m.is_castle() || chess960 {
@@ -286,8 +263,6 @@ pub fn to_uci(m: Move, legal: &MoveList, chess960: bool) -> String {
     out
 }
 
-/// The king's destination for a castling move: the g-file or c-file on its own rank, by the
-/// derived side.
 fn castle_king_destination(m: Move) -> Square {
     let file = match m.castle_side() {
         CastleSide::King => File::G,
@@ -296,9 +271,8 @@ fn castle_king_destination(m: Move) -> Square {
     Square::from_file_rank(file, m.from_sq().rank())
 }
 
-/// Parse a UCI move string against a generated legal move list. Matching against the list
-/// rather than constructing bits from the string is what disposes of promotion-flag inference,
-/// en-passant detection, castling disambiguation and illegal-input rejection all at once.
+/// Matched against the legal list, which settles promotion, en passant, castling and illegality at
+/// once.
 #[must_use]
 pub fn parse_uci(legal: &MoveList, s: &str) -> Option<Move> {
     if s.len() != 4 && s.len() != 5 {
@@ -308,7 +282,6 @@ pub fn parse_uci(legal: &MoveList, s: &str) -> Option<Move> {
     if let Some(m) = legal.iter().find(|m| m.to_uci_chess960() == s) {
         return Some(m);
     }
-    // Then the king-to-destination spelling of a castle.
     if s.len() == 4 {
         let from = Square::from_algebraic(&s[..2])?;
         let to = Square::from_algebraic(&s[2..])?;
@@ -323,10 +296,9 @@ pub fn parse_uci(legal: &MoveList, s: &str) -> Option<Move> {
 // MoveList
 // ---------------------------------------------------------------------------
 
-/// The known maximum legal move count is 218. The capacity is rounded up.
+/// The known maximum is 218.
 pub const MAX_MOVES: usize = 256;
 
-/// A generated move list. Carries no scores.
 #[derive(Clone)]
 pub struct MoveList {
     moves: [Move; MAX_MOVES],
@@ -363,13 +335,11 @@ impl MoveList {
         &self.moves[..self.len as usize]
     }
 
-    /// The moves, mutably, for a picker that orders them in place.
     #[must_use]
     pub fn as_mut_slice(&mut self) -> &mut [Move] {
         &mut self.moves[..self.len as usize]
     }
 
-    /// The moves, in generation order.
     pub fn iter(&self) -> impl Iterator<Item = Move> + '_ {
         self.as_slice().iter().copied()
     }
@@ -386,6 +356,6 @@ impl Default for MoveList {
     }
 }
 
-// `len` is a `u16`, not a `u8`. With MAX_MOVES = 256 a `u8` length wraps to zero at capacity.
+// `len` is `u16`: a `u8` would wrap to zero at 256.
 const _: () = assert!(size_of::<MoveList>() == 514);
 const _: () = assert!(align_of::<MoveList>() == 2);

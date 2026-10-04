@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Chess960 start positions by their standard number, and the double-Fischer start that gives each
-//! side its own array. 518 is the orthodox array, so `dfrc_fen(518, 518)` is the standard start
-//! with its castling rights spelled by rook file.
+//! Array 518 is the orthodox start.
 
 use alloc::format;
 use alloc::string::String;
 
-/// How many start arrays there are, numbered from zero.
 pub const ARRAYS: u32 = 960;
 
-/// The ten ways two knights fill five free squares, in the numbering's order.
+/// In the numbering's order.
 const KNIGHTS: [(usize, usize); 10] = [
     (0, 1),
     (0, 2),
@@ -24,7 +21,6 @@ const KNIGHTS: [(usize, usize); 10] = [
     (3, 4),
 ];
 
-/// Puts `piece` on the `nth` square of `rank` still empty, counting from the a-file.
 fn place(rank: &mut [u8; 8], nth: usize, piece: u8) {
     let square = rank
         .iter()
@@ -36,12 +32,9 @@ fn place(rank: &mut [u8; 8], nth: usize, piece: u8) {
     rank[square] = piece;
 }
 
-/// The back rank of array `n`, a-file first, as the lowercase letters a FEN uses.
-///
 /// # Panics
 ///
-/// If `n` is not below [`ARRAYS`]. Every number the decoding reads is then in range by
-/// construction.
+/// If `n` is not below [`ARRAYS`].
 #[must_use]
 pub fn back_rank(n: u32) -> [u8; 8] {
     assert!(n < ARRAYS, "{n} is not a Chess960 start array");
@@ -55,19 +48,18 @@ pub fn back_rank(n: u32) -> [u8; 8] {
     let (low, high) = KNIGHTS[n / 6];
     place(&mut rank, high, b'n');
     place(&mut rank, low, b'n');
-    // Rook, king, rook into the three squares left, which is what puts the king between them.
+    // R K R into what is left, which puts the king between its rooks.
     place(&mut rank, 0, b'r');
     place(&mut rank, 0, b'k');
     place(&mut rank, 0, b'r');
     rank
 }
 
-/// The start with White on array `white` and Black on array `black`, castling rights in
-/// Shredder notation, king side first for each colour.
+/// Castling rights in Shredder notation.
 ///
 /// # Panics
 ///
-/// If either number is not below [`ARRAYS`]. The panic names the number.
+/// If either number is not below [`ARRAYS`].
 #[must_use]
 pub fn dfrc_fen(white: u32, black: u32) -> String {
     let w = back_rank(white);

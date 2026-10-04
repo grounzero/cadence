@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! FEN, X-FEN and Shredder-FEN. **Both castling spellings are accepted on input and the
-//! position records which it was given**, because a GUI may send either and a position that
-//! round-trips through the wrong one is a different position.
+//! A position remembers which castling spelling it was given: round-tripped through the other, it
+//! is a different position.
 
 use alloc::string::String;
 use core::fmt::Write as _;
@@ -12,51 +11,38 @@ use crate::castling::{CastleSide, CastlingLayout, CastlingRights, ci};
 use crate::position::{Board, Setup};
 use crate::types::{Colour, File, OptSquare, Piece, PieceType, Rank, Square};
 
-/// The standard start position, in the notation every GUI sends it in.
 pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-/// Why a FEN string was rejected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FenError {
-    /// The string did not have four to six space-separated fields.
+    /// Not four to six fields.
     Fields,
-    /// The piece-placement field did not describe 8 ranks of 8 files.
     Placement,
-    /// The side-to-move field was neither `w` nor `b`.
     SideToMove,
     /// The castling field named a rook that is not there, or a right that cannot exist given
     /// the king's square.
     Castling,
-    /// The en-passant field was not `-` or a square on rank 3 or rank 6.
+    /// Not `-` or a rank 3 or 6 square.
     EnPassant,
-    /// A halfmove or fullmove counter was not a number, or was out of range.
     Counter,
     /// Not exactly one king of each colour.
     Kings,
 }
 
-/// Which castling-field notation to emit. These are two different notations, not a formatting
-/// preference.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FenStyle {
-    /// `KQkq`, where each letter denotes the **outermost** rook on that side of the king, not
-    /// the a- and h-file rooks. Falls back to naming the castling rook's file when, and only
-    /// when, another rook of the same colour stands outside it on the same side.
+    /// `KQkq` names the outermost rook; the file is named only when another rook stands outside it.
     XFen,
-    /// Always names the castling rook's file: `HAha`. Never ambiguous, never mixed.
+    /// Always the rook's file.
     Shredder,
 }
 
 impl Board {
-    /// Parse a FEN. Accepts standard `KQkq` castling fields and the Shredder rook-file
-    /// spelling, in both cases with arbitrary rook files.
-    ///
     /// # Errors
     ///
-    /// [`FenError`] describes which field was rejected. In particular a castling right whose
-    /// rook is not there, or whose king is not on its back rank, is [`FenError::Castling`] here
-    /// rather than a panic in move generation.
+    /// The field that was rejected; a castling right without its rook is refused here rather than
+    /// panicking in move generation.
     pub fn from_fen(fen: &str) -> Result<Board, FenError> {
         let fields: [&str; 6] = {
             let mut it = fen.split_whitespace();
@@ -117,9 +103,7 @@ impl Board {
         }))
     }
 
-    /// Emit this position as a FEN in the requested notation. The en-passant field is emitted
-    /// whenever the last move was a double pawn push, which is what the FEN specification says
-    /// and what the state holds.
+    /// The ep field follows every double push, as the specification says.
     #[must_use]
     pub fn to_fen(&self, style: FenStyle) -> String {
         let mut out = String::with_capacity(90);
@@ -163,7 +147,6 @@ impl Board {
         out
     }
 
-    /// The castling field in slot order `KQkq`, or `-`.
     fn write_castling_field(&self, out: &mut String, style: FenStyle) {
         let rights = self.castling_rights();
         if rights.is_empty() {
@@ -199,9 +182,7 @@ impl Board {
         }
     }
 
-    /// Whether another rook of `c` stands on the back rank outside the castling rook `rf` on
-    /// side `s`: the condition under which X-FEN must name the file. A property of the
-    /// position, not of the layout: an extra rook can arrive by promotion at any time.
+    /// Read from the position, not the layout: a rook can arrive by promotion.
     fn rook_outside(&self, c: Colour, s: CastleSide, rf: Square) -> bool {
         let rooks = self.pieces(c, PieceType::Rook) & Bitboard::rank(rf.rank());
         rooks.into_iter().any(|sq| match s {
@@ -211,7 +192,6 @@ impl Board {
     }
 }
 
-/// The placement field: eight ranks, top first, digits for runs of empties.
 fn parse_placement(field: &str) -> Result<[Option<Piece>; 64], FenError> {
     let mut mailbox = [None; 64];
     let mut ranks = field.split('/');
@@ -246,8 +226,7 @@ fn parse_placement(field: &str) -> Result<[Option<Piece>; 64], FenError> {
     Ok(mailbox)
 }
 
-/// The castling field, in either notation, resolved against the placement. `K`/`k`: the
-/// outermost rook of that colour on the king's side of its king, on the back rank.
+/// `K` and `k` mean the outermost rook on the king's side.
 fn parse_castling(
     field: &str,
     mailbox: &[Option<Piece>; 64],

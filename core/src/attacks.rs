@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Attack sets: leapers, sliders, and the two 64×64 line tables. Every function here answers
-//! "which squares does a piece of this kind on this square attack" with no reference to a
-//! position.
+//! No reference to a position.
 
 use crate::bitboard::Bitboard;
 use crate::magic;
@@ -13,7 +11,6 @@ use crate::types::{Colour, Square};
 // ---------------------------------------------------------------------------
 
 const fn knight_from(bb: Bitboard) -> u64 {
-    // Two steps one way, one step the other, in all eight combinations.
     let ns = bb.north().north().0 | bb.south().south().0;
     let ew = bb.east().east().0 | bb.west().west().0;
     Bitboard(ns).east().0 | Bitboard(ns).west().0 | Bitboard(ew).north().0 | Bitboard(ew).south().0
@@ -70,16 +67,13 @@ pub fn king_attacks(sq: Square) -> Bitboard {
     Bitboard(KING[sq.index()])
 }
 
-/// The two squares a pawn of colour `c` on `sq` attacks (one on an edge file). Attacks, not
-/// pushes: a pawn on its promotion rank attacks nothing.
+/// A pawn on its promotion rank attacks nothing.
 #[inline]
 #[must_use]
 pub fn pawn_attacks(c: Colour, sq: Square) -> Bitboard {
     Bitboard(PAWN[c.index()][sq.index()])
 }
 
-/// Every square attacked by any pawn of colour `c` in `pawns`. The set form of
-/// [`pawn_attacks`], two shifts rather than a loop.
 #[inline]
 #[must_use]
 pub fn pawn_attacks_bb(c: Colour, pawns: Bitboard) -> Bitboard {
@@ -93,14 +87,14 @@ pub fn pawn_attacks_bb(c: Colour, pawns: Bitboard) -> Bitboard {
 // Sliders
 // ---------------------------------------------------------------------------
 
-/// Squares a rook on `sq` attacks under `occ`, the first blocker in each direction included.
+/// The first blocker in each direction included.
 #[inline]
 #[must_use]
 pub fn rook_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     magic::rook_attacks(sq, occ)
 }
 
-/// Squares a bishop on `sq` attacks under `occ`, the first blocker in each direction included.
+/// The first blocker in each direction included.
 #[inline]
 #[must_use]
 pub fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {
@@ -116,10 +110,7 @@ pub fn queen_attacks(sq: Square, occ: Bitboard) -> Bitboard {
 // ---------------------------------------------------------------------------
 // BETWEEN and RAY
 // ---------------------------------------------------------------------------
-// Both are derived from the empty-board slider rays, which is the definition: two squares are
-// aligned iff one attacks the other on an empty board, the open segment is what each attacks
-// with the other as the only blocker, and the line is what both attack on the empty board plus
-// the two of them.
+// Derived from empty-board rays: aligned if one attacks the other on an empty board.
 
 const ROOK_DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const BISHOP_DIRS: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -129,8 +120,6 @@ const BISHOP_DIRS: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
     reason = "only ever const-evaluated; the arrays land in .rodata, not on a stack"
 )]
 const fn build_lines() -> ([[u64; 64]; 64], [[u64; 64]; 64]) {
-    // Empty-board rays once per square, then the blocked walks only for the pairs that turn out
-    // to be aligned.
     let mut rays = [[0u64; 64]; 2];
     let mut sq = 0;
     while sq < 64 {
@@ -166,24 +155,20 @@ const fn build_lines() -> ([[u64; 64]; 64], [[u64; 64]; 64]) {
 
 static LINES: ([[u64; 64]; 64], [[u64; 64]; 64]) = build_lines();
 
-/// The **open** segment strictly between `a` and `b` when they share a rank, file or diagonal;
-/// empty otherwise, and empty when `a == b`. Symmetric.
+/// Open: neither end included.
 #[inline]
 #[must_use]
 pub fn between(a: Square, b: Square) -> Bitboard {
     Bitboard(LINES.0[a.index()][b.index()])
 }
 
-/// The **whole line** through `a` and `b`, edge to edge and including both, when they share a
-/// rank, file or diagonal; empty otherwise, and empty when `a == b`. Symmetric.
+/// Edge to edge, both ends included.
 #[inline]
 #[must_use]
 pub fn ray(a: Square, b: Square) -> Bitboard {
     Bitboard(LINES.1[a.index()][b.index()])
 }
 
-/// Whether `c` lies on the line through `a` and `b`: `ray(a, b)` contains `c`. False when `a`
-/// and `b` are not aligned.
 #[inline]
 #[must_use]
 pub fn aligned(a: Square, b: Square, c: Square) -> bool {

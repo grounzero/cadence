@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! NNUE feature indexing: the train/play contract. This module depends on `types` and nothing
-//! else, deliberately.
+//! The train/play contract. Depends on `types` alone, deliberately.
 
 use crate::types::{Colour, Piece, Square};
 
 /// 2 colours x 6 piece types x 64 squares.
 pub const NUM_INPUTS: usize = 768;
 
-/// Perspective-flipped index into the input layer. This ordering **is** the train/play
-/// contract: inference and the training data writer both consume it, so a permutation here is
-/// invisible to forward-pass agreement and shows up only as a net that trains well and plays
-/// badly.
+/// This ordering is the contract: a permutation passes forward-pass agreement and shows up only
+/// as a net that trains well and plays badly.
 #[inline]
 #[must_use]
 pub const fn feature_index(persp: Colour, piece: Piece, sq: Square) -> usize {
@@ -22,10 +19,7 @@ pub const fn feature_index(persp: Colour, piece: Piece, sq: Square) -> usize {
 }
 
 // --- the pins ----------------------------------------------------------------
-// The corners of the ordering, frozen at compile time so the discriminants of Colour,
-// PieceType, Piece and Square cannot drift and need reordering to match Bullet after the first
-// net is trained. Every one of these is a claim about the contract, not about the
-// implementation; change one and the nets already trained stop loading correctly.
+// Change one and every trained net stops loading correctly.
 const _: () = assert!(feature_index(Colour::White, Piece::WPawn, Square::A1) == 0);
 const _: () = assert!(feature_index(Colour::White, Piece::WPawn, Square::H8) == 63);
 const _: () = assert!(feature_index(Colour::White, Piece::WKnight, Square::A1) == 64);
