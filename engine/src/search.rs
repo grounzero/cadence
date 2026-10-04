@@ -1186,7 +1186,7 @@ impl<'a> Search<'a> {
             }
             let stand_pat = eval::evaluate(board);
             if stand_pat >= beta {
-                return stand_pat;
+                return beta;
             }
             if stand_pat > alpha {
                 alpha = stand_pat;

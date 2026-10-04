@@ -1001,6 +1001,9 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// **The king-safety tables moved every score but two and eight moves**,
 /// `d7c8q` replacing `d7c8r` at 505 against 240 and `g5f6` returning in place
 /// of `e2d2`.
+///
+/// **The stand-pat returning beta moved one score and one move**, `h1h7` at 548
+/// replacing `h1h5` at 536: the value quiescence hands up changed, not a window.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("d2d4", 38),
     ("d5e6", -146),
@@ -1012,7 +1015,7 @@ const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("d1e3", 12),
     ("e1d3", 61),
     ("b2b3", 101),
-    ("h1h5", 536),
+    ("h1h7", 548),
     ("e1e2", 549),
     ("g1g3", 539),
     ("a1a4", 545),
