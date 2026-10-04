@@ -1,23 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The oracle side of the position gates, and a move source for walks.
-//!
-//! Two different things live here and the distinction matters.
-//!
-//! **Oracles** (`attackers_to`, `blockers_and_pinners`, `can_castle`) are
-//! written from the definitions, in `(file, rank)` integer stepping, and read
-//! nothing from `attacks` or `magic`. They are what the engine's answers are
-//! compared with, so they must not share an implementation with it.
-//!
-//! **The move source** (`pseudo_legal` and `legal`) exists so that a walk
-//! can happen before `generate_legal` does. It is deliberately the obvious
-//! generator: piece attack sets, pawn pushes and captures, promotions, en
-//! passant from the state, castling from `Board::can_castle`, then a
-//! make/unmake filter for "left the king in check". It uses the crate's
-//! attack tables and `attackers_to`, both of which have their own gates; a
-//! bug in either does not make a walk assertion pass, it makes the walk go
-//! somewhere strange, and the oracle assertions still hold there. Once
-//! `generate_legal` exists this becomes an independent second opinion on it.
+//! Oracles are written from the definitions in `(file, rank)` stepping and read nothing from
+//! `attacks` or `magic`, so they share no implementation with the engine. The move source is the
+//! obvious generator over the crate's gated attack tables, an independent second opinion on
+//! `generate_legal`.
 
 use cadence_core::Move;
 use cadence_core::attacks;
@@ -90,9 +76,7 @@ fn slides(sq: Square, occ: u64, dirs: &[(i8, i8)]) -> u64 {
     out
 }
 
-/// The squares `piece` on `sq` attacks under `occ`. Pawns attack diagonally
-/// forward; kings and knights leap; sliders stop at the first occupied square
-/// (inclusive).
+/// Sliders stop at the first occupied square, inclusive.
 #[must_use]
 pub fn attacks_from(piece: Piece, sq: Square, occ: Bitboard) -> Bitboard {
     let occ = occ.0;
@@ -109,7 +93,6 @@ pub fn attacks_from(piece: Piece, sq: Square, occ: Bitboard) -> Bitboard {
     })
 }
 
-/// Every piece on the board, as `(square, piece)`.
 #[must_use]
 pub fn pieces(board: &Board) -> Vec<(Square, Piece)> {
     Square::all()
@@ -117,9 +100,7 @@ pub fn pieces(board: &Board) -> Vec<(Square, Piece)> {
         .collect()
 }
 
-/// Brute force: every piece on the board, of either colour, that attacks
-/// `sq` under `occ`. The piece sets are the board's; `occ` only decides
-/// slider blocking, the same contract as `Board::attackers_to`.
+/// Brute force, either colour; `occ` only decides slider blocking, as in `Board::attackers_to`.
 #[must_use]
 pub fn attackers_to(board: &Board, sq: Square, occ: Bitboard) -> Bitboard {
     let mut out = Bitboard::EMPTY;
@@ -131,9 +112,8 @@ pub fn attackers_to(board: &Board, sq: Square, occ: Bitboard) -> Bitboard {
     out
 }
 
-/// The definition: a piece (of either colour) is a blocker for `c`'s king iff
-/// removing it from the occupancy exposes that king to an enemy slider of the
-/// matching type that did not attack it before; the pinner is that slider.
+/// A piece of either colour is a blocker iff removing it exposes `c`'s king to an enemy slider that
+/// did not attack it before; the pinner is that slider.
 #[must_use]
 pub fn blockers_and_pinners(board: &Board, c: Colour) -> (Bitboard, Bitboard) {
     let ksq = board.king_square(c);
@@ -167,11 +147,8 @@ pub fn blockers_and_pinners(board: &Board, c: Colour) -> (Bitboard, Bitboard) {
     (blockers, pinners)
 }
 
-/// The castling-legality predicate written from the corpus's statement of
-/// the rules, with
-/// the oracle attackers: right held, both segments empty bar the two origins,
-/// and every square of the closed king path unattacked with **both** the king
-/// and the castling rook lifted.
+/// From the corpus's statement of the rules: every square of the closed king path unattacked with
+/// both the king and the castling rook lifted.
 #[must_use]
 pub fn can_castle(board: &Board, c: Colour, s: CastleSide) -> bool {
     if !board.castling_rights().has(c, s) {
@@ -216,8 +193,7 @@ pub fn can_castle(board: &Board, c: Colour, s: CastleSide) -> bool {
 // The move source
 // ---------------------------------------------------------------------------
 
-/// Every pseudo-legal move for the side to move: the obvious generator, with
-/// no legality filter except that a king is never captured.
+/// No legality filter, except that a king is never captured.
 #[must_use]
 pub fn pseudo_legal(board: &Board) -> Vec<Move> {
     let us = board.side_to_move();
@@ -301,8 +277,7 @@ pub fn pseudo_legal(board: &Board) -> Vec<Move> {
     out
 }
 
-/// The pseudo-legal moves that do not leave the mover's king attacked,
-/// decided by making each one and asking the crate's `attackers_to`.
+/// Decided by making each move and asking the crate's `attackers_to`.
 #[must_use]
 pub fn legal(board: &mut Board) -> Vec<Move> {
     let us = board.side_to_move();
@@ -324,26 +299,15 @@ pub fn legal(board: &mut Board) -> Vec<Move> {
 // Random placements
 // ---------------------------------------------------------------------------
 
-/// A random legal-looking placement as a FEN: one king each, not adjacent;
-/// up to fifteen other pieces per side with pawns off the back ranks; random
-/// side to move; no castling rights; no en-passant square. Nothing is done
-/// about the side not to move being in check: attackers, blockers and
-/// pinners are defined regardless, and that is what these feed. About a
-/// quarter of them are that way, which is what `tests/opponent_in_check.rs`
-/// filters for.
+/// Kings not adjacent, no castling, no en passant, and the side not to move left in check about a
+/// quarter of the time, which `tests/opponent_in_check.rs` filters for.
 #[must_use]
 pub fn random_placement_fen(rng: &mut Rng) -> String {
     placement_fen(rng, false)
 }
 
-/// The same, with the two kings deliberately adjacent.
-///
-/// A separate generator rather than a relaxed one, because the case is worth
-/// reaching on purpose and the unbiased placement above reaches it with
-/// probability about 1/64. Touching kings are the sharp corner of "the side
-/// not to move is in check": each king attacks the other, so it holds
-/// whichever side is to move, and the enemy king appears in the attacker set
-/// that decides check as well as in the target sets that decide moves.
+/// Separate because the unbiased placement reaches it about 1 in 64. Touching kings put each king
+/// in check whichever side is to move.
 #[must_use]
 pub fn random_touching_kings_fen(rng: &mut Rng) -> String {
     placement_fen(rng, true)
