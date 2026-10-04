@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The tuner: that it reads the evaluation the search plays with, that its
-//! gradient is the derivative of its loss, and that it finds weights it was
-//! told to find.
-//!
-//! The data here is synthetic. Results are the sigmoid of an evaluation
-//! under a known table, so a correct tuner recovers that table and the tests
-//! need no games to have been played.
+//! The data is synthetic: results are the sigmoid of an evaluation under a known table, so a
+//! correct tuner recovers that table with no games played.
 
 mod support;
 
@@ -46,8 +41,7 @@ fn boards() -> Vec<Board> {
     out
 }
 
-/// Samples whose results are the sigmoid of White's evaluation under
-/// `truth`, so `truth` is the table that minimises the loss.
+/// So `truth` is the table that minimises the loss.
 fn labelled(truth: &[Real], k: f64) -> Vec<Sample> {
     boards()
         .iter()
@@ -143,8 +137,7 @@ fn k_is_recovered() {
     assert!((k - 1.3).abs() < 1e-3, "k {k}");
 }
 
-/// Samples labelled under a scaling that differs by phase, so `k` is the scaling that minimises
-/// the loss under `truth`.
+/// So `k` is the scaling that minimises the loss under `truth`.
 fn labelled_by_phase(truth: &[Real], k: Scale) -> Vec<Sample> {
     boards()
         .iter()
