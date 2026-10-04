@@ -1,40 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus section 3: DFRC castling legality.
-//!
-//! Each position isolates one rule. Together they are the reason section 2 is not
-//! enough: start-array perft under-tests castling badly at any depth, because
-//! the degenerate geometries (king that does not move, rook that does not
-//! move, king and rook swapping squares, rook landing on the king's origin)
-//! barely occur in the first few plies of a game.
-//!
-//! Each test asserts three things: the node counts to depth 3, whether *any*
-//! castling move is legal, and, when one is, that it is exactly the move the
-//! corpus names. The last is what catches an engine that finds a castle but
-//! the wrong one.
-//!
-//! Every rule appears twice, once per colour. Every position in this block was
-//! White to move until the rank-8 mirrors were added, which meant a mirroring
-//! bug passed all fifteen castling tests and reported as "DFRC start array
-//! 400/55 has the wrong node count at depth 2", a true statement that names
-//! the wrong subsystem.
-//!
-//! Tests are selected by a distinctive phrase from the row's `reason` column
-//! plus the side to move, never by row index, so reordering the corpus cannot
-//! silently repoint a test at a different position. A selector matching zero
-//! or two rows fails loudly.
-//!
-//! Castling legality here is evaluated with **both the king and the castling
-//! rook lifted from the occupancy**. Two of these positions are legal under a
-//! naive implementation that leaves the rook on the board and illegal under
-//! this convention, so a systematic disagreement with section 3 means checking the
-//! convention before the magics.
+//! Start-array perft barely reaches the degenerate geometries, so each position here isolates one
+//! rule, per colour, and asserts the counts to depth 3, the verdict, and the exact castle. Legality
+//! lifts both king and castling rook from the occupancy; two positions differ under a naive
+//! implementation, so a systematic disagreement means checking the convention before the magics.
 
 mod support;
 
-/// Each rule generates two tests, one per colour, from a single selector, and
-/// the same list is emitted as a constant so that coverage of the block can be
-/// asserted rather than assumed.
+/// The list is also emitted as a constant, so the block's coverage can be asserted.
 macro_rules! castling_tests {
     ($( $white:ident / $black:ident => $selector:literal; )*) => {
         const SELECTORS: &[&str] = &[$($selector),*];
@@ -95,19 +68,9 @@ castling_tests! {
         => "THE AMBIGUITY PROOF";
 }
 
-/// The positions that prove "the king moves two squares" cannot encode
-/// castling in Chess960.
-///
-/// With the king one square from its own rook and the square between them
-/// empty, the quiet king move and the castle have the same king destination
-/// and are **both legal at once**, so the destination does not identify the
-/// move. King-takes-rook is injective by construction: the destination always
-/// holds a friendly rook.
-///
-/// The full move list is asserted, not just the two moves: the surrounding
-/// king and rook moves are what make the position ordinary rather than
-/// contrived. Both colours, because a rank-8 mirroring bug is exactly what
-/// this file exists to catch.
+/// With the king beside its own rook, the quiet king move and the castle share a destination and
+/// are both legal, so the destination cannot identify the move. King-takes-rook is injective: the
+/// destination always holds a friendly rook.
 #[test]
 fn king_destination_notation_is_ambiguous() {
     let proofs = support::ambiguity_proofs();
@@ -138,16 +101,8 @@ fn king_destination_notation_is_ambiguous() {
     }
 }
 
-/// The selectors above must partition the castling block.
-///
-/// Every selector is separately asserted to match exactly one row per colour,
-/// which sounds like it covers everything and does not: two selectors can
-/// resolve to the same rule, leaving a third rule with no test, and every
-/// individual assertion still passes. This is the test that the block is
-/// covered rather than that each test found something.
-///
-/// It passes today: it is a check on the corpus and the selector list, not on
-/// move generation.
+/// Per-selector uniqueness is not enough: two selectors can resolve to one rule and leave a third
+/// untested.
 #[test]
 fn selectors_partition_the_castling_block() {
     let reasons: Vec<String> = support::castling_cases()

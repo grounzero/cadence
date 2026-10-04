@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Checks on the public corpus fixture itself.
-//!
-//! They assert nothing about the engine: they assert that the fixture was
-//! read the way the other tests in this directory assume, so that a failure
-//! there is a fact about the move generator and not an artefact of the
-//! parser.
-//!
-//! That paragraph opened "these are the only tests in this directory that
-//! pass today", which was true when the corpus landed ahead of the
-//! generator it gates. Every test here passes now, and what still holds is
-//! the reason these exist rather than the count.
-//!
-//! They also catch the fixture contradicting itself. The standard values
-//! appear once in a readable summary table and once in the named TSV block,
-//! and there is nothing but these tests stopping the two from drifting apart.
+//! A failure here is a fact about the fixture or its reader, not the move generator. They also
+//! catch the fixture contradicting itself, as where the summary table and the TSV block restate one
+//! number.
 
 mod support;
 
@@ -31,16 +19,9 @@ fn corpus_section_1_is_six_positions_with_contiguous_depths() {
     }
 }
 
-/// Every summary row has one cell per depth column, empty cells included.
-///
-/// The absent values are empty cells, and an empty cell has to keep the space
-/// between its pipes. The reader trims repeated pipes from both ends of a row
-/// before splitting it, so a row ending `033 ||` is one column short rather
-/// than eight columns with the last one blank. Today the column that would
-/// vanish is the empty one, so the values read the same and nothing else would
-/// notice; that stops being true the moment an absent value is not the last in
-/// its row. Counting the columns here makes the space a checked property of the
-/// file instead of a note somebody has to have read.
+/// An empty cell must keep the space between its pipes: the reader trims repeated pipes, so `033
+/// ||` reads one column short. Today only a trailing column would vanish, so nothing else would
+/// notice until an absent value is not last in its row.
 #[test]
 fn corpus_section_1_summary_rows_all_have_eight_columns() {
     let names: Vec<String> = support::standard_positions()
@@ -70,8 +51,6 @@ fn corpus_section_1_summary_rows_all_have_eight_columns() {
     assert_eq!(rows, 6, "expected one summary row per position");
 }
 
-/// Section 1 states every node count twice in the fixture: in the readable summary
-/// table with thousands separators, and in the TSV block without. They agree.
 #[test]
 fn corpus_section_1_summary_table_agrees_with_the_tsv_block() {
     let tsv: std::collections::BTreeMap<(String, u32), u64> = support::standard_positions()
@@ -100,8 +79,7 @@ fn corpus_section_1_summary_table_agrees_with_the_tsv_block() {
     }
 }
 
-/// The two values the one-time completion gate is run against have to be in
-/// here. `tests/standard_perft.rs` names the gate and the command.
+/// `tests/standard_perft.rs` names the gate and the command.
 #[test]
 fn corpus_holds_the_completion_gate_values() {
     let startpos = support::standard("startpos");
@@ -148,9 +126,7 @@ fn corpus_section_2_is_twenty_distinct_arrays_to_depth_5() {
     }
 }
 
-/// The standard start array must be present as a control, and its numbers
-/// must be the standard start position's. That single row is what shows the
-/// Chess960 path and the standard path agree.
+/// That row is what shows the Chess960 and standard paths agree.
 #[test]
 fn corpus_dfrc_control_array_matches_the_standard_start_position() {
     let control = support::dfrc(518, 518);
@@ -170,8 +146,6 @@ fn corpus_dfrc_control_array_matches_the_standard_start_position() {
     }
 }
 
-/// The castling block is thirty cases (fifteen rules, each mirrored), and its
-/// verdict column agrees with its move column.
 #[test]
 fn corpus_castling_block_is_thirty_consistent_cases() {
     let cases = support::castling_cases();
@@ -206,9 +180,8 @@ fn corpus_castling_block_is_thirty_consistent_cases() {
     }
 }
 
-/// Each ambiguity-proof move list must have exactly as many moves as its own
-/// row in the castling block says the position has at depth 1, and must
-/// contain both of the two moves the proof turns on.
+/// As many moves as the position's own castling-block row says at depth 1, including both moves the
+/// proof turns on.
 #[test]
 fn corpus_ambiguity_proofs_agree_with_their_own_perft_rows() {
     let proofs = support::ambiguity_proofs();
@@ -241,8 +214,7 @@ fn corpus_ambiguity_proofs_agree_with_their_own_perft_rows() {
     }
 }
 
-/// Every edge case has a full depth-1 move list whose length agrees with the
-/// `d1` column and with its own stated count.
+/// Agrees with the `d1` column and with its own stated count.
 #[test]
 fn corpus_move_lists_agree_with_their_node_counts() {
     let mut cases = support::edge_cases();
@@ -283,8 +255,6 @@ fn corpus_move_lists_agree_with_their_node_counts() {
     }
 }
 
-/// The two positions whose annotations name checking moves must name moves
-/// that are actually in their own move lists.
 #[test]
 fn corpus_check_annotations_name_moves_from_their_own_lists() {
     let annotated: Vec<_> = support::expected_move_lists()
@@ -308,7 +278,7 @@ fn corpus_check_annotations_name_moves_from_their_own_lists() {
     }
 }
 
-/// Block names are the addressing scheme, so they have to be unique.
+/// Block names are the addressing scheme.
 #[test]
 fn corpus_block_names_are_unique() {
     let names = support::block_names();
@@ -324,9 +294,7 @@ fn corpus_block_names_are_unique() {
     );
 }
 
-/// Every rule in the castling block exists for both colours, and the mirrored
-/// row has the same node counts: mirroring is an exact symmetry, so a
-/// difference is a transcription error in the corpus, not a chess fact.
+/// Mirroring is an exact symmetry, so a difference is a transcription error, not a chess fact.
 #[test]
 fn corpus_castling_mirrors_agree_with_their_originals() {
     let cases = support::castling_cases();
@@ -356,8 +324,7 @@ fn corpus_castling_mirrors_agree_with_their_originals() {
     }
 }
 
-/// The immediate-castle rows must name arrays that exist in the DFRC block,
-/// and the White rows must be those arrays' own start FENs.
+/// The White rows must be those arrays' own start FENs.
 #[test]
 fn corpus_immediate_castles_reference_real_arrays() {
     let rows = support::immediate_castles();
@@ -385,8 +352,7 @@ fn corpus_immediate_castles_reference_real_arrays() {
     }
 }
 
-/// The two spellings of a notation row must differ in the castling field and
-/// nowhere else; otherwise the row is comparing two different positions.
+/// Otherwise the row compares two different positions.
 #[test]
 fn corpus_fen_notation_rows_differ_only_in_the_castling_field() {
     let rows = support::fen_notations();
@@ -429,8 +395,7 @@ fn corpus_rights_captures_only_remove_rights() {
     }
 }
 
-/// The ep-evasion row must be one of the edge cases, and its whole point is
-/// that the move's destination is outside the naive target mask.
+/// The row must also be one of the edge cases.
 #[test]
 fn corpus_ep_evasion_destination_is_outside_the_mask() {
     let rows = support::ep_evasions();
@@ -467,9 +432,7 @@ fn corpus_capacity_position_is_at_the_move_bound() {
     assert_eq!(unique.len(), 218, "a move is listed twice");
 }
 
-/// Each divide must sum to that position's perft, and list exactly its root
-/// moves. This is the check that makes the divide data usable as a reference:
-/// a divide that does not sum to the total is worse than no divide.
+/// And list exactly its root moves: a divide that does not sum to the total is worse than none.
 #[test]
 fn corpus_divides_sum_to_their_perft_totals() {
     let rows = support::divides();

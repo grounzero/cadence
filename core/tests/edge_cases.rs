@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus section 4: check, evasion, promotion and en-passant edge cases.
-//!
-//! These are the positions that silently corrupt perft at depth 4 and beyond
-//! while shallow depths stay green. Each gets two tests (the node counts,
-//! and the exact depth-1 move list) because an aggregate can be right by
-//! cancellation. One missing evasion plus one illegal move generated is a
-//! perfect total and a broken engine; a move list cannot lie that way.
-//!
-//! The named properties the corpus states in prose are asserted too, and are
-//! derived from the parsed document rather than transcribed: the checking
-//! moves come from the annotation's `<move> and <move> give check` clause, and
-//! everything else in the same move list is then required *not* to give
-//! check.
-//!
-//! All of section 4 is in the fast tier. The deepest value here is 15,495 nodes.
+//! Each position gets a node count and an exact depth-1 move list, because a count can be right by
+//! cancellation. The checking moves come from the annotation, and every other move in the list must
+//! not give check.
 
 mod support;
 
@@ -63,9 +51,7 @@ macro_rules! edge_move_list_tests {
             let expected = support::expected_moves(&c.fen);
             let label = concat!("edge moves [", $selector, "]");
 
-            // The document states the count twice: in the TSV `d1` column
-            // and in parentheses above the list. Neither is trusted over the
-            // other; they are checked against each other in the corpus
+            // The `d1` column and the parenthesised count are checked against each other in the
             // integrity tests.
             let mut want = expected.moves.clone();
             want.sort();
@@ -93,13 +79,8 @@ edge_move_list_tests! {
 // The named properties
 // ---------------------------------------------------------------------------
 
-/// The only position in the corpus that exercises the double-check branch.
-///
-/// Black's king is attacked by a rook and a knight at once. No capture of one
-/// checker and no interposition can resolve both, so generation must restrict
-/// to king moves the moment the checker count reaches two, and it must reach
-/// two, which is what this asserts directly rather than inferring from the
-/// move list.
+/// The corpus's only double-check position. The checker count must reach two, asserted directly
+/// rather than inferred from the move list.
 #[test]
 fn double_check_position_has_exactly_two_checkers() {
     let c = support::edge_case("DOUBLE CHECK");
@@ -115,11 +96,7 @@ fn double_check_position_has_exactly_two_checkers() {
     );
 }
 
-/// All four promotion pieces block the check equally well.
-///
-/// A generator that emits only queen promotions when in check, or that
-/// computes block squares without expanding the promotion pieces, returns
-/// four moves here instead of seven.
+/// A generator emitting only queen promotions in check returns four moves here instead of seven.
 #[test]
 fn underpromotion_evasion_generates_all_four_pieces() {
     let c = support::edge_case("UNDERPROMOTION RESOLVING CHECK");
@@ -142,14 +119,8 @@ fn underpromotion_evasion_generates_all_four_pieces() {
 
 macro_rules! check_claim_tests {
     ($( $name:ident => $selector:literal; )*) => { $(
-        /// Every move the corpus annotation says gives check must give check,
-        /// and every *other* promotion in the same position must not.
-        ///
-        /// The negative half is derived, not transcribed: the annotation only
-        /// names the checking moves, so the complement is computed from the
-        /// parsed move list. That makes it stricter than the prose: the
-        /// prose says "the quiet b7b8 promotions do not", the test says every
-        /// promotion that is not named does not.
+        /// The negative half is computed from the parsed list, so every unnamed promotion must not
+        /// give check, stricter than the prose.
         #[test]
         fn $name() {
             let c = support::edge_case($selector);
@@ -191,15 +162,8 @@ check_claim_tests! {
     promotion_capture_check_claims_hold => "PROMOTION-CAPTURE GIVING CHECK";
 }
 
-/// An en-passant capture can resolve a check, and its destination is outside
-/// the target set a naive evasion generator searches.
-///
-/// This is the case the check-count dispatch omits. The checker is a pawn that
-/// has just
-/// double-pushed; the capture removes it, but lands on the square *behind* it,
-/// so it is neither "capture the checker" nor "interpose on BETWEEN". The
-/// corpus supplies the mask explicitly so the claim is checked rather than
-/// described.
+/// The checker has just double-pushed and the capture lands behind it: neither taking on the
+/// checker's square nor interposing. The corpus supplies the mask, so the claim is checked.
 #[test]
 fn en_passant_capture_is_a_legal_check_evasion() {
     let cases = support::ep_evasions();
@@ -236,10 +200,8 @@ fn en_passant_capture_is_a_legal_check_evasion() {
     }
 }
 
-/// Two pawns can capture the same en-passant square.
-///
-/// The invariant "at most one ep capture per position" is false, and an
-/// implementation written against it generates one of the two.
+/// At most one ep capture per position is false; an implementation written against it generates one
+/// of the two.
 #[test]
 fn both_pawns_may_capture_the_same_ep_square() {
     let c = support::edge_case("TWO PAWNS CAPTURING");
@@ -274,9 +236,8 @@ fn both_pawns_may_capture_the_same_ep_square() {
     }
 }
 
-/// Both selector lists must partition the edge-case block, and must agree with
-/// each other: a position with a node-count test and no move-list test is
-/// exactly the gap the move-list tests exist to close.
+/// A position with a node-count test and no move-list test is the gap the move-list tests exist to
+/// close.
 #[test]
 fn selectors_partition_the_edge_case_block() {
     let reasons: Vec<String> = support::edge_cases()

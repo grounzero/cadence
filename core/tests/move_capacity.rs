@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus move-list capacity.
-//!
-//! Nothing else in the corpus comes near the 218-move bound, so `MAX_MOVES`
-//! and the width of `MoveList`'s length field are otherwise untested, the
-//! `u8`-to-`u16` correction included. A `u8` length wraps to zero at a
-//! capacity of 256, so the failure is not a truncated list but **no legal
-//! moves at all**, which reads like a stalemate rather than a bug.
+//! Nothing else nears the 218-move bound. A `u8` length wraps to zero at 256, which reads as no
+//! legal moves, like a stalemate rather than a bug.
 
 mod support;
 

@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus FEN notation and castling-rights removal.
-//!
-//! Two concerns that share a cause: the castling field is the only part of a
-//! FEN whose meaning depends on where the rooks are, and DFRC is where that
-//! stops being a formality.
+//! The castling field is the only part of a FEN whose meaning depends on where the rooks are.
 
 mod support;
 
@@ -14,10 +10,8 @@ mod support;
 
 macro_rules! fen_notation_tests {
     ($( $name:ident => $selector:literal; )*) => { $(
-        /// Both spellings denote the same position, so both must parse to the
-        /// same rights and the same node counts. A parser that reads `K` as
-        /// "the h-file rook" finds nothing there and silently drops the right,
-        /// which is a legal-looking position with the wrong move list.
+        /// A parser reading `K` as the h-file rook drops the right silently: a legal-looking
+        /// position with the wrong move list.
         #[test]
         fn $name() {
             let f = support::fen_notation($selector);
@@ -37,11 +31,8 @@ fen_notation_tests! {
     xfen_falls_back_to_the_file_letter    => "THE FALLBACK";
 }
 
-/// Round-trip in both notations, over every position the corpus names.
-///
-/// Emission is where the two notations diverge in the other direction: a
-/// Shredder emitter that always writes `KQkq` loses the rook files, and an
-/// X-FEN emitter that never falls back writes an ambiguous field.
+/// A Shredder emitter that always writes `KQkq` loses the rook files; an X-FEN emitter that never
+/// falls back writes an ambiguous field.
 #[test]
 fn fen_round_trips_in_both_notations() {
     for f in support::fen_notations() {
@@ -63,15 +54,9 @@ fn fen_round_trips_in_both_notations() {
 
 macro_rules! rights_capture_tests {
     ($( $name:ident => $selector:literal; )*) => { $(
-        /// `update_mask[from] & update_mask[to]` is one branchless line
-        /// claimed to cover king moves, rook moves, rook captures and
-        /// rook-takes-rook. Perft exercises the first two constantly and the
-        /// capture cases barely at all, and under DFRC the rook files are
-        /// arbitrary, so the compile-time table the standard trick uses does
-        /// not exist.
-        ///
-        /// The assertion is on the emitted FEN rather than on any internal
-        /// representation, so it cannot pass by agreeing with itself.
+        /// Perft barely exercises the capture cases of the update mask, and under DFRC no
+        /// compile-time table exists. Asserted on the emitted FEN, so it cannot pass by agreeing
+        /// with itself.
         #[test]
         fn $name() {
             let r = support::rights_capture($selector);

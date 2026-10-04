@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `castling`: rights and layout, with no FEN parser and no move
-//! generation involved.
-//!
-//! The layout is built directly from the Scharnagl back ranks (the same
-//! decoder the corpus's DFRC arrays were checked against) for all 960
-//! arrays × both colours, and every field is compared with a naive statement
-//! of the rules: destinations fixed by side, `king_path` the closed segment,
-//! `must_be_empty` both segments minus the two origins, `update_mask` clearing
-//! exactly the rights a move from or to that square kills.
-//!
-//! The degenerate-castle census is the external number: over the 1,920
-//! castles, **552 move exactly one piece, 1,368 move both, 0 move neither**
-//! (corpus section 5). It is computable from the layout alone, and it is what makes
-//! "clear both origins before setting either destination" a rule about 28.7%
-//! of DFRC castles rather than a corner case.
+//! Every layout field over all 960 arrays and both colours, against a naive statement of the rules.
+//! The census of corpus section 5, 552 castles moving one piece and 1,368 both, makes clearing both
+//! origins before setting either destination a rule about 28.7% of DFRC castles.
 
 mod support;
 
@@ -89,7 +77,7 @@ fn rights_predicates_over_all_sixteen_values() {
 // The layout, over all 960 arrays × both colours
 // ---------------------------------------------------------------------------
 
-/// The naive closed segment along a rank, both ends included.
+/// Both ends included.
 fn segment(a: Square, b: Square) -> Bitboard {
     assert_eq!(a.rank(), b.rank());
     let (lo, hi) = if a.file() <= b.file() { (a, b) } else { (b, a) };
@@ -103,7 +91,6 @@ fn segment(a: Square, b: Square) -> Bitboard {
     out
 }
 
-/// One colour's castling geometry from a Scharnagl back rank.
 struct Array {
     king: Square,
     /// Kingside rook, queenside rook.
@@ -124,7 +111,6 @@ fn array(n: u32, c: Colour) -> Array {
     }
 }
 
-/// Both colours of array `n`, as the layout constructor takes them.
 fn layout_inputs(n: u32) -> ([OptSquare; 2], [OptSquare; 4]) {
     let w = array(n, Colour::White);
     let b = array(n, Colour::Black);
@@ -213,8 +199,7 @@ fn update_mask_clears_exactly_the_rights_a_move_touching_the_square_kills() {
                 "array {n}: update_mask[{sq}]"
             );
         }
-        // Applied the way make_move applies it: a rook leaving its square and
-        // capturing the other rook kills both rights in one AND.
+        // A rook capturing the other rook kills both rights in one AND.
         let all = CastlingRights::ALL;
         let wk = rooks[ci(Colour::White, CastleSide::King)]
             .get()
@@ -250,13 +235,8 @@ fn update_mask_clears_exactly_the_rights_a_move_touching_the_square_kills() {
     }
 }
 
-/// The census: 552 castles move exactly one piece, 1,368 move both, none
-/// move neither. Corpus section 5, reproduced from the layout alone.
-///
-/// Counted per colour: each colour's 960 arrays × 2 sides are the 1,920
-/// castles, and the two colours are mirrors, so both must give the same
-/// numbers: a rank-8 mirroring bug in the layout shows up here as one
-/// colour's census disagreeing with the other's.
+/// The two colours are mirrors, so a rank-8 mirroring bug shows as one colour's census disagreeing
+/// with the other's.
 #[test]
 fn degenerate_castle_census_is_552_one_piece_1368_two_piece_0_zero_piece() {
     for c in Colour::ALL {
@@ -293,8 +273,7 @@ fn degenerate_castle_census_is_552_one_piece_1368_two_piece_0_zero_piece() {
         assert_eq!(one, 552, "{c:?}: castles where exactly one piece moves");
         assert_eq!(two, 1368, "{c:?}: castles where both pieces move");
         assert_eq!(zero, 0, "{c:?}: castles where neither piece moves");
-        // The one-piece castles split into king-stays and rook-stays; both
-        // shapes exist, and neither is rare.
+        // Both shapes exist, and neither is rare.
         assert_eq!(king_still + rook_still, 552, "{c:?}");
         assert!(king_still > 0 && rook_still > 0, "{c:?}");
     }
