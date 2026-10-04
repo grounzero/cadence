@@ -1,27 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus section 2: DFRC start arrays.
-//!
-//! Twenty double-Fischer-random start positions, both sides holding both
-//! castling rights, named by the Scharnagl index of each back rank.
-//!
-//! **These numbers have one oracle and no cross-check.** Nothing in section 2 has
-//! been compared against a second implementation, and there is no
-//! decades-old published table for DFRC start arrays. When Cadence disagrees
-//! here, "the corpus is wrong" is a live hypothesis: check the castling
-//! convention in the corpus preamble before suspecting the magics.
-//!
-//! The trap this section exists to expose: in most arrays the king and rook
-//! have pieces between them, so no castle is reachable until depth 5 or
-//! deeper, and a run to depth 4 passes with the castling code completely
-//! broken. Four of these twenty can castle at their first move and were
-//! chosen for it, and are asserted separately at the bottom of this file.
-//!
-//! These run to **depth 5 in the fast tier**, not depth 4. Depth 4 is the
-//! depth the corpus explicitly warns is worthless here, and running twenty
-//! arrays to it is twenty near-duplicate tests of non-castling movegen. The
-//! whole set at d5 is ~98M nodes against the ~469M the standard suite already
-//! contributes.
+//! These numbers have one oracle and no cross-check: on a disagreement, check the corpus's castling
+//! convention before suspecting the magics. Depth 5 in the fast tier, because most arrays cannot
+//! castle before it and depth 4 passes with castling broken.
 
 mod support;
 
@@ -66,13 +47,9 @@ dfrc_perft_tests! {
 // The four arrays that can castle at move one
 // ---------------------------------------------------------------------------
 
-/// The corpus names four arrays as castling at their first move, and that
-/// claim is what the whole fast tier's DFRC castling coverage rests on: most
-/// arrays cannot reach a castle before depth 5. Until now the claim lived in a
-/// prose table and nothing checked it.
-///
-/// The Black rows are the position after `1. a3`, a reachable position rather
-/// than a contrived side-to-move flip.
+/// Most arrays cannot castle before depth 5, so the fast tier's DFRC castling coverage rests on
+/// these four. The Black rows are the position after `1. a3`, reachable rather than a flipped side
+/// to move.
 macro_rules! immediate_castle_tests {
     ($( $name:ident => $wid:literal, $bid:literal, $stm:ident; )*) => { $(
         #[test]

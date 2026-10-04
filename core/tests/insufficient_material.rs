@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `Board::is_insufficient_material`: a table each way, every row also read with the
-//! colours mirrored. The mirror moves every square to the other colour, so it exercises both
-//! halves of the one-square-colour test.
+//! The mirror moves every square to the other colour, so it exercises both halves of the
+//! one-square-colour test.
 
 use cadence_core::position::Board;
 

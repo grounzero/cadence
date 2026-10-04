@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Generative machinery for the property tests.
-//!
-//! These four properties have no
-//! corpus data behind them, because they are not statements about particular
-//! positions: they are statements about every position. What they need
-//! instead is a way to *make* positions, deterministically.
-//!
-//! Nothing here is chess logic in the sense the engine means it. The Scharnagl
-//! decoder is combinatorics over back ranks, the walk uses the engine's own
-//! `generate_legal`, and the RNG exists so a failure is reproducible from a
-//! seed rather than from a lucky afternoon.
+//! Positions made deterministically, for properties about every position rather than particular
+//! ones. The RNG exists so a failure is reproducible from a seed.
 
 use cadence_core::position::Board;
 use cadence_core::types::{Colour, PieceType};
@@ -20,9 +11,8 @@ use cadence_core::{FenStyle, Move, generate_legal};
 // Determinism
 // ---------------------------------------------------------------------------
 
-/// splitmix64. Deterministic, seedable, and not `HashMap`'s `RandomState`:
-/// a property test that cannot be re-run on the seed that failed is a property
-/// test that finds a bug once.
+/// splitmix64, not `HashMap`'s `RandomState`: a property test that cannot be re-run on the seed
+/// that failed finds a bug once.
 pub struct Rng(u64);
 
 impl Rng {
@@ -39,7 +29,6 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// Uniform in `0..n`.
     pub fn below(&mut self, n: usize) -> usize {
         assert!(n > 0, "below(0)");
         usize::try_from(self.next_u64() % n as u64).expect("fits")
@@ -50,8 +39,7 @@ impl Rng {
 // The 960 back ranks
 // ---------------------------------------------------------------------------
 
-/// The ten ways to place two knights among five free squares, in the order
-/// Scharnagl's numbering uses.
+/// In the order Scharnagl's numbering uses.
 const KNIGHT_PLACEMENTS: [(usize, usize); 10] = [
     (0, 1),
     (0, 2),
@@ -65,12 +53,8 @@ const KNIGHT_PLACEMENTS: [(usize, usize); 10] = [
     (3, 4),
 ];
 
-/// The back rank of Chess960 start position `n`, as eight lowercase chars,
-/// a-file first.
-///
-/// Verified against every index in the corpus's DFRC block (twenty arrays,
-/// two indices each) by [`scharnagl_matches_the_corpus`] in the round-trip
-/// tests. 518 is the standard array.
+/// Verified against every index in the corpus's DFRC block by `scharnagl_matches_the_corpus`. 518
+/// is the standard array.
 #[must_use]
 pub fn scharnagl(n: u32) -> String {
     assert!(n < 960, "{n} is not a Chess960 start position");
@@ -89,8 +73,8 @@ pub fn scharnagl(n: u32) -> String {
     k1.clone_into_rank(&mut rank, 'n');
     k2.clone_into_rank(&mut rank, 'n');
 
-    // Rook, king, rook (in that order), which is what makes the king strictly
-    // between its rooks in all 960 arrays.
+    // Rook, king, rook in that order, which puts the king strictly between its rooks in all 960
+    // arrays.
     let free = free_squares(&rank);
     free[0].clone_into_rank(&mut rank, 'r');
     free[1].clone_into_rank(&mut rank, 'k');
@@ -119,8 +103,7 @@ fn free_squares(rank: &[Option<char>; 8]) -> Vec<FreeSquare> {
         .collect()
 }
 
-/// The DFRC start FEN for White array `wid` and Black array `bid`, castling
-/// rights in Shredder notation.
+/// Castling rights in Shredder notation.
 #[must_use]
 pub fn dfrc_start_fen(wid: u32, bid: u32) -> String {
     let white = scharnagl(wid);
@@ -137,8 +120,7 @@ pub fn dfrc_start_fen(wid: u32, bid: u32) -> String {
     assert_eq!(b.len(), 2, "array {bid} does not have two rooks");
 
     let file_char = |i: usize| (b'a' + u8::try_from(i).expect("file fits")) as char;
-    // Shredder notation, in the "KQkq" slot order: king side (the higher file)
-    // first for each colour.
+    // King side, the higher file, first for each colour.
     let rights = format!(
         "{}{}{}{}",
         file_char(w[1]).to_ascii_uppercase(),
@@ -152,7 +134,7 @@ pub fn dfrc_start_fen(wid: u32, bid: u32) -> String {
     )
 }
 
-/// All 960 single-shuffle start positions (White and Black arrays equal).
+/// White and Black arrays equal.
 #[must_use]
 pub fn all_960_start_fens() -> Vec<String> {
     (0..960).map(|n| dfrc_start_fen(n, n)).collect()
@@ -162,11 +144,8 @@ pub fn all_960_start_fens() -> Vec<String> {
 // Board fingerprint
 // ---------------------------------------------------------------------------
 
-/// Everything `unmake_move` is required to restore.
-///
-/// The mailbox and the twelve piece bitboards are both captured, and captured
-/// *separately*, because the failure being hunted is the two disagreeing,
-/// which a fingerprint derived from only one of them cannot see.
+/// The mailbox and the piece bitboards are captured separately, because the failure hunted is the
+/// two disagreeing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fingerprint {
     pub mailbox: Vec<Option<String>>,
@@ -207,14 +186,13 @@ pub fn fingerprint(board: &Board) -> Fingerprint {
     }
 }
 
-/// The legal moves of `board`, as a `Vec` so the list can outlive the borrow.
+/// A `Vec`, so the list can outlive the borrow.
 #[must_use]
 pub fn legal(board: &Board) -> Vec<Move> {
     generate_legal(board).as_slice().to_vec()
 }
 
-/// Positions the walks start from: every corpus position that is a full,
-/// ordinary board, plus a spread of start arrays.
+/// Every full, ordinary corpus board, plus a spread of start arrays.
 #[must_use]
 pub fn walk_seeds() -> Vec<String> {
     let mut out: Vec<String> = super::standard_positions()

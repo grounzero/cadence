@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! One self-play game at a fixed node count, from a start to an end the rules give it. There is no
-//! adjudication and no ply cap: the fifty-move rule bounds a game, and a game with no result is
+//! No adjudication and no ply cap: the fifty-move rule bounds a game, and a game with no result is
 //! worse than a long one.
 
 use std::io;
@@ -15,7 +14,7 @@ use crate::score::Score;
 use crate::search::{Limits, Search};
 use crate::tt::Table;
 
-/// How a game ended. Every variant is a rule of chess, which is the whole of what ends a game here.
+/// Every variant is a rule of chess.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
     Mate,
@@ -26,7 +25,6 @@ pub enum Ending {
 }
 
 impl Ending {
-    /// The word a game record carries.
     #[must_use]
     pub fn word(self) -> &'static str {
         match self {
@@ -38,7 +36,6 @@ impl Ending {
         }
     }
 
-    /// The inverse of [`Ending::word`].
     #[must_use]
     pub fn from_word(word: &str) -> Option<Ending> {
         [
@@ -53,7 +50,7 @@ impl Ending {
     }
 }
 
-/// A game's result from White's point of view.
+/// From White's point of view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     White,
@@ -62,7 +59,7 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// `1-0`, `0-1` or `1/2-1/2`, which is what the tuner reads.
+    /// What the tuner reads.
     #[must_use]
     pub fn text(self) -> &'static str {
         match self {
@@ -72,7 +69,6 @@ impl Outcome {
         }
     }
 
-    /// The inverse of [`Outcome::text`].
     #[must_use]
     pub fn from_text(text: &str) -> Option<Outcome> {
         [Outcome::White, Outcome::Black, Outcome::Draw]
@@ -81,8 +77,7 @@ impl Outcome {
     }
 }
 
-/// Whether the game is over in `board`, and if so how and with what result. Mate is read before
-/// the fifty-move rule, because a mate delivered on the hundredth quiet ply is still a mate.
+/// Mate is read first: a mate on the hundredth quiet ply is still a mate.
 #[must_use]
 pub fn ending(board: &Board) -> Option<(Ending, Outcome)> {
     if generate_legal(board).is_empty() {
@@ -107,8 +102,7 @@ pub fn ending(board: &Board) -> Option<(Ending, Outcome)> {
     None
 }
 
-/// The game played from a position: each move with the score its search reported, from the side
-/// to move's point of view, and how it ended.
+/// Scores from the side to move's point of view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Played {
     pub moves: Vec<(Move, Score)>,
@@ -116,8 +110,7 @@ pub struct Played {
     pub outcome: Outcome,
 }
 
-/// One fixed-node search of `board` from an empty table, which is what screens a start. Returns
-/// the score from the side to move's point of view.
+/// From an empty table; what screens a start.
 pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Score {
     tt.clear();
     let stop = AtomicBool::new(false);
@@ -127,13 +120,11 @@ pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Score {
     search.score()
 }
 
-/// Play `board` out, every move a search of `nodes` nodes, the table cleared first. The same
-/// board and node count give the same game, whatever `tt` held before.
+/// The same board and node count give the same game, whatever `tt` held before.
 ///
 /// # Panics
 ///
-/// If the search returns a move that is not legal. That is a search fault, and a record written
-/// past it would be a game no rules allow.
+/// If the search returns an illegal move.
 pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
     tt.clear();
     let stop = AtomicBool::new(false);

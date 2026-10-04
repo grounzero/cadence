@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Zobrist keys: const splitmix64 tables and typed key operations. Every table is built at
-//! compile time from a fixed seed, so the keys are a function of the code alone and two builds
-//! agree.
+//! Built at compile time from a fixed seed, so two builds agree.
 
 use crate::castling::CastlingRights;
 use crate::rng::splitmix64;
 use crate::types::{File, Piece, Square};
 
-/// Fixed for the life of the crate. Changing it changes every key, which is harmless to the
-/// engine and fatal to any stored table or datagen record that carried keys.
+/// Changing it invalidates any stored record that carried keys.
 const SEED: u64 = 0x00CA_DE7C_E5EE_D002;
 
-/// The four tables, drawn in one sequence: piece-square, side, castling, ep.
+/// Drawn in this order, which the keys depend on.
 struct Tables {
     piece: [[u64; 64]; 12],
     side: u64,
@@ -62,7 +59,6 @@ const fn build() -> Tables {
 
 static TABLES: Tables = build();
 
-/// The key for `piece` standing on `sq`.
 #[inline]
 #[must_use]
 pub fn piece(piece: Piece, sq: Square) -> u64 {
@@ -76,15 +72,14 @@ pub fn side() -> u64 {
     TABLES.side
 }
 
-/// The key for the whole rights set. Losing a right is one XOR of the old index's key and the
-/// new one's.
+/// One key per rights set: losing a right XORs the old set's key out and the new one's in.
 #[inline]
 #[must_use]
 pub fn castling(rights: CastlingRights) -> u64 {
     TABLES.castling[rights.zobrist_index()]
 }
 
-/// The key for an available en-passant capture on `file`.
+/// Only when a capture is available.
 #[inline]
 #[must_use]
 pub fn ep(file: File) -> u64 {

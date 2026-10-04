@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence-core`: board representation, move generation and the single definition of NNUE
-//! feature indexing. `no_std` + `alloc`: the search state stack and the game history are heap
-//! allocations.
+//! The one definition of NNUE feature indexing lives here. `alloc` because the state stack and
+//! game history are on the heap.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
-/// Maximum search depth in plies. Bounds the accumulator stack, the killer tables and the PV
-/// table.
+/// Sizes the state stack, the killers and the principal-variation table.
 pub const MAX_PLY: usize = 256;
 
 pub mod attacks;

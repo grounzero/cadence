@@ -1,32 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `attackers_to` and for `blockers`/`pinners`: brute force.
-//!
-//! Castling legality, king-move legality and en passant
-//! all rest on `attackers_to`; every pin filter in move generation rests on
-//! the blockers computation. Neither had a gate. A bug in either was reached
-//! only by perft, which reports a wrong total and cannot say which of the
-//! two broke: a reversed pawn-attack direction and a pin computed with the
-//! wrong slider type both present as "the node count is off by a little".
-//!
-//! **Half one.** For every square, `attackers_to(sq, occ)` must equal the set
-//! of pieces `p` on the board for which a naive "does `p` attack `sq` under
-//! `occ`" says yes (the oracle in `support::naive`, written in `(file,
-//! rank)` integers with nothing from `attacks` or `magic`). Under the board's
-//! occupancy, under the occupancy with each king lifted (the king-retreat
-//! case), and
-//! under random subsets, because the occupancy is caller-supplied and the
-//! contract is that only slider blocking reads it.
-//!
-//! **Half two.** For each colour, `blockers(c)` must equal the set of pieces
-//! whose removal exposes `c`'s king to an enemy slider that did not attack it
-//! before, and `pinners(c)` the set of those sliders: the definition,
-//! evaluated by removing each piece and retesting.
-//!
-//! Positions: every corpus position, two thousand random placements, and
-//! positions reached by walking from the corpus seeds. The random placements
-//! are where the slider geometry actually gets exercised: a start array has
-//! no pins in it.
+//! Perft cannot say which of `attackers_to` and the blockers broke: a reversed pawn direction and a
+//! pin with the wrong slider type both read as a node count off by a little. Both are compared with
+//! brute-force oracles over corpus positions, random placements, which hold the pins a start array
+//! lacks, and walks.
 
 mod support;
 
@@ -61,8 +38,7 @@ fn random_fens() -> Vec<String> {
         .collect()
 }
 
-/// The board's occupancy, each king lifted, and a few random subsets: the
-/// occupancy is the caller's, and every one of these is a caller.
+/// The occupancy is the caller's, and every one of these is a caller.
 fn occupancies(board: &Board, rng: &mut generate::Rng) -> Vec<(String, Bitboard)> {
     let occ = board.occupied();
     let mut out = vec![
@@ -125,9 +101,8 @@ fn assert_pins(label: &str, board: &Board) {
             board.to_fen(cadence_core::FenStyle::Shredder),
             board.pinners(c)
         );
-        // Structural consequences of the definition: a pinner is an enemy
-        // slider, a blocker is not the king, and every blocker has exactly
-        // one pinner behind it.
+        // A pinner is an enemy slider, a blocker is not the king, and every blocker has exactly one
+        // pinner behind it.
         let them = c.flip();
         let sliders = board.pieces(them, PieceType::Bishop)
             | board.pieces(them, PieceType::Rook)
@@ -142,8 +117,7 @@ fn assert_pins(label: &str, board: &Board) {
             "{label}: the king is not a blocker"
         );
     }
-    // A blocker of the mover's own colour is exactly a pinned piece; the
-    // classic case is asserted by name below in `pins_by_hand`.
+    // A blocker of the mover's own colour is exactly a pinned piece.
 }
 
 #[test]
@@ -184,8 +158,7 @@ fn blockers_and_pinners_match_the_definition_over_random_placements() {
             enemy_blocker_seen += (board.blockers(c) & board.by_colour(c.flip())).count() as usize;
         }
     }
-    // The random placements must actually exercise both kinds of blocker,
-    // or the test above is checking empty sets against empty sets.
+    // Otherwise the test above compares empty sets.
     assert!(
         pinned_seen > 200,
         "only {pinned_seen} pinned pieces seen; the generator is too tame"
@@ -196,9 +169,7 @@ fn blockers_and_pinners_match_the_definition_over_random_placements() {
     );
 }
 
-/// Along walks from the corpus seeds, so that both halves are checked in
-/// positions a game actually reaches, including after castling, promotion
-/// and en passant.
+/// Including after castling, promotion and en passant.
 #[test]
 fn both_halves_hold_along_walks() {
     let seeds = generate::walk_seeds();

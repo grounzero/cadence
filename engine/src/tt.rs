@@ -1,63 +1,52 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The transposition table: what the search already knows about a position. A fixed-size
-//! open-addressed table of 64-byte buckets, four slots each, indexed by the Zobrist key.
+//! Open-addressed 64-byte buckets of four slots, indexed by the Zobrist key.
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use cadence_core::Move;
 
-/// The default `Hash`, in mebibytes: what the engine allocates before a GUI says otherwise.
-/// Sixteen, which is what the STC preset passes.
+/// What the STC preset passes.
 pub const DEFAULT_HASH_MB: usize = 16;
 
-/// The smallest `Hash` the UCI option accepts. One mebibyte is 16,384 buckets, which is small
-/// enough to be useless and large enough to work.
+/// 16,384 buckets: small enough to be useless, large enough to work.
 pub const MIN_HASH_MB: usize = 1;
 
-/// The largest `Hash` the UCI option accepts. Four gibibytes is past any machine in the fleet;
-/// the allocation is fallible either way.
+/// Past any machine in the fleet; the allocation is fallible either way.
 pub const MAX_HASH_MB: usize = 4096;
 
-/// Slots per bucket. Four sixteen-byte slots is one 64-byte cache line, so a probe that scans
-/// the whole bucket costs one cache miss.
+/// Four sixteen-byte slots fill one cache line, so a whole-bucket probe costs one miss.
 const SLOTS: usize = 4;
 
 /// Buckets [`Table::hashfull`] looks at. Four slots each, so the sample is the thousand a
 /// permill is a count of.
 const SAMPLE_BUCKETS: usize = 250;
 
-/// Depth, in ply, that one generation of age is worth when the least valuable slot of a full
-/// bucket is chosen.
+/// Plies of depth one generation of age is worth when choosing a full bucket's victim.
 const AGE_PENALTY: i32 = 8;
 
-/// The generation counter is six bits, so it wraps at 64.
 const AGE_MASK: u8 = 0x3F;
 
-/// What a score in a slot is: the value itself, or a bound on it. Fail-soft alpha-beta returns
-/// three kinds of value, and a table that does not distinguish them cannot be probed safely.
+/// Fail-soft returns three kinds of value, and a table that does not distinguish them cannot be
+/// probed safely.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Bound {
-    /// The search failed high here: the true value is at least the score.
+    /// At least the score.
     Lower = 1,
-    /// The search failed low here: the true value is at most the score.
+    /// At most the score.
     Upper = 2,
-    /// The window contained the value: the score is the value.
+    /// The score is the value.
     Exact = 3,
 }
 
-/// One decoded result: what the search reads off a hit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Hit {
-    /// The best move found at this node. The search tries it first at an interior node
-    /// (`search::order_first`), whatever `depth` says: a hit too shallow to answer the question
-    /// still names the move that answered it before.
+    /// Tried first whatever `depth` says: a hit too shallow to answer still names the move that
+    /// answered before.
     pub mv: Move,
-    /// The score, relative to the node it was stored at rather than to the root: see
-    /// `score::to_tt`.
+    /// Relative to the node it was stored at, not the root.
     pub score: i16,
-    /// The depth the score was searched to.
     pub depth: u8,
     pub bound: Bound,
 }
@@ -74,10 +63,10 @@ const BOUND_SHIFT: u32 = 40;
 const AGE_SHIFT: u32 = 42;
 
 impl Entry {
-    /// An untouched slot: no bound, so it decodes to nothing.
+    /// No bound, so it decodes to nothing.
     pub const EMPTY: Entry = Entry(0);
 
-    /// Pack one result. `age` is masked to six bits.
+    /// `age` is masked to six bits.
     #[must_use]
     pub const fn new(mv: Move, score: i16, depth: u8, bound: Bound, age: u8) -> Entry {
         Entry(
@@ -99,15 +88,14 @@ impl Entry {
         Entry(bits)
     }
 
-    /// The generation this was stored in, or zero for an untouched slot.
+    /// Zero for an untouched slot.
     #[must_use]
     const fn age(self) -> u8 {
         ((self.0 >> AGE_SHIFT) as u8) & AGE_MASK
     }
 
-    /// The result, or `None` for an untouched slot. The bound field is what decides: it is two
-    /// bits and zero is not a bound, so a slot that has never been written decodes to nothing
-    /// whatever else its bits happen to say.
+    /// The bound decides: zero is not a bound, so a never-written slot decodes to nothing whatever
+    /// its other bits say.
     #[must_use]
     pub const fn decode(self) -> Option<Hit> {
         let bound = match (self.0 >> BOUND_SHIFT) & 0b11 {
@@ -125,8 +113,7 @@ impl Entry {
     }
 }
 
-/// The lockless read, as a function: the two words of a slot, validated against the key being
-/// looked up. `Some` only when `word0 ^ word1` is `key` **and** the data decodes to a result.
+/// The lockless read: `Some` only when `word0 ^ word1` is `key` and the data decodes.
 #[must_use]
 pub fn verify(word0: u64, word1: u64, key: u64) -> Option<Hit> {
     if word0 ^ word1 != key {
@@ -157,9 +144,8 @@ impl Slot {
         )
     }
 
-    /// Data first, then the checked key. Under `Relaxed` neither the compiler nor the hardware
-    /// owes a reader that order; what the order buys is that the window in which a reader can
-    /// see a new key beside old data is not widened on purpose.
+    /// Under `Relaxed` nothing owes a reader this order; it only avoids widening the window in
+    /// which a new key sits beside old data.
     #[inline]
     fn write(&self, key: u64, entry: Entry) {
         let data = entry.to_bits();
@@ -168,7 +154,6 @@ impl Slot {
     }
 }
 
-/// Four slots on one cache line.
 #[repr(align(64))]
 struct Bucket {
     slots: [Slot; SLOTS],
@@ -186,24 +171,22 @@ const _: () = assert!(size_of::<Slot>() == 16);
 const _: () = assert!(size_of::<Bucket>() == 64);
 const _: () = assert!(align_of::<Bucket>() == 64);
 
-/// The table. Allocated once, never resized: a new size is a new table.
+/// Never resized: a new size is a new table.
 pub struct Table {
     buckets: Box<[Bucket]>,
     generation: AtomicU8,
 }
 
 impl Table {
-    /// A table of `mb` mebibytes, rounded down to whole buckets, or `None` if the allocation
-    /// fails. A GUI can ask for more memory than the machine has, and an engine that aborts on
-    /// it is an engine that loses the game; the caller keeps whatever table it had.
+    /// Rounded down to whole buckets; `None` if allocation fails, because an engine that aborts on
+    /// a GUI's oversized request loses the game.
     #[must_use]
     pub fn new(mb: usize) -> Option<Table> {
         let bytes = mb.checked_mul(1 << 20)?;
         Table::with_buckets(bytes / size_of::<Bucket>())
     }
 
-    /// A table of exactly `buckets` buckets, or `None` if the allocation fails. Zero buckets is
-    /// a table that never stores and never hits, which is the search with no table at all.
+    /// Zero buckets never stores and never hits: the search with no table.
     #[must_use]
     pub fn with_buckets(buckets: usize) -> Option<Table> {
         let mut v: Vec<Bucket> = Vec::new();
@@ -215,22 +198,18 @@ impl Table {
         })
     }
 
-    /// How many buckets there are.
     #[must_use]
     pub fn buckets(&self) -> usize {
         self.buckets.len()
     }
 
-    /// How much memory the table occupies, in bytes.
     #[must_use]
     pub fn bytes(&self) -> usize {
         self.buckets.len() * size_of::<Bucket>()
     }
 
-    /// How full the table is, in permill of the slots sampled: the first [`SAMPLE_BUCKETS`]
-    /// buckets, or every bucket in a table smaller than that. It counts a slot that has ever
-    /// been written rather than one this search wrote, so within a game it rises and never falls
-    /// until [`Table::clear`].
+    /// Permill of the slots in the first `SAMPLE_BUCKETS` buckets. Counts a slot ever written, not
+    /// one this search wrote, so within a game it only rises until [`Table::clear`].
     #[must_use]
     pub fn hashfull(&self) -> u32 {
         let sampled = SAMPLE_BUCKETS.min(self.buckets.len());
@@ -240,8 +219,7 @@ impl Table {
         let mut used = 0;
         for bucket in &self.buckets[..sampled] {
             for slot in &bucket.slots {
-                // The data word alone: what is being asked is whether the slot was ever written,
-                // which no key makes truer.
+                // The data word alone: whether a slot was ever written needs no key.
                 let (_, data) = slot.read();
                 used += usize::from(Entry::from_bits(data).decode().is_some());
             }
@@ -249,9 +227,8 @@ impl Table {
         (used * 1000 / (sampled * SLOTS)) as u32
     }
 
-    /// Empty every slot and put the generation back to zero. `bench` calls this between
-    /// positions, which is what makes its node count independent of position order;
-    /// `ucinewgame` calls it because the next game's tree has nothing to do with this one's.
+    /// `bench` calls this between positions, which makes its node count independent of position
+    /// order.
     pub fn clear(&self) {
         for bucket in &self.buckets {
             for slot in &bucket.slots {
@@ -262,20 +239,17 @@ impl Table {
         self.generation.store(0, Ordering::Relaxed);
     }
 
-    /// Begin a search: everything stored from now on is one generation younger than what is
-    /// already there.
+    /// Everything stored from now on is one generation younger.
     pub fn new_search(&self) {
         let next = self.generation.load(Ordering::Relaxed).wrapping_add(1) & AGE_MASK;
         self.generation.store(next, Ordering::Relaxed);
     }
 
-    /// The current generation.
     #[must_use]
     pub fn generation(&self) -> u8 {
         self.generation.load(Ordering::Relaxed)
     }
 
-    /// The result stored for `key`, if there is one.
     #[must_use]
     pub fn probe(&self, key: u64) -> Option<Hit> {
         let bucket = self.bucket(key)?;
@@ -288,7 +262,6 @@ impl Table {
         None
     }
 
-    /// Store a result for `key`, choosing which slot of the bucket to take.
     pub fn store(&self, key: u64, mv: Move, score: i16, depth: u8, bound: Bound) {
         let Some(bucket) = self.bucket(key) else {
             return;
@@ -301,13 +274,12 @@ impl Table {
             let (word0, word1) = slot.read();
             let entry = Entry::from_bits(word1);
             let Some(hit) = entry.decode() else {
-                // An untouched slot is free; take it and stop looking.
                 slot.write(key, fresh);
                 return;
             };
             if word0 ^ word1 == key {
-                // The same position. Keep what is there when it was searched deeper and the new
-                // result is only a bound: a shallower bound tells the next probe less.
+                // A deeper result is kept against a shallower bound, which tells the next probe
+                // less.
                 if depth < hit.depth && bound != Bound::Exact {
                     return;
                 }
@@ -324,9 +296,8 @@ impl Table {
         bucket.slots[victim].write(key, fresh);
     }
 
-    /// The bucket `key` indexes, or `None` when the table has no buckets. The index is the high
-    /// half of `key * buckets`, which spreads a 64-bit key over any bucket count rather than
-    /// only over a power of two.
+    /// The high half of `key * buckets`, which spreads a key over any bucket count, not only a
+    /// power of two.
     #[inline]
     fn bucket(&self, key: u64) -> Option<&Bucket> {
         let index = ((u128::from(key) * self.buckets.len() as u128) >> 64) as usize;

@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Reads `tests/fixtures/perft-corpus.txt` and hands back typed cases.
-//!
-//! The corpus fixture is the single source of every expected value in these
-//! tests. Nothing here transcribes a node count, a FEN or a move list into
-//! Rust: the only literals in the test files are *selectors* (a position's
-//! name, a Scharnagl index pair, a distinctive phrase from a row's `reason`
-//! column) which pick a row out of the fixture. That split is deliberate: a
-//! selector that stops matching is a loud failure, whereas a transcribed
-//! number that drifts from the fixture is a silent one.
-//!
-//! The fixture is embedded with `include_str!`, so editing it forces a
-//! rebuild and the tests cannot be run against a stale or missing copy.
+//! The fixture is the single source of every expected value: test files hold only selectors,
+//! because a selector that stops matching fails loudly and a transcribed number that drifts fails
+//! silently. Embedded with `include_str!`, so the tests cannot run against a stale or missing copy.
 
 // Each test binary in this directory uses a different subset of this module.
 #![allow(dead_code)]
@@ -24,19 +15,14 @@ use cadence_core::position::Board;
 use cadence_core::{generate_legal, perft};
 use std::collections::BTreeMap;
 
-/// The corpus fixture, embedded at compile time.
 pub const FIXTURE: &str = include_str!("../../../tests/fixtures/perft-corpus.txt");
 
 // ---------------------------------------------------------------------------
 // Fixture structure
 // ---------------------------------------------------------------------------
 
-/// A fenced code block. Blocks are addressed by the **name** in their info
-/// string (```` ```tsv edge-cases ````), never by the section they sit under.
-///
-/// Naming them is what lets a section hold more than one block, and it removes
-/// the coupling between a test and a heading number: editing the explanatory
-/// document cannot silently repoint a test at different data.
+/// Addressed by the name in the info string, never by the section: editing the document cannot
+/// silently repoint a test at different data.
 fn blocks() -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut fence: Option<(String, Vec<String>)> = None;
@@ -59,7 +45,6 @@ fn blocks() -> Vec<(String, String)> {
     out
 }
 
-/// The body of the one block named `name`.
 fn block(name: &str) -> String {
     let all = blocks();
     let mut hits: Vec<&(String, String)> = all
@@ -76,7 +61,6 @@ fn block(name: &str) -> String {
     hits.pop().expect("checked above").1.clone()
 }
 
-/// Every block name in the fixture, for the integrity tests.
 pub fn block_names() -> Vec<String> {
     blocks()
         .into_iter()
@@ -84,7 +68,6 @@ pub fn block_names() -> Vec<String> {
         .collect()
 }
 
-/// The named block, split into tab-separated fields.
 fn tsv(name: &str) -> Vec<Vec<String>> {
     block(name)
         .lines()
@@ -108,14 +91,11 @@ fn number(field: &str) -> u64 {
 pub struct StandardPosition {
     pub name: String,
     pub fen: String,
-    /// `(depth, nodes)`, ascending.
+    /// Ascending.
     pub nodes: Vec<(u32, u64)>,
 }
 
-/// The `| # | Position | FEN |` table in section 1, keyed by lowercased name.
-///
-/// Lowercased because the fixture retains the display table's title case:
-/// the tables say `Kiwipete` and the TSV block says `kiwipete`.
+/// Keyed lowercased: the tables say `Kiwipete` and the TSV block says `kiwipete`.
 fn standard_fens() -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for line in FIXTURE.lines() {
@@ -139,11 +119,8 @@ fn standard_fens() -> BTreeMap<String, String> {
     out
 }
 
-/// The `| Position | d1 | ... | d7 |` table in section 1, as `(name, depth, nodes)`.
-///
-/// This is the readable summary table, which restates the TSV block's numbers
-/// with thousands separators. It is parsed only so the two serializations can
-/// be checked against each other; the TSV block is what the tests assert with.
+/// Parsed only to check the two serializations against each other; the TSV block is what the tests
+/// assert with.
 pub fn standard_summary_table() -> Vec<(String, u32, u64)> {
     let mut out = Vec::new();
     for line in FIXTURE.lines() {
@@ -299,7 +276,6 @@ pub fn castling_cases() -> Vec<CastlingCase> {
         .collect()
 }
 
-/// Side to move, parsed from the FEN.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Stm {
     White,
@@ -307,7 +283,6 @@ pub enum Stm {
 }
 
 impl Stm {
-    /// The side to move in a case's FEN.
     #[must_use]
     pub fn of_case(case: &CastlingCase) -> Self {
         Self::of(&case.fen)
@@ -322,13 +297,8 @@ impl Stm {
     }
 }
 
-/// The one castling case whose `reason` contains `keyword` and whose FEN has
-/// `stm` to move.
-///
-/// Every rule in the castling block appears twice, once per colour, because a
-/// rank-8 mirroring bug otherwise passes every White position and reports as a
-/// wrong node count in an unrelated DFRC start array. The keyword selects the
-/// *rule*; `stm` selects which mirror of it.
+/// Every rule appears once per colour, because a rank-8 mirroring bug otherwise passes every White
+/// position. The keyword selects the rule; `stm` selects which mirror.
 pub fn castling_case(keyword: &str, stm: Stm) -> CastlingCase {
     let mut hits: Vec<CastlingCase> = castling_cases()
         .into_iter()
@@ -351,8 +321,7 @@ pub fn castling_pair(keyword: &str) -> Vec<CastlingCase> {
         .collect()
 }
 
-/// Every `FEN:` / `legal:` pair in the block proving that king-to-destination
-/// notation is ambiguous. One per colour.
+/// The pairs proving king-to-destination notation ambiguous, one per colour.
 pub fn ambiguity_proofs() -> Vec<(String, Vec<String>)> {
     let mut out = Vec::new();
     let mut fen: Option<String> = None;
@@ -404,7 +373,6 @@ pub fn edge_cases() -> Vec<EdgeCase> {
         .collect()
 }
 
-/// The one section 4 case whose `reason` contains `keyword`.
 pub fn edge_case(keyword: &str) -> EdgeCase {
     let mut hits: Vec<EdgeCase> = edge_cases()
         .into_iter()
@@ -419,7 +387,6 @@ pub fn edge_case(keyword: &str) -> EdgeCase {
     hits.pop().expect("checked above")
 }
 
-/// One entry of section 4's "Full expected move lists at depth 1" block.
 #[derive(Clone, Debug)]
 pub struct ExpectedMoves {
     pub fen: String,
@@ -431,10 +398,7 @@ pub struct ExpectedMoves {
 }
 
 impl ExpectedMoves {
-    /// Moves the annotation claims give check.
-    ///
-    /// Parsed from the one shape the fixture actually uses:
-    /// `<move> and <move> give check`.
+    /// Parsed from the one shape the fixture uses: `<move> and <move> give check`.
     pub fn checking_moves(&self) -> Vec<String> {
         let Some(idx) = self.annotation.find("give check") else {
             return Vec::new();
@@ -446,7 +410,6 @@ impl ExpectedMoves {
             .collect()
     }
 
-    /// The promotion moves in the list, by their trailing piece character.
     pub fn promotions(&self) -> Vec<String> {
         self.moves
             .iter()
@@ -523,7 +486,6 @@ pub fn expected_move_lists() -> Vec<ExpectedMoves> {
     out
 }
 
-/// The expected depth-1 move list for `fen`.
 pub fn expected_moves(fen: &str) -> ExpectedMoves {
     expected_move_lists()
         .into_iter()
@@ -535,14 +497,13 @@ pub fn expected_moves(fen: &str) -> ExpectedMoves {
 // Immediate-castle claims, FEN notation, rights-by-capture, capacity, divide
 // ---------------------------------------------------------------------------
 
-/// A DFRC start array that can castle at the named side's first move.
 #[derive(Clone, Debug)]
 pub struct ImmediateCastle {
     pub wid: u32,
     pub bid: u32,
     pub stm: Stm,
     pub fen: String,
-    /// The castling move, king-takes-rook.
+    /// King-takes-rook.
     pub castling: String,
     pub nodes: Vec<(u32, u64)>,
 }
@@ -579,7 +540,6 @@ pub fn immediate_castle(wid: u32, bid: u32, stm: Stm) -> ImmediateCastle {
         .unwrap_or_else(|| panic!("no immediate-castle row for {wid}/{bid} {stm:?}"))
 }
 
-/// The same position spelled two ways.
 #[derive(Clone, Debug)]
 pub struct FenNotation {
     pub shredder: String,
@@ -621,7 +581,6 @@ pub fn fen_notation(keyword: &str) -> FenNotation {
     hits.pop().expect("checked above")
 }
 
-/// A capture that removes a castling right.
 #[derive(Clone, Debug)]
 pub struct RightsCapture {
     pub fen: String,
@@ -686,7 +645,6 @@ pub fn move_capacity() -> EdgeCase {
     }
 }
 
-/// One root move of a perft divide.
 #[derive(Clone, Debug)]
 pub struct DivideRow {
     pub name: String,
@@ -710,7 +668,7 @@ pub fn divides() -> Vec<DivideRow> {
         .collect()
 }
 
-/// The divide for one position at one depth, sorted by move.
+/// Sorted by move.
 pub fn divide(name: &str, depth: u32) -> Vec<(String, u64)> {
     let mut rows: Vec<(String, u64)> = divides()
         .into_iter()
@@ -726,12 +684,10 @@ pub fn divide(name: &str, depth: u32) -> Vec<(String, u64)> {
 #[derive(Clone, Debug)]
 pub struct EpEvasion {
     pub fen: String,
-    /// The ep capture, king-takes-rook UCI (no castling involved).
+    /// King-takes-rook UCI.
     pub mv: String,
-    /// The single checker's square.
     pub checker: String,
-    /// `checker | BETWEEN[king][checker]`: the target set a naive evasion
-    /// generator searches. The point is that `mv`'s destination is not in it.
+    /// The target set a naive evasion generator searches; `mv`'s destination is not in it.
     pub mask: Vec<String>,
     pub reason: String,
 }
@@ -764,15 +720,9 @@ pub fn ep_evasions() -> Vec<EpEvasion> {
 // Tier selection
 // ---------------------------------------------------------------------------
 
-/// The deepest perft the fast tier runs for a standard-suite position.
 pub const FAST_STANDARD_MAX_DEPTH: u32 = 5;
-/// The deepest perft the fast tier runs for a DFRC start array.
-///
-/// Five, not four. At four this is twenty near-duplicate tests of
-/// non-castling movegen: most start arrays cannot reach a castle before depth
-/// five, which is the trap the DFRC section of the corpus exists to warn
-/// about. The whole set at d5 is ~98M nodes against the ~469M the standard
-/// suite already contributes to this tier.
+/// Five, not four: most start arrays cannot castle before depth five. About 98M nodes, against the
+/// standard suite's 469M in this tier.
 pub const FAST_DFRC_MAX_DEPTH: u32 = 5;
 
 #[must_use]
@@ -801,9 +751,7 @@ fn board(label: &str, fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{label}: FEN rejected ({e:?})\n  {fen}"))
 }
 
-/// Assert every `(depth, nodes)` row, reporting all mismatches rather than
-/// stopping at the first. A single wrong depth is a different bug from a
-/// whole position being wrong, and the shape of the failure says which.
+/// Reports every mismatch: one wrong depth is a different bug from a whole position wrong.
 pub fn assert_perft(label: &str, fen: &str, rows: &[(u32, u64)]) {
     assert!(
         !rows.is_empty(),
@@ -827,7 +775,7 @@ pub fn assert_perft(label: &str, fen: &str, rows: &[(u32, u64)]) {
     );
 }
 
-/// Every legal move, king-takes-rook spelling, sorted.
+/// King-takes-rook spelling, sorted.
 #[must_use]
 pub fn legal_uci(label: &str, fen: &str) -> Vec<String> {
     let b = board(label, fen);
@@ -841,7 +789,6 @@ pub fn legal_uci(label: &str, fen: &str) -> Vec<String> {
     moves
 }
 
-/// Every legal move as a `(uci, is_castle)` pair.
 #[must_use]
 pub fn legal_moves(label: &str, fen: &str) -> Vec<(String, Move)> {
     let b = board(label, fen);
@@ -855,18 +802,13 @@ pub fn legal_moves(label: &str, fen: &str) -> Vec<(String, Move)> {
     moves
 }
 
-/// Compare a generated move list against the corpus one as a set, naming what
-/// is missing and what is spurious. A count alone can be right by
-/// cancellation: one missing evasion and one illegal move generated is a
-/// perfect total and a broken engine.
+/// As a set, naming what is missing and what is spurious: a count can be right by cancellation.
 pub fn assert_move_list(label: &str, expected: &[String], got: &[String]) {
     let want: std::collections::BTreeSet<&String> = expected.iter().collect();
     let have: std::collections::BTreeSet<&String> = got.iter().collect();
     let missing: Vec<&&String> = want.difference(&have).collect();
     let spurious: Vec<&&String> = have.difference(&want).collect();
-    // Length first, and separately from the set difference: a generator that
-    // emits every move twice has an identical move *set* and twice the node
-    // count, so set equality alone would pass it.
+    // Length separately: a generator emitting every move twice has an identical set.
     assert_eq!(
         got.len(),
         expected.len(),
@@ -882,8 +824,6 @@ pub fn assert_move_list(label: &str, expected: &[String], got: &[String]) {
     );
 }
 
-/// The full section 3 assertion: node counts, then the castling verdict, then the
-/// exact castling move.
 pub fn assert_castling_case(selector: &str, stm: Stm) {
     let case = castling_case(selector, stm);
     let label = format!("castling [{selector}] {stm:?}");
@@ -912,12 +852,9 @@ pub fn assert_castling_case(selector: &str, stm: Stm) {
     }
 }
 
-/// The legal move whose king-takes-rook spelling is `uci`.
-///
 /// # Panics
 ///
-/// If no legal move has that spelling, which is itself the assertion in
-/// several tests.
+/// If no legal move has that spelling.
 #[must_use]
 pub fn legal_move_named(label: &str, fen: &str, uci: &str) -> Move {
     let moves = legal_moves(label, fen);
@@ -933,14 +870,8 @@ pub fn legal_move_named(label: &str, fen: &str, uci: &str) -> Move {
         .1
 }
 
-/// Assert that `selectors` partition `reasons`: every selector matches at
-/// least one row, and every row is matched by exactly one selector.
-///
-/// Checking each selector for uniqueness individually is not enough. Two
-/// selectors can both resolve to the same row (leaving a third row with no
-/// test at all), and every per-selector assertion still passes. This is the
-/// check that the *block* is covered, rather than that each test found
-/// something.
+/// Every selector matches a row and every row exactly one selector. Per-selector uniqueness is not
+/// enough: two selectors can resolve to one row and leave a third untested.
 pub fn assert_selectors_partition(label: &str, selectors: &[&str], reasons: &[String]) {
     let mut uncovered: Vec<&String> = Vec::new();
     let mut multiply_covered: Vec<(String, Vec<&str>)> = Vec::new();

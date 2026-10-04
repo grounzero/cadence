@@ -1,21 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The static evaluation: antisymmetric under a colour flip, bounded away
-//! from the mate scale, and not trivial.
-//!
-//! The property with teeth is `white(pos) == -white(mirror(pos))`, where
-//! `white` is the evaluation from White's point of view. A piece-square
-//! table indexed with the wrong flip for one colour, a term counted for
-//! White and not for Black, a tempo bonus applied on the wrong side of the
-//! sign change: all of them break it. The property is only as good as the
-//! set it runs over, so the coverage is counted and asserted -- total
-//! positions, positions with castling rights live, DFRC positions, and
-//! positions at each end of the phase scale and in between -- rather than
-//! assumed. And the mirror itself is checked first, because a mirror that
-//! quietly produced a different kind of position would make every count
-//! above it vacuous.
-//!
-//! "Not trivial" is there because a zero evaluation is perfectly symmetric.
+//! `white(pos) == -white(mirror(pos))` catches a wrongly flipped table or a one-sided term, and is
+//! only as good as its set, so the coverage is counted and asserted. "Not trivial" is there because
+//! a zero evaluation is perfectly symmetric.
 
 mod support;
 
@@ -25,7 +12,6 @@ use cadence_engine::eval::{PHASE_MAX, WEIGHTS, evaluate, phase, trace};
 use cadence_engine::score::{MAX_EVAL, Score};
 use support::{Rng, mirror, mirror_fen};
 
-/// The evaluation from White's point of view.
 fn white(board: &Board) -> Score {
     match board.side_to_move() {
         Colour::White => evaluate(board),
@@ -37,8 +23,7 @@ fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// Whether any castling right of `board` is a DFRC one: a king off the
-/// e-file or a castling rook off the a/h-file.
+/// A king off the e-file or a castling rook off the a/h-file.
 fn is_dfrc(board: &Board) -> bool {
     let layout = board.layout();
     let rights = board.castling_rights();
@@ -59,10 +44,7 @@ fn is_dfrc(board: &Board) -> bool {
     })
 }
 
-/// Every position the symmetry and bound properties run over: the corpus,
-/// and random walks from the start position, the DFRC arrays and the
-/// endgame seeds. Walks move on with a random legal move; a walk that ends
-/// (no legal move) restarts from its seed with the next seed of the RNG.
+/// A walk that ends restarts from its seed with the RNG's next seed.
 fn positions() -> Vec<Board> {
     let mut out: Vec<Board> = support::corpus_fens().iter().map(|f| board(f)).collect();
     let mut seeds: Vec<String> = vec![START_FEN.to_string()];
@@ -70,20 +52,14 @@ fn positions() -> Vec<Board> {
     seeds.extend(support::ENDGAME_FENS.iter().map(|s| (*s).to_string()));
     let mut rng = Rng::new(0xE7A1_5E7A_1A7E_D001);
     for (i, fen) in seeds.iter().enumerate() {
-        // A seed with the side not to move in check is accepted by
-        // `from_fen`, which validates that a position is representable and
-        // not that it is legal. Walking from one no longer panics inside
-        // `core` -- a king is never a target, so the first move cannot take
-        // one -- but it is still not a position to measure an evaluation's
-        // symmetry over, because no game reaches it. The assertion names a
-        // bad seed immediately rather than silently walking from it.
+        // `from_fen` accepts a seed with the side not to move in check, which no game reaches; the
+        // assertion names such a seed rather than walking from it.
         let seed = board(fen);
         assert!(
             !seed.opponent_in_check(),
             "seed {fen}: the side not to move is in check"
         );
-        // More walking from the endgame seeds, which are few, so the quiet
-        // end of the phase scale is populated.
+        // The endgame seeds are few, so the quiet end of the phase scale gets more walking.
         let walks = if i > 20 { 12 } else { 4 };
         for _ in 0..walks {
             let mut b = board(fen);
@@ -174,8 +150,7 @@ fn the_evaluation_is_antisymmetric_under_a_colour_flip() {
             between += 1;
         }
     }
-    // The coverage, asserted. A walk that did not reach the endgame, or a
-    // seed list with no DFRC in it, would pass the property above and mean
+    // A walk that missed the endgame, or a seed list without DFRC, would pass the property and mean
     // nothing.
     println!(
         "coverage: {total} positions, {rights_live} with rights live, {dfrc} DFRC, \
@@ -202,8 +177,7 @@ fn the_evaluation_is_antisymmetric_under_a_colour_flip() {
     assert!(ending >= 200, "only {ending} positions at phase 0");
 }
 
-/// Absurd material, which `from_fen` accepts. The last two carry forty
-/// queens, which is enough for the evaluation's clamp to bind.
+/// The last two carry forty queens, enough for the evaluation's clamp to bind.
 const ABSURD: [&str; 6] = [
     "QQQQQQQQ/QQQQQQQQ/8/8/8/8/8/k6K w - - 0 1",
     "qqqqqqqq/qqqqqqqq/8/8/8/8/8/K6k w - - 0 1",
@@ -216,9 +190,8 @@ const ABSURD: [&str; 6] = [
 #[test]
 fn the_evaluation_stays_inside_the_evaluation_bound() {
     let mut positions = positions();
-    // Absurd material, both ways, and the evaluation must still not reach
-    // the mate scale: a mate score that is really an evaluation would be
-    // preferred to a real mate, or feared like one.
+    // A mate score that is really an evaluation would be preferred to a real mate, or feared like
+    // one.
     for fen in ABSURD {
         positions.push(board(fen));
     }
@@ -233,7 +206,6 @@ fn the_evaluation_stays_inside_the_evaluation_bound() {
     }
 }
 
-/// Remove the piece on `sq` from `fen`.
 fn without(fen: &str, sq: &str) -> Board {
     let b = board(fen);
     let mut pieces: Vec<(String, char)> = Vec::new();
@@ -248,7 +220,6 @@ fn without(fen: &str, sq: &str) -> Board {
         b.piece_at(cadence_core::Square::from_algebraic(sq).expect("square"))
             .is_some()
     );
-    // Rebuild the placement field.
     let mut rows: Vec<String> = Vec::new();
     for rank in (0..8).rev() {
         let mut row = String::new();
@@ -280,11 +251,9 @@ fn material_is_counted_and_ordered() {
     // The start position is level.
     assert_eq!(evaluate(&board(START_FEN)), 0);
 
-    // Taking a Black piece off the start position favours White, by more
-    // for a more valuable piece. The castling field is dropped so that
-    // removing a rook does not make the FEN inconsistent. The pawn is f7's
-    // because its removal frees no piece: a centre pawn's opens a bishop and
-    // the queen at the bottom of their mobility tables, which outweighs it.
+    // The castling field is dropped so removing a rook leaves the FEN consistent. f7 because its
+    // removal frees no piece: a centre pawn's opens the bishop and queen at the bottom of their
+    // mobility tables.
     let base = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1";
     let gain = |sq: &str| white(&without(base, sq));
     let (pawn, knight, bishop, rook, queen) =
@@ -301,8 +270,7 @@ fn material_is_counted_and_ordered() {
     assert_eq!(white(&without(base_b, "f2")), -pawn);
 }
 
-/// A piece's value in each phase averaged over where it can stand: material plus the mean of its
-/// table, ranks 2 to 7 for the pawn and every square otherwise.
+/// Ranks 2 to 7 for the pawn, every square otherwise.
 fn effective(piece: usize) -> (i32, i32) {
     use cadence_engine::eval::{MATERIAL, PST};
     let (squares, n) = if piece == 0 { (8..56, 48) } else { (0..64, 64) };
@@ -314,9 +282,8 @@ fn effective(piece: usize) -> (i32, i32) {
 
 #[test]
 fn every_piece_is_worth_roughly_its_classical_value_in_both_phases() {
-    // Wide bands on the classical scale, in centipawns: the point is the order of magnitude, not
-    // the distance from any one table. They read effective values rather than a removal from the
-    // start position, because a fitted table puts its largest penalties on the home squares.
+    // Wide bands, for the order of magnitude. Effective values rather than a removal, because a
+    // fitted table puts its largest penalties on the home squares.
     let bands = [
         ("pawn", 60..=160),
         ("knight", 250..=400),
@@ -353,9 +320,7 @@ fn the_phase_spans_the_scale() {
 
 #[test]
 fn the_evaluation_prefers_a_centralised_knight_and_an_advanced_pawn() {
-    // Two positions that differ in the placement of one piece. These pin
-    // that the piece-square tables are wired in and oriented the right way
-    // up for both colours; the table values themselves are not pinned.
+    // Pins that the tables are wired in and the right way up for both colours, not their values.
     let rim = white(&board("4k3/8/8/8/8/8/8/N3K3 w - - 0 1"));
     let centre = white(&board("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1"));
     assert!(centre > rim, "knight a1 {rim} vs d4 {centre}");
@@ -371,10 +336,7 @@ fn the_evaluation_prefers_a_centralised_knight_and_an_advanced_pawn() {
     assert!(second_b < home_b, "black pawn e7 {home_b} vs e2 {second_b}");
 }
 
-/// The evaluation from White's point of view before its clamp, rebuilt
-/// from the trace alone: the coefficients dotted with the weights, then
-/// blended by the phase. Wide arithmetic, so that nothing here can wrap
-/// where the evaluation's own does not.
+/// Wide arithmetic, so nothing here wraps where the evaluation's own does not.
 fn from_trace(b: &Board) -> i64 {
     let t = trace(b);
     let (mut mg, mut eg) = (0i64, 0i64);
@@ -389,9 +351,8 @@ fn from_trace(b: &Board) -> i64 {
 
 #[test]
 fn the_trace_dotted_with_the_weights_is_the_evaluation() {
-    // The gate that keeps the tuner and the search on one evaluation. A
-    // term added to `evaluate` outside the walk the trace records, or a
-    // weight read from anywhere but the table, breaks it.
+    // A term added outside the walk the trace records, or a weight read from anywhere but the
+    // table, breaks it.
     let mut positions = positions();
     positions.extend(ABSURD.iter().map(|f| board(f)));
     let bound = i64::from(MAX_EVAL - 1);
@@ -509,7 +470,7 @@ fn a_mirrored_position_has_every_pawn_coefficient_negated() {
 // Mobility
 // ---------------------------------------------------------------------------
 
-/// The coefficient of `piece`'s mobility table at `count` in `fen`, White's pieces less Black's.
+/// White's pieces less Black's.
 fn mobility_at(fen: &str, piece: PieceType, count: usize) -> i32 {
     use cadence_engine::eval::{MOBILITY, MOBILITY_OFFSET};
     trace(&board(fen)).coefficients[MOBILITY + MOBILITY_OFFSET[piece.index()] + count]
@@ -587,8 +548,7 @@ fn every_knight_bishop_rook_and_queen_has_exactly_one_mobility_count() {
 // King safety
 // ---------------------------------------------------------------------------
 
-/// The king-safety coefficients of `fen`, White's entry less Black's: the attack table, then the
-/// shield table.
+/// White's entry less Black's: the attack table, then the shield table.
 fn king_terms(fen: &str) -> (Vec<i32>, Vec<i32>) {
     use cadence_engine::eval::{ATTACKERS, ATTACKERS_LEN, SHIELD, SHIELD_LEN};
     let t = trace(&board(fen));

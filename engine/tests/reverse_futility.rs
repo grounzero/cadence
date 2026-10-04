@@ -1,34 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Reverse futility: near the horizon, a node whose static evaluation
-//! stands a margin above beta is returned without being searched at all.
-//!
-//! **What these gates demonstrate is an early return decided by the
-//! margin, and a refused condition not returning.** Both halves are
-//! sharper than "the pruning happens" and the first is sharper than any
-//! counter: the load-bearing gate below searches one position twice with
-//! beta moved by a single centipawn across the threshold the margin sets,
-//! and asserts that on one side the whole search is **one node** and on
-//! the other it is not. A rule keyed on the depth, on the position being
-//! quiet, or on anything but the margin gives the same answer to both and
-//! fails. Nothing about the position, the depth or the move list differs
-//! between the two runs.
-//!
-//! **And the refusal is gated through its own counter rather than through
-//! an absence.** A full-window node clears the margin here and is searched
-//! anyway; the gate asserts both that it was searched and that the window
-//! condition is what decided, so a tree in which no full-window node ever
-//! cleared the margin cannot pass it.
-//!
-//! **One gate exists for a constant that is not there.** The rule carries
-//! no depth limit: what stops it acting deep is the margin outrunning the
-//! evaluation's own spread, and `the_margin_is_the_depth_limit` pins that
-//! as a property rather than leaving it as an omission a later session
-//! reads as an oversight and repairs.
-//!
-//! The counters these gates read are written wherever the rule runs and
-//! read on no decision path, so a depth-limited search here reads no clock
-//! and the assertions are exact, not statistical.
+//! The margin decides: beta moved a centipawn across the threshold makes the search one node on one
+//! side and a tree on the other. The full-window refusal is gated through its own counter, and
+//! `the_margin_is_the_depth_limit` pins the absent depth limit as a property.
 
 mod support;
 
@@ -42,47 +16,21 @@ use cadence_engine::search::{Limits, reverse_futile, reverse_futility_margin};
 use cadence_engine::tune::Tunables;
 use support::{PAWN_ENDGAMES, table};
 
-/// The compiled-in values of the constants a tune may move, which is what every gate here
-/// pins.
+/// The compiled-in values every gate here pins.
 const DEFAULT: &Tunables = &Tunables::DEFAULT;
 
-/// The depth the two set gates below search to.
-///
-/// **Nine, and it was measured rather than chosen.** The rule needs an
-/// interior node inside a null window whose static evaluation clears beta
-/// by a margin, and a balanced position does not produce one until the
-/// search is deep enough for a line to have gone somewhere. Measured on
-/// the tree this landed on, over the five positions the two gates below
-/// use, the start position is the laggard by a long way: Kiwipete and the
-/// middlegame fire from depth four, the two pawn endgames from depth
-/// seven, and the start position not until **depth eight**, where it fires
-/// forty times against Kiwipete's 26,612.
-///
-/// Nine is taken, one ply past the first depth that works, because a
-/// coverage assertion standing exactly on the first depth that works is
-/// one the next tree change empties in silence -- which is the failure the
-/// counterfactual ceilings in `tests/ordering.rs` keep finding, arriving
-/// on a coverage assertion instead of on a ceiling. At nine the five
-/// positions fire 591, 52,015, 30,481, 702 and 443 times.
-///
-/// **This constant was six and asserted rather than measured**, on the
-/// argument that it is where the null-move gates stand. Both set gates
-/// failed on the tree the rule landed on, which is the cheap version of
-/// this mistake: an unmeasured coverage depth that is too shallow fails
-/// loudly, and one that is too deep passes and covers nothing.
+/// The start position first fires at depth eight; nine is one past it, so a tree change cannot
+/// empty the gate in silence.
 const GATE_DEPTH: u32 = 9;
 
-/// A quiet middlegame, the same position the reduction and futility gates
-/// use. Nothing is en prise, so the static evaluation is a reading the rule
-/// can be asked about rather than a snapshot of a position mid-exchange.
+/// Nothing is en prise, so the static evaluation is a reading the rule can be asked about.
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// One node, searched at `depth` inside the window given, with a table of
-/// its own. The score, the nodes the search took, and the two counters.
+/// Returns the score, the nodes taken and the two counters.
 fn one_node(fen: &str, depth: u32, alpha: Score, beta: Score) -> (Score, u64, u64, u64) {
     let stop = AtomicBool::new(false);
     let tt = table();
@@ -97,24 +45,9 @@ fn one_node(fen: &str, depth: u32, alpha: Score, beta: Score) -> (Score, u64, u6
     )
 }
 
-/// The margin is what returns the node, and one centipawn either side of
-/// it is the whole difference between the two runs.
-///
-/// The node is searched at depth one, so the only node the rule can act at
-/// is the one the gate hands it: every child is at depth zero, which is the
-/// quiescence search, and the quiescence search has no margin rule. That
-/// makes the counters below the root's own and not a subtree's, and it
-/// makes the node count a statement about this node alone.
-///
-/// `beta` is placed exactly at `eval - reverse_futility_margin(DEFAULT, 1)`, where
-/// the condition `eval - margin >= beta` first holds, and then one
-/// centipawn higher, where it does not. Nothing else moves.
-///
-/// **The assertion that carries the gate is the node count**, because this
-/// rule's whole claim is that the node is answered without being searched:
-/// one node on the admitted side, against a tree on the refused side. A
-/// counter can say the rule fired; only the node count says nothing was
-/// searched.
+/// At depth one every child is quiescence, so the node count speaks for this node alone, and it
+/// carries the gate: one node on the admitted side. Beta sits at `eval -
+/// reverse_futility_margin(DEFAULT, 1)` and then a centipawn higher.
 #[test]
 fn the_margin_is_what_returns_the_node() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
@@ -143,19 +76,8 @@ fn the_margin_is_what_returns_the_node() {
     );
 }
 
-/// A full-window node that clears the margin is searched anyway, and the
-/// window condition is what decided.
-///
-/// The rule returns a bound and nothing else: no move, no line. That is the
-/// answer a null-window question wants and it is not the answer the
-/// principal variation wants, which is the same refusal the null move takes
-/// and for the same reason. Here it is asserted through the refusal counter
-/// as well as through the node count, so a tree in which no full-window
-/// node ever cleared the margin cannot pass by presenting no case.
-///
-/// The window is the same beta the gate above fires on, with alpha a
-/// hundred centipawns below it rather than one, so the only thing that
-/// differs between the two gates is the width of the window.
+/// The rule returns a bound, which the principal variation cannot use. Same beta as above with
+/// alpha a hundred below, so only the window's width differs.
 #[test]
 fn a_full_window_node_that_clears_the_margin_is_searched() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
@@ -169,9 +91,8 @@ fn a_full_window_node_that_clears_the_margin_is_searched() {
     assert!(nodes > 1, "the full-window node was not searched");
 }
 
-/// A node in check has no static evaluation, so the rule cannot claim
-/// anything about it, and the exemption is that absence rather than a
-/// condition anybody has to remember.
+/// No static evaluation in check, so the exemption is that absence rather than a condition to
+/// remember.
 #[test]
 fn a_node_in_check_is_never_returned() {
     for depth in 0..8 {
@@ -184,10 +105,8 @@ fn a_node_in_check_is_never_returned() {
     }
 }
 
-/// A beta on the mate scale refuses the rule, at every depth and in both
-/// directions. A mate score is not a quantity a centipawn margin is
-/// commensurable with, and a claim resting on no search has proved nothing
-/// about a forced mate.
+/// A mate score is not commensurable with a centipawn margin, and a claim resting on no search
+/// proves nothing about a forced mate.
 #[test]
 fn a_mate_beta_refuses_the_margin() {
     for depth in 1..8 {
@@ -204,10 +123,7 @@ fn a_mate_beta_refuses_the_margin() {
     }
 }
 
-/// The margin is a pawn and a half per ply of remaining depth, pinned
-/// against the values the constant's own comment names, and it grows: a
-/// node with more search under it has to clear beta by more before its
-/// whole subtree is given up.
+/// A pawn and a half per ply, growing with the search under the node.
 #[test]
 fn the_margin_is_the_documented_margin() {
     assert_eq!(reverse_futility_margin(DEFAULT, 1), 150);
@@ -222,9 +138,8 @@ fn the_margin_is_the_documented_margin() {
     }
 }
 
-/// A cut returns `beta` itself, and it fires exactly where the evaluation less the margin
-/// still reaches `beta`. Returning either evaluation fails the sweep, and so does a strict
-/// comparison, since the sweep lands on the threshold exactly.
+/// Returning either evaluation, or a strict comparison, fails the sweep, which lands on the
+/// threshold exactly.
 #[test]
 fn a_cut_returns_beta_where_the_margin_clears_it() {
     let mut fired = 0;
@@ -248,20 +163,9 @@ fn a_cut_returns_beta_where_the_margin_clears_it() {
     );
 }
 
-/// The margin is the depth limit, and there is no other one.
-///
-/// This gate exists for a constant that is deliberately absent. The rule
-/// carries no depth test: what stops it acting at a deep node is that the
-/// margin it must clear grows with the depth while the evidence available
-/// does not. Pinned as the property rather than left as an omission,
-/// because an omission reads as an oversight and the repair a later session
-/// would reach for is exactly the constant this declines.
-///
-/// Two halves. A fixed gap admits a band of shallow depths and nothing
-/// past it, which a rule with no bound at all would fail. And the band
-/// **moves with the evidence**, which is the half a depth constant cannot
-/// do: ten times the gap buys ten times the band, where a limit would cut
-/// both at the same ply.
+/// The rule has no depth test: the margin grows with depth while the evidence does not. A fixed gap
+/// admits a band of shallow depths, and ten times the gap buys ten times the band, which a depth
+/// constant could not.
 #[test]
 fn the_margin_is_the_depth_limit() {
     // 600 centipawns above beta: four plies of margin exactly, and the
@@ -286,13 +190,8 @@ fn the_margin_is_the_depth_limit() {
     assert!(reverse_futile(DEFAULT, Some(6_000), 41, 0).is_none());
 }
 
-/// The pruning happens in a real search: a middlegame and the start
-/// position both return nodes on the margin.
-///
-/// Coverage first: each search completed the depth it was asked for, so the
-/// counters were read off finished trees. Then the property. A rule wired
-/// in but never admitted fails it, which is the whole of what this gate is
-/// for; the sharper claims are the two gates at the head of this file.
+/// A rule wired in but never admitted fails it; the sharper claims are the gates at the head of
+/// this file.
 #[test]
 fn a_middlegame_search_returns_nodes_on_the_margin() {
     for fen in [
@@ -319,22 +218,9 @@ fn a_middlegame_search_returns_nodes_on_the_margin() {
     }
 }
 
-/// A pawn endgame takes the margin where the null move refuses it, and the
-/// difference between the two guards is deliberate.
-///
-/// The null move refuses a side with nothing but pawns beside its king,
-/// because its mechanism is passing and passing is exactly what a side in
-/// zugzwang wants and cannot have. This rule has no such guard and declines
-/// one: it does not pass, it compares a reading against a bound, and its
-/// exposure to a position the evaluation misreads is the one every member
-/// of the margin family has rather than the one the null move's mechanism
-/// creates.
-///
-/// That difference is asserted rather than described. On the same positions
-/// at the same depth, `tests/pruning.rs` asserts the null move is never
-/// tried; here the margin returns nodes. A later session that gives this
-/// rule the material guard for symmetry breaks this gate, which is what it
-/// is for.
+/// This rule compares a reading against a bound and does not pass, so it takes no material guard.
+/// `tests/pruning.rs` asserts the null move is never tried on these positions; here the margin
+/// returns nodes, so a guard added for symmetry breaks this.
 #[test]
 fn a_pawn_endgame_takes_the_margin_where_the_null_move_refuses_it() {
     for fen in PAWN_ENDGAMES {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The game record: one game per line, fields separated by ` | `, in game-number order. A record
-//! holds what replays the game and not the positions, so filtering again never generates again.
+//! A record holds what replays the game, not the positions, so filtering again never generates
+//! again.
 
 use std::fmt::Write as _;
 
@@ -14,8 +14,6 @@ use super::opening::Opening;
 use crate::position::Position;
 use crate::score::Score;
 
-/// One game as the file holds it: number, arrays, random plies, moves each with its score, result
-/// and ending, and the starts the screen refused before this one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     pub number: u64,
@@ -43,19 +41,18 @@ impl Record {
         }
     }
 
-    /// The start before the random plies.
+    /// Before the random plies.
     ///
     /// # Panics
     ///
-    /// If the arrays do not make a legal start. [`Record::parse`] refuses such numbers first.
+    /// If the arrays do not make a legal start.
     #[must_use]
     pub fn start(&self) -> Position {
         let fen = dfrc_fen(self.white, self.black);
         Position::new(Board::from_fen(&fen).unwrap_or_else(|e| panic!("{fen}: {e:?}")))
     }
 
-    /// The line, without its newline. Moves are spelled king-takes-rook, so a castle reads the
-    /// same in every start.
+    /// Castles are spelled king-takes-rook, so they read the same in every start.
     #[must_use]
     pub fn line(&self) -> String {
         let plies: Vec<String> = self.plies.iter().map(|m| m.to_uci_chess960()).collect();
@@ -76,13 +73,12 @@ impl Record {
         )
     }
 
-    /// Reads a line [`Record::line`] wrote, replaying every move against the legal list so that a
-    /// record that parses is a game the rules allow.
+    /// Every move is replayed against the legal list, so a record that parses is a game the rules
+    /// allow.
     ///
     /// # Errors
     ///
-    /// A field missing or malformed, or a move that is not legal where it stands. The message
-    /// says which and not where, which the caller knows.
+    /// A field missing or malformed, or an illegal move.
     pub fn parse(line: &str) -> Result<Record, String> {
         let fields: Vec<&str> = line.split(" | ").collect();
         let [number, arrays, plies, moves, result, refused] = fields[..] else {

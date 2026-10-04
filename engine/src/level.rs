@@ -1,49 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The strength ladder: one target rating in, and a candidate count, a margin and
-//! a halving constant out, from a table compiled in rather than tuned. The table
-//! is deliberately absent from the tunable constants, because a tune that could
-//! move it would let a run change what the engine is rather than how well it
-//! searches.
-//!
-//! **Every quantity here is an integer and the sampler that reads them uses no
-//! float.** A softmax over `f64` is reproducible on one host and not obviously
-//! reproducible across two, because the last bit of `exp` belongs to whatever
-//! library the build linked, and a move choice that depends on that is the
-//! failure that does not reproduce under investigation.
+//! Compiled in so a tune cannot change what the engine is. Integers only: `exp` on `f64` is not
+//! reproducible across hosts.
 
-/// The bottom of the ladder, and the lowest number the option accepts.
+/// Also the lowest number the option accepts.
 pub const MIN_ELO: u32 = 1000;
 
-/// The top of the ladder, and what the number defaults to. Below the engine's
-/// own strength by enough that the top rung is still a level rather than a name
-/// for full strength, which is the absence of the option and not a rung.
+/// Far enough below full strength that the top rung is still a level; full strength is the option's
+/// absence.
 pub const MAX_ELO: u32 = 1800;
 
-/// What one rung does to a search. The margin is in centipawns below the best
-/// line, and `halving` is the centipawn deficit at which a candidate is half as
-/// likely to be chosen as the best one.
+/// `margin` is centipawns below the best line; `halving` is the deficit at which a candidate is
+/// half as likely as the best.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
-    /// How many root lines the search computes and samples among.
     pub candidates: usize,
-    /// How far below the best line a line may score and still be a candidate.
     pub margin: i32,
-    /// The centipawn deficit that halves a candidate's weight.
     pub halving: i32,
 }
 
-/// One rung: the rating it is named by, and what it does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rung {
     pub elo: u32,
     pub policy: Policy,
 }
 
-/// The ladder, ascending, chosen by a rule fixed before the reading it was
-/// chosen from. **It is monotone in expected centipawn loss and not in any one
-/// column**: the top rung samples from two lines at a narrow margin, so it needs
-/// a flatter distribution than the rung below to lose less.
+/// Chosen by a rule fixed before the reading. Monotone in expected centipawn loss, not in any one
+/// column: the top rung samples two lines at a narrow margin, so it needs a flatter distribution to
+/// lose less.
 pub const LADDER: &[Rung] = &[
     Rung {
         elo: 1000,
@@ -87,10 +71,7 @@ pub const LADDER: &[Rung] = &[
     },
 ];
 
-/// The rung a target rating lands on: the highest rung at or below it, and the
-/// bottom rung for anything under the ladder. A value between two rungs resolves
-/// down rather than to the nearer, so a number never buys strength it did not ask
-/// for.
+/// A rating between rungs resolves down, so a number never buys strength it did not ask for.
 #[must_use]
 pub fn policy(elo: u32) -> Policy {
     let mut chosen = LADDER[0].policy;
@@ -102,30 +83,24 @@ pub fn policy(elo: u32) -> Policy {
     chosen
 }
 
-/// Fixed-point one, and the sixteenths one halving is cut into. A weight is a
-/// table lookup and a shift, which is the whole of what keeps the choice free of
-/// floating point.
+/// A weight is a table lookup and a shift, which keeps the choice free of floating point.
 pub const ONE: u64 = 1 << 20;
 const STEPS: i64 = 16;
 
-/// Two to the minus `f` sixteenths, in units of [`ONE`]. Compiled in rather than
-/// computed, because computing it is the float this module exists to avoid.
+/// Compiled in, because computing it is the float this module avoids.
 const DECAY: [u64; 16] = [
     1048576, 1004120, 961548, 920782, 881744, 844361, 808563, 774282, 741455, 710020, 679917,
     651091, 623487, 597053, 571740, 547500,
 ];
 
-/// How likely a candidate `deficit` centipawns below the best line is, against
-/// the best line's [`ONE`]. A deficit of one `halving` is half as likely, two is
-/// a quarter, and far enough down is zero rather than a rounding of it.
+/// Far enough down is zero rather than a rounding of it.
 #[must_use]
 pub fn weight(deficit: i32, halving: i32) -> u64 {
     let deficit = i64::from(deficit.max(0));
     let halving = i64::from(halving.max(1));
     let steps = deficit * STEPS / halving;
     let shift = steps / STEPS;
-    // Past sixty-three halvings the shift is undefined and the weight is zero
-    // anyway, so the bound is arithmetic rather than a policy.
+    // Past sixty-three halvings the shift is undefined and the weight zero anyway.
     if shift >= 63 {
         return 0;
     }
@@ -137,8 +112,7 @@ pub fn weight(deficit: i32, halving: i32) -> u64 {
     DECAY[fraction] >> shift
 }
 
-/// One step of splitmix64, which is what `core` already seeds its tables with.
-/// It is used here to turn one position into one number and never to carry state.
+/// Turns one position into one number, never carrying state.
 const fn mix(seed: u64) -> u64 {
     let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -146,22 +120,17 @@ const fn mix(seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Which candidate to play, given each one's centipawn deficit below the best
-/// line and a seed. **The seed is the position and not the process**, so the same
-/// position at the same level always yields the same move and a complaint about
-/// one can be reproduced.
+/// The seed is the position, not the process, so a complaint about a move can be reproduced.
 ///
 /// # Panics
 ///
-/// If `deficits` is empty. A root with no line is a root with no move, which the
-/// caller has already returned on.
+/// If `deficits` is empty.
 #[must_use]
 pub fn choose(deficits: &[i32], halving: i32, seed: u64) -> usize {
     assert!(!deficits.is_empty(), "no candidates to choose among");
     let weights: Vec<u64> = deficits.iter().map(|d| weight(*d, halving)).collect();
     let total: u64 = weights.iter().sum();
-    // Every candidate rounded to nothing, which a wide margin and a sharp
-    // distribution can do together. The best line is the honest answer.
+    // Every candidate rounded to nothing; the best line is the honest answer.
     if total == 0 {
         return 0;
     }

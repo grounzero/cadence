@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence bench` and its determinism contract.
-//!
-//! The node count is the regression detector for the whole engine, and it
-//! is only a usable signal if it is a function of the code alone. This
-//! file pins what can be pinned from outside: the position list is checked
-//! in and covers what it should; two runs in one process agree to the node
-//! and to the move, in every position; two processes agree with each other
-//! and with the in-process run; the last line is the count in the format
-//! the CI step and `OpenBench` read; and the count equals `bench.txt`, so a
-//! change to it is declared here before it is declared anywhere else.
+//! The count is only a signal if it is a function of the code alone. This pins the list's coverage,
+//! agreement to the node within and across processes, the last line's format for CI and
+//! `OpenBench`, and the count against `bench.txt`.
 
 mod support;
 
@@ -19,7 +12,6 @@ use cadence_engine::bench::{self, DEPTH, POSITIONS};
 use cadence_engine::search::Limits;
 use cadence_engine::time::budget;
 
-/// The FENs of the checked-in list, comments and blank lines dropped.
 fn positions() -> Vec<String> {
     POSITIONS
         .lines()
@@ -29,7 +21,6 @@ fn positions() -> Vec<String> {
         .collect()
 }
 
-/// Whether any castling right of `board` is a DFRC one.
 fn is_dfrc(board: &Board) -> bool {
     let layout = board.layout();
     for c in Colour::ALL {
@@ -62,11 +53,8 @@ fn the_position_list_is_checked_in_and_covers_the_game() {
     let mut in_check = 0;
     for fen in &fens {
         let b = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
-        // Playable: the side not to move is not in check, and there is a
-        // move to find. The engine survives a position that is not (a king
-        // is never a target, `core/tests/opponent_in_check.rs`), but the
-        // bench list is meant to be a set of positions a game could reach,
-        // and this assertion catches an unreachable entry at its source.
+        // The engine survives an unreachable position, but the bench list should be positions a
+        // game could reach, and this catches one at its source.
         assert!(
             !b.opponent_in_check(),
             "{fen}: the side not to move is in check"
@@ -125,7 +113,7 @@ fn two_runs_in_one_process_agree_to_the_node_in_every_position() {
     assert_eq!(a.nodes, b.nodes);
 }
 
-/// The binary's last line, parsed: `(nodes, nps)`.
+/// Parsed as `(nodes, nps)`.
 fn last_line(out: &str) -> (u64, u64) {
     let line = out.lines().last().unwrap_or_else(|| panic!("empty output"));
     let toks: Vec<&str> = line.split_whitespace().collect();
@@ -172,10 +160,8 @@ fn two_processes_agree_with_each_other_and_with_the_library() {
     assert_eq!(na, lib.nodes, "the binary and the library disagree");
 }
 
-/// `bench.txt` at the repository root holds the current expected count,
-/// and the `Bench: <n>` trailer on the commit that changes it must agree
-/// (the commit-msg hook enforces that). This is the local copy of the CI
-/// step that diffs the last line of `cadence bench` against it.
+/// The local copy of the CI step that diffs the last line against `bench.txt`; the commit-msg hook
+/// holds the `Bench:` trailer to it.
 #[test]
 fn the_count_equals_bench_txt() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../bench.txt");

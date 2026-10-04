@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What a search counts and remembers as it runs, and what it tells you about itself afterwards.
 //! Nothing here calls into another part of the search, which is what lets every other part call it.
 
 use std::sync::atomic::Ordering;
@@ -15,45 +14,38 @@ use crate::score::{self, Score};
 use crate::tt::Bound;
 
 impl Search<'_> {
-    /// Nodes searched so far.
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.nodes
     }
 
-    /// How many null moves the last search tried.
     #[must_use]
     pub fn null_attempts(&self) -> u64 {
         self.null_attempts
     }
 
-    /// How many of those produced a cutoff.
     #[must_use]
     pub fn null_cutoffs(&self) -> u64 {
         self.null_cutoffs
     }
 
-    /// How often every other condition admitted a null move and the side to move had nothing
-    /// but pawns beside the king.
     #[must_use]
     pub fn null_refused_by_material(&self) -> u64 {
         self.null_refused_material
     }
 
-    /// How many late moves the last search first searched at reduced depth.
+    /// Late moves first searched at reduced depth.
     #[must_use]
     pub fn lmr_reductions(&self) -> u64 {
         self.lmr_reductions
     }
 
-    /// How many of those reduced searches beat alpha and were re-run at full depth.
+    /// Reduced searches that beat alpha and were re-run at full depth.
     #[must_use]
     pub fn lmr_researches(&self) -> u64 {
         self.lmr_researches
     }
 
-    /// How often a history score shortened a reduction the index had decided on, and how often
-    /// it lengthened one.
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
         self.history_reduced_less
@@ -64,8 +56,8 @@ impl Search<'_> {
         self.history_reduced_more
     }
 
-    /// How many nodes the margin admitted, how many quiet moves it skipped there, and how many
-    /// it would have skipped and did not because the move gives check.
+    /// Nodes the margin admitted; its siblings count the quiet moves skipped there and the skips
+    /// refused for giving check.
     #[must_use]
     pub fn futility_nodes(&self) -> u64 {
         self.futility_nodes
@@ -81,17 +73,13 @@ impl Search<'_> {
         self.futility_kept_check
     }
 
-    /// How many nodes the margin returned without searching, and how many it would have
-    /// returned and did not because the node had the full window. How often a node admitted
-    /// this rule, how many quiet moves it gave up there, and how often a move that would have
-    /// been given up was kept for giving check.
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
         self.lmp_nodes
     }
 
-    /// How many observations this search folded into the correction table,
-    /// and at how many nodes it read a non-zero correction back.
+    /// Observations folded into the correction table, and nodes that read a non-zero correction
+    /// back.
     #[must_use]
     pub fn corrhist_updates(&self) -> u64 {
         self.corrhist_updates
@@ -117,13 +105,14 @@ impl Search<'_> {
         self.reverse_futility_cutoffs
     }
 
+    /// Nodes the margin would have returned but for the full window.
     #[must_use]
     pub fn reverse_futility_refused_by_window(&self) -> u64 {
         self.reverse_futility_refused_window
     }
 
-    /// How many nodes ran the capture probe, how many captures it searched at reduced depth, and
-    /// how many of those cut the node.
+    /// Nodes that ran the capture probe, captures it searched at reduced depth, and those that cut
+    /// the node.
     #[must_use]
     pub fn probcut_attempts(&self) -> u64 {
         self.probcut_attempts
@@ -139,15 +128,13 @@ impl Search<'_> {
         self.probcut_cutoffs
     }
 
-    /// How often the probe would have run and did not because the node had the full window.
+    /// Probes refused for the full window.
     #[must_use]
     pub fn probcut_refused_by_window(&self) -> u64 {
         self.probcut_refused_window
     }
 
-    /// How many check evasion lists the quiescence search prepared, and how many of those the
-    /// sort moved a new move to the head of. The first says the in-check horizon was reached at
-    /// all, which is what stops the second being vacuous.
+    /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
     #[must_use]
     pub fn evasion_lists(&self) -> u64 {
         self.evasion_lists
@@ -158,31 +145,24 @@ impl Search<'_> {
         self.evasion_lists_reordered
     }
 
-    /// The table the last search left behind, for a gate that wants to see what the cutoffs
-    /// wrote and what the ordering would do with it.
     #[must_use]
     pub fn history(&self) -> &History {
         &self.history
     }
 
-    /// The depth of the last completed iteration; zero before any. Elapsed milliseconds at the
-    /// end of each completed iteration, in order.
+    /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
         &self.iterations
     }
 
-    /// The root move and score of each completed iteration, in order, and empty where none
-    /// completed. Kept under every limit, so a `go depth` and a `bench` position record one
-    /// entry per iteration while reading no clock.
     #[must_use]
     pub fn iteration_roots(&self) -> &[(Move, Score)] {
         &self.roots
     }
 
-    /// How many completed iterations in a row ended on the move the last one ended on, counting
-    /// that one, and zero where none completed. Derived from [`Search::iteration_roots`] rather
-    /// than counted beside it, so the two cannot disagree.
+    /// Completed iterations in a row ending on the last one's move, counting it. Derived from
+    /// [`Search::iteration_roots`], so the two cannot disagree.
     #[must_use]
     pub fn stable_iterations(&self) -> usize {
         let Some(&(last, _)) = self.roots.last() else {
@@ -195,18 +175,18 @@ impl Search<'_> {
             .count()
     }
 
+    /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {
         self.completed_depth
     }
 
-    /// The root score of the last completed iteration, from the side to move's point of view.
+    /// From the side to move's point of view.
     #[must_use]
     pub fn score(&self) -> Score {
         self.score
     }
 
-    /// The principal variation of the last completed iteration.
     #[must_use]
     pub fn pv(&self) -> &[Move] {
         &self.pv
@@ -222,9 +202,6 @@ impl Search<'_> {
         self.stop.load(Ordering::Relaxed)
     }
 
-    /// Count a node, at the ply it sits at, and publish the count where a group is watching.
-    /// The deepest ply is what `seldepth` reports and nothing here reads it, so a search that
-    /// keeps it visits the same nodes in the same order as one that does not.
     #[inline]
     pub(super) fn visit(&mut self, ply: usize) {
         self.nodes += 1;
@@ -234,9 +211,8 @@ impl Search<'_> {
         }
     }
 
-    /// The static evaluation this node's rules read, corrected by what the evaluation has been
-    /// wrong by on this pawn structure. The correction is read before the node folds anything
-    /// in, so nothing it offers has seen the score it will be scored against.
+    /// Read before the node folds anything in, so no correction has seen the score it will be
+    /// scored against.
     pub(super) fn corrected_eval(
         &mut self,
         board: &Board,
@@ -252,10 +228,8 @@ impl Search<'_> {
         Some(eval::evaluate(board) + correction)
     }
 
-    /// Fold this node's disagreement between the static evaluation and the score it returned
-    /// into the correction table. Four things disqualify a node: no static reading, a mate
-    /// score, a best move that is noisy or absent, and a bound pointing the other way from the
-    /// difference.
+    /// Disqualified: no static reading, a mate score, a noisy or absent best move, or a bound
+    /// pointing against the difference.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn remember_correction(
         &mut self,
@@ -284,8 +258,7 @@ impl Search<'_> {
         }
     }
 
-    /// Record what this node's cutoff says about its quiet moves: credit `cut`, and debit every
-    /// quiet move tried ahead of it at this node.
+    /// Credits `cut` and debits every quiet move tried before it.
     pub(super) fn remember_history(&mut self, us: Colour, tried: &[Move], cut: Move, depth: u32) {
         if cut.is_noisy() {
             return;
@@ -301,9 +274,8 @@ impl Search<'_> {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// This search's nodes, or the group's where one is watching. A worker reads its own count
-    /// live and its siblings' from the slots they publish into, so a reported figure is about
-    /// the whole search rather than about one thread.
+    /// The group's where one is watching: the siblings' counts from their slots, this worker's
+    /// live.
     #[inline]
     pub(super) fn reported_nodes(&self) -> u64 {
         let Some((nodes, worker_index)) = self.shared_nodes else {
@@ -318,9 +290,8 @@ impl Search<'_> {
         })
     }
 
-    /// Store this worker's count in the slot it owns. Nothing else writes that slot, so no
-    /// ordering beyond `Relaxed` is needed; the slots do share cache lines, which was measured
-    /// at under 1 percent of node throughput up to 18 threads and about 3 percent at 64.
+    /// Only the owner writes the slot, so `Relaxed` suffices. Shared cache lines measured under 1
+    /// percent of throughput up to 18 threads, about 3 percent at 64.
     #[inline]
     pub(super) fn publish_nodes(&self) {
         if let Some((nodes, worker_index)) = self.shared_nodes {
@@ -336,9 +307,8 @@ mod tests {
     use crate::search::Search;
     use crate::tt::Table;
 
-    /// `reported_nodes` answers for the group and not for the worker that asks. This is the one
-    /// externally visible thing `Threads` above one changes, and it is asserted here rather than
-    /// through a search because a search only shows it when the helpers get scheduled.
+    /// The one externally visible thing `Threads` above one changes; asserted directly because a
+    /// search shows it only when helpers get scheduled.
     #[test]
     fn reported_nodes_sums_the_group_and_reads_its_own_count_live() {
         let stop = AtomicBool::new(false);
@@ -363,8 +333,7 @@ mod tests {
             "own count live plus every sibling's slot"
         );
 
-        // The worker's own slot is stale until it publishes, which is why the live count is read
-        // from the field and never from the slot.
+        // Stale until it publishes, which is why the live count comes from the field.
         assert_eq!(slots[0].load(Ordering::Relaxed), 0);
         search.publish_nodes();
         assert_eq!(slots[0].load(Ordering::Relaxed), 7);

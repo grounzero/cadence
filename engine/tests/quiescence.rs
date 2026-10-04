@@ -1,30 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The quiescence search: what the horizon looks like once it is quiet.
-//!
-//! A search that stops at a fixed depth and calls the static evaluation
-//! evaluates positions in the middle of capture sequences, and plays
-//! accordingly: it takes a defended pawn with the queen at the last ply
-//! because the recapture is one ply beyond the horizon. Quiescence resolves
-//! the captures, promotions and checks at the horizon before evaluating, so
-//! that what the evaluation sees is a position nobody is about to win
-//! material in.
-//!
-//! None of this proves the search is *right*. Quiescence has no perft: a
-//! stand-pat rule that is slightly off, a noisy set that is slightly wrong,
-//! an in-check node that is allowed to stand pat, all play legal chess,
-//! pass every test that does not know the answer, and gain less than they
-//! should. What a gate can do is pin the behaviours that define the thing,
-//! each observable at depth one, where the old search and the new one
-//! differ in a way that needs no opponent to see: a capture refuted by an
-//! immediate recapture is not played; a piece attacked at the root is not
-//! left to be taken; a losing capture is never forced on the side to move,
-//! so a quiet horizon scores its static evaluation and costs one node; a
-//! check at the horizon is answered, not ignored, so a mate in one is found
-//! at depth one and a skewer through a check is seen; a promotion at the
-//! horizon is seen; and the tree below depth one is bounded. Every
-//! constructed position is checked for what it claims before the engine is
-//! asked, and every one is asked in both colours.
+//! Quiescence has no perft: a slightly wrong stand-pat or noisy set plays legal chess and passes
+//! every test that does not know the answer. These pin, at depth one and in both colours, the
+//! behaviours that define it, each constructed position checked for what it claims first.
 
 mod support;
 
@@ -41,7 +19,6 @@ use cadence_engine::search::Limits;
 use cadence_engine::see::see;
 use support::table;
 
-/// The result of one search: move, score, nodes, completed depth, pv.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Result {
     best: Move,
@@ -75,7 +52,7 @@ fn mv(board: &Board, uci: &str) -> Move {
         .unwrap_or_else(|| panic!("{uci} is not legal in {board:?}"))
 }
 
-/// A UCI move under the colour mirror: the ranks flip, the files stay.
+/// The ranks flip, the files stay.
 fn mirror_uci(uci: &str) -> String {
     uci.chars()
         .map(|c| match c {
@@ -85,7 +62,6 @@ fn mirror_uci(uci: &str) -> String {
         .collect()
 }
 
-/// A position and a move of interest, in both colours.
 fn both_colours(fen: &str, uci: &str) -> [(String, String); 2] {
     [
         (fen.to_string(), uci.to_string()),
@@ -93,7 +69,7 @@ fn both_colours(fen: &str, uci: &str) -> [(String, String); 2] {
     ]
 }
 
-/// Classical piece values, for the in-test material arithmetic only.
+/// For the in-test material arithmetic only.
 fn value(pt: PieceType) -> i32 {
     match pt {
         PieceType::Pawn => 1,
@@ -104,7 +80,6 @@ fn value(pt: PieceType) -> i32 {
     }
 }
 
-/// `c`'s material less the other side's.
 fn balance(b: &Board, c: Colour) -> i32 {
     let mut total = 0;
     for pt in PieceType::ALL {
@@ -115,7 +90,6 @@ fn balance(b: &Board, c: Colour) -> i32 {
     total
 }
 
-/// The side to move's legal captures.
 fn captures(b: &Board) -> Vec<Move> {
     generate_legal(b)
         .iter()
@@ -123,7 +97,6 @@ fn captures(b: &Board) -> Vec<Move> {
         .collect()
 }
 
-/// The side to move's legal captures of a piece of type `pt`.
 fn captures_of(b: &Board, pt: PieceType) -> Vec<Move> {
     captures(b)
         .into_iter()
@@ -133,8 +106,7 @@ fn captures_of(b: &Board, pt: PieceType) -> Vec<Move> {
         .collect()
 }
 
-/// Whether the side to move's piece of type `pt` could be captured if it
-/// passed: the opponent's captures of it after a null move.
+/// The opponent's captures of it after a null move.
 fn en_prise(b: &mut Position, pt: PieceType) -> bool {
     b.make_null_move();
     let hit = !captures_of(b, pt).is_empty();
@@ -142,9 +114,7 @@ fn en_prise(b: &mut Position, pt: PieceType) -> bool {
     hit
 }
 
-/// Whether `bad`, a capture, loses material to the worst recapture on its
-/// destination square: the mover's balance after the recapture is below
-/// its balance before the capture.
+/// The mover's balance after the worst recapture is below its balance before the capture.
 fn loses_material_to_a_recapture(b: &mut Position, bad: Move) -> bool {
     assert!(bad.is_capture(), "{bad:?} is not a capture");
     let us = b.side_to_move();
@@ -162,8 +132,6 @@ fn loses_material_to_a_recapture(b: &mut Position, bad: Move) -> bool {
     worst < before
 }
 
-/// Whether the side to move has a move after which the opponent has no
-/// capture at all.
 fn has_a_move_allowing_no_capture(b: &mut Position) -> bool {
     let legal = generate_legal(b);
     legal.iter().any(|m| {
@@ -174,8 +142,7 @@ fn has_a_move_allowing_no_capture(b: &mut Position) -> bool {
     })
 }
 
-/// The side to move's best static score after one move: the depth-one
-/// score of a search whose horizon is quiet.
+/// The depth-one score of a search whose horizon is quiet.
 fn best_static_reply(b: &mut Position) -> Score {
     let mut best = Score::MIN;
     for m in generate_legal(b).iter() {
@@ -186,18 +153,9 @@ fn best_static_reply(b: &mut Position) -> Score {
     best
 }
 
-/// How many root moves the null window costs a second search.
-///
-/// Every root move behind the first is searched in a window with no room
-/// in it for an answer better than the move in hand, and a move that
-/// beats it comes back with a bound rather than a value and is searched
-/// again with the full window. So a leaf under such a move is visited
-/// twice, and the count is the number of root moves that are strictly
-/// better than everything tried before them.
-///
-/// Only sound where the value of a root move is minus the static
-/// evaluation of the position it leads to, which is what a quiet horizon
-/// means: the callers below each establish that before using this.
+/// A root move strictly better than everything before it is searched twice, in the null window and
+/// again in the full one. Sound only where a root move's value is minus the static evaluation it
+/// leads to, which each caller establishes first.
 fn root_re_searches(b: &mut Position) -> u64 {
     let mut best = Score::MIN;
     let mut re_searched = 0;
@@ -217,9 +175,7 @@ fn root_re_searches(b: &mut Position) -> u64 {
 // Captures at the horizon
 // ---------------------------------------------------------------------------
 
-/// A capture that is refuted by an immediate recapture -- the capturer is
-/// worth more than what it takes -- with a quiet alternative available.
-/// Each is a pawn or piece defended once, taken by something bigger.
+/// Each a piece defended once, taken by something bigger, with a quiet alternative available.
 const LOSING_CAPTURES: &[(&str, &str)] = &[
     // Qxd5, a pawn defended by a pawn.
     ("6k1/8/4p3/3p4/8/8/8/3Q2K1 w - - 0 1", "d1d5"),
@@ -251,19 +207,15 @@ fn the_losing_captures_are_what_they_claim() {
     }
 }
 
-/// At depth one the old search takes the material and stops; with the
-/// captures resolved at the horizon the recapture is seen and the capture
-/// is not played. Deeper searches see it either way, and must still not.
+/// At depth one a static horizon takes the material; resolving captures sees the recapture.
 #[test]
 fn a_capture_refuted_by_an_immediate_recapture_is_not_played() {
     for (fen, bad) in LOSING_CAPTURES {
         for (fen, bad) in both_colours(fen, bad) {
             let mut b = support::position(&fen);
             let bad = mv(&b, &bad);
-            // Standing pat is a lower bound for the side to move at the
-            // horizon, so at depth one no reply scores above its static
-            // worth and the root never scores above its best static reply:
-            // the capture is not counted as having won anything.
+            // Standing pat bounds the side to move at the horizon, so the root never scores above
+            // its best static reply.
             let ceiling = best_static_reply(&mut b);
             for depth in 1..=3 {
                 let r = search(&mut b, Limits::depth(depth));
@@ -280,9 +232,8 @@ fn a_capture_refuted_by_an_immediate_recapture_is_not_played() {
     }
 }
 
-/// A piece attacked at the root, with a safe square to go to, and a decoy:
-/// a knight on the rim whose centralising move is the best thing the
-/// piece-square tables can see, which is what the old search plays.
+/// Plus a decoy, a knight on the rim whose centralising move is the best the piece-square tables
+/// see.
 const ATTACKED_PIECES: &[(&str, PieceType)] = &[
     // The queen on d4 is attacked by the knight; Nb1-c3 is the decoy.
     ("6k1/8/2n5/8/3Q4/8/8/1N4K1 w - - 0 1", PieceType::Queen),
@@ -341,12 +292,8 @@ fn a_piece_attacked_at_the_root_is_not_left_to_be_taken() {
 // Standing pat
 // ---------------------------------------------------------------------------
 
-/// White has three king moves and nothing else; after each of them Black's
-/// only capture is Qxb3, a pawn defended by a pawn, which loses the queen.
-/// The side to move at the horizon is never obliged to capture: the
-/// position stands on its static evaluation, so the depth-one score is the
-/// best static reply -- exactly what a search with a quiet horizon gives --
-/// while the node count shows the losing capture was looked at.
+/// After each of White's three king moves Black's only capture, Qxb3, loses the queen. The side to
+/// move is never obliged to capture, so the depth-one score is the best static reply.
 const STAND_PAT: &str = "7k/5q2/8/8/1p6/pP6/P7/7K w - - 0 1";
 
 #[test]
@@ -378,31 +325,15 @@ fn a_losing_capture_is_never_forced_on_the_side_to_move_at_the_horizon() {
         let roots = generate_legal(&b).len() as u64;
         let r = search(&mut b, Limits::depth(1));
         assert_eq!(r.score, expected, "{fen}: score {}", r.score);
-        // This gate used to require more than `1 + roots` nodes as well, to
-        // show the losing capture had been looked at and refused. The
-        // exchange evaluation now refuses it without looking, which is the
-        // gate in the section on losing captures below; the property here
-        // is the score, and it is unchanged.
+        // The losing capture is refused by the exchange evaluation before it is searched, which the
+        // section on losing captures gates.
         let _ = roots;
     }
 }
 
-/// Where no root move allows a capture or a promotion, the horizon is
-/// already quiet: the search costs one node per leaf and scores the best
-/// static reply.
-///
-/// **One node per leaf, and one more for each leaf the null window has to
-/// visit twice.** The root searches its first move in the full window and
-/// the rest in a window with no room in it for a better answer, so a root
-/// move that turns out to be better comes back with a bound and is
-/// searched again. Here every leaf is a single node -- there is nothing
-/// noisy to resolve under any of them -- so the whole of the count is
-/// arithmetic: the root, one node per root move, and one more for each
-/// root move that beat everything before it. `root_re_searches` computes
-/// the last term from the static evaluations, which is what those moves
-/// are worth at this depth, so this gate pins the re-search rule as well
-/// as the cost of a quiet horizon. It read `1 + legal.len()` before the
-/// null window existed.
+/// Where no root move allows a capture or promotion, each leaf is one node, plus one for each root
+/// move the null window searches twice. `root_re_searches` computes that term from the static
+/// evaluations, so this pins the re-search rule as well as the cost of a quiet horizon.
 #[test]
 fn a_quiet_horizon_costs_one_node_per_leaf_and_scores_the_static_evaluation() {
     let mut fens = vec![START_FEN.to_string()];
@@ -430,8 +361,7 @@ fn a_quiet_horizon_costs_one_node_per_leaf_and_scores_the_static_evaluation() {
     }
 }
 
-/// Kiwipete has eight captures at the root and plenty below: a search that
-/// resolves them visits more than the root and its children at depth one.
+/// Kiwipete has eight captures at the root and plenty below.
 #[test]
 fn a_noisy_horizon_is_searched_below_depth_one() {
     let fen = support::standard_fen("kiwipete");
@@ -450,10 +380,7 @@ fn a_noisy_horizon_is_searched_below_depth_one() {
 // Checks at the horizon
 // ---------------------------------------------------------------------------
 
-/// A side in check at the horizon may not stand pat -- it has to get out of
-/// check, and if it cannot it is mated. So a mate in one is found at depth
-/// one: the mating move is the root move, and the horizon below it is a
-/// position with no evasion.
+/// A side in check may not stand pat, so a mate in one is found at depth one.
 #[test]
 fn mate_in_one_is_found_at_depth_one() {
     for (fen, key) in both_colours("7k/8/6K1/8/8/8/8/1R6 w - - 0 1", "b1b8") {
@@ -467,11 +394,8 @@ fn mate_in_one_is_found_at_depth_one() {
     }
 }
 
-/// Ra8+ skewers the king and the queen: every evasion is a quiet king move,
-/// and after each the rook takes the queen. A horizon that lets the side
-/// in check stand pat, or answers a check with captures only, scores Ra8+
-/// as nothing; one that answers it with the evasions sees the queen go.
-/// The old search prefers Ra7, for the seventh rank.
+/// Every evasion is a quiet king move after which the rook takes the queen. A horizon that stands
+/// pat in check or answers only with captures scores Ra8+ as nothing.
 const SKEWER: &str = "4k2q/8/8/8/8/8/8/R5K1 w - - 0 1";
 
 #[test]
@@ -502,9 +426,8 @@ fn the_skewer_is_what_it_claims() {
     }
 }
 
-/// Half a rook's endgame value averaged over its squares, read from the table so that a fit
-/// cannot move the score past the bar. Winning the queen scores about a rook and missing it about
-/// minus the queen's margin over the rook, so half a rook separates the two with room either way.
+/// Read from the table so a fit cannot move the score past the bar. Winning the queen scores about
+/// a rook and missing it about minus the queen's margin over the rook.
 fn half_a_rook() -> Score {
     let rook = PieceType::Rook.index();
     let table = &eval::WEIGHTS[eval::PST + 64 * rook..eval::PST + 64 * rook + 64];
@@ -535,12 +458,8 @@ fn a_check_at_the_horizon_is_answered_with_every_evasion() {
 // Promotions at the horizon
 // ---------------------------------------------------------------------------
 
-/// Black's pawn on a2 promotes next move unless White covers a1. A
-/// horizon that does not see promotions plays Rh7 for the seventh rank and
-/// meets a queen; one that does plays a rook move after which every
-/// promotion is captured. The one check available, Rh8+, hangs the rook to
-/// the king, so a horizon that sees the promotion cannot push it out of
-/// sight with a check either.
+/// A horizon blind to promotions plays Rh7 and meets a queen. The only check, Rh8+, hangs the rook,
+/// so a check cannot push the promotion out of sight.
 const PROMOTION: &str = "6k1/6p1/8/8/2b5/7R/p7/6K1 w - - 0 1";
 
 /// Whether every promotion the opponent has is met by a capture of the
@@ -617,10 +536,8 @@ fn a_promotion_at_the_horizon_is_seen() {
 // The order the noisy moves are tried in
 // ---------------------------------------------------------------------------
 
-/// Most valuable victim first, least valuable attacker among equal
-/// victims, both ranked pawn, knight, bishop, rook, queen, with the king an
-/// attacker only. The key is what the quiescence search sorts by, so its
-/// order is part of what the bench number depends on.
+/// Pawn, knight, bishop, rook, queen, the king an attacker only. The quiescence sort reads this
+/// key, so its order is part of what the bench number depends on.
 #[test]
 fn the_capture_key_ranks_the_victim_first_and_the_attacker_second() {
     let victims = [
@@ -664,10 +581,8 @@ fn the_capture_key_ranks_the_victim_first_and_the_attacker_second() {
     }
 }
 
-/// The key of a move in a position: a capture reads its attacker and victim
-/// off the board, en passant is a pawn taking a pawn, a queen promotion
-/// outranks every capture and an underpromotion ranks below every one, and
-/// a promotion that captures keeps the capture's order within its class.
+/// En passant is a pawn taking a pawn; a promotion that captures keeps the capture's order within
+/// its class.
 #[test]
 fn the_noisy_key_reads_the_board() {
     // Kiwipete's eight captures, each named.
@@ -711,10 +626,7 @@ fn the_noisy_key_reads_the_board() {
     }
 }
 
-/// The noisy list sorted: a permutation of the generated one, keys
-/// non-increasing, ties in generation order -- checked in every corpus
-/// position, and in Kiwipete the sorted order is written out, because there
-/// the generated order is not it.
+/// In Kiwipete the sorted order is written out, because there the generated order is not it.
 #[test]
 fn the_noisy_moves_are_sorted_by_key_stably() {
     let mut differs = 0;
@@ -776,15 +688,9 @@ fn the_noisy_moves_are_sorted_by_key_stably() {
 // The order the check evasions are tried in
 // ---------------------------------------------------------------------------
 
-/// Runs `f` at every in-check position that is one legal move from a corpus
-/// position: the move that gave the check, the board it reached, and the
-/// evasions generated there, in generation order.
-///
-/// This is the population the ordering acts on, and it is taken from the
-/// corpus rather than constructed, because what the sort is worth depends
-/// on how often a check at the horizon has a noisy answer at all. A check
-/// that is mate generates nothing and is not one of these positions: the
-/// search returns before it reaches the order.
+/// Taken from the corpus, not constructed, because what the sort is worth depends on how often a
+/// horizon check has a noisy answer. A check that is mate generates nothing and is not one of
+/// these.
 fn for_each_in_check_child(mut f: impl FnMut(&str, Move, &Board, &[Move])) {
     for fen in support::corpus_fens() {
         let mut b = support::position(&fen);
@@ -801,10 +707,8 @@ fn for_each_in_check_child(mut f: impl FnMut(&str, Move, &Board, &[Move])) {
     }
 }
 
-/// The rank an evasion is required to sort by: its capture key if it is
-/// noisy, and one rank below every noisy one if it is quiet. `i32::MIN`
-/// rather than `picker::QUIET`, so the assertion says "below all of them"
-/// and not "the number the implementation uses".
+/// `i32::MIN` rather than `picker::QUIET`, so the assertion says below all of them and not the
+/// implementation's number.
 fn evasion_rank(b: &Board, m: Move) -> i32 {
     if m.is_noisy() {
         noisy_key(b, m)
@@ -813,10 +717,8 @@ fn evasion_rank(b: &Board, m: Move) -> i32 {
     }
 }
 
-/// The premise of the change, read off the generator rather than assumed:
-/// the evasions come out king moves first, so the capture of the piece
-/// giving check is tried after every retreat, and a retreat from a check
-/// is what opens the next one.
+/// The premise, read off the generator: king moves come first, so capturing the checker is tried
+/// after every retreat.
 #[test]
 fn the_check_evasions_are_generated_king_first() {
     let (mut lists, mut with_noisy, mut king_first, mut noisy_behind_a_king_move) = (0, 0, 0, 0);
@@ -853,10 +755,7 @@ fn the_check_evasions_are_generated_king_first() {
     );
 }
 
-/// The order the sort is required to produce over an evasion list, which is
-/// the one place the quiescence search sorts a list holding quiet moves:
-/// every noisy evasion first by capture key, the quiet ones behind them all
-/// in the order the generator emitted them, and nothing gained or lost.
+/// The one place quiescence sorts a list holding quiet moves.
 #[test]
 fn the_check_evasions_sort_noisy_first_and_keep_generation_order() {
     let mut reordered = 0;
@@ -904,13 +803,8 @@ fn the_check_evasions_sort_noisy_first_and_keep_generation_order() {
     assert!(reordered > 0, "no corpus evasion list is reordered");
 }
 
-/// White is in check from the queen on a1 and has exactly one legal move,
-/// Ng1, which blocks the check and gives one: the knight lands defended by
-/// the king, so the capture that answers it, Qxg1, loses the queen for a
-/// knight, and the seven king moves that answer it keep the queen. The
-/// generator emits the king moves first and the sort puts the capture in
-/// front of them, so this is a position where the sort tries the losing
-/// move first.
+/// Ng1, White's only move, blocks and gives check from a defended square, so Qxg1 loses the queen
+/// while the seven king moves keep it. The sort puts the losing capture first.
 const DEFENDED_BLOCKER: &str = "8/8/8/8/8/7N/4k1PP/q6K w - - 0 1";
 
 #[test]
@@ -950,15 +844,8 @@ fn the_defended_blocker_is_what_it_claims() {
     }
 }
 
-/// The sort reorders the evasions; it does not shorten the list. The one
-/// noisy evasion here is tried first and loses a queen, and the value of
-/// the position is what the quiet ones are worth, so a search that stopped
-/// at the head of the sorted list would score this the other way round.
-///
-/// It costs the same eleven nodes at depth one in either order, because
-/// every evasion is searched in either order and none of the eight has a
-/// capture under it. That is the point: this is a claim about what the
-/// node is worth, not about what it costs.
+/// The noisy evasion tried first loses a queen, so a search stopping at the head would score this
+/// the other way round. Eleven nodes in either order: a claim about value, not cost.
 #[test]
 fn a_noisy_evasion_that_loses_is_not_the_answer() {
     for (fen, key) in both_colours(DEFENDED_BLOCKER, "h3g1") {
@@ -976,43 +863,9 @@ fn a_noisy_evasion_that_loses_is_not_the_answer() {
     }
 }
 
-/// The end-to-end gate: the corpus at depth two, where a check at the
-/// horizon has a tree under it, reading the decision rather than its cost.
-/// This is the one that fails if the sort is never called.
-///
-/// **It asserted a node ceiling until 2026-09-07 and had stopped being able
-/// to.** The reference was taken before losing captures were refused:
-/// 306,698 nodes in generation order against 68,845 ordered, a 4.45x
-/// window, with the ceiling at 150,000 between them. Exchange pruning took
-/// both readings down and took the window with them, to 12,342 against
-/// 10,643, so the ceiling sat 12.2x above the reading it existed to refuse
-/// and deleting `picker::sort_from` from the evasion path left all 27 tests
-/// in this file green.
-///
-/// **Summing the corpus is what closed the window, and it closed further
-/// than the ratio shows.** Only three of the 67 positions change at all,
-/// Kiwipete carries 1,676 of the 1,699-node difference, and one position
-/// searches three nodes *fewer* in generation order. The one position that
-/// can see the property gives 1.34x; the 66 that cannot bring it to 1.16x.
-/// Going deeper does not reopen it, measured at depths 1 to 6: 1.17, 1.16,
-/// 1.12, 1.07, 1.08, 1.09. A ceiling re-derived into that window would
-/// carry 8% either side, fail on changes that have nothing to do with
-/// evasions, and be raised -- which is how 150,000 came to sit where it
-/// did.
-///
-/// **Asserting the sorted order instead would rebuild the same hole one
-/// level down.** `the_check_evasions_sort_noisy_first_and_keep_generation_order`
-/// above already asserts exactly that, over this same population, and it
-/// passes with the sort deleted from `quiesce`, because it calls
-/// `picker::sort_from` itself. The property that lost its gate is not the
-/// sorter's output; it is that the search's in-check path applies it.
-///
-/// So the property goes where the pruning rules keep theirs, on a counter,
-/// in the two halves `futility_nodes` and `futility_skipped` are in: lists
-/// prepared says the in-check horizon is reached at all, and lists
-/// reordered says the sort ran and moved the head. Neither is a node count,
-/// so no unrelated change can drift them, and a bound that cannot drift is
-/// a bound nobody has to raise.
+/// Gated on counters, not nodes: lists prepared says the in-check horizon is reached, lists
+/// reordered says the sort ran in the search. A node ceiling had stopped separating the builds, and
+/// asserting the sorted order directly passes with the sort deleted from `quiesce`.
 #[test]
 fn ordering_the_check_evasions_reaches_the_head_of_the_list() {
     let (mut lists, mut reordered) = (0u64, 0u64);
@@ -1042,27 +895,11 @@ fn ordering_the_check_evasions_reaches_the_head_of_the_list() {
 // ---------------------------------------------------------------------------
 // Losing captures are not searched
 // ---------------------------------------------------------------------------
-//
-// Out of check, the quiescence search skips a noisy move whose static
-// exchange value (`see::see`) is negative: a capture that loses material
-// once every recapture has been answered is refused without being searched.
-// In check nothing is skipped, because an evasion is a legal answer to the
-// check and skipping one is skipping an answer.
-//
-// What a gate can see: a node count, and the sign the rule reads. A depth-one
-// search from a position whose root moves are all quiet costs one node per
-// root move plus the root when every reply below the horizon is refused,
-// and more when one is searched. So the gates are three positions of one
-// shape, the only noisy reply losing, winning and even (exactly `1 + roots`
-// nodes, more, and more), with the sign the rule reads asserted from `see`
-// before the search is asked. What `see` itself gets right -- pins, x-rays,
-// discovered checks -- is that function's gate, `tests/see.rs`, and not
-// repeated here.
+// Out of check a noisy move with negative `see` is refused unsearched; in check nothing is, since
+// every evasion answers the check. What `see` gets right is `tests/see.rs`'s gate.
 
-/// `see` of the one noisy reply the side to move has after each of the root
-/// side's quiet moves, asserted to be the same move and the same value
-/// after every one of them, and that value returned. A noisy root move is
-/// the main search's business and is skipped.
+/// Asserted to be the same move and value after every quiet root move; a noisy root move is the
+/// main search's business and is skipped.
 fn the_only_reply_exchange(b: &mut Position, uci: &str) -> i32 {
     let root = generate_legal(b);
     let mut value = None;
@@ -1098,16 +935,8 @@ fn fen(b: &Board) -> String {
     b.to_fen(cadence_core::fen::FenStyle::Shredder)
 }
 
-/// The stand-pat position: after every white king move Black's only noisy
-/// move is Qxb3, a pawn defended by a pawn. Refused without being searched:
-/// one node per root move, and the score is the best static reply.
-///
-/// The refusal is what makes each leaf a single node, and the count is the
-/// same arithmetic as the quiet horizon above: a leaf under a root move
-/// that beat everything before it is visited twice, because the window it
-/// was first searched in had no room for the answer it gave. A capture
-/// searched instead of refused shows up as a node under a leaf, which
-/// neither term accounts for.
+/// One node per root move, plus one for each the null window visits twice; a searched capture shows
+/// as a node under a leaf, which neither term accounts for.
 #[test]
 fn a_losing_capture_at_the_horizon_is_refused_without_being_searched() {
     for (fen, reply) in both_colours(STAND_PAT, "f7b3") {
@@ -1126,10 +955,8 @@ fn a_losing_capture_at_the_horizon_is_refused_without_being_searched() {
     }
 }
 
-/// The same shape with the pawn undefended: Qxa2 wins a pawn, is searched,
-/// and the root scores below its best static reply. The knight on a3 is
-/// there to block the pawn, so that every root move is a king move and
-/// the capture is the same after each; it attacks nothing.
+/// The knight on a3 blocks the pawn, so every root move is a king move and the capture is the same
+/// after each.
 const WINNING_AT_THE_HORIZON: &str = "7k/5q2/8/8/8/n7/P7/7K w - - 0 1";
 
 #[test]
@@ -1148,12 +975,8 @@ fn a_winning_capture_at_the_horizon_is_searched() {
     }
 }
 
-/// An even exchange is not a losing one: after every white king move the
-/// only noisy reply is axb3, a pawn for a pawn, and it is searched. The
-/// rule is `see < 0`, and this is the boundary. White's a- and b-pawns are
-/// blocked so that no quiet root move changes what defends b3; bxa4 is a
-/// root move too, which the main search plays and the helper skips, and
-/// under it Black has nothing noisy, so it is one node either way.
+/// `see < 0` is the rule and this is its boundary. The blocked a- and b-pawns keep every quiet root
+/// move from changing what defends b3.
 const EVEN_AT_THE_HORIZON: &str = "7k/8/8/8/pp6/nP6/P7/7K w - - 0 1";
 
 #[test]
@@ -1170,27 +993,9 @@ fn an_even_exchange_at_the_horizon_is_searched() {
     }
 }
 
-/// In check, nothing is refused. The defended-blocker position: Ng1 is
-/// White's only move and gives check; Black's answers are Qxg1, which
-/// loses the queen for the knight, and seven king moves. Nine of the nodes
-/// are the eight evasions and the recapture under the queen capture, and
-/// the queen capture being two of them is the point: it is searched, and
-/// the king takes back under it. A refused evasion is those two nodes
-/// missing.
-///
-/// **Two more nodes are the root and the node below the check, and the
-/// rest are the null window paying for being wrong.** The node below the
-/// check searches its first evasion in the full window and the rest in one
-/// with no room for a better answer, so an evasion that turns out to be
-/// better is searched twice. Three of them are in one colour and one in
-/// the other: eleven nodes became fourteen and twelve, and under the fitted
-/// piece-square table fifteen and thirteen, one more evasion in each colour
-/// improving on those before it. That difference is
-/// not a difference about check evasions. It is how many of them improved
-/// on the evasions tried before them, which is the order they are tried in
-/// and what they are worth, and a mirrored position is not searched in a
-/// mirrored order. The counts are exact and stay exact; what they stopped
-/// being is one number.
+/// The queen capture and the king's recapture under it are searched; a refused evasion is those two
+/// nodes missing. The colours differ by null-window re-searches, which follow the order the
+/// evasions are tried in, so each count is exact but not one number.
 #[test]
 fn a_losing_evasion_is_searched_all_the_same() {
     for ((fen, _), expected) in both_colours(DEFENDED_BLOCKER, "a1a1")
@@ -1203,21 +1008,8 @@ fn a_losing_evasion_is_searched_all_the_same() {
     }
 }
 
-/// The corpus at depth two, with losing captures refused. **Re-measured on
-/// 2026-09-07, because the reading quoted here was taken before the rule
-/// this gates existed:** 63,206 nodes with the losing captures searched,
-/// Kiwipete the worst at 55,045, against 10,643 with them refused and 4,991
-/// there. The ceiling sits between the two, 3.8x above the reading it
-/// admits and well under the one it refuses.
-///
-/// **A node ceiling is the right instrument here and was the wrong one for
-/// the evasion sort above, and the difference is the window:** 5.94x rather
-/// than 1.16x, because this rule removes whole subtrees while the sort
-/// reorders a list that is searched either way. That is also why the two
-/// are not merged, though they print the same total today: deleting the
-/// `see` test fails this gate, the depth-one bound below and the
-/// single-position gate above it, while deleting the sort fails none of
-/// them.
+/// Between 63,206 nodes with losing captures searched and 10,643 with them refused, a 5.94x window:
+/// this rule removes whole subtrees, so a ceiling works here where it failed for the evasion sort.
 const CORPUS_DEPTH_TWO_PRUNED_CEILING: u64 = 40_000;
 
 #[test]
@@ -1249,16 +1041,9 @@ fn refusing_losing_captures_saves_nodes() {
 // The tree below the horizon is bounded
 // ---------------------------------------------------------------------------
 
-/// Depth one from every corpus position -- the standard suite, the DFRC
-/// arrays, the castling-legality set, the edge cases -- completes within a
-/// fixed number of nodes. The horizon resolves captures and promotions,
-/// which material bounds, and a horizon that recursed on anything else
-/// would not stay under the ceiling. Measured when the quiescence search
-/// landed, noisy moves ordered by MVV-LVA and nothing pruned: 245,781
-/// nodes, in Kiwipete, and 159,421,843 there before the ordering, with the
-/// ceiling at a million, four times the measurement. With losing captures
-/// refused it is 3,019, Kiwipete still, and the ceiling has followed it
-/// down to about five times that.
+/// Material bounds a horizon that resolves only captures and promotions; one recursing on anything
+/// else would not stay under. Measured at 3,019 nodes, Kiwipete the largest, with losing captures
+/// refused.
 const DEPTH_ONE_NODE_CEILING: u64 = 15_000;
 
 #[test]

@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The version string the binary reports, composed at compile time. `build.rs` asks git what
-//! commit this is and whether HEAD is at an annotated tag, and emits the two answers raw.
+//! `build.rs` emits the commit and the exact tag raw; the string is composed here, where it can be
+//! tested.
 
-/// The tag HEAD is exactly at, or empty. Set by `build.rs`.
+/// Empty when HEAD is at no annotated tag.
 const TAG: &str = env!("CADENCE_TAG");
 
-/// The package version, which is the whole workspace's version.
+/// The whole workspace's version.
 const PACKAGE: &str = env!("CARGO_PKG_VERSION");
 
-/// What this build calls itself. The version half of the UCI `id name`.
+/// The version half of the UCI `id name`.
 pub const VERSION: &str = if is_release(TAG, PACKAGE) {
     PACKAGE
 } else {
     concat!(env!("CARGO_PKG_VERSION"), "-dev-", env!("CADENCE_COMMIT"))
 };
 
-/// Whether `tag` releases `package`: exact equality and nothing looser. Not a prefix test and
-/// not a "starts with the version" test.
+/// Exact equality: not a prefix test.
 const fn is_release(tag: &str, package: &str) -> bool {
     let (tag, package) = (tag.as_bytes(), package.as_bytes());
     if tag.is_empty() || tag.len() != package.len() {
@@ -37,11 +36,11 @@ const fn is_release(tag: &str, package: &str) -> bool {
 mod tests {
     use super::{PACKAGE, VERSION, is_release};
 
-    /// The short commit, or `unknown`. `build.rs` sets it and never leaves it empty.
+    /// `build.rs` never leaves it empty.
     const COMMIT: &str = env!("CADENCE_COMMIT");
 
-    /// The property the fallback rests on: nothing that is not the version itself grants the
-    /// release form, and in particular nothing empty does.
+    /// Nothing but the version itself grants the release form, and in particular nothing empty
+    /// does.
     #[test]
     fn only_an_exact_tag_releases() {
         assert!(is_release("0.3.0", "0.3.0"));
@@ -61,8 +60,7 @@ mod tests {
         }
     }
 
-    /// Whichever form this build took, it is one of the two and it opens with the package
-    /// version, so a reader who knows the version can always find it at the front.
+    /// Either form opens with the package version.
     #[test]
     fn the_version_string_is_one_of_two_shapes() {
         assert!(
@@ -76,8 +74,7 @@ mod tests {
         );
     }
 
-    /// The commit is never empty, so the dev form can never trail off into `<version>-dev-`,
-    /// which reads as a truncation rather than as a fact.
+    /// So the dev form never trails off into `<version>-dev-`, which reads as a truncation.
     #[test]
     fn the_commit_is_always_something() {
         assert!(!COMMIT.is_empty());

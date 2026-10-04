@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Shared by the engine's integration tests.
-//!
-//! The corpus fixture is read here with a small parser of its own, because the
-//! engine crate does not see `core`'s test support. As there, nothing
-//! transcribes a FEN or a node count into Rust: the fixture is the only
-//! source of expected values, and a test names a row and reads it.
+//! Read with a small parser of its own, because the engine crate does not see `core`'s test
+//! support; the fixture is the only source of expected values.
 
 // Each test binary uses a different subset of this module.
 #![allow(dead_code)]
@@ -16,15 +12,10 @@ use std::time::{Duration, Instant};
 
 pub const FIXTURE: &str = include_str!("../../../tests/fixtures/perft-corpus.txt");
 
-/// Pawn-and-king positions where one side stands far enough ahead that the
-/// evaluation sits above beta at null-window nodes throughout the tree.
-/// Two gates read them for opposite halves of one fact -- null-move pruning
-/// refuses these positions, so a search of them tries no null move
-/// (`tests/pruning.rs`) and remains a function of the position and the
-/// depth alone, independent of the window it is asked in
-/// (`tests/search.rs`). Pawns start on their own second and third ranks, so
-/// no promotion is reachable inside six plies of the main search and every
-/// node of a depth-six subtree is pawn-and-king only.
+/// One side stands far enough ahead that the evaluation sits above beta at null-window nodes, so
+/// the null move is refused throughout (`tests/pruning.rs`) and the search is window-independent
+/// (`tests/search.rs`). No promotion is reachable inside six plies, so a depth-six subtree is
+/// pawn-and-king only.
 pub const PAWN_ENDGAMES: [&str; 2] = [
     "4k3/pppp4/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
     "4k3/pppppppp/8/8/8/8/4PPPP/4K3 b - - 0 1",
@@ -66,7 +57,7 @@ pub fn standard_fen(name: &str) -> String {
     panic!("no section 1 position named {name}");
 }
 
-/// Every FEN in the section 1 table, startpos first.
+/// Startpos first.
 pub fn standard_fens() -> Vec<String> {
     let mut out = Vec::new();
     for line in FIXTURE.lines() {
@@ -117,9 +108,7 @@ pub fn edge_case_fens() -> Vec<String> {
         .collect()
 }
 
-/// Every position the corpus names, for "over every corpus position" tests:
-/// the standard suite, the DFRC arrays, the castling-legality set and the
-/// edge cases.
+/// The standard suite, the DFRC arrays, the castling-legality set and the edge cases.
 pub fn corpus_fens() -> Vec<String> {
     let mut out = standard_fens();
     out.extend(dfrc_arrays().into_iter().map(|(_, _, fen)| fen));
@@ -132,13 +121,9 @@ pub fn corpus_fens() -> Vec<String> {
 // The transposition table
 // ---------------------------------------------------------------------------
 
-/// The search position at `fen`, which is what a gate hands to a search. Eight test files
-/// carried a `board(fen)` of their own before this existed, and every one of them wanted this.
-///
 /// # Panics
 ///
-/// If `fen` does not parse. A gate naming an unparseable position is a broken gate, and the
-/// panic names it.
+/// If `fen` does not parse.
 #[must_use]
 pub fn position(fen: &str) -> cadence_engine::position::Position {
     cadence_engine::position::Position::new(
@@ -146,9 +131,7 @@ pub fn position(fen: &str) -> cadence_engine::position::Position {
     )
 }
 
-/// A search over `tt` with `limits` already set, which is what a gate builds. The limits are a
-/// setter on the search rather than an argument to its constructor, and writing that out at
-/// every gate is the cost this absorbs.
+/// With `limits` already set, which every gate would otherwise write out.
 #[must_use]
 pub fn search<'a>(
     limits: cadence_engine::search::Limits,
@@ -160,13 +143,8 @@ pub fn search<'a>(
     search
 }
 
-/// A table for one search, at the size the engine defaults to.
-///
-/// Every gate that ran before the table existed gets a fresh one per
-/// search, which is what those gates were written against: a search whose
-/// node count depends on nothing but the position and the depth. A gate
-/// that means to test the table across searches builds its own and keeps
-/// it (`tests/tt.rs`).
+/// Fresh per search, so a gate's count depends on the position and depth alone; `tests/tt.rs` keeps
+/// its own across searches.
 ///
 /// # Panics
 ///
@@ -181,7 +159,7 @@ pub fn table() -> cadence_engine::tt::Table {
 // Determinism
 // ---------------------------------------------------------------------------
 
-/// splitmix64. Seedable, so a failing walk is reproducible from its seed.
+/// splitmix64, seedable, so a failing walk is reproducible.
 pub struct Rng(u64);
 
 impl Rng {
@@ -198,7 +176,6 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// Uniform in `0..n`.
     pub fn below(&mut self, n: usize) -> usize {
         assert!(n > 0, "below(0)");
         usize::try_from(self.next_u64() % n as u64).expect("fits")
@@ -209,16 +186,11 @@ impl Rng {
 // The binary as a subprocess
 // ---------------------------------------------------------------------------
 
-/// How long a subprocess may take before the test calls it hung. Generous,
-/// because CI runners are slow and debug builds slower; a real hang is
-/// seconds of nothing, not a close call.
+/// Generous for slow CI and debug builds: a real hang is seconds of nothing, not a close call.
 pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// Feed `input` to `cadence` on stdin, all at once, and return its stdout.
-///
-/// The child is killed and the test fails if it has not exited within
-/// [`SUBPROCESS_TIMEOUT`]: a `go infinite` that does not come back on `stop`
-/// or `quit` is a hang, and a hung test is worse than a failed one.
+/// All at once. The child is killed and the test fails after `SUBPROCESS_TIMEOUT`, because a hung
+/// test is worse than a failed one.
 pub fn talk(input: &str) -> String {
     talk_bytes(input.as_bytes())
 }
@@ -264,7 +236,6 @@ pub fn bestmove(out: &str) -> String {
         .unwrap_or_else(|| panic!("no bestmove line in {out:?}"))
 }
 
-/// Every `bestmove` line's move, in order.
 pub fn bestmoves(out: &str) -> Vec<String> {
     out.lines()
         .filter_map(|l| l.strip_prefix("bestmove "))
@@ -276,16 +247,9 @@ pub fn bestmoves(out: &str) -> Vec<String> {
 // Colour mirror
 // ---------------------------------------------------------------------------
 
-/// The position with the colours swapped: ranks reversed, piece case swapped,
-/// side to move flipped, castling rights swapped, the en-passant square on
-/// the mirrored rank. Clocks unchanged. A legal position mirrors to a legal
-/// position, and mirroring twice is the identity -- both asserted in
-/// `tests/eval.rs`, because every coverage count there rests on this
-/// function being right.
-///
-/// Operates on the FEN text, which is the representation in which the
-/// transform is obviously correct. Shredder style, so the castling field is
-/// always file letters and never needs the `K`/`Q` resolution redone.
+/// Mirroring twice is the identity, asserted in `tests/eval.rs` because its coverage counts rest on
+/// this. On the FEN text, where the transform is obviously correct, in Shredder style so the
+/// castling field needs no `K`/`Q` resolution.
 pub fn mirror_fen(fen: &str) -> String {
     let fields: Vec<&str> = fen.split_whitespace().collect();
     assert!(fields.len() >= 4, "short FEN: {fen}");
@@ -340,7 +304,6 @@ fn swap_case(c: char) -> char {
     }
 }
 
-/// `board` with the colours swapped. See [`mirror_fen`].
 pub fn mirror(board: &cadence_core::Board) -> cadence_core::Board {
     let fen = board.to_fen(cadence_core::FenStyle::Shredder);
     let mirrored = mirror_fen(&fen);
@@ -352,9 +315,7 @@ pub fn mirror(board: &cadence_core::Board) -> cadence_core::Board {
 // Endgame seeds
 // ---------------------------------------------------------------------------
 
-/// Positions with little or nothing left but pawns and kings, as seeds for
-/// walks that need the endgame end of the phase scale. Random walks from
-/// the start position do not get there.
+/// Random walks from the start position do not reach the endgame end of the phase scale.
 pub const ENDGAME_FENS: &[&str] = &[
     "8/8/8/4k3/8/8/4P3/4K3 w - - 0 1",     // KPK
     "8/5k2/8/8/8/8/1PP5/1K6 w - - 0 1",    // KPPK
@@ -374,9 +335,7 @@ pub const ENDGAME_FENS: &[&str] = &[
 // The binary, interactively
 // ---------------------------------------------------------------------------
 
-/// A running `cadence` process spoken to a line at a time. For tests that
-/// need to read a reply before deciding what to send next -- a game on a
-/// clock, where each `go` carries the time the previous reply left.
+/// For tests that read a reply before deciding what to send, such as a game on a clock.
 pub struct Engine {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
@@ -405,8 +364,7 @@ impl Engine {
         self.stdin.flush().expect("flush to cadence");
     }
 
-    /// Read lines until one starts with `prefix`; return every line read,
-    /// the matching one last. Panics, rather than hanging, if the process
+    /// Returns every line read, the matching one last; panics rather than hanging if the process
     /// ends first.
     pub fn read_until(&mut self, prefix: &str) -> Vec<String> {
         use std::io::BufRead;
@@ -427,21 +385,14 @@ impl Engine {
         }
     }
 
-    /// `isready` / `readyok`: wait until the engine is up and has consumed
-    /// everything sent so far. A timing test that does not do this measures
-    /// process start-up -- 150-250 ms on macOS for a freshly built binary,
-    /// which was enough to make "the search used its movetime" pass against
-    /// a placeholder that returned at once.
+    /// Without it a timing test measures process start-up, 150-250 ms on macOS, which once let a
+    /// placeholder pass as using its movetime.
     pub fn sync(&mut self) -> Vec<String> {
         self.send("isready");
         self.read_until("readyok")
     }
 
-    /// Send `setup` lines, then `go_line`, read up to and including the
-    /// `bestmove`, quit, and return everything the engine printed, one line
-    /// per entry. The way to drive a search that must run to its limit:
-    /// `talk` pipes `quit` in with the rest, and `quit` -- correctly -- stops
-    /// a search that is still running.
+    /// For a search that must run to its limit: `talk` pipes `quit`, which stops a running search.
     pub fn go(setup: &[&str], go_line: &str) -> Vec<String> {
         let mut e = Engine::spawn();
         for line in setup {
@@ -453,17 +404,9 @@ impl Engine {
         lines
     }
 
-    /// [`Engine::go`], with a deadline, returning how long the search took
-    /// and everything printed from the first setup line onward.
-    ///
-    /// A gate whose subject is "the engine comes back" must not hang when it
-    /// does not, and `read_until` blocks: `panic = "abort"` is not in force
-    /// in the test profile (Cargo.toml), so a search thread that panics
-    /// unwinds and dies while the UCI loop goes on reading, and no
-    /// `bestmove` is ever printed. The same shape covers a search that
-    /// simply never stops. The child sees end of input when this process
-    /// exits, so a thread left behind on the failing path does not outlive
-    /// the run.
+    /// Returns the search's duration and everything printed. The deadline matters because the test
+    /// profile does not abort on panic, so a dead search thread leaves the UCI loop reading and
+    /// `read_until` blocked.
     pub fn go_within(setup: &[&str], go_line: &str, timeout: Duration) -> (Duration, Vec<String>) {
         let setup: Vec<String> = setup.iter().map(|s| (*s).to_string()).collect();
         let line = go_line.to_string();
@@ -473,10 +416,8 @@ impl Engine {
             for l in &setup {
                 e.send(l);
             }
-            // Sync first, so the elapsed time is the search's and not the
-            // process start-up's.
-            // Its output is kept: anything the setup lines printed comes out
-            // before `readyok` and would otherwise be read past and lost.
+            // Sync first, so the elapsed time excludes start-up; its output is kept, since setup
+            // lines print before `readyok`.
             let mut lines = e.sync();
             lines.pop();
             let start = Instant::now();
@@ -490,9 +431,7 @@ impl Engine {
             .unwrap_or_else(|_| panic!("no bestmove within {timeout:?} for `{go_line}`"))
     }
 
-    /// Run `body` on a thread and fail rather than block when it does not
-    /// finish. [`Engine::go_within`]'s reason, for a gate that has to send a
-    /// command mid-search and so cannot hand the whole exchange over.
+    /// For a gate that must send a command mid-search, for `Engine::go_within`'s reason.
     pub fn within<T: Send + 'static>(
         timeout: Duration,
         body: impl FnOnce() -> T + Send + 'static,
@@ -535,9 +474,8 @@ pub enum Outcome {
     Cap,
 }
 
-/// A player: given the board, returns the move to play. The harness checks
-/// that it is legal, so a player that returns an illegal move fails the
-/// test by name rather than corrupting the board.
+/// The harness checks legality, so an illegal move fails the test by name instead of corrupting the
+/// board.
 pub type Player<'a> = dyn FnMut(&mut cadence_engine::position::Position) -> Move + 'a;
 
 /// Play `white` against `black` from `fen` until a rules-based end or `cap`

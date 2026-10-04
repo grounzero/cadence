@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `zobrist`'s tables. The rule about *when* each key is mixed
-//! in is gated with `position`, where the incremental key is compared with a
-//! from-scratch recomputation at every node of a walk; what is checked here
-//! is that the keys themselves can carry that test.
-//!
-//! 793 keys (768 piece-square, 1 side, 16 castling, 8 en-passant), all
-//! non-zero and pairwise distinct. A zero key is a piece that does not hash;
-//! two equal keys are two positions that collide by construction. Neither
-//! is caught by anything downstream: perft does not hash, and a
-//! transposition table returns a wrong entry silently.
+//! A zero key is a piece that does not hash, and two equal keys collide by construction. Nothing
+//! downstream catches either: perft does not hash, and a table returns a wrong entry silently.
 
 use cadence_core::castling::CastlingRights;
 use cadence_core::types::{File, Piece, Square};
@@ -55,8 +47,7 @@ fn every_key_is_distinct() {
     assert_eq!(seen.len(), keys.len());
 }
 
-/// The keys are a function of the crate, not of the run: the same call
-/// returns the same key, and the piece table is indexed by piece then square.
+/// A function of the crate, not of the run.
 #[test]
 fn keys_are_stable_and_typed() {
     assert_eq!(
@@ -81,9 +72,7 @@ fn keys_are_stable_and_typed() {
         zobrist::castling(CastlingRights::ALL)
     );
     assert_ne!(zobrist::ep(File::A), zobrist::ep(File::H));
-    // Spread: no key is a small number, and the high halves vary. A table
-    // built from a broken generator (all keys equal to the seed, or a
-    // counter) fails here.
+    // A broken generator, all keys equal to the seed or a counter, fails here.
     let keys = all_keys();
     let high_halves: std::collections::HashSet<u32> =
         keys.iter().map(|(_, k)| (*k >> 32) as u32).collect();
@@ -97,8 +86,8 @@ fn keys_are_stable_and_typed() {
     );
 }
 
-/// A fold of every key, pinned: an edit to the generator the keys are drawn from changes it. The
-/// figure was read off the tree before the generator moved into `rng`, which is what it guards.
+/// An edit to the generator changes it. Read off the tree before the generator moved into `rng`,
+/// which is what it guards.
 #[test]
 fn the_keys_are_the_ones_every_build_has_drawn() {
     let fold = all_keys()

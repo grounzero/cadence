@@ -1,26 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The history heuristic: what a quiet move has been worth elsewhere, and
-//! what reads it.
-//!
-//! What these gates demonstrate is the mechanism and not that the code
-//! runs. The load-bearing one is
-//! [`a_cutoff_raises_a_score_and_the_order_follows`]: a real search plays
-//! real cutoffs, the table it leaves behind holds a higher score for the
-//! move that cut than for the moves it beat, and sorting the same list
-//! through that table puts a different move in front of the search. Score
-//! and order are asserted as one chain, because either alone passes on a
-//! mechanism that does nothing -- a table nobody reads raises scores
-//! forever, and a sort keyed on a table nobody writes reorders nothing.
-//!
-//! The malus has a gate of its own, since it is the half that produces a
-//! negative score and a negative score is the whole of what the reduction
-//! reads on the downside; a table that only ever credits would pass every
-//! gate here that does not look for one.
-//!
-//! The rest pin the arithmetic directly, without a search: the bonus, the
-//! ageing update's bound and its diminishing return, the shift, and the
-//! rule that history adjusts a reduction and never creates one.
+//! A cutoff raises a score and the sort follows, asserted as one chain, since either alone passes
+//! on a mechanism that does nothing. The malus has its own gate, because a table that only credits
+//! would pass every gate that does not look for a negative score.
 
 mod support;
 
@@ -33,62 +15,24 @@ use cadence_engine::picker::sort_from;
 use cadence_engine::search::{Limits, history_reduction, lmr_reduction};
 use support::table;
 
-/// The depth the ordering gate runs at. Six, like the reduction gates:
-/// deep enough that quiet cutoffs are plentiful and the table has been
-/// written to well before the last iteration sorts a list.
+/// Deep enough that the table is well written before the last iteration sorts a list.
 const ORDER_DEPTH: u32 = 6;
 
-/// The depth the modulation gate runs at, and it is deeper for a reason
-/// that is a property of the mechanism rather than of the position.
-///
-/// The reduction reads the *tails* of the score distribution, deliberately
-/// (`history::HISTORY_PLY`), and a tail needs a table that has been written
-/// to enough times for one to exist. Measured over the bench positions:
-/// at depth six no position in the list moves a reduction in both
-/// directions, at depth seven none does either, and at depth eight five do.
-/// A gate on a rule that fires on the outer few per cent has to search
-/// deep enough to have an outer few per cent.
-///
-/// **Late move pruning moved it from eight to ten, and what moved is the
-/// malus's reader rather than the table.** The direction only the debit can
-/// produce -- a reduction the score *lengthens* -- falls from 949,732 to
-/// 293,638 over the bench positions at depth twelve, a 69% fall, while the
-/// direction a credit produces rises from 110,829 to 166,213. The ratio
-/// between the two narrows from 8.6 to 1 down to 1.8 to 1. The mechanism is
-/// that a move carrying negative history is a late quiet move that has been
-/// refuted, and that is precisely the population this rule gives up before
-/// a reduction site is reached, so the malus keeps its writer and loses
-/// most of its reader. Measured on this position: no reduction is
-/// lengthened at depth eight, and some are at nine. Ten is taken, one past
-/// the first depth that works, for `GATE_DEPTH`'s reason in
-/// `tests/futility.rs`.
+/// The reduction reads the tails of the score distribution, which need a well-written table, and
+/// late move pruning gives up most of the refuted moves the malus marks. No reduction is lengthened
+/// at depth eight on this position and some are at nine; ten is one past.
 const MODULATION_DEPTH: u32 = 10;
 
-/// A quiet middlegame with both sides developed and no capture worth
-/// making, which is where a history table has something to learn: the same
-/// quiet moves come up at node after node and the score separates them.
-/// Kiwipete is the opposite kind of position and is used above for the
-/// opposite reason, that its noisy prefix is long enough for the "the sort
-/// did not disturb the other bands" half to mean something.
+/// The same quiet moves recur from node to node, so the score separates them; Kiwipete serves the
+/// opposite purpose, a noisy prefix long enough to show the other bands undisturbed.
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// The chain the whole change rests on, end to end through a real search:
-/// a cutoff raises a score, and the order changes as a result.
-///
-/// Three links, each asserted, and the first two are what stop the third
-/// passing for the wrong reason. The search writes: some quiet move ends
-/// the search with a score above zero, so a cutoff credited it. The write
-/// is discriminating: the highest-scoring quiet move in the root's own list
-/// outscores the lowest, so the table separates quiet moves rather than
-/// lifting them all together. And the sort follows: ordering the root's
-/// legal list through that table puts a different move at the head of the
-/// quiet block than ordering it through no table at all, with the noisy
-/// prefix identical between the two, which is what says the score moved a
-/// quiet move and did not disturb a band it has no business in.
+/// The search writes, the write discriminates between quiet moves, and the sort follows with the
+/// noisy prefix unchanged; the first two links stop the third passing for the wrong reason.
 #[test]
 fn a_cutoff_raises_a_score_and_the_order_follows() {
     let fen = support::standard_fen("kiwipete");
@@ -156,16 +100,8 @@ fn a_cutoff_raises_a_score_and_the_order_follows() {
     );
 }
 
-/// The malus fires, and both directions reach a reduction that was going
-/// to happen.
-///
-/// The counters are the instrument: one counts a reduction the score
-/// shortened, the other one it lengthened, and the second cannot move
-/// unless some move at a reduction site carries a negative score, which
-/// only the debit on the refuted quiets can produce. A table that credited
-/// the cutter and left its siblings alone would pass the first assertion
-/// and fail this one, which is why the two are separate counters and not a
-/// sum.
+/// The lengthening counter can only move if a reduction site holds a negative score, which only the
+/// debit writes. Two counters, not a sum, so a credit-only table fails.
 #[test]
 fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
     let stop = AtomicBool::new(false);
@@ -193,11 +129,8 @@ fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
     );
 }
 
-/// Every entry the search writes stays inside the table's stated range,
-/// measured over a real search rather than over the update function alone:
-/// the bound is what `picker`'s band width and the shift's divisor are both
-/// sized against, so it is worth checking against the thing that actually
-/// writes.
+/// Measured over a real search, since `picker`'s band width and the shift's divisor are sized
+/// against this bound.
 #[test]
 fn a_real_search_leaves_every_entry_inside_the_bound() {
     let stop = AtomicBool::new(false);
@@ -217,21 +150,9 @@ fn a_real_search_leaves_every_entry_inside_the_bound() {
     }
 }
 
-/// The table is one search's and never two, which is the variant that was
-/// chosen rather than an accident of the UCI layer.
-///
-/// Two runs of one `Search` over one position, with the transposition table
-/// cleared between them so that it carries nothing either. What a search
-/// sees is then the code, the position and an empty table, all three the
-/// same both times, and the killers are cleared at the head of `run`. So
-/// the history is the only state that could carry, and two identical runs
-/// are what says it did not: had the second started from the first's table
-/// it would have sorted its quiet moves differently and searched a
-/// different tree.
-///
-/// `bench` cannot make this distinction -- it builds a fresh `Search` per
-/// position -- so a gate through one `Search` is the only thing in the
-/// repository that can say which lifetime is in force.
+/// With the transposition table cleared and the killers cleared by `run`, history is the only state
+/// that could carry, and identical runs show it did not. `bench` builds a fresh `Search` per
+/// position, so only a gate through one `Search` can tell the lifetime.
 #[test]
 fn the_table_does_not_survive_a_second_search() {
     let stop = AtomicBool::new(false);
@@ -267,14 +188,8 @@ fn the_table_does_not_survive_a_second_search() {
     );
 }
 
-/// The bonus is the scaled square of the depth until the cap, and the cap
-/// is where that square would leave the table's range.
-///
-/// The scale is pinned here as well as the shape, because it is the one
-/// constant in this module chosen against a measurement rather than argued
-/// from the mechanism: at a scale of one the ageing term never engages and
-/// the cap is decoration, which is a thing the gate should notice being
-/// undone.
+/// The scale is pinned too: at a scale of one the ageing term never engages and the cap is
+/// decoration.
 #[test]
 fn the_bonus_is_the_scaled_square_until_the_cap() {
     assert_eq!(history::bonus(0), 0);
@@ -292,12 +207,8 @@ fn the_bonus_is_the_scaled_square_until_the_cap() {
     }
 }
 
-/// The ageing update: bounded for every input, credit raises, debit lowers,
-/// and the return diminishes as the entry approaches the cap.
-///
-/// The last is the property that makes it ageing rather than accumulation,
-/// and it is the one an implementation gets wrong by leaving out a term
-/// while every other assertion here still passes.
+/// The diminishing return makes it ageing rather than accumulation, and is what leaving out a term
+/// breaks while every other assertion still passes.
 #[test]
 fn the_update_is_bounded_and_its_return_diminishes() {
     let extremes = [
@@ -348,9 +259,7 @@ fn the_update_is_bounded_and_its_return_diminishes() {
     assert!(e <= HISTORY_MAX, "credits passed the cap: {e}");
 }
 
-/// The shift is odd, bounded and monotone: symmetric about a score of
-/// zero, never more than [`SHIFT_MAX`] plies, and never smaller for a
-/// larger score.
+/// Symmetric about zero, never more than `SHIFT_MAX` plies, never smaller for a larger score.
 #[test]
 fn the_shift_is_bounded_and_monotone() {
     assert_eq!(history::shift(0), 0, "a move with no score was moved");
@@ -370,9 +279,8 @@ fn the_shift_is_bounded_and_monotone() {
     );
 }
 
-/// History adjusts a reduction and never creates one: a base of zero comes
-/// back zero for every score there is, so every exemption `reduction` holds
-/// survives the table.
+/// A base of zero comes back zero for every score, so every exemption `reduction` holds survives
+/// the table.
 #[test]
 fn history_never_creates_a_reduction() {
     for h in (-HISTORY_MAX..=HISTORY_MAX).step_by(31) {
@@ -384,8 +292,7 @@ fn history_never_creates_a_reduction() {
     }
 }
 
-/// Where a reduction was going to happen, the score moves it by the shift
-/// and by no more, in both directions, and it cannot drive one below zero.
+/// In both directions, and never below zero.
 #[test]
 fn history_moves_a_reduction_by_the_shift() {
     for depth in [3u32, 4, 8, 16, 31] {
@@ -413,12 +320,8 @@ fn history_moves_a_reduction_by_the_shift() {
     }
 }
 
-/// Every move a generator emits indexes inside the table.
-///
-/// The butterfly index is twelve bits of a sixteen-bit move, and the table
-/// is sized for that and not for anything the encoding might grow. A
-/// promotion carries its piece in the bits above the index, so the check is
-/// worth making against real lists rather than against the mask.
+/// A promotion carries its piece above the twelve-bit index, so the check runs over real lists
+/// rather than the mask.
 #[test]
 fn every_generated_move_indexes_inside_the_table() {
     let mut seen = 0;
@@ -432,9 +335,7 @@ fn every_generated_move_indexes_inside_the_table() {
     assert!(seen > 0, "the corpus produced no moves");
 }
 
-/// A table nobody has written to reads zero for every move, which is what
-/// makes the empty slice `picker` takes from a caller with none the same
-/// order as no table at all.
+/// Which makes the empty slice `picker` takes from a caller with none the same order as no table.
 #[test]
 fn a_fresh_table_reads_zero() {
     let h = History::new();

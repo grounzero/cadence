@@ -1,22 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `features`: the train/play contract, stated as data.
-//!
-//! `feature_index` is the single definition inference and the training-data
-//! writer both consume. Its ordering is frozen by compile-time pins the
-//! moment it exists, and checked against Bullet's `Chess768` as integers
-//! before any training run. What can be checked here, with no trainer, is
-//! that it computes exactly this ordering:
+//! `feature_index` must compute exactly this, each perspective a bijection onto `0..768` and
+//! Black's view the colour-swapped mirror of White's:
 //!
 //! ```text
 //! rel_colour = piece.colour ^ perspective       (0 = us)
 //! rel_sq     = sq ^ (perspective == Black ? 56 : 0)
 //! index      = rel_colour * 384 + piece_type * 64 + rel_sq
 //! ```
-//!
-//! and that the ordering has the properties the network relies on: each
-//! perspective is a bijection onto `0..768`, and Black's view of a position
-//! is White's view of the colour-swapped, vertically mirrored one.
 
 use cadence_core::types::{Colour, Piece, PieceType, Square};
 use cadence_core::{NUM_INPUTS, feature_index};
@@ -57,8 +48,7 @@ fn each_perspective_is_a_bijection_onto_the_input_range() {
     }
 }
 
-/// Black's view of `(piece, sq)` is White's view of the other-colour piece
-/// on the mirrored square. This is the perspective flip in one line.
+/// The perspective flip in one line.
 #[test]
 fn black_perspective_is_the_colour_swapped_mirror_of_white() {
     for piece in Piece::ALL {
@@ -73,8 +63,7 @@ fn black_perspective_is_the_colour_swapped_mirror_of_white() {
     }
 }
 
-/// The corners of the ordering by name: the same values the crate pins at
-/// compile time, restated so a report names them.
+/// The same values the crate pins at compile time, restated so a report names them.
 #[test]
 fn named_pins() {
     assert_eq!(feature_index(Colour::White, Piece::WPawn, Square::A1), 0);

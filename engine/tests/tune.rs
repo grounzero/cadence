@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The search constants a tune may move, and the three places they surface: the options `uci`
-//! declares, the block `cadence spsa` prints, and the values a search reads.
-//!
-//! A tuner delivers every value as `setoption name <name> value <v>`, and an engine ignores an
-//! option it does not know. So a misspelled name, a float that does not parse, or an option that
-//! is accepted and reaches nothing all fail in silence, as a tune that runs to its end and moves
-//! nothing. Each is gated here instead: the two printed forms are parsed independently and
-//! compared, every malformed spelling is shown to be refused with the value kept, and every
-//! option is shown to change a search through the pipe a tuner uses.
+//! A misspelled name, an unparsed float or an option reaching nothing all fail in silence, as a
+//! tune that moves nothing. So both printed forms are parsed and compared, malformed spellings
+//! shown refused, and every option shown to change a search through the tuner's pipe.
 
 mod support;
 
@@ -19,23 +13,20 @@ use cadence_engine::tune::{self, Kind, PARAMS, Param, Tunable, Tunables};
 use cadence_engine::uci::Session;
 use support::{Engine, talk};
 
-/// A quiet middlegame, the position the pruning gates use, where every rule the table reaches
-/// has nodes to act on at the depth below.
+/// Every rule the table reaches has nodes to act on at `DEPTH`.
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 /// Deep enough that each rule fires many times over, shallow enough that a subprocess per
 /// setting stays cheap.
 const DEPTH: u32 = 8;
 
-/// The options the engine declared before any of these existed. A tunable spelled like one of
-/// them would be answered by the wrong handler.
+/// A tunable spelled like one of these would be answered by the wrong handler.
 const FIXED_OPTIONS: [&str; 5] = ["UCI_Chess960", "Hash", "Threads", "MultiPV", "Ponder"];
 
 fn param(which: Tunable) -> &'static Param {
     &PARAMS[which as usize]
 }
 
-/// `cadence spsa`'s stdout and exit code.
 fn spsa(args: &[&str]) -> (String, Option<i32>) {
     let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
         .arg("spsa")
@@ -48,8 +39,7 @@ fn spsa(args: &[&str]) -> (String, Option<i32>) {
     )
 }
 
-/// The `option` lines of a `uci` reply, by name, as the protocol's name and the rest of the
-/// line's tokens.
+/// By name, as the protocol's name and the rest of the line's tokens.
 fn declared() -> Vec<(String, Vec<String>)> {
     let out = talk("uci\nquit\n");
     let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
@@ -64,20 +54,17 @@ fn declared() -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Two readings of one decimal as the same number, which is the question and not bitwise
-/// equality.
+/// The question is the number, not bitwise equality.
 fn same(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-9
 }
 
-/// The value after `key` in a declaration's tokens.
 fn token<'a>(toks: &'a [String], key: &str) -> Option<&'a str> {
     let at = toks.iter().position(|t| t == key)?;
     toks.get(at + 1).map(String::as_str)
 }
 
-/// The `nodes` of the last iteration line of a fixed-depth search from [`MIDDLEGAME`], after
-/// `setup`.
+/// Of the last iteration line, from `MIDDLEGAME` at `DEPTH`, after `setup`.
 fn nodes_after(setup: &[&str]) -> u64 {
     let position = format!("position fen {MIDDLEGAME}");
     let mut lines: Vec<&str> = setup.to_vec();
@@ -97,7 +84,6 @@ fn nodes_after(setup: &[&str]) -> u64 {
 // The declaration, and the one fact it shares with the tune input
 // ---------------------------------------------------------------------------
 
-/// Every parameter is declared before `uciok`, exactly as its row renders it.
 #[test]
 fn every_parameter_is_declared_before_uciok() {
     let out = talk("uci\nquit\n");
@@ -111,9 +97,8 @@ fn every_parameter_is_declared_before_uciok() {
     }
 }
 
-/// The names a tuner will send: no whitespace, because a tuner's option string is split on it;
-/// no longer than a tuner stores; distinct without regard to case, and distinct from every
-/// option declared before them.
+/// No whitespace, since a tuner splits on it; no longer than a tuner stores; distinct without
+/// regard to case and from every earlier option.
 #[test]
 fn every_name_survives_the_trip_through_a_tuner() {
     for (i, p) in PARAMS.iter().enumerate() {
@@ -143,12 +128,8 @@ fn every_name_survives_the_trip_through_a_tuner() {
     }
 }
 
-/// **The drift gate.** The block `cadence spsa` prints and the options `uci` declares are
-/// parsed separately, the way a tuner and a GUI would read them, and have to agree on every
-/// name, kind, default and bound.
-///
-/// Both are rendered from one table today, so this passes by construction; it is what fails if
-/// either rendering stops reading the table, which is the one way two copies of a fact appear.
+/// Parsed separately, as a tuner and a GUI would read them. Both render from one table, so this
+/// fails only if a rendering stops reading it.
 #[test]
 fn the_spsa_block_and_the_uci_declaration_agree() {
     let (block, code) = spsa(&[]);
@@ -203,8 +184,7 @@ fn the_spsa_block_and_the_uci_declaration_agree() {
     }
 }
 
-/// The subcommand takes no arguments, for `bench`'s reason: what it prints is fixed in the
-/// source.
+/// For `bench`'s reason: what it prints is fixed in the source.
 #[test]
 fn the_spsa_subcommand_refuses_arguments() {
     let (out, code) = spsa(&["--iterations", "2000"]);
@@ -212,14 +192,8 @@ fn the_spsa_subcommand_refuses_arguments() {
     assert!(out.is_empty(), "printed a block anyway: {out:?}");
 }
 
-/// **A float's bounds live in the block and nowhere else**, which is the half of FINDINGS F116
-/// that can be gated here. A `type string` declaration carries no minimum and no maximum, so the
-/// drift gate above has nothing to compare for a float, and the only place a reader can see the
-/// range is the line `cadence spsa` prints.
-///
-/// What this cannot gate is a block edited by hand after it is printed: the engine clamps such a
-/// value in silence, and nothing in this tree sees the form. That half is a creation step, and
-/// F116 carries it.
+/// A float's `type string` declaration carries no bounds, so the drift gate has nothing to compare;
+/// a block edited by hand is clamped by the engine in silence, which nothing here can see.
 #[test]
 fn a_floats_bounds_are_in_the_block_because_its_declaration_has_none() {
     for p in PARAMS.iter().filter(|p| p.kind == Kind::Float) {
@@ -248,8 +222,7 @@ fn a_floats_bounds_are_in_the_block_because_its_declaration_has_none() {
 // What a value does on the way in
 // ---------------------------------------------------------------------------
 
-/// A float takes every spelling a tuner's float formatting produces, exponents included,
-/// and a value outside the range is clamped into it rather than refused.
+/// A value outside the range is clamped rather than refused.
 #[test]
 fn a_float_takes_every_spelling_a_tuner_sends() {
     let p = param(Tunable::LmpMultiplier);
@@ -281,7 +254,6 @@ fn a_float_takes_every_spelling_a_tuner_sends() {
     }
 }
 
-/// An integer takes an integer and nothing else, which is what a tuner sends for one.
 #[test]
 fn an_integer_takes_an_integer() {
     let p = param(Tunable::ReverseFutilityMargin);
@@ -296,11 +268,8 @@ fn an_integer_takes_an_integer() {
     }
 }
 
-/// **A malformed value is refused, said so, and changes nothing.** The session names the value
-/// and what it kept, answers the next command, and searches exactly the tree it searched before.
-///
-/// This is the no-panic half of the float path made observable: every string here is one that
-/// either fails to parse or parses to something that is not a finite number.
+/// The session names the value and what it kept, answers the next command, and searches the same
+/// tree.
 #[test]
 fn a_malformed_value_is_refused_and_the_search_is_untouched() {
     let untouched = nodes_after(&[]);
@@ -352,9 +321,7 @@ fn a_malformed_value_is_refused_and_the_search_is_untouched() {
 // What a value does to the search
 // ---------------------------------------------------------------------------
 
-/// **Every option changes the search**, at each end of its range, through the pipe a tuner
-/// uses. An option that is declared and accepted and reaches nothing is the failure a tune
-/// cannot report, because it runs to its end and moves nothing.
+/// A declared, accepted option that reaches nothing is the failure a tune cannot report.
 #[test]
 fn every_option_changes_the_search_at_both_ends_of_its_range() {
     let untouched = nodes_after(&[]);
@@ -367,8 +334,7 @@ fn every_option_changes_the_search_at_both_ends_of_its_range() {
     }
 }
 
-/// Setting every option to its default is the same search as setting none, line for line: the
-/// point a tune starts from is the engine the tree already holds.
+/// The point a tune starts from is the engine the tree already holds.
 #[test]
 fn every_option_at_its_default_is_the_untouched_search() {
     let position = format!("position fen {MIDDLEGAME}");
@@ -403,9 +369,7 @@ fn every_option_at_its_default_is_the_untouched_search() {
     assert_eq!(strip(&untouched), strip(&asked));
 }
 
-/// **The identity the reparameterisation claims.** At its default the multiplier gives the count
-/// the divisor gave, at every depth and not only the ones the rule reads: `3 + d * d * 500 /
-/// 1000` is `3 + d * d / 2`, so the tree cannot have moved.
+/// `3 + d * d * 500 / 1000` is `3 + d * d / 2` at every depth, so the tree cannot have moved.
 #[test]
 fn the_default_multiplier_is_the_divisor_it_replaced() {
     for depth in 0..=u32::from(u8::MAX) {
@@ -417,11 +381,8 @@ fn the_default_multiplier_is_the_divisor_it_replaced() {
     }
 }
 
-/// **A setting cannot reach `bench`.** Every option is moved to an end of its range in a live
-/// session, and `bench` in the same process still reads the count `bench.txt` declares.
-///
-/// It passes today because each search starts from the compiled-in values and only a session
-/// hands it others; it is what fails if a tunable is ever made process-wide.
+/// Each search starts from the compiled-in values and only a session hands it others; this fails if
+/// a tunable is made process-wide.
 #[test]
 fn a_setting_in_a_session_cannot_reach_bench() {
     let mut session = Session::new();

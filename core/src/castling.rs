@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Castling rights and castling geometry. Mutable rights are split from immutable layout.
-
 use core::mem::size_of;
 
 use crate::attacks;
@@ -19,17 +17,14 @@ impl CastleSide {
     pub const ALL: [CastleSide; 2] = [CastleSide::King, CastleSide::Queen];
 }
 
-/// The slot for `(c, s)`: WK = 0, WQ = 1, BK = 2, BQ = 3. This is the FEN token order `KQkq`,
-/// so parsing is a left-to-right scan with no remapping, and it indexes every per-right array
-/// in [`CastlingLayout`].
+/// FEN token order, `KQkq`, so parsing needs no remapping.
 #[inline]
 #[must_use]
 pub const fn ci(c: Colour, s: CastleSide) -> usize {
     (c as usize) * 2 + (s as usize)
 }
 
-/// Four live bits, in slot order. Rights are only ever removed, never granted, except by the
-/// FEN parser building the initial set.
+/// Only ever removed, except by the FEN parser.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Hash, Debug)]
 #[repr(transparent)]
 pub struct CastlingRights(u8);
@@ -38,7 +33,6 @@ impl CastlingRights {
     pub const NONE: CastlingRights = CastlingRights(0);
     pub const ALL: CastlingRights = CastlingRights(0b1111);
 
-    /// The four low bits of `bits`, anything above them ignored.
     #[inline]
     #[must_use]
     pub const fn from_bits(bits: u8) -> CastlingRights {
@@ -51,14 +45,12 @@ impl CastlingRights {
         self.0
     }
 
-    /// The single bit for `(c, s)`: `1 << ci(c, s)`.
     #[inline]
     #[must_use]
     pub const fn bit(c: Colour, s: CastleSide) -> u8 {
         1 << ci(c, s)
     }
 
-    /// Both of `c`'s bits.
     #[inline]
     #[must_use]
     pub const fn both(c: Colour) -> u8 {
@@ -71,7 +63,6 @@ impl CastlingRights {
         self.0 & Self::bit(c, s) != 0
     }
 
-    /// Whether `c` holds either right.
     #[inline]
     #[must_use]
     pub const fn any(self, c: Colour) -> bool {
@@ -84,15 +75,13 @@ impl CastlingRights {
         self.0 == 0
     }
 
-    /// `self & mask`. The one mutation: `make_move` applies `update_mask[from] &
-    /// update_mask[to]` through it.
+    /// The one mutation.
     #[inline]
     #[must_use]
     pub const fn masked(self, mask: u8) -> CastlingRights {
         CastlingRights(self.0 & mask)
     }
 
-    /// `0..16`, the index into the Zobrist castling table.
     #[inline]
     #[must_use]
     pub const fn zobrist_index(self) -> usize {
@@ -100,32 +89,23 @@ impl CastlingRights {
     }
 }
 
-/// Built once by `from_fen`; constant for the rest of the game; never in the undo record. Every
-/// per-right array is indexed by [`ci`].
+/// Constant for the game, so never in the undo record.
 #[derive(Clone, Copy, Debug)]
 pub struct CastlingLayout {
-    /// `rights = rights.masked(update_mask[from] & update_mask[to])`. One branchless line
-    /// covering king moves, rook moves, rook captures and rook-takes-rook.
+    /// One branchless update covers king moves, rook moves and rook captures.
     pub update_mask: [u8; 64],
     pub king_from: [OptSquare; 2],
     pub rook_from: [OptSquare; 4],
-    /// g-file / c-file on the king's rank.
     pub king_to: [OptSquare; 4],
-    /// f-file / d-file on the king's rank.
     pub rook_to: [OptSquare; 4],
-    /// Closed segment `[king_from, king_to]`, **inclusive of both endpoints**. Inclusivity
-    /// folds "out of check" and "into check" into one loop.
+    /// Both ends included, so out of check and into check are one loop.
     pub king_path: [Bitboard; 4],
-    /// `(segment[kf, kt] | segment[rf, rt]) & !(kf | rf)`. `Bitboard::FULL` for absent rights,
-    /// so any occupancy rejects.
+    /// `FULL` for an absent right, so any occupancy rejects it.
     pub must_be_empty: [Bitboard; 4],
 }
 
 impl CastlingLayout {
-    /// The layout for a position whose kings stand on `king_from` (per colour, `NONE` when that
-    /// colour holds no right) and whose castling rooks stand on `rook_from` (per slot, `NONE`
-    /// for an absent right). Destinations are fixed by the rules and never derived from
-    /// direction: kingside → king g, rook f; queenside → king c, rook d, on the king's rank.
+    /// Destinations come from the rules, never from direction.
     #[must_use]
     pub fn new(king_from: [OptSquare; 2], rook_from: [OptSquare; 4]) -> CastlingLayout {
         let mut layout = CastlingLayout::none();
@@ -161,8 +141,6 @@ impl CastlingLayout {
         layout
     }
 
-    /// No rights at all: every mask keeps everything, every path is empty, every
-    /// `must_be_empty` is `FULL`.
     #[must_use]
     pub fn none() -> CastlingLayout {
         CastlingLayout {
@@ -177,7 +155,7 @@ impl CastlingLayout {
     }
 }
 
-/// The closed segment between two squares on one rank, both ends included.
+/// Both ends included.
 fn segment(a: Square, b: Square) -> Bitboard {
     debug_assert_eq!(a.rank(), b.rank());
     attacks::between(a, b) | a.bb() | b.bb()

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence bench`: the deterministic regression detector. A fixed-depth search over a
-//! checked-in position list whose node count must be a function of the code alone: single
-//! thread, fixed depth, a fixed table cleared between positions, the list and the depth
-//! compiled in rather than passed on a command line, and no clock on any decision path.
+//! The node count must be a function of the code alone: single thread, fixed depth, a fixed table
+//! cleared between positions, the list and depth compiled in, and no clock on a decision path.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -18,20 +16,16 @@ use crate::search::{Limits, Search};
 use crate::tt::Table;
 use crate::tune::Tunables;
 
-/// The transposition table size the bench runs with, in mebibytes. Sixteen, which is what the
-/// STC preset passes and what the engine defaults to today.
+/// What the STC preset passes.
 pub const HASH_MB: usize = 16;
 
-/// The fixed depth every position is searched to. **What sets it is not a property of the
-/// search**: the SPRT harness scales every workload's time control by the speed it measures from
-/// this run, so a short window reads low and hands the other side a longer clock, and changing
-/// this is changing the detector.
+/// The SPRT harness scales every time control by the speed it measures from this run, so a short
+/// window reads low and hands the other side a longer clock. Changing this changes the detector.
 pub const DEPTH: u32 = 13;
 
-/// The checked-in position list, one FEN per line, `#` for comments.
+/// One FEN per line, `#` for comments.
 pub const POSITIONS: &str = include_str!("../bench_positions.txt");
 
-/// One position's result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub fen: String,
@@ -39,7 +33,6 @@ pub struct Line {
     pub nodes: u64,
 }
 
-/// The whole run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     pub lines: Vec<Line>,
@@ -47,7 +40,6 @@ pub struct Report {
     pub millis: u64,
 }
 
-/// The FENs of [`POSITIONS`], comments and blank lines dropped.
 #[must_use]
 pub fn positions() -> Vec<&'static str> {
     POSITIONS
@@ -57,12 +49,9 @@ pub fn positions() -> Vec<&'static str> {
         .collect()
 }
 
-/// Run the bench: every position in [`POSITIONS`] to [`DEPTH`], single thread, from a table of
-/// [`HASH_MB`] cleared between positions.
-///
 /// # Panics
 ///
-/// If a checked-in position does not parse, or if a table of [`HASH_MB`] mebibytes cannot be
+/// If a checked-in position does not parse, or a table of [`HASH_MB`] mebibytes cannot be
 /// allocated.
 #[must_use]
 pub fn bench() -> Report {
@@ -79,8 +68,7 @@ pub fn bench() -> Report {
         let mut pos = Position::new(board);
         let mut search = Search::new(&stop, &tt);
         search.set_limits(Limits::depth(DEPTH));
-        // The compiled-in values and never a setting, which is the separation `HASH_MB` makes for
-        // the table: a tunable that reached here would make the count depend on an option.
+        // Never a setting: a tunable that reached here would make the count depend on an option.
         search.set_tunables(Tunables::DEFAULT);
         let best = search.run(&mut pos, &mut std::io::sink());
         nodes += search.nodes();
@@ -98,8 +86,7 @@ pub fn bench() -> Report {
     }
 }
 
-/// The subcommand: run, print one line per position and the summary, whose last line is
-/// `<nodes> nodes <nps> nps`. Takes no arguments, by design.
+/// The summary's last line is `<nodes> nodes <nps> nps`. Takes no arguments, by design.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     if !args.is_empty() {

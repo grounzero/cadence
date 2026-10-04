@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The capture probe: at a null-window node the null move did not cut, a capture whose shallow
-//! search still stands above a raised beta cuts the node without its move list being searched.
-//!
-//! What these gates demonstrate is that the rule **happens**, that every cut it takes was
-//! verified by a reduced search rather than by the quiescence screen alone, and that the
-//! full window **refuses** it, through a counter that sees the refusal decide rather than a
-//! tree in which the question never came up. The admission function is pinned on its own,
-//! because the conditions it holds are the ones the other engines' logs say were fiddly.
-//!
-//! The counters are written wherever the rule runs and read on no decision path, so a
-//! depth-limited search here reads no clock and the assertions are exact.
+//! The probe happens, every cut was verified by a reduced search rather than the quiescence screen
+//! alone, and the full window refuses it through a counter that sees the refusal decide. The
+//! counters are on no decision path, so the assertions are exact.
 
 mod support;
 
@@ -21,12 +13,11 @@ use cadence_engine::search::{Limits, bound_for, probcut_bound};
 use cadence_engine::tt::Bound;
 use support::table;
 
-/// The depth the search gates run to. Eight: past the rule's minimum by enough that the probe
-/// runs at several depths of the tree, and still a fraction of a second in debug.
+/// Past the rule's minimum by enough that the probe runs at several depths, still a fraction of a
+/// second in debug.
 const GATE_DEPTH: u32 = 8;
 
-/// Search `fen` to [`GATE_DEPTH`] and hand the finished search to `check`, once the depth it
-/// was asked for is known to have completed.
+/// Once the depth asked for is known to have completed.
 fn searched(fen: &str, check: impl FnOnce(&cadence_engine::search::Search<'_>)) {
     let stop = AtomicBool::new(false);
     let tt = table();
@@ -42,10 +33,8 @@ fn searched(fen: &str, check: impl FnOnce(&cadence_engine::search::Search<'_>)) 
     check(&s);
 }
 
-/// Two middlegames. The start position stood here until the fitted piece-square table, and it
-/// cut exactly once at this depth under the hand-written one and not at all under the fitted
-/// one, so it was a knife-edge rather than a demonstration; this Italian cuts 113 times under the
-/// first and 167 under the second, and kiwipete 279 and 221.
+/// The start position cut once under the hand-written table and not at all under the fitted one, a
+/// knife-edge; this Italian cuts 113 and 167 times, Kiwipete 279 and 221.
 fn fens() -> [String; 2] {
     [
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".to_string(),
@@ -53,12 +42,8 @@ fn fens() -> [String; 2] {
     ]
 }
 
-/// The rule happens: a middlegame search runs the probe and cuts on it.
-///
-/// Attempts prove the conditions admit the probe somewhere real, and cutoffs prove a shallow
-/// capture search stands above the raised beta somewhere, which is the entire mechanism. A
-/// rule wired in and never admitted passes neither; one admitted and never cutting passes only
-/// the first.
+/// Attempts prove the conditions admit the probe; cutoffs prove a shallow capture search stands
+/// above the raised beta. Never admitted passes neither, never cutting only the first.
 #[test]
 fn a_middlegame_search_cuts_through_the_capture_probe() {
     for fen in fens() {
@@ -77,9 +62,8 @@ fn a_middlegame_search_cuts_through_the_capture_probe() {
     }
 }
 
-/// Every cut was a reduced search that ran. The quiescence screen only decides which captures
-/// are worth the reduced search, so a cut counted without one would be the screen cutting the
-/// node on a horizon score.
+/// The quiescence screen only picks captures for the reduced search, so a cut without one would be
+/// the screen cutting on a horizon score.
 #[test]
 fn every_cut_is_a_reduced_search_that_ran() {
     for fen in fens() {
@@ -99,9 +83,8 @@ fn every_cut_is_a_reduced_search_that_ran() {
     }
 }
 
-/// The full window refuses the probe, because a principal-variation node wants the exact score
-/// and a shallow bound is not one. Searched on the Italian, since kiwipete was refused twice
-/// under one evaluation and never under the next.
+/// A principal-variation node wants the exact score, which a shallow bound is not. On the Italian,
+/// since Kiwipete's refusals came and went with the evaluation.
 #[test]
 fn the_full_window_refuses_the_probe() {
     searched(&fens()[0], |s| {
@@ -112,8 +95,6 @@ fn the_full_window_refuses_the_probe() {
     });
 }
 
-/// The admission function: a raised beta above beta where the rule may run, and `None`
-/// everywhere it may not.
 #[test]
 fn the_bound_refuses_what_the_rule_may_not_touch() {
     let deep = 64;
@@ -155,9 +136,8 @@ fn the_bound_refuses_what_the_rule_may_not_touch() {
     );
 }
 
-/// The bound a fail-soft value carries, which left `negamax` when the rule's two lines took it
-/// past the line-count limit. It is arithmetic and it is pinned here so that the extraction is a
-/// gate's business rather than a private rearrangement.
+/// Arithmetic that left `negamax` under the line-count limit, pinned so the extraction is a gate's
+/// business.
 #[test]
 fn a_fail_soft_value_carries_the_bound_its_window_says() {
     assert_eq!(bound_for(10, 0, 10), Bound::Lower, "at beta");

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What a search reports as it runs, and the root lines it keeps for the report. The root
-//! driver chooses its move from those kept lines, so `keep_line` is the one item here the search
-//! reads back.
+//! `keep_line` is the one item here the search reads back.
 
 use std::io::Write;
 
@@ -13,9 +11,7 @@ use crate::position::Position;
 use crate::score::{self, Score};
 
 impl Search<'_> {
-    /// Name the root move about to be searched, and its place in the root list, once the search
-    /// has been running for [`CURRMOVE_AFTER_MS`]. Nothing is written and no clock is read under
-    /// a depth or node limit, which is the shape `bench` runs in.
+    /// Under a depth or node limit nothing is written and no clock is read.
     pub(super) fn name_current(
         &self,
         m: Move,
@@ -29,9 +25,7 @@ impl Search<'_> {
         if self.elapsed_ms() < CURRMOVE_AFTER_MS {
             return;
         }
-        // No `depth` on this line, deliberately. A harness that picks iteration lines out of the
-        // stream by their `info depth ` prefix would otherwise collect one of these per root
-        // move.
+        // No `depth`: a harness picking lines by `info depth ` would collect these.
         let _ = writeln!(
             out,
             "info currmove {} currmovenumber {number}",
@@ -40,17 +34,13 @@ impl Search<'_> {
         let _ = out.flush();
     }
 
-    /// Keep the line the root just returned, with the pv it ended on. Taken off
-    /// [`PvTable`](super::pv::PvTable) here because the next line's search of the root clears
-    /// row zero and writes its own.
+    /// Taken now: the next line's search of the root clears the table's row zero.
     pub(super) fn keep_line(&mut self, mv: Move, score: Score) {
         let pv = self.table.line(0).to_vec();
         self.lines.push(RootLine { mv, score, pv });
     }
 
-    /// One `info` line for line `number` of the iteration just completed, its pv spelled by
-    /// walking it on the board so castling reads per the option. `multipv` is absent where only
-    /// one line was asked for, which is the line every rating list and every test reads.
+    /// `multipv` is left out at one line, which is what every rating list reads.
     pub(super) fn report(&self, board: &mut Position, number: usize, out: &mut dyn Write) {
         let reported = &self.lines[number - 1];
         let ms = self.elapsed_ms();

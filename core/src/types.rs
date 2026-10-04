@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Board primitives. The one hard invariant lives on [`Square`]: **A1 = 0, LSB = A1, H8 = 63.**
-//! Magics, pawn shifts, `flip_vertical == sq ^ 56` and the NNUE feature index are all written
-//! against it.
-
 use core::fmt;
 use core::mem::{align_of, size_of};
 
@@ -23,7 +19,6 @@ pub enum Colour {
 impl Colour {
     pub const ALL: [Colour; 2] = [Colour::White, Colour::Black];
 
-    /// The other side.
     #[inline]
     #[must_use]
     pub const fn flip(self) -> Colour {
@@ -33,7 +28,6 @@ impl Colour {
         }
     }
 
-    /// `0` for White, `1` for Black. The index into every per-colour array.
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
@@ -62,14 +56,12 @@ impl PieceType {
         PieceType::King,
     ];
 
-    /// The discriminant, `0..=5`.
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }
 
-    /// The lowercase FEN / UCI letter: `p n b r q k`.
     #[must_use]
     pub const fn to_char(self) -> char {
         match self {
@@ -83,9 +75,8 @@ impl PieceType {
     }
 }
 
-/// Colour-major and dense over `0..=11`, so `[Bitboard; 12]` has no holes and `Option<Piece>`
-/// niche-packs into one byte. The niche is load-bearing: `Board::mailbox` is `[Option<Piece>;
-/// 64]` and `StateInfo::captured` is what keeps `StateInfo` on a single cache line.
+/// Dense and colour-major: `Option<Piece>` must stay one byte, which keeps `StateInfo` on one cache
+/// line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Piece {
@@ -119,15 +110,13 @@ impl Piece {
         Piece::BKing,
     ];
 
-    /// `c * 6 + pt`, read back out of [`Piece::ALL`] because there is no const-callable way to
-    /// build an enum from its discriminant without a transmute.
+    /// From [`Piece::ALL`], because a const enum from its discriminant needs a transmute.
     #[inline]
     #[must_use]
     pub const fn new(c: Colour, pt: PieceType) -> Piece {
         Piece::ALL[c.index() * 6 + pt.index()]
     }
 
-    /// `(self as u8) / 6`.
     #[inline]
     #[must_use]
     pub const fn colour(self) -> Colour {
@@ -138,21 +127,18 @@ impl Piece {
         }
     }
 
-    /// `(self as u8) % 6`.
     #[inline]
     #[must_use]
     pub const fn piece_type(self) -> PieceType {
         PieceType::ALL[(self as usize) % 6]
     }
 
-    /// The discriminant, `0..=11`.
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }
 
-    /// The FEN letter: uppercase for White, lowercase for Black.
     #[must_use]
     pub const fn to_char(self) -> char {
         let lower = self.piece_type().to_char();
@@ -162,8 +148,6 @@ impl Piece {
         }
     }
 
-    /// The inverse of [`Piece::to_char`]; `None` for anything that is not one of the twelve FEN
-    /// letters.
     #[must_use]
     pub const fn from_char(c: char) -> Option<Piece> {
         Some(match c {
@@ -184,8 +168,7 @@ impl Piece {
     }
 }
 
-/// What a pawn may become. A separate type from [`PieceType`], so that a promotion to a king or
-/// a pawn cannot be constructed.
+/// Its own type, so a promotion to a king or pawn cannot be constructed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum PromoPiece {
@@ -214,20 +197,17 @@ impl PromoPiece {
         }
     }
 
-    /// The discriminant, `0..=3`.
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }
 
-    /// The UCI suffix: `n b r q`.
     #[must_use]
     pub const fn to_char(self) -> char {
         self.piece_type().to_char()
     }
 
-    /// The inverse of [`PromoPiece::to_char`].
     #[must_use]
     pub const fn from_char(c: char) -> Option<PromoPiece> {
         Some(match c {
@@ -269,8 +249,6 @@ impl File {
         File::H,
     ];
 
-    /// `0..=7`, a-file first.
-    ///
     /// # Panics
     ///
     /// In debug builds, if `index > 7`.
@@ -287,20 +265,18 @@ impl File {
         self as usize
     }
 
-    /// Every square on this file.
     #[inline]
     #[must_use]
     pub const fn bb(self) -> Bitboard {
         Bitboard(Bitboard::FILE_A.0 << (self as u8))
     }
 
-    /// `a`..`h`.
     #[must_use]
     pub const fn to_char(self) -> char {
         (b'a' + self as u8) as char
     }
 
-    /// The inverse of [`File::to_char`], lowercase only.
+    /// Lowercase only.
     #[must_use]
     pub const fn from_char(c: char) -> Option<File> {
         if c.is_ascii_lowercase() && (c as u32) < ('a' as u32 + 8) {
@@ -336,8 +312,6 @@ impl Rank {
         Rank::Eight,
     ];
 
-    /// `0..=7`, first rank first.
-    ///
     /// # Panics
     ///
     /// In debug builds, if `index > 7`.
@@ -354,31 +328,25 @@ impl Rank {
         self as usize
     }
 
-    /// Every square on this rank.
     #[inline]
     #[must_use]
     pub const fn bb(self) -> Bitboard {
         Bitboard(Bitboard::RANK_1.0 << (8 * self as u8))
     }
 
-    /// This rank as seen from `c`'s side of the board: the identity for White, the vertical
-    /// mirror for Black. `Rank::Eight.relative(Black)` is `Rank::One`, so a colour's promotion
-    /// rank is `Rank::Eight.relative(c)` and its back rank is `Rank::One.relative(c)`.
+    /// The rank from `c`'s side: `Rank::Eight.relative(c)` is its promotion rank.
     #[inline]
     #[must_use]
     pub const fn relative(self, c: Colour) -> Rank {
-        // `r ^ 7` is `7 - r` for r in 0..8; multiplying the mask by the colour index makes it
-        // the identity for White.
+        // `^ 7` mirrors; times the colour index, White is unchanged.
         Rank::ALL[self.index() ^ (7 * c.index())]
     }
 
-    /// `1`..`8`.
     #[must_use]
     pub const fn to_char(self) -> char {
         (b'1' + self as u8) as char
     }
 
-    /// The inverse of [`Rank::to_char`].
     #[must_use]
     pub const fn from_char(c: char) -> Option<Rank> {
         if ('1' as u32) <= (c as u32) && (c as u32) < ('1' as u32 + 8) {
@@ -389,8 +357,7 @@ impl Rank {
     }
 }
 
-/// LERF, rank-major. **HARD INVARIANT: A1 = 0, LSB = A1, H8 = 63.** Magics, pawn shifts,
-/// `flip_vertical == sq ^ 56` and the NNUE feature index all depend on it.
+/// A1 = 0, H8 = 63, rank-major: magics, pawn shifts, `sq ^ 56` and the feature index depend on it.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Square(u8);
@@ -415,13 +382,12 @@ squares! {
 }
 
 impl Square {
-    /// The only constructor. `const` because the feature-index pins call it.
+    /// `const` because the feature-index pins call it.
     ///
     /// # Panics
     ///
-    /// In debug builds, if `index > 63`. There is no release-mode check: the callers that
-    /// matter build the index from `trailing_zeros()` of a non-zero `u64` or from a `(File,
-    /// Rank)` pair, both of which are in range by construction.
+    /// In debug builds, if `index > 63`; release trusts callers, whose indices are in range by
+    /// construction.
     #[inline]
     #[must_use]
     pub const fn new(index: u8) -> Square {
@@ -435,14 +401,12 @@ impl Square {
         Square((rank as u8) * 8 + (file as u8))
     }
 
-    /// `0..=63`, A1 = 0, H8 = 63.
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
         self.0 as usize
     }
 
-    /// The set containing only this square.
     #[inline]
     #[must_use]
     pub const fn bb(self) -> Bitboard {
@@ -461,8 +425,7 @@ impl Square {
         Rank::ALL[(self.0 >> 3) as usize]
     }
 
-    /// The same file on the mirrored rank: `sq ^ 56`. This is the perspective flip the feature
-    /// index applies for Black.
+    /// The feature index's perspective flip for Black.
     #[inline]
     #[must_use]
     pub const fn flip_vertical(self) -> Square {
@@ -470,13 +433,10 @@ impl Square {
         Square(self.0 ^ FLIP)
     }
 
-    /// Every square, A1 first.
     pub fn all() -> impl Iterator<Item = Square> {
         (0..64u8).map(Square::new)
     }
 
-    /// `"e4"` → `E4`. `None` for anything that is not two characters naming a file `a`..`h` and
-    /// a rank `1`..`8`.
     #[must_use]
     pub fn from_algebraic(s: &str) -> Option<Square> {
         let mut chars = s.chars();
@@ -501,9 +461,8 @@ impl fmt::Debug for Square {
     }
 }
 
-/// A square that may be absent, holding `64` for absence. A distinct type rather than a value
-/// inside [`Square`], so that it has no `index()`, no `bb()` and no arithmetic surface at all:
-/// the two failure modes above are then not expressible, rather than merely discouraged.
+/// Absence as its own one-byte type, with no index or arithmetic, so a missing square cannot reach
+/// square arithmetic.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct OptSquare(u8);
@@ -526,8 +485,6 @@ impl OptSquare {
         }
     }
 
-    /// The only way out. There is deliberately no `index()`, no `bb()` and no arithmetic
-    /// surface, so a NONE cannot reach square arithmetic even by accident.
     #[inline]
     #[must_use]
     pub const fn get(self) -> Option<Square> {
@@ -561,10 +518,8 @@ impl fmt::Debug for OptSquare {
 }
 
 // --- layout guards --------------------------------------------------------
-// `Square` is a newtype rather than a 64-variant enum so that `pop_lsb` can build one from
-// `trailing_zeros()` directly, on the hottest loop in movegen; `forbid(unsafe_code)` rules out
-// the transmute a 64-variant enum would need. The cost of that choice is the second assertion
-// here: `Option<Square>` is two bytes, which is exactly why absence is its own one-byte type.
+// A newtype, not a 64-variant enum, so `pop_lsb` builds one from `trailing_zeros` without a
+// transmute; hence `Option<Square>` is two bytes and absence has its own type.
 const _: () = assert!(size_of::<Square>() == 1);
 const _: () = assert!(align_of::<Square>() == 1);
 const _: () = assert!(size_of::<Option<Square>>() == 2);

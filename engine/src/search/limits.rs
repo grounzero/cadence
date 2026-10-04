@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What a `go` command asked for, parsed, and how a search keeps to it. The search never writes a
-//! limit, so one that did not appear stays `None` all the way down.
-
 use std::iter::Peekable;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -11,33 +8,28 @@ use cadence_core::Colour;
 
 use super::{CLOCK_INTERVAL, Search};
 
-/// What a `go` command asked for. A field that is `None` did not appear and must not influence
-/// the search.
+/// A `None` field did not appear, and the search never writes one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Limits {
-    /// `go depth N`: stop after completing iteration N.
+    /// After completing iteration N.
     pub depth: Option<u32>,
-    /// `go nodes N`: stop after N nodes.
     pub nodes: Option<u64>,
-    /// `go movetime N`: search for exactly N milliseconds.
+    /// Exactly N milliseconds.
     pub movetime: Option<u64>,
-    /// `go infinite`: search until `stop`, and do not return before it.
+    /// Do not return before `stop`.
     pub infinite: bool,
-    /// `go ponder`: search the opponent's time until `stop` or `ponderhit`, reading no clock.
-    /// It bounds the search the way `infinite` does, because a ponder that returns a move on a
-    /// budget has answered a question nobody asked yet.
+    /// Bounded like `infinite`, reading no clock: a ponder that answered on a budget would answer a
+    /// question not yet asked.
     pub ponder: bool,
-    /// `wtime` / `btime`, in milliseconds, indexed by `Colour`.
+    /// Milliseconds, indexed by `Colour`.
     pub time: [Option<u64>; 2],
-    /// `winc` / `binc`, in milliseconds, indexed by `Colour`.
+    /// Milliseconds, indexed by `Colour`.
     pub inc: [Option<u64>; 2],
-    /// `movestogo N`: moves until the next time control.
     pub movestogo: Option<u32>,
 }
 
 impl Limits {
-    /// Parse the tokens that follow `go`. Unknown tokens are skipped; a known token without a
-    /// number, or with something that is not a number, is skipped too.
+    /// A known token without a number is skipped, like an unknown one.
     #[must_use]
     pub fn parse<'a>(tokens: impl Iterator<Item = &'a str>) -> Limits {
         let mut limits = Limits::default();
@@ -54,9 +46,8 @@ impl Limits {
                 "winc" => limits.inc[Colour::White.index()] = large(&mut it),
                 "binc" => limits.inc[Colour::Black.index()] = large(&mut it),
                 "movestogo" => limits.movestogo = small(&mut it),
-                // Accepted and ignored. `mate` takes a number, which is consumed so it is not
-                // mistaken for anything else; the moves after `searchmoves` are unknown tokens
-                // and fall through to the arm below.
+                // Accepted and ignored; `mate`'s number is consumed so it is not misread, and
+                // `searchmoves`' moves fall through as unknown tokens.
                 "mate" => {
                     let _ = small(&mut it);
                 }
@@ -66,7 +57,6 @@ impl Limits {
         limits
     }
 
-    /// A fixed-depth search.
     #[must_use]
     pub fn depth(depth: u32) -> Limits {
         Limits {
@@ -75,7 +65,6 @@ impl Limits {
         }
     }
 
-    /// Search until `stop`.
     #[must_use]
     pub fn infinite() -> Limits {
         Limits {
@@ -84,23 +73,19 @@ impl Limits {
         }
     }
 
-    /// The side to move's clock and increment, if a clock was given.
     #[must_use]
     pub fn clock(&self, us: Colour) -> Option<(u64, u64)> {
         self.time[us.index()].map(|t| (t, self.inc[us.index()].unwrap_or(0)))
     }
 
-    /// Whether this `go` named a clock at all, for either side. A `go` that named the other
-    /// side's clock and not ours is clocked: nothing is known about our own time, and the safe
-    /// reading of that is zero rather than unlimited.
+    /// Either side's: with only the other's, our own time reads as zero rather than unlimited.
     #[must_use]
     pub fn is_clocked(&self) -> bool {
         self.time.iter().chain(self.inc.iter()).any(Option::is_some) || self.movestogo.is_some()
     }
 }
 
-/// The next token as a non-negative number, consumed only if it is one. A token that does not
-/// parse is left for the main loop, which skips it -- it may be the next keyword.
+/// Consumed only if it parses; otherwise left for the main loop, since it may be the next keyword.
 fn large<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u64> {
     let n: i64 = it.peek()?.parse().ok()?;
     it.next();
@@ -112,8 +97,8 @@ fn small<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u32> {
 }
 
 impl Search<'_> {
-    /// Whether a limit or the stop flag ends the search here, at any node from the first; the
-    /// clock only every `CLOCK_INTERVAL` nodes, and only when there is a budget.
+    /// The limits and stop flag at every node; the clock only every `CLOCK_INTERVAL` nodes, and
+    /// only with a budget.
     pub(super) fn out_of_time(&mut self) -> bool {
         if self.aborted {
             return true;
@@ -132,8 +117,8 @@ impl Search<'_> {
             return true;
         }
         if self.nodes & (CLOCK_INTERVAL - 1) == 0 {
-            // On the interval that already exists rather than on one of its own: a hit that
-            // waited for the end of a deep iteration would spend the clock it just took.
+            // On the existing interval: a hit that waited for the iteration's end would spend the
+            // clock it just took.
             self.absorb_ponder_hit();
             if let Some(b) = self.budget
                 && self.elapsed_ms() >= b.hard
@@ -145,10 +130,8 @@ impl Search<'_> {
         false
     }
 
-    /// Take a `ponderhit` if one has arrived: the search stops pondering, the clock runs from
-    /// this moment, and the iteration ladder starts again. The ladder is cleared because an
-    /// entry measured from the ponder's origin, read against the new one, gives a branching
-    /// factor below one and starts an iteration on it.
+    /// The ladder is cleared: an entry measured from the ponder's origin gives a branching factor
+    /// below one and starts an iteration on it.
     pub(super) fn absorb_ponder_hit(&mut self) {
         if !self.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
             return;
@@ -159,9 +142,7 @@ impl Search<'_> {
         self.budget = self.budget_on_hit;
     }
 
-    /// Hold the finished search until `stop`, in the two states that say so. `go infinite` and
-    /// a ponder nobody has hit both mean "do not answer until told", and a ponder that returned
-    /// early would be answering a question the opponent has not yet asked.
+    /// Under `infinite` or an unhit ponder, both of which mean do not answer until told.
     pub(super) fn wait_if_open_ended(&self) {
         if self.limits.infinite || self.pondering {
             while !self.stop_requested() {

@@ -1,45 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Repository chores. Not a workspace member and not shipped.
-//!
-//! Run via the `cargo xtask <subcommand>` alias defined in
-//! `.cargo/config.toml`.
+//! Repository chores, run as `cargo xtask <subcommand>`; not a workspace member.
 
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-/// The SPDX identifier every `.rs` file in the repository must open with.
-///
-/// One line, and it must be the first line of the file. The copyright notice
-/// is deliberately not here: repeating it in every file means a name or a
-/// year change is a repository-wide edit, and SPDX exists precisely so that
-/// per-file licensing is a machine-readable tag rather than a wall of prose.
-/// The notice itself lives in `LICENSE` and in `README.md`.
+/// The copyright notice lives in `LICENSE`, so a name or year change is one edit.
 const HEADER: &str = "// SPDX-License-Identifier: GPL-3.0-or-later";
 
-/// Directory names never descended into: version control and build
-/// artefacts (`__pycache__` embeds the absolute paths of the machine that
-/// compiled it, which check-boundary would otherwise flag).
+/// `__pycache__` embeds the compiling machine's absolute paths.
 const SKIP_DIRS: &[&str] = &[".git", "target", "__pycache__"];
 
-/// The hooks `install-hooks` expects to find in `.githooks/`.
 const HOOKS: &[&str] = &["commit-msg", "pre-commit"];
 
-/// Concurrent copies to run at once: the `-T` an SPRT worker is started with.
-/// The bench has to be measured at the worker's own concurrency because that
-/// is the state the worker measures in, and the figure is
-/// concurrency-dependent.
-///
-/// Six is the default because it is what the worker these figures are taken
-/// for was started with. It is a property of a machine and not of this
-/// repository, so a different one is measured with `--concurrency` rather
-/// than by editing this.
+/// The SPRT worker's `-T`: the figure depends on concurrency, so it is measured at the
+/// worker's.
 const DEFAULT_CONCURRENCY: usize = 6;
 
-/// Pairs of rounds to run. Each pair is one dev bench followed by one base
-/// bench, which is what the worker does before every workload.
+/// Each pair is dev then base, as the worker benches before every workload.
 const DEFAULT_PAIRS: usize = 5;
 
 fn main() -> ExitCode {
@@ -93,8 +73,7 @@ fn usage() {
     );
 }
 
-/// The repository root, resolved at compile time so the subcommand works
-/// from any working directory.
+/// Resolved at compile time, so the subcommand works from any directory.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -142,8 +121,6 @@ fn check_headers() -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// `None` if the header is correct, otherwise a one-line description of what
-/// is wrong with it.
 fn header_defect(text: &str) -> Option<String> {
     match text.lines().next() {
         Some(line) if line == HEADER => None,
@@ -156,97 +133,32 @@ fn header_defect(text: &str) -> Option<String> {
 // check-boundary
 // ---------------------------------------------------------------------------
 //
-// Every reference in this repository must resolve inside it. The tree
-// builds, tests and explains itself from a clean clone, and a comment that
-// cites a document that is not here hands the reader a pointer to nothing.
-// The cleanup that removed the last such references touched 44 lines across
-// 15 files, which is the proof that the habit of writing them is real and
-// will write them again; a rule enforced by memory erodes, so this one runs
-// beside check-headers, in CI and in `.githooks/pre-commit`.
+// Every reference must resolve inside this repository. The rules are shapes, so
+// nothing private is named here:
 //
-// The rules are deliberately SHAPES, not names, so there is no list of
-// outside documents to maintain here -- or to read:
+//   * a `docs/...` path must exist;
+//   * the only capitals `NAME.md` are [`ROOT_DOCUMENTS`];
+//   * no `/Users/` path;
+//   * ASCII outside [`ALLOWED_NON_ASCII`] and [`ALLOWED_IN_PLACE`];
+//   * no planning noun with a number;
+//   * no `ADR` citation;
+//   * no `F` with two or three digits in a comment, squares and `noqa:` codes aside.
 //
-//   * A path-shaped `docs/...` token must resolve to a file or directory
-//     that exists in this repository. A citation of a document that is not
-//     here fails, whatever it is called, and the rule maintains itself as
-//     documents come and go.
-//   * `NAME.md` where NAME is all capitals is the root-document convention,
-//     and the only such documents in this tree are [`ROOT_DOCUMENTS`]. Any
-//     other is a reference to a document that is not here.
-//   * No absolute `/Users/` path: a home path names a machine, not the
-//     repository.
-//   * No character outside ASCII except the ones on [`ALLOWED_NON_ASCII`],
-//     which is the exhaustive notation list, or the ones on
-//     [`ALLOWED_IN_PLACE`] inside the paths that row names. That table is
-//     currently empty, so for now the rule is simply: outside the notation
-//     list, ASCII.
-//   * No planning label: a planning noun with a number attached. Name the
-//     condition, not the phase.
-//
-// The last two were rules enforced by attention until 2026-08-25, and three
-// punctuation violations reached a tree in one week, each caught by somebody
-// noticing. What a person can catch by noticing, a person can miss by not.
-//
-// WHAT THESE TWO CANNOT CATCH, because a check whose limits are unstated is
-// the failure this project keeps recording:
-//
-//   * The punctuation rule is a character test, so it cannot see a *use* of an
-//     exempt character that is wrong: a `×` standing in for the word "by", a
-//     `→` in prose that wanted "becomes". For a row of [`ALLOWED_IN_PLACE`] it
-//     would check the file and not the sentence, so a character inside one of
-//     that row's paths, doing there the wrong thing it is admitted for, would
-//     still pass. It also cannot see the punctuation the rule is really about,
-//     which is a hyphen substituted for whatever it replaced; that reads worse
-//     and is pure ASCII. And the exempt list was
-//     verified against the tree once, when the rule landed. This check keeps
-//     the tree inside the list; it does not re-verify that the list is right.
-//   * The vocabulary rule is a keyword search over a tree whose domain
-//     vocabulary overlaps it, so it is scoped down to what it can assert
-//     without lying. See [`PLANNING_WORDS`] for the words that are searched,
-//     [`PLANNING_ALLOWED`] for the two files where a planning noun is a
-//     domain term, and the note on both for the forms deliberately not
-//     searched. In particular: a planning reference carrying no number
-//     ("the next phase", "the review said") is invisible to it, and that is
-//     the majority of ways to write one.
+// It cannot see a wrong use of an allowed character, a hyphen standing in for a
+// dash, or a planning reference with no number.
 
-/// A character allowed only in named places: the paths where it is permitted,
-/// and what it is doing there.
-///
-/// One row per character, so admitting another is a row rather than a new
-/// mechanism. [`ALLOWED_IN_PLACE`] is the table.
+/// A character allowed only in named places.
 struct InPlace {
-    /// The character.
     c: char,
-    /// Path prefixes where it is allowed. A prefix, so a directory works.
+    /// Prefixes, so a directory works.
     paths: &'static [&'static str],
-    /// What it is doing in those places, phrased to complete "allowed only
-    /// in...". This is what the author reads when the check fires, so it says
-    /// where the character may go rather than restating that it may not go
-    /// here.
+    /// Completes "allowed only in...", so the author reads where it may go.
     allowed_only: &'static str,
 }
 
-/// The characters that are permitted somewhere and not everywhere.
-///
-/// **Empty, and deliberately still here.** Both rows it once held were retired
-/// on 2026-08-25, in the same order they were argued: the corpus marked an
-/// absent node count with a character that needed an exception across three
-/// files, and that marker is now an empty cell; the citations were written with
-/// a character that needed another, and they are now written "section 4". Each
-/// removal made the punctuation rule shorter to state rather than longer.
-///
-/// The test a row has to pass is whether an ASCII spelling exists that is not
-/// worse. Neither of those two could meet it once the question was put: an
-/// empty table cell is not worse than a dash meaning "no value", and "section
-/// 4" is not worse than a sign meaning "section". What is left, if a row is
-/// ever added, is a character with no ASCII spelling at all and a use confined
-/// to named files. Keeping the mechanism costs a line and an empty slice;
-/// rebuilding it would cost the argument again.
+/// Empty; a row needs a character whose every ASCII spelling is worse.
 const ALLOWED_IN_PLACE: &[InPlace] = &[];
 
-/// The characters from [`ALLOWED_IN_PLACE`] that `rel` is one of the places
-/// for.
 fn in_place_allowances(rel: &str) -> Vec<char> {
     ALLOWED_IN_PLACE
         .iter()
@@ -255,28 +167,12 @@ fn in_place_allowances(rel: &str) -> Vec<char> {
         .collect()
 }
 
-/// The entry for `c`, if it is a character allowed only in named places.
 fn in_place_entry(c: char) -> Option<&'static InPlace> {
     ALLOWED_IN_PLACE.iter().find(|entry| entry.c == c)
 }
 
-/// Every non-ASCII character this repository permits anywhere, and the whole
-/// list. The ones permitted only somewhere are [`ALLOWED_IN_PLACE`].
-///
-/// These are notation rather than punctuation: dimensions and products, error
-/// bars, microseconds, the field separator in the layout diagrams and the CI
-/// summary line, the mapping and implication arrows, the order and set
-/// relations, the Greek letters the SPRT bounds and an evaluation delta use,
-/// and the four box-drawing characters the directory trees are made of.
-///
-/// The list being exhaustive is what makes it a check rather than a
-/// judgement: a character that is neither ASCII nor here is a violation, and
-/// nobody has to decide. Two consequences worth knowing before adding to it.
-/// `µ` is U+00B5, the micro sign, and the Greek mu U+03BC is a different
-/// character that this list does not contain; one symbol with two spellings
-/// is exactly what an exhaustive list is for. And the box-drawing set is the
-/// four characters the trees actually use, so a tree drawn with `┌` or `┬`
-/// fails until somebody decides those belong here too.
+/// Notation, and the whole list: anything else non-ASCII fails. `µ` is the micro sign, not
+/// Greek mu.
 const ALLOWED_NON_ASCII: &[char] = &[
     '\u{d7}',   // × dimensions and products
     '\u{b1}',   // ± error bars on an Elo estimate
@@ -300,22 +196,8 @@ const ALLOWED_NON_ASCII: &[char] = &[
     '\u{2514}', // └
 ];
 
-/// The planning nouns that must not appear with a number attached.
-///
-/// Planning vocabulary is meaningless to a reader without the plan in hand,
-/// including its author a year later, and a comment naming a numbered future
-/// step is a comment that goes wrong the moment the plan changes, with
-/// nothing to force its update. The rule is to name the condition instead.
-///
-/// **Scoped down, three times, and each cut is a thing this does not catch.**
-/// `step` is not searched: `core/src/position.rs` uses "Step 2" for the
-/// stride of a loop, which is the ordinary technical sense and the more
-/// common one in engine code. `gate` is searched with a digit but not with a
-/// letter, so gate letters ("gate A") pass: "gate" is one of the most common
-/// words in this tree's test prose, and `gate` followed by a single capital
-/// is indistinguishable from a sentence that happens to continue "gate A
-/// stranger receives". And nothing here catches a planning reference without
-/// a number, which is most of them.
+/// A numbered plan step means nothing without the plan. Not searched: `step` (a loop stride),
+/// `gate` with a letter (test prose), and references with no number.
 const PLANNING_WORDS: &[&str] = &[
     "phase",
     "item",
@@ -327,35 +209,28 @@ const PLANNING_WORDS: &[&str] = &[
     "review",
 ];
 
-/// Where a word in [`PLANNING_WORDS`] is a domain term rather than a plan
-/// reference, as (path prefix, word) pairs.
-///
-/// The tapered evaluation's game phase is an integer on `0..=PHASE_MAX`, so
-/// "phase 0" in these two files means the value and not the plan. The cost is
-/// stated rather than hidden: a plan reference written in either file is not
-/// caught, and those are the two files most likely to write the word.
+/// The evaluation's game phase is a number here, so a plan reference in these files is not
+/// caught.
 const PLANNING_ALLOWED: &[(&str, &str)] = &[
     ("engine/src/eval.rs", "phase"),
     ("engine/tests/eval.rs", "phase"),
 ];
 
-/// The all-capitals `NAME.md` documents this tree holds, and so the only
-/// ones it may name. Adding one here is publishing a document, so it lands
-/// with the file it names.
+/// These spell the citation rules out to enforce them; every other rule still reads them.
+const CITATION_RULE_FILES: &[&str] = &[".githooks/check-message-metadata"];
+
+/// Adding one publishes a document, so it lands with the file.
 const ROOT_DOCUMENTS: &[&str] = &["README.md", "CHANGELOG.md"];
 
-/// Whether `c` can be part of a path-shaped token.
 const fn is_path_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')
 }
 
-/// Every path-shaped token in `line` that starts with `docs/`, with
-/// sentence punctuation trimmed from the end.
+/// Sentence punctuation is trimmed from the end.
 fn docs_tokens(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for (start, _) in line.match_indices("docs/") {
-        // Only the start of a path: `cadence/docs/...` is still rooted at
-        // the repository, but `xyzdocs/` is a different name.
+        // `cadence/docs/` is rooted here; `xyzdocs/` is another name.
         if line[..start].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
             continue;
         }
@@ -366,12 +241,9 @@ fn docs_tokens(line: &str) -> Vec<&str> {
     out
 }
 
-/// Every `NAME.md` token in `line` whose NAME is entirely capitals, digits
-/// and underscores: the root-document naming convention.
 fn caps_md_tokens(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for (at, _) in line.match_indices(".md") {
-        // `.md` must end the token.
         if line[at + 3..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
             continue;
         }
@@ -379,7 +251,6 @@ fn caps_md_tokens(line: &str) -> Vec<&str> {
             .rfind(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
             .map_or(0, |i| i + c_len(&line[..at], i));
         let name = &line[name_start..at];
-        // At least two characters of all-caps name, at a word boundary.
         let bounded =
             name_start == 0 || !line[..name_start].ends_with(|c: char| is_path_char(c) && c != '/');
         if name.len() >= 2 && bounded {
@@ -389,43 +260,23 @@ fn caps_md_tokens(line: &str) -> Vec<&str> {
     out
 }
 
-/// The byte length of the character starting at `i` in `s`.
 fn c_len(s: &str, i: usize) -> usize {
     s[i..].chars().next().map_or(1, char::len_utf8)
 }
 
-/// A character with no glyph to print: what to call it, and what to do with
-/// it.
-///
-/// Reporting one of these the way a visible character is reported prints a
-/// name that is not there, `` ` ` ``, and asks the author to find an ASCII
-/// spelling for something that is not standing in for anything. So these are
-/// named rather than quoted, and told to go rather than to be replaced.
+/// Named rather than quoted, and told to go: it stands in for nothing.
 struct Invisible {
-    /// What to call it in the report, in place of the character itself.
     name: &'static str,
-    /// What to do with it.
     advice: &'static str,
 }
 
-/// Delete it. The advice for a character that is not standing in for
-/// anything: it has no ASCII spelling because it has no reading.
 const DELETE: &str = "nothing: delete it. It is invisible and stands in for nothing, \
                       so there is no ASCII spelling to find";
 
-/// The advice for a character that *is* standing in for a space.
 const PLAIN_SPACE: &str = "an ordinary space. This one is invisible and is not one, \
                            which is why it survived being read";
 
-/// Whether `c` has no visible glyph, and what to say about it.
-///
-/// The ranges rather than a Unicode property, because `char` in std carries no
-/// category API and a dependency for this would be a dependency in a
-/// repository chore. What the list has to cover is what actually arrives:
-/// space characters that are not the space, the zero-width family, the bidi
-/// controls that make a line read as something other than what it holds, the
-/// byte-order mark, and the replacement character, which is not invisible but
-/// means the bytes were not UTF-8.
+/// Ranges, because std has no Unicode categories and a chore merits no dependency.
 fn invisible(c: char) -> Option<Invisible> {
     let (name, advice) = match c {
         '\u{a0}' => ("a no-break space", PLAIN_SPACE),
@@ -464,9 +315,7 @@ fn invisible(c: char) -> Option<Invisible> {
     Some(Invisible { name, advice })
 }
 
-/// How a character is shown in a report: named if it has no glyph, quoted if
-/// it has one, and with its code point either way, which is the half that
-/// survives a terminal.
+/// The code point is the part that survives a terminal.
 fn describe(c: char) -> String {
     match invisible(c) {
         Some(i) => format!("{} (U+{:04X})", i.name, c as u32),
@@ -474,11 +323,7 @@ fn describe(c: char) -> String {
     }
 }
 
-/// What to write instead of `c`, for the characters that actually turn up.
-///
-/// A gate that reports only that it fired makes the author guess, and for a
-/// dash the guess is a hyphen, which is the one answer the rule rules out. So
-/// each arm names the replacement rather than the offence.
+/// Naming the replacement spares a guess, and for a dash the guess is a hyphen.
 fn replacement_for(c: char) -> &'static str {
     match c {
         '\u{2014}' => {
@@ -507,11 +352,7 @@ fn replacement_for(c: char) -> &'static str {
     }
 }
 
-/// Every non-ASCII character in `line` that is on neither
-/// [`ALLOWED_NON_ASCII`] nor `in_place`, once each.
-///
-/// `in_place` is what [`in_place_allowances`] returned for the file this line
-/// is in, resolved once per file rather than once per character.
+/// Once each; `in_place` is resolved once per file.
 fn stray_non_ascii(line: &str, in_place: &[char]) -> Vec<char> {
     let mut out: Vec<char> = Vec::new();
     for c in line.chars() {
@@ -525,23 +366,12 @@ fn stray_non_ascii(line: &str, in_place: &[char]) -> Vec<char> {
     out
 }
 
-/// Whether `c` can separate a planning noun from its number: a space, the
-/// punctuation a label is written with, or nothing at all (`phase1`).
-///
-/// A full stop is deliberately absent. "changes the phase. 3 of them" is a
-/// sentence, not a label.
+/// Not a full stop: "the phase. 3 of them" is a sentence.
 const fn is_label_gap(c: char) -> bool {
     matches!(c, ' ' | '\t' | '-' | '_' | ':' | '#')
 }
 
-/// The first planning label on `line`, if it has one: a word from
-/// [`PLANNING_WORDS`] at a word boundary, an optional plural, an optional run
-/// of separators, and then a digit. One report per line, as the other rules
-/// here give.
-///
-/// The returned slice is cut from `line` rather than rebuilt, so the report
-/// quotes what the author wrote. ASCII lowercasing preserves byte length, so
-/// an offset into the lowered copy is the same offset into the original.
+/// Sliced from `line`, so the report quotes the author; ASCII lowercasing keeps offsets.
 fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
     let lower = line.to_ascii_lowercase();
     for word in PLANNING_WORDS {
@@ -572,21 +402,80 @@ fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
     None
 }
 
-/// What a run reads: the files on disk, or the content `git commit` is about
-/// to record.
-///
-/// The distinction is the whole point of running this before a commit. A check
-/// that reads the working tree while the index holds something else passes
-/// commits it should reject, when the fix is written and not staged, and
-/// rejects commits it should not, when the offending line is in the tree and
-/// not in the commit.
+/// Case-sensitive, because the letters occur inside lower-case words.
+fn record_citation(line: &str) -> Option<&str> {
+    for (at, _) in line.match_indices("ADR") {
+        if line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let after_word = at + 3;
+        let plural = usize::from(line[after_word..].starts_with('s'));
+        let rest = &line[after_word + plural..];
+        if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+            continue;
+        }
+        let digits = rest.trim_start_matches(['-', ' ']);
+        let number = if digits.starts_with(|c: char| c.is_ascii_digit()) {
+            let gap = rest.len() - digits.len();
+            gap + digits
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(digits.len())
+        } else {
+            0
+        };
+        return Some(&line[at..after_word + plural + number]);
+    }
+    None
+}
+
+/// A Markdown or text file is all comment.
+fn comment_of<'a>(line: &'a str, rel: &str) -> Option<(usize, &'a str)> {
+    let ext = Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let marker = match ext.as_deref() {
+        Some("rs") => "//",
+        Some("md" | "txt") => return Some((0, line)),
+        Some("py" | "sh" | "toml" | "yml" | "yaml") => "#",
+        _ if rel.starts_with(".githooks/") => "#",
+        _ => return None,
+    };
+    line.find(marker).map(|at| (at, &line[at..]))
+}
+
+fn finding_citation<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
+    let (offset, comment) = comment_of(line, rel)?;
+    for (at, _) in comment.match_indices('F') {
+        if comment[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let rest = &comment[at + 1..];
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if !(2..=3).contains(&digits) {
+            continue;
+        }
+        if rest[digits..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        if comment[..at].trim_end().ends_with("noqa:") {
+            continue;
+        }
+        return Some(&line[offset + at..offset + at + 1 + digits]);
+    }
+    None
+}
+
+/// Reading the tree while the index differs would pass an unstaged fix and fail a line not in
+/// the commit.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
     WorkingTree,
     Index,
 }
 
-/// `git` in the repository root, or `Err` with something a hook can print.
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = Command::new("git")
         .current_dir(root)
@@ -604,9 +493,7 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Paths out of a `-z` git listing. `-z` rather than plain output because
-/// `core.quotePath` mangles anything outside ASCII, and this command is in the
-/// business of finding characters outside ASCII.
+/// `-z`, because `core.quotePath` mangles non-ASCII paths.
 fn nul_separated(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
         .split('\0')
@@ -615,15 +502,11 @@ fn nul_separated(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Every path in the index.
 fn index_paths(root: &Path) -> Result<Vec<String>, String> {
     Ok(nul_separated(&git(root, &["ls-files", "--cached", "-z"])?))
 }
 
-/// The staged additions, copies, modifications and renames: the content this
-/// commit introduces, which is all a pre-commit run has to read. Everything
-/// else was read by the run that admitted it, and by CI, which reads the whole
-/// tree every time.
+/// Only what this commit introduces; CI reads the whole tree.
 fn staged_changes(root: &Path) -> Result<Vec<String>, String> {
     if git(root, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() {
         // The first commit has nothing to diff against.
@@ -640,7 +523,6 @@ fn staged_changes(root: &Path) -> Result<Vec<String>, String> {
     Ok(nul_separated(&git(root, &args)?))
 }
 
-/// `(relative path, content)` for everything one run reads.
 fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     match source {
@@ -676,12 +558,7 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
     Ok(out)
 }
 
-/// Every problem in one file's `text`, as `(line number, what and what to do)`.
-///
-/// Split out of [`check_boundary`] so that the function left behind is the
-/// choice of what to read and the report, and this one is the rules. The
-/// repository's own clippy gate refuses a function this long, which is the
-/// lint that caught `nps` growing past it once already.
+/// Separate from [`check_boundary`] because clippy refuses one function that long.
 fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, String)> {
     let in_place = in_place_allowances(rel);
     let mut out = Vec::new();
@@ -729,6 +606,25 @@ fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, 
                 ),
             ));
         }
+        let spells_the_rule = CITATION_RULE_FILES.contains(&rel);
+        if let Some(cite) = record_citation(line).filter(|_| !spells_the_rule) {
+            out.push((
+                at,
+                format!(
+                    "the record citation `{cite}`. The record is not in this tree, \
+                     so write the reason it gave instead"
+                ),
+            ));
+        }
+        if let Some(cite) = finding_citation(line, rel).filter(|_| !spells_the_rule) {
+            out.push((
+                at,
+                format!(
+                    "the finding citation `{cite}`. The finding is not in this tree, \
+                     so write what it found instead"
+                ),
+            ));
+        }
     }
     out
 }
@@ -742,9 +638,7 @@ fn check_boundary(source: Source) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // The `docs/` existence rule resolves against whichever tree is being
-    // read, so a citation of a file that is on disk and not in the commit
-    // fails a staged run. That is the reference the commit would publish.
+    // Against the index in a staged run, because that is what the commit publishes.
     let cached = if source == Source::Index {
         match index_paths(&root) {
             Ok(paths) => Some(paths),
@@ -765,7 +659,7 @@ fn check_boundary(source: Source) -> ExitCode {
 
     let mut bad = Vec::new();
     for (rel_str, text) in &inputs {
-        // The file defining the rules necessarily spells some of them out.
+        // This file spells the rules out.
         if rel_str == "xtask/src/main.rs" {
             continue;
         }
@@ -795,15 +689,13 @@ fn check_boundary(source: Source) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// One `## [label]` heading in the changelog, with its line and any date.
 struct Heading {
     line: usize,
     label: String,
     date: Option<String>,
 }
 
-/// The three numbers of an `x.y.z` version, or `None` for anything else.
-/// Digits only, so a `+1` or an empty part is not a version.
+/// Digits only, so `+1` or an empty part is not a version.
 fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let parts: Vec<&str> = s.split('.').collect();
     if parts.len() != 3
@@ -820,7 +712,6 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     ))
 }
 
-/// Whether `s` has the shape `YYYY-MM-DD`.
 fn is_iso_date(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 10
@@ -833,7 +724,6 @@ fn is_iso_date(s: &str) -> bool {
         })
 }
 
-/// The `version` under `[workspace.package]` in the root manifest.
 fn workspace_version(manifest: &str) -> Option<String> {
     let mut in_section = false;
     for line in manifest.lines().map(str::trim) {
@@ -846,9 +736,7 @@ fn workspace_version(manifest: &str) -> Option<String> {
     None
 }
 
-/// What is wrong with `changelog` against the version tags and the workspace
-/// version. `[Unreleased]` is allowed first and checked against nothing,
-/// because it is ahead of every tag by design.
+/// `[Unreleased]` is checked against nothing, being ahead of every tag.
 fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut headings = Vec::new();
@@ -943,9 +831,7 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
     out
 }
 
-/// Fail when a version tag or the workspace version has no changelog entry.
-/// No visible tags is a failure and not a pass, because a shallow checkout
-/// fetches none.
+/// No tags is a failure, because a shallow checkout fetches none.
 fn check_changelog() -> ExitCode {
     let root = repo_root();
     let read =
@@ -982,13 +868,7 @@ fn check_changelog() -> ExitCode {
     }
 }
 
-/// Every regular file under `dir`, skipping `SKIP_DIRS`, `.DS_Store` and `.git`.
-///
-/// `.git` is skipped as a file and not only as a directory. In a linked
-/// worktree it is a file holding `gitdir: <absolute path>`, so collecting it
-/// made the boundary scan report an absolute home path against a tree that
-/// did not contain one, and the gate could not pass anywhere but the primary
-/// clone.
+/// `.git` is skipped as a file too: in a worktree it holds an absolute path.
 fn collect_all(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -1029,42 +909,18 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 // nps
 // ---------------------------------------------------------------------------
 //
-// What the SPRT harness plays is not the time control the preset names. The
-// worker measures the bench's speed on its own hardware and multiplies the
-// nominal control by `scale_nps / measured`, where `scale_nps` is a number a
-// human entered when the test was created. If that number is stale, every
-// game of every test is played at the wrong clock and nothing says so. This
-// happened after quiescence was added: the bench's speed halved while the
-// entered figure did not.
+// The harness scales each clock by `scale_nps / measured`, so a stale `scale_nps`
+// plays every game at the wrong clock unnoticed; this measures it when a test is
+// created. A tool, not a gate: the figure depends on the machine as much as the code.
 //
-// So the figure is not remembered, it is measured, here, at the moment a test
-// is created and from the binary the scaling will divide by. This subcommand
-// is the thing that measures it. It is deliberately a tool and not a gate: it
-// has no opinion and no failing exit code, because the value is a function of
-// the machine, its concurrency and its thermal state as much as of the code,
-// and a gate over a number no other party can recompute would be a mechanism
-// in appearance only.
+// It copies OpenBench's shape (`Client/bench.py` `run_benchmark`,
+// `Client/worker.py` `determine_scale_factor`):
 //
-// The measurement copies the harness rather than inventing its own shape
-// (OpenBench `Client/bench.py` `run_benchmark`, `Client/worker.py`
-// `determine_scale_factor` and `safe_run_benchmarks`):
-//
-//   * one round is `concurrency` copies of `cadence bench` run at once, and
-//     the round's figure is the MEAN of their nps, not the best of them;
-//   * the minimum, maximum and spread within that round are retained too:
-//     they answer whether the copies contend with each other, which the mean
-//     cannot show;
-//   * the harness takes exactly one round per binary (`sets=1`), so a round
-//     here is a round there;
-//   * it benches dev first and base second, so under `scale_method = BASE`
-//     each divisor candidate is the SECOND figure, taken on a machine the
-//     first bench has already warmed. Pairs are reported because the machine
-//     can keep warming across the run; the flat tail, not an aggregate over
-//     cold and warm pairs, is the reference entered as `scale_nps`.
-//
-// It also re-checks for free what the harness checks: every copy of a round
-// must report the same node count, or the harness refuses the workload with
-// `Non-Deterministic Benches`.
+//   * a round is `concurrency` copies at once, and its figure is their mean;
+//   * min, max and spread show contention, which the mean hides;
+//   * one round per binary, as `sets=1`;
+//   * dev before base, so under `BASE` the divisor is the second, warmed figure,
+//     and the flat tail of the pairs is the figure to enter.
 
 struct Round {
     mean_nps: u64,
@@ -1122,7 +978,6 @@ fn parse_nps_args(args: &[String]) -> Result<NpsArgs, String> {
     Ok(out)
 }
 
-/// One round: `copies` benches at once, retaining both divisor and contention data.
 fn run_round(binary: &Path, copies: usize) -> Result<Round, String> {
     let children: Vec<_> = (0..copies)
         .map(|_| {
@@ -1190,8 +1045,6 @@ fn round_spread_percent(round: &Round) -> f64 {
     100.0 * (round.max_nps - round.min_nps) as f64 / round.mean_nps as f64
 }
 
-/// What the table means, printed once before it. Split out of [`nps`] so
-/// that the function left behind is the measurement and its checks.
 fn print_preamble(args: &NpsArgs) {
     println!(
         "{} copies at once, {} pairs, the shape the OpenBench worker measures in:",
@@ -1210,7 +1063,6 @@ fn print_preamble(args: &NpsArgs) {
     );
 }
 
-/// One row of the table: a round's mean, min, max, spread and node count.
 #[expect(
     clippy::cast_precision_loss,
     reason = "nps is displayed, and decides nothing here"
@@ -1253,11 +1105,7 @@ fn nps(args: &[String]) -> ExitCode {
 
     let mut divisors = Vec::with_capacity(args.pairs);
     let mut copy_spreads = Vec::with_capacity(args.pairs * 2);
-    // Every round runs the same binary, so a disagreement *between* rounds is
-    // as much a determinism violation as one within a round. `run_round`
-    // checks within; this checks across, because the line printed at the end
-    // claims both and a claim wider than its check is the fault this whole
-    // subcommand exists because of.
+    // Across rounds as well as within, because the closing line claims both.
     let mut nodes: Option<u64> = None;
     for pair in 1..=args.pairs {
         let round = || match run_round(&args.binary, args.concurrency) {
@@ -1338,7 +1186,6 @@ fn nps(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// What a given reference would deliver against what was just measured.
 #[expect(
     clippy::cast_precision_loss,
     reason = "nps and time controls are displayed, and decide nothing here"
@@ -1371,12 +1218,7 @@ fn report_against_reference(reference: u64, mean: u64, lo: u64, hi: u64) {
     }
 }
 
-/// Point this clone's git at `.githooks/`.
-///
-/// Hooks are not cloned, so this is per-clone and has to be re-run on a fresh
-/// checkout. `core.hooksPath` is used rather than copying files into
-/// `.git/hooks/`, so that a hook edited in the repository takes effect
-/// immediately instead of after someone remembers to re-install it.
+/// `core.hooksPath`, not copies, so an edited hook takes effect at once. Hooks are not cloned.
 fn install_hooks() -> ExitCode {
     let root = repo_root();
     let hooks = root.join(".githooks");
@@ -1418,15 +1260,10 @@ fn install_hooks() -> ExitCode {
 mod tests {
     use super::*;
 
-    /// `cargo test --workspace` does not reach this crate, so these run from
-    /// their own manifest, in CI, beside the fmt and clippy legs. A matcher
-    /// whose tests nothing runs is the same shape as a rule nothing checks.
+    /// `cargo test --workspace` does not reach this crate; CI runs these from its own manifest.
     const NOT_ALLOWED: &str = "core/src/lib.rs";
 
-    /// A linked worktree's `.git` is a file whose one line is an absolute path,
-    /// and collecting it made `check-boundary` report a violation in every
-    /// worktree while the tree itself was clean. Reverting the skip fails this
-    /// with the live symptom rather than with a shape that resembles it.
+    /// In a worktree `.git` is a file holding an absolute path.
     #[test]
     fn a_worktrees_dot_git_file_is_not_collected() {
         let dir = std::env::temp_dir().join(format!("cadence-xtask-{}", std::process::id()));
@@ -1470,13 +1307,7 @@ mod tests {
         }
     }
 
-    /// The two lists answer different questions and a character on both would
-    /// make its paths dead text: the everywhere list would already have let it
-    /// through. Checked rather than remembered, because the two are written
-    /// forty lines apart.
-    ///
-    /// Vacuous while [`ALLOWED_IN_PLACE`] is empty, and kept for the row that
-    /// may come: the invariant is what a reader adding one needs told.
+    /// A character on both lists would make its paths dead text.
     #[test]
     fn a_character_is_allowed_everywhere_or_in_named_places_and_not_both() {
         for entry in ALLOWED_IN_PLACE {
@@ -1505,7 +1336,7 @@ mod tests {
     fn exempt_notation_passes_and_typography_does_not() {
         let notation: String = ALLOWED_NON_ASCII.iter().collect();
         assert!(stray_non_ascii(&notation, &[]).is_empty());
-        // The three that reached a tree in one week, and the other spelling of mu.
+        // The usual arrivals, and Greek mu.
         for bad in [
             "a dash \u{2014}",
             "a \u{201c}quote\u{201d}",
@@ -1516,12 +1347,7 @@ mod tests {
         }
     }
 
-    /// The table is empty, so no path admits anything, and the two characters
-    /// it used to admit are refused in the files that used to be their places.
-    ///
-    /// This is the test that starts saying something again the day a row is
-    /// added: it drives [`in_place_allowances`] over the paths that mattered
-    /// most recently rather than asserting on the empty slice directly.
+    /// Over the paths that used to admit something, so it says something once a row exists.
     #[test]
     fn an_empty_table_admits_nothing_anywhere() {
         let retired = ["\u{a7}", "\u{2014}"];
@@ -1547,9 +1373,7 @@ mod tests {
         }
     }
 
-    /// The root documents pass and any other all-capitals `NAME.md` is
-    /// refused. The refused name is invented, because a real private one
-    /// here would inventory what is withheld.
+    /// The refused name is invented: a real one would inventory what is withheld.
     #[test]
     fn root_documents_pass_and_other_capitals_md_do_not() {
         for name in ROOT_DOCUMENTS {
@@ -1561,11 +1385,7 @@ mod tests {
         assert!(out[0].1.contains("is not a document"), "{}", out[0].1);
     }
 
-    /// The citation sign was the last row of [`ALLOWED_IN_PLACE`] and is now
-    /// refused everywhere, so what a contributor meets is the plain message and
-    /// the advice to write the word. Asserted because the advice is the whole
-    /// reason the removal is not a loss: the twenty-seven citations it used to
-    /// abbreviate now say "section 4", and so does the report.
+    /// The report's advice is what makes refusing the sign no loss.
     #[test]
     fn the_citation_sign_is_now_refused_everywhere_and_told_to_be_a_word() {
         for path in ["core/src/movegen.rs", "docs/testing/perft.md"] {
@@ -1580,12 +1400,6 @@ mod tests {
         }
     }
 
-    /// The seven invisibles that actually arrive in pasted prose -- the space
-    /// that does not break, the hyphen that does not print, the zero-width
-    /// space, the two joiners and the non-joiner, and the byte-order mark --
-    /// plus the bidi overrides that make a line read as something other than
-    /// what it holds, and the replacement character that means the bytes were
-    /// not UTF-8.
     #[test]
     fn every_invisible_that_actually_arrives_is_named() {
         for (c, expected) in [
@@ -1625,9 +1439,7 @@ mod tests {
         assert!(describe('\u{2014}').contains('`'));
     }
 
-    /// An exempt character with no glyph would be a contradiction: the list
-    /// admits characters for what they say, and one that shows nothing says
-    /// nothing.
+    /// An allowed character with no glyph would say nothing.
     #[test]
     fn nothing_on_either_allowed_list_is_invisible() {
         for c in ALLOWED_NON_ASCII {
@@ -1666,6 +1478,110 @@ mod tests {
         ] {
             assert!(planning_label(line, NOT_ALLOWED).is_some(), "{line} passed");
         }
+    }
+
+    #[test]
+    fn record_citations_are_caught_in_the_forms_they_are_written_in() {
+        for (line, cite) in [
+            (
+                "// Below the null move, which is ADR-0008's order",
+                "ADR-0008",
+            ),
+            ("// as ADR 3 says", "ADR 3"),
+            ("/// ADR0010 is the ruling", "ADR0010"),
+            ("// the ADRs agree on this", "ADRs"),
+            ("the reasoning is the one ADR-0002 asks for", "ADR-0002"),
+        ] {
+            assert_eq!(record_citation(line), Some(cite), "{line}");
+        }
+    }
+
+    #[test]
+    fn words_that_contain_the_letters_are_not_record_citations() {
+        for line in [
+            "// a quadratic term",
+            "let adr = 1;",
+            "// ADRESS is not a word this tree uses",
+            "// MADR is not a citation either",
+        ] {
+            assert_eq!(record_citation(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn finding_citations_are_caught_in_the_comments_they_are_written_in() {
+        for (rel, line, cite) in [
+            (
+                "engine/tests/tune.rs",
+                "/// that can be gated here, and F916 carries it.",
+                "F916",
+            ),
+            ("engine/src/x.rs", "let a = 1; // see F942", "F942"),
+            ("tools/x.py", "x = 1  # F910 has the instance", "F910"),
+            (
+                ".githooks/commit-msg",
+                "# F951 is why this is resolved from git",
+                "F951",
+            ),
+            ("README.md", "as F960 records", "F960"),
+        ] {
+            assert_eq!(finding_citation(line, rel), Some(cite), "{rel}: {line}");
+        }
+    }
+
+    #[test]
+    fn squares_lint_codes_and_code_are_not_finding_citations() {
+        for (rel, line) in [
+            // Squares are one digit.
+            (
+                "core/src/types.rs",
+                "    A1 = 0, B1 = 1, C1 = 2, D1 = 3, E1 = 4, F1 = 5,",
+            ),
+            (
+                "core/tests/a.rs",
+                "assert_eq!(b.attackers_to(Square::F5, occ), x); // F5 is a square",
+            ),
+            // A lint code.
+            (
+                "openbench/overlay/CadenceSite/settings.py",
+                "from OpenSite.settings import *  # noqa: F403",
+            ),
+            // Code, and a hex constant, are not comments.
+            ("engine/src/x.rs", "let f = Square::F906;"),
+            ("engine/src/x.rs", "// the mask is 0xF16"),
+            // A file whose comments this check cannot find.
+            ("engine/bench_positions.txt.json", "F916"),
+        ] {
+            assert_eq!(finding_citation(line, rel), None, "{rel}: {line}");
+        }
+    }
+
+    #[test]
+    fn a_planted_citation_fails_the_scan_beside_the_other_rules() {
+        let out = scan(
+            "engine/src/search/node.rs",
+            "// Below the null move, which is ADR-0008's order.\n// F916 carries it.\n",
+            &|_| true,
+        );
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(out[0].1.contains("ADR-0008"), "{out:?}");
+        assert!(out[1].1.contains("F916"), "{out:?}");
+    }
+
+    #[test]
+    fn the_message_gate_may_spell_the_citation_rules_and_nothing_else() {
+        let gate = scan(
+            ".githooks/check-message-metadata",
+            "# ADR and F916 are refused\n",
+            &|_| true,
+        );
+        assert!(gate.is_empty(), "{gate:?}");
+        let other = scan(
+            ".githooks/commit-msg",
+            "# ADR and F916 are refused\n",
+            &|_| true,
+        );
+        assert_eq!(other.len(), 2, "{other:?}");
     }
 
     #[test]

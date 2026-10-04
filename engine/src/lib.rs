@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence-engine`: search, UCI and the command-line surface. The binary in `main.rs` is a
-//! thin dispatcher over this library.
+//! The binary in `main.rs` is a thin dispatcher over this library.
 
 #![forbid(unsafe_code)]
 

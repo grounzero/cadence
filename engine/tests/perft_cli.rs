@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence perft` reproduces the corpus from the command line.
-//!
-//! Drives the real binary as a subprocess, the same way a user or a script
-//! would, and compares its output with `tests/fixtures/perft-corpus.txt`, read here
-//! with a small parser of its own, because the engine crate does not see
-//! `core`'s test support. As there, nothing transcribes a node count into
-//! Rust; the fixture is the only source of expected values.
-//!
-//! Depths are kept to what a debug binary runs in seconds: the point is the
-//! command line, not the node counts, which the core tests already hold to
-//! depth 5.
+//! Compared with the fixture through a parser of its own, since the engine crate does not see
+//! `core`'s test support. Depths stay within seconds in debug: the point is the command line.
 
 mod support;
 
@@ -18,7 +9,6 @@ use std::process::Command;
 
 use support::{standard_fen, tsv};
 
-/// Run `cadence perft <args...>`, returning stdout lines.
 fn perft(args: &[&str]) -> Vec<String> {
     let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
         .arg("perft")
@@ -100,8 +90,7 @@ fn castling_legality_positions_to_depth_3() {
     }
 }
 
-/// `--divide` prints one sorted `move: nodes` line per root move, and the
-/// lines are exactly the corpus divide rows.
+/// One sorted `move: nodes` line per root move, exactly the corpus divide rows.
 #[test]
 fn divide_matches_the_corpus_rows() {
     for (name, depth) in [("startpos", "1"), ("startpos", "2"), ("kiwipete", "1")] {
@@ -126,8 +115,7 @@ fn divide_matches_the_corpus_rows() {
     }
 }
 
-/// The total is a function of the position alone: one thread, several
-/// threads, and more threads than root moves all agree.
+/// One thread, several, and more threads than root moves all agree.
 #[test]
 fn thread_count_does_not_change_the_total() {
     let fen = standard_fen("kiwipete");
@@ -166,15 +154,8 @@ fn usage_errors_exit_2() {
     }
 }
 
-/// `cadence perft` on a position the side not to move is in check in returns
-/// a count instead of killing the process.
-///
-/// Regression: the first of these died with SIGABRT when generation offered
-/// the king capture and the check info recomputed after `make_move`
-/// asked for a king that had just been taken off the board. There is no
-/// external oracle for a position that cannot occur, so what is asserted is
-/// what the command can be held to: it exits cleanly (the `perft` helper
-/// checks the status), it prints a count, and `--divide` sums to it.
+/// The first of these once died with SIGABRT. With no external oracle, it must exit cleanly, print
+/// a count, and have `--divide` sum to it.
 #[test]
 fn a_position_with_the_side_not_to_move_in_check_is_counted_not_fatal() {
     for fen in [

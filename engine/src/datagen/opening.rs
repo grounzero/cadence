@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Where a self-play game starts: a double-Fischer start drawn uniformly, uniform random plies on
-//! top of it, and a shallow search that refuses a start already decided. The three constants are
-//! chosen and not measured, and the yield run does not test them.
+//! A double-Fischer start drawn uniformly, uniform random plies on top, and a shallow screen
+//! refusing a start already decided. The three constants are chosen, not measured.
 
 use cadence_core::chess960::{ARRAYS, dfrc_fen};
 use cadence_core::position::Board;
@@ -14,17 +13,15 @@ use crate::position::Position;
 use crate::score::Score;
 use crate::tt::Table;
 
-/// Random plies played on the start before the game proper, half for each side.
+/// Half for each side.
 pub const RANDOM_PLIES: usize = 8;
 
-/// The screening search's size, the same as a game move's.
+/// The same as a game move's.
 pub const SCREEN_NODES: u64 = 5_000;
 
-/// A start whose screened score lies outside this many centipawns either way is refused. The
-/// window drops gross imbalance and does not try to keep a start balanced.
+/// Drops gross imbalance without trying to keep a start balanced.
 pub const WINDOW: Score = 200;
 
-/// A start that passed: its two array numbers, the random plies, and the board after them.
 pub struct Opening {
     pub white: u32,
     pub black: u32,
@@ -32,12 +29,11 @@ pub struct Opening {
     pub board: Position,
 }
 
-/// One draw from `rng`, or `None` if the random plies end the game or the screen refuses it.
+/// `None` if the random plies end the game or the screen refuses it.
 ///
 /// # Panics
 ///
-/// If the drawn start does not parse. Every number drawn is below the array count, so that is a
-/// decoder fault.
+/// If the drawn start does not parse.
 pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
     let white = draw_array(rng);
     let black = draw_array(rng);
@@ -66,7 +62,7 @@ pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
     })
 }
 
-/// Draws until a start passes, and says how many were refused on the way.
+/// Also returns how many were refused.
 pub fn next(rng: &mut Rng, tt: &Table) -> (Opening, u32) {
     let mut refused = 0;
     loop {

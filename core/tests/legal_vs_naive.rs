@@ -1,33 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `generate_legal` against an independent legal generator, as move sets.
-//!
-//! The corpus says how many moves there are and, for a handful of positions,
-//! which. This says which, everywhere: in every corpus position and at every
-//! node of walks from the corpus seeds, the generator's move set must equal
-//! the set produced by `support::naive::legal`, the obvious pseudo-legal
-//! generator plus a make/unmake king-safety filter, written as a move source
-//! for the position gates and kept as a second opinion on this one.
-//!
-//! The two share the attack tables and `attackers_to`, both gated on their
-//! own, and nothing else: the naive generator knows no pins, no check
-//! dispatch, no evasion masks and no en-passant occupancy rule. It answers
-//! "is the king attacked afterwards" by actually playing the move. So when
-//! the two disagree the diff names the move, and the disagreement is in the
-//! fast generator's legality reasoning, not in what a piece attacks.
-//!
-//! Duplicates are caught separately: a generator that emits a move twice has
-//! the right set and the wrong count, and perft would see a wrong total with
-//! nothing to localise it.
-//!
-//! **The one place the two used to disagree was a place this file never
-//! went.** The naive generator excludes the enemy king from its target sets,
-//! so where the side not to move is in check it declines the king capture
-//! and the fast generator offered it; the corpus and every walk seed is a
-//! legal position, so the comparison never ran anywhere that shows. Both
-//! generators now decline it, and the last test here is the one that runs on
-//! positions where they would once have differed. `tests/opponent_in_check.rs`
-//! holds the rest of the family.
+//! The two share only the gated attack tables and `attackers_to`; the naive one plays each move to
+//! test king safety, so a disagreement names the move and lies in the fast generator's legality
+//! reasoning. Duplicates are caught separately: a doubled move has the right set and the wrong
+//! count.
 
 mod support;
 
@@ -46,7 +22,6 @@ fn uci_set(moves: &[Move]) -> Vec<String> {
     v
 }
 
-/// The generator's moves equal the naive generator's, as a set and in count.
 fn assert_same_moves(label: &str, board: &mut Board) {
     let fast = generate_legal(board).as_slice().to_vec();
     let slow = naive::legal(board);
@@ -70,7 +45,7 @@ fn assert_same_moves(label: &str, board: &mut Board) {
         "{label}: generate_legal emitted a move twice\n  {}\n  {fast_uci:?}",
         board.to_fen(cadence_core::FenStyle::Shredder)
     );
-    // The moves themselves, not just their spellings: the same flag bits.
+    // The same flag bits, not just the spellings.
     let mut fast_bits: Vec<u16> = fast.iter().map(|m| m.to_bits()).collect();
     let mut slow_bits: Vec<u16> = slow.iter().map(|m| m.to_bits()).collect();
     fast_bits.sort_unstable();
@@ -149,11 +124,9 @@ fn generate_legal_matches_the_naive_generator_along_walks() {
 
 #[test]
 fn generate_legal_matches_the_naive_generator_with_the_opponent_in_check() {
-    // Positions no legal play can reach, which `from_fen` accepts: the case
-    // both generators have an opinion about and neither was ever asked. The
-    // first family is a random placement filtered for it; the second has the
-    // kings adjacent, where the enemy king is an attacker of our king as
-    // well as a piece on a square we can move to.
+    // Unreachable positions `from_fen` accepts, where the two once differed. The second family has
+    // the kings adjacent, where the enemy king attacks ours as well as standing on a square we can
+    // move to.
     let mut rng = generate::Rng::new(0x1E9A_3000_0000_0003);
     let mut compared = 0usize;
     let mut touching = 0usize;

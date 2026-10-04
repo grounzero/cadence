@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `cadence datagen`. A game ends by the rules alone, a game is a function of its
-//! seed and number, a run's file is the same at any thread count, a record replays to the ending
-//! it names, and extraction splits by game and keeps no position in check.
+//! A game ends by the rules alone, a game is a function of its seed and number, a run's file is the
+//! same at any thread count, a record replays to the ending it names, and extraction splits by game
+//! and keeps no position in check.
 
 use std::process::Command;
 
@@ -24,7 +24,6 @@ fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// A small run's records, as the file holds them.
 fn run(seed: u64, games: u64, threads: usize) -> Vec<u8> {
     let mut out = Vec::new();
     datagen::generate(seed, games, threads, &mut out, &mut |_| {}).expect("a run into memory");

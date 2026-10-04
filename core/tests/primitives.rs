@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `types` and `bitboard`.
-//!
-//! Property tests over the whole domain rather than examples: there are only
-//! 64 squares, 12 pieces and 8 directions, so every claim here is checked
-//! for every value. The oracle is `(file, rank)` arithmetic written out in
-//! plain integers, which is the definition the LERF layout is supposed to
-//! satisfy (`index == rank * 8 + file`, `flip == sq ^ 56`), and nothing from
-//! the crate is trusted to test itself.
+//! Every claim is checked for every square, piece and direction, against `(file, rank)` arithmetic
+//! in plain integers.
 
 use cadence_core::bitboard::Bitboard;
 use cadence_core::types::{Colour, File, OptSquare, Piece, PieceType, PromoPiece, Rank, Square};
@@ -16,8 +10,6 @@ use cadence_core::types::{Colour, File, OptSquare, Piece, PieceType, PromoPiece,
 // Square <-> (File, Rank), the LERF invariant
 // ---------------------------------------------------------------------------
 
-/// A1 = 0, H8 = 63, `index == rank * 8 + file`, and the round trip through
-/// `(File, Rank)` is the identity in both directions.
 #[test]
 fn square_index_is_rank_major_with_a1_at_zero() {
     for i in 0..64u8 {
@@ -42,7 +34,6 @@ fn square_index_is_rank_major_with_a1_at_zero() {
     assert_eq!(Square::E4.index(), 28);
 }
 
-/// The named constants agree with the constructor and with their own names.
 #[test]
 fn square_constants_match_their_names() {
     let named = [
@@ -76,7 +67,6 @@ fn square_constants_match_their_names() {
     }
 }
 
-/// `flip_vertical == sq ^ 56`: same file, mirrored rank, an involution.
 #[test]
 fn flip_vertical_is_xor_56() {
     const FLIP: u8 = 56;
@@ -101,7 +91,7 @@ fn flip_vertical_is_xor_56() {
     assert_eq!(Square::H4.flip_vertical(), Square::H5);
 }
 
-/// `sq.bb()` is exactly bit `index`, so LSB = A1 and MSB = H8.
+/// So LSB = A1 and MSB = H8.
 #[test]
 fn square_bitboard_is_its_own_bit() {
     for i in 0..64u8 {
@@ -180,8 +170,7 @@ fn colour_flip_is_an_involution_and_index_is_the_discriminant() {
     assert_eq!(Colour::ALL, [Colour::White, Colour::Black]);
 }
 
-/// Colour-major and dense: `Piece::new(c, pt)` is `c * 6 + pt`, and the two
-/// accessors invert it for all twelve.
+/// `Piece::new(c, pt)` is `c * 6 + pt`.
 #[test]
 fn piece_is_colour_major_and_dense() {
     let mut seen = Vec::new();
@@ -306,8 +295,6 @@ fn set_then_clear_is_the_identity_for_every_square() {
     }
 }
 
-/// `pop_lsb` yields the squares in ascending order, exactly once each, and
-/// leaves the set empty. Checked over a spread of sets including the extremes.
 #[test]
 fn pop_lsb_drains_in_ascending_order() {
     let sets: Vec<Bitboard> = [
@@ -397,9 +384,7 @@ fn operators_are_the_underlying_bit_operations() {
 // Bitboard: shifts, against (file, rank) arithmetic
 // ---------------------------------------------------------------------------
 
-/// The oracle: move `(df, dr)` from every square of the set, dropping squares
-/// that leave the board. Written in file/rank integers so it cannot share a
-/// wrap bug with the shift being tested.
+/// In file/rank integers, so it cannot share a wrap bug with the shift tested.
 fn naive_shift(bb: Bitboard, df: i8, dr: i8) -> Bitboard {
     let mut out = 0u64;
     for i in 0..64u8 {
@@ -470,10 +455,8 @@ fn forward_is_north_for_white_and_south_for_black() {
 // Layout guards
 // ---------------------------------------------------------------------------
 
-/// The `const` guards in the crate already refuse to compile if these drift.
-/// Restated here so the numbers are visible in a test report, and so that a
-/// change to them shows up as a named failure rather than a build error in an
-/// unrelated file.
+/// The crate's `const` guards already refuse to compile on drift; restated so a change is a named
+/// failure, not a build error in an unrelated file.
 #[test]
 fn layouts_are_the_sizes_the_design_measured() {
     use core::mem::{align_of, size_of};

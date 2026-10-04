@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence datagen`: self-play games at a fixed node count, written as game records, and the
-//! separate step that extracts labelled positions from them. Every game is seeded by its number,
-//! so a run's file is the same whatever the thread count and whichever thread finished first.
+//! Every game is seeded by its number, so a run's file is the same whatever the thread count and
+//! whichever thread finished first.
 
 pub mod extract;
 pub mod game;
@@ -24,26 +23,22 @@ use crate::tt::Table;
 use crate::version::VERSION;
 use record::Record;
 
-/// Nodes a game move searches. Compiled in rather than passed, like `bench`'s depth, so a
-/// record's provenance line names every setting that shaped it.
+/// Compiled in, like `bench`'s depth, so a record's provenance line names every setting that shaped
+/// it.
 pub const NODES: u64 = 5_000;
 
-/// Each worker's table, in mebibytes, cleared at the start of every game.
+/// Cleared at the start of every game.
 pub const HASH_MB: usize = 16;
 
-/// The holdout takes every game whose number is a multiple of this, unless the command says
-/// otherwise.
 pub const HOLDOUT_EVERY: u64 = 10;
 
-/// The seed game `number` of a run seeded `seed` draws from. Hashed twice so that two runs with
-/// different seeds share a game only by a 64-bit coincidence.
+/// Hashed twice, so runs with different seeds share a game only by a 64-bit coincidence.
 #[must_use]
 pub fn game_seed(seed: u64, number: u64) -> u64 {
     splitmix64(splitmix64(seed).0 ^ number).0
 }
 
-/// Plays game `number` of the run seeded `seed`. The result is a function of those two numbers
-/// alone, whatever `tt` held before.
+/// A function of `seed` and `number` alone, whatever `tt` held before.
 #[must_use]
 pub fn play(seed: u64, number: u64, tt: &Table) -> Record {
     let mut rng = Rng::new(game_seed(seed, number));
@@ -52,7 +47,7 @@ pub fn play(seed: u64, number: u64, tt: &Table) -> Record {
     Record::new(number, &opening, played, refused)
 }
 
-/// The comment line a record file opens with: everything that shaped the games.
+/// Everything that shaped the games.
 #[must_use]
 pub fn provenance(seed: u64, games: u64) -> String {
     format!(
@@ -64,13 +59,11 @@ pub fn provenance(seed: u64, games: u64) -> String {
     )
 }
 
-/// Plays games `0..games` on `threads` workers and writes their records to `out` in number order.
-/// `progress` is called with the count written so far, from the writing thread.
+/// Records are written in number order; `progress` is called from the writing thread.
 ///
 /// # Errors
 ///
-/// If `out` cannot be written; the workers stop at their next game. A table that cannot be
-/// allocated is reported the same way.
+/// If `out` cannot be written or a table cannot be allocated.
 pub fn generate(
     seed: u64,
     games: u64,
@@ -124,7 +117,6 @@ pub fn generate(
 const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
      cadence datagen extract <games> --train PATH --holdout PATH [--every N]";
 
-/// The command-line surface.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     let result = match args.first().map(String::as_str) {
@@ -142,10 +134,8 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-/// A command line as flags with their values, and the arguments that are not flags.
 type Split = (Vec<(String, String)>, Vec<String>);
 
-/// Flags as name and value pairs, and the arguments that are not flags.
 fn split(args: &[String]) -> Result<Split, String> {
     let (mut flags, mut rest) = (Vec::new(), Vec::new());
     let mut it = args.iter();

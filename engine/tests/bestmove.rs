@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The search as a function: whatever it returns is a legal move.
-//!
-//! This is the one property of the move chooser that every later search
-//! must keep, and it is tested here independently of how the move is found.
-//! The UCI plumbing around it -- `go`, `stop`, the `bestmove` line and its
-//! spelling -- is tested against the binary in tests/uci.rs.
+//! The one property every later search must keep, tested independently of how the move is found;
+//! the UCI plumbing is `tests/uci.rs`'s.
 
 mod support;
 
@@ -18,8 +14,6 @@ use cadence_engine::position::Position;
 use cadence_engine::search::Limits;
 use support::{Rng, table};
 
-/// Search `board` to the given limits with a fresh stop flag, discarding
-/// `info` output.
 fn best(board: &mut Position, limits: Limits) -> Move {
     let stop = AtomicBool::new(false);
     let tt = table();
@@ -127,8 +121,6 @@ fn a_raised_stop_flag_returns_a_legal_move_at_once() {
     assert_legal(&fen, m);
 }
 
-/// `infinite` does not return on its own; it returns when `stop` is raised,
-/// and then with a legal move.
 #[test]
 fn infinite_waits_for_stop() {
     let fen = support::standard_fen("kiwipete");

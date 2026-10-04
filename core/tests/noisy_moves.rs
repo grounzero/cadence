@@ -1,29 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `generate_noisy` against `generate_legal`: the noisy subsequence, exactly.
-//!
-//! A quiescence search wants the captures, en-passant captures and
-//! promotions of a position and nothing else, and it wants them cheaply:
-//! generating every move to throw most of them away would make the search's
-//! most numerous node pay for the quiet moves it never looks at. So the
-//! generator has a second entry point, and this file is its specification:
-//! **`generate_noisy(b)` is `generate_legal(b)` filtered by `Move::is_noisy`,
-//! in `generate_legal`'s order.** As a sequence, not a set. The order is
-//! part of the contract because a search's node count depends on the order
-//! it tries moves in, and a noisy list in the legal list's order is one a
-//! filter over the legal list could have produced -- so the two paths are
-//! interchangeable without moving the bench number, which is how the
-//! generator is cross-checked from the engine side.
-//!
-//! The oracle is `generate_legal`, gated on its own (perft, the naive
-//! generator, the corpus move lists) and not in question here. What can go
-//! wrong is the subset: a promotion push left out because it lands on an
-//! empty square, a king capture left out because captures were taken from
-//! the piece loop alone, an en passant left out, a noisy evasion left out in
-//! check, a castle let in because its destination holds a piece, a double
-//! push let in, the order changed. The walks are biased toward the rare
-//! kinds and count what they saw, so the branches this file exists to
-//! exercise are asserted reached rather than assumed.
+//! `generate_noisy(b)` is `generate_legal(b)` filtered by `Move::is_noisy`, in `generate_legal`'s
+//! order: a sequence, because a filtered list in that order leaves the bench count unchanged. The
+//! walks favour the rare kinds and count them, so the branches are asserted reached.
 
 mod support;
 
@@ -34,30 +13,25 @@ use support::generative as generate;
 const WALKS: usize = 200;
 const PLIES_PER_WALK: usize = 60;
 
-/// What the positions compared so far have shown, so that the coverage of
-/// the rare branches is a number and not a hope.
+/// So the coverage of the rare branches is a number and not a hope.
 #[derive(Default, Debug)]
 struct Seen {
     nodes: usize,
-    /// Positions with no noisy move at all: the list must be empty there.
+    /// The list must be empty there.
     quiet: usize,
-    /// Moves, by kind, across every position compared.
     captures: usize,
     en_passant: usize,
     promotions: usize,
     promotion_captures: usize,
     king_captures: usize,
-    /// Positions in check, in double check, and in check with at least one
-    /// noisy evasion -- the in-check subset is its own branch.
+    /// The in-check subset is its own branch.
     in_check: usize,
     double_check: usize,
     noisy_evasions: usize,
-    /// Positions where a castle is legal: never in the noisy list.
+    /// Never in the noisy list.
     castles: usize,
 }
 
-/// The noisy list equals the legal list filtered by `is_noisy`, as a
-/// sequence; and the count of what this position showed.
 fn assert_noisy_subsequence(label: &str, board: &Board, seen: &mut Seen) {
     let legal = generate_legal(board);
     let noisy = generate_noisy(board);
@@ -104,10 +78,6 @@ fn assert_noisy_subsequence(label: &str, board: &Board, seen: &mut Seen) {
     }
 }
 
-/// Every position the corpus names: the standard suite, the DFRC arrays,
-/// the castling-legality set, the edge cases (promotions in check, both
-/// en-passant evasions, double check), the rights-capture positions, the
-/// immediate castles, both notations, and the move-capacity position.
 fn corpus_fens() -> Vec<String> {
     let mut fens: Vec<String> = support::standard_positions()
         .into_iter()
@@ -147,9 +117,8 @@ fn generate_noisy_is_the_noisy_subsequence_in_every_corpus_position() {
     assert!(seen.quiet > 0, "{seen:?}");
 }
 
-/// Walks from the corpus seeds, preferring the rare kinds when they are on
-/// offer so that en passant, promotion and castling are compared often
-/// rather than by luck; compared at every node, and counted.
+/// Preferring the rare kinds when on offer, so en passant, promotion and castling are compared
+/// often rather than by luck.
 #[test]
 fn generate_noisy_is_the_noisy_subsequence_along_walks() {
     let seeds = generate::walk_seeds();
@@ -182,8 +151,7 @@ fn generate_noisy_is_the_noisy_subsequence_along_walks() {
     }
     eprintln!("walks: {seen:?}");
     assert!(seen.nodes >= WALKS * 20, "walks ended early: {seen:?}");
-    // Floors well under what the seeded walks produce, each one naming a
-    // branch of the generator that this test exists to have compared.
+    // Each floor names a branch this test exists to have compared.
     assert!(seen.quiet >= 200, "{seen:?}");
     assert!(seen.captures >= 5_000, "{seen:?}");
     assert!(seen.king_captures >= 50, "{seen:?}");
@@ -191,9 +159,8 @@ fn generate_noisy_is_the_noisy_subsequence_along_walks() {
     assert!(seen.promotions >= 100, "{seen:?}");
     assert!(seen.promotion_captures >= 20, "{seen:?}");
     assert!(seen.in_check >= 200, "{seen:?}");
-    // Double check is not asserted here: random play reaches it rarely (none
-    // in 11,809 nodes when this was calibrated), and the corpus test above
-    // asserts that its double-check position was compared.
+    // Not asserted: random play reaches double check rarely, none in 11,809 nodes at calibration,
+    // and the corpus test asserts its double-check position.
     assert!(seen.noisy_evasions >= 50, "{seen:?}");
     assert!(seen.castles >= 100, "{seen:?}");
 }

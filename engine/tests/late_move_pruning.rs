@@ -1,33 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Late move pruning: at low depth, a node stops searching quiet moves once
-//! a count of them has failed to beat alpha, instead of searching the rest
-//! at reduced depth.
-//!
-//! **What these gates demonstrate is that the count is what decides, and
-//! that every refusal decides something.** The first is the sharper of the
-//! two claims and it is made the way the margin's file makes its own: one
-//! position searched twice with nothing different between the runs but the
-//! count the node is given, moves given up on one side of it and none on
-//! the other.
-//!
-//! **The second claim is the one this rule needs and the margin's does
-//! not.** A reduction that was wrong is caught by the re-search above it; a
-//! move given up here is never searched, at any depth, by any mechanism, so
-//! an exemption that does not fire is a claim nothing is checking. Every
-//! exemption below is therefore gated twice: once as arithmetic, on the
-//! function, and once as a decision, on a counter that has to move or a
-//! move the search has to find. The check exemption is gated by a mate that
-//! only exists behind it.
-//!
-//! **And the floor is gated as the tie it is.** [`lmp_count`] never returns
-//! less than [`REDUCTION_INDEX`], so no move the reduction refuses to
-//! shorten by a ply is a move this rule deletes. That is one assertion and
-//! it is the whole of why the base is not a tuning parameter.
-//!
-//! The counters are written wherever the rule runs and read on no decision
-//! path, so a depth-limited search here reads no clock and the assertions
-//! are exact.
+//! The count decides, shown by one position searched twice with only the count changed. A given-up
+//! move is never searched again, so every exemption is gated twice, as arithmetic and as a
+//! decision; `lmp_count` never falls below `REDUCTION_INDEX`, so no move the reduction spares is
+//! deleted.
 
 mod support;
 
@@ -43,41 +19,26 @@ use cadence_engine::search::{
 use cadence_engine::tune::Tunables;
 use support::table;
 
-/// The compiled-in values of the constants a tune may move, which is what every gate here
-/// pins.
+/// The compiled-in values every gate here pins.
 const DEFAULT: &Tunables = &Tunables::DEFAULT;
 
-/// The depth the set gate below searches to.
-///
-/// **Seven, and it is chosen the way the margin's `GATE_DEPTH` is: one ply
-/// past the shallowest depth that works, measured rather than assumed.**
-/// Over the set below, a search to depth five gives up moves at every
-/// position and a search to four does not at all of them, because the rule
-/// needs a node holding more moves than the count admits and the count is
-/// eight at depth four. Seven is taken. A gate standing exactly on the
-/// first depth that works is a gate the next tree change silently empties,
-/// which is how the counterfactual ceilings in `tests/ordering.rs` have
-/// failed before.
+/// Depth five is the shallowest at which every position gives moves up; seven leaves margin, so a
+/// tree change cannot silently empty the gate.
 const GATE_DEPTH: u32 = 7;
 
-/// A quiet middlegame, the same position the reduction and margin gates
-/// use, so the three rules are asked about one tree.
+/// The same position the reduction and margin gates use, so the three rules are asked about one
+/// tree.
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
-/// White is three queens down and has one thing on the board: a rook that
-/// reaches a8 along an empty file, where it mates. The mating move is quiet
-/// and gives check, and the gate below reads its place in the sorted list
-/// rather than assuming one. The margin's own gate stands on the same
-/// position for the same exemption; here what would delete the move is its
-/// rank rather than the evaluation.
+/// The gate reads the mating move's place in the sorted list rather than assuming one: here its
+/// rank, not the evaluation, is what would delete it.
 const QUIET_MATE: &str = "6k1/5ppp/8/8/8/8/1qqq4/R5K1 w - - 0 1";
 
 fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// One node, searched at `depth` inside the null window `(alpha, alpha+1)`,
-/// with a table of its own. The counters come back with the score.
+/// Inside the null window `(alpha, alpha+1)`, with a table of its own.
 fn one_node(fen: &str, depth: u32, alpha: Score) -> (Score, u64, u64, u64) {
     let stop = AtomicBool::new(false);
     let tt = table();
@@ -87,14 +48,8 @@ fn one_node(fen: &str, depth: u32, alpha: Score) -> (Score, u64, u64, u64) {
     (score, s.lmp_nodes(), s.lmp_skipped(), s.lmp_kept_check())
 }
 
-/// The count is what gives the move up, and the move's own rank is the
-/// whole difference between two runs of one function.
-///
-/// A quiet non-killer at the index the count names is given up and the same
-/// move one index lower is not. Nothing else moves: not the move, not the
-/// node, not the killers. A rule keyed on anything but the count -- the
-/// move being quiet, the node being admitted -- answers the same on both
-/// and fails here.
+/// A quiet non-killer at the index the count names is given up, and the same move one index lower
+/// is not. A rule keyed on anything but the count answers the same on both.
 #[test]
 fn the_count_is_what_gives_the_move_up() {
     let quiet = generate_legal(&board(START_FEN))
@@ -116,14 +71,7 @@ fn the_count_is_what_gives_the_move_up() {
     }
 }
 
-/// No move the reduction refuses to shorten is a move this rule deletes.
-///
-/// The tie is the argument for the count's floor and this is the assertion
-/// that keeps it true: the count never falls below [`REDUCTION_INDEX`], so
-/// at every depth the rule acts on, a move inside the reduction's exempt
-/// prefix is inside the count as well. Both halves are asserted, because
-/// the first alone would still hold if the reduction's own threshold moved
-/// out from under it.
+/// Both halves are asserted, since the first alone would hold if the reduction's threshold moved.
 #[test]
 fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
     let quiet = generate_legal(&board(START_FEN))
@@ -154,8 +102,7 @@ fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
     }
 }
 
-/// The count grows with the depth and never shrinks, so a node with more
-/// search under it searches more moves before giving the rest up.
+/// A node with more search under it searches more moves before giving the rest up.
 #[test]
 fn the_count_is_the_documented_count() {
     assert_eq!(lmp_count(DEFAULT, 1), 3);
@@ -174,10 +121,8 @@ fn the_count_is_the_documented_count() {
     }
 }
 
-/// Past the depth limit the rule is off, whatever the node holds.
-///
-/// A node with more moves than any count admits is refused at every depth
-/// above the limit, so only the limit can be doing the refusing.
+/// A node with more moves than any count admits is refused above the limit, so only the limit
+/// refuses.
 #[test]
 fn no_pruning_past_the_depth_limit() {
     assert!(lmp_index(DEFAULT, false, 8, 256).is_some(), "depth eight");
@@ -189,9 +134,7 @@ fn no_pruning_past_the_depth_limit() {
     }
 }
 
-/// A node in check is never admitted, at any depth inside the band and
-/// whatever it holds. Every move there is an evasion and what a wrong skip
-/// loses is a mate defence.
+/// Every move in check is an evasion, and a wrong skip loses a mate defence.
 #[test]
 fn a_node_in_check_never_gives_a_move_up() {
     for depth in 0..12 {
@@ -204,8 +147,7 @@ fn a_node_in_check_never_gives_a_move_up() {
     }
 }
 
-/// A node holding no more moves than the count searches all of them, which
-/// is what makes the node-level question worth asking once.
+/// Which makes the node-level question worth asking once.
 #[test]
 fn a_node_inside_the_count_is_not_admitted() {
     for depth in 1..=8 {
@@ -221,10 +163,8 @@ fn a_node_inside_the_count_is_not_admitted() {
     }
 }
 
-/// Every exemption the move itself carries refuses the skip, pinned one at
-/// a time: the same quiet move at the same index is a candidate with no
-/// exemption in force and is not one under each. Real moves from real
-/// lists, so `is_noisy` is exercised against the generator.
+/// The same quiet move at the same index is a candidate with no exemption in force and not one
+/// under each. Real moves, so `is_noisy` is exercised against the generator.
 #[test]
 fn each_exemption_alone_keeps_the_move() {
     let list = generate_legal(&board(START_FEN));
@@ -261,14 +201,8 @@ fn each_exemption_alone_keeps_the_move() {
     assert!(!lmp_skips(from, noisy, [Move::NULL; 2], 8), "noisy");
 }
 
-/// The pruning happens in a real search: three positions all admit nodes
-/// and give quiet moves up at them.
-///
-/// Coverage first, so the counters are read off finished trees. Then the
-/// property in two halves that fail differently: admitted nodes prove the
-/// node-level question fires somewhere real, and given-up moves prove the
-/// loop acts on it. A rule wired in but never admitted passes neither; one
-/// admitted only at nodes whose every late move is exempt passes the first.
+/// Admitted nodes prove the node-level question fires; given-up moves prove the loop acts. Never
+/// admitted passes neither; admitted only where every late move is exempt passes the first.
 #[test]
 fn a_middlegame_search_gives_up_late_quiet_moves() {
     for fen in [
@@ -300,35 +234,13 @@ fn a_middlegame_search_gives_up_late_quiet_moves() {
     }
 }
 
-/// A quiet move that gives check is searched at a node where the rule is
-/// giving up every other move at its rank, and the proof is the mate.
-///
-/// `Ra8` is quiet, gives check and mates, and the gate reads its place in
-/// the sorted list rather than assuming one. Three assertions, and the
-/// first cannot be satisfied by accident: the search returns a mate score,
-/// which it can only do by searching a move the count would otherwise have
-/// deleted. The other two say the rule was live while it did so, so the
-/// mate is not being found because the rule failed to fire.
-///
-/// **What is deliberately not asserted here is that a move was given up at
-/// this node**, and the reason is the mate: it cuts, so the loop breaks and
-/// nothing behind it is ever reached, which leaves the skip counter at zero
-/// however live the rule is. A gate written to assert it would pass only by
-/// finding a mate late enough to leave moves behind it, which is a property
-/// of the position and not of the rule.
-/// `a_node_that_gives_moves_up_still_has_an_answer` is where the skip
-/// counter is asserted, on a node with no mate in it.
-///
-/// **Measured on a build with the check exemption taken out**, which is
-/// what says this gate discriminates rather than passing on the shape of
-/// the position: the same node returns -2,233 and the first assertion is
-/// the one that fires.
+/// The mate score can only come from searching a move the count would delete. No skip is asserted
+/// here, since the mate cuts before any move behind it; without the check exemption the node
+/// returns -2,233.
 #[test]
 fn a_quiet_check_survives_the_count_and_the_mate_is_found() {
-    // The rank is read off the same sort the search runs, with the empty
-    // table and empty killers a fresh search starts from, so the gate
-    // cannot pass because the mating move happened to sort inside the
-    // count. If a later ordering change promotes it there, this fires.
+    // Read off the search's own sort from a fresh state, so the gate cannot pass because the mating
+    // move sorted inside the count.
     let b = board(QUIET_MATE);
     let mut list = generate_legal(&b);
     picker::sort_from(&b, &mut list, 0, [Move::NULL; 2], &[]);
@@ -351,12 +263,8 @@ fn a_quiet_check_survives_the_count_and_the_mate_is_found() {
     );
 }
 
-/// A node that gives moves up still answers with a score something
-/// searched.
-///
-/// The count never reaches the node's first move, so this cannot fail as a
-/// wrong score: it would fail as a node returning the sentinel it started
-/// from. Asserted on a run where the rule was live.
+/// The count never reaches the first move, so a failure here is the sentinel returned, not a wrong
+/// score.
 #[test]
 fn a_node_that_gives_moves_up_still_has_an_answer() {
     let (score, nodes, skipped, _) = one_node(MIDDLEGAME, 2, 0);

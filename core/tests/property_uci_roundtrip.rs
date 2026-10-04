@@ -1,22 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! UCI round-trip: `parse_uci(emit(m)) == Some(m)`.
-//!
-//! Over all 960 start arrays and thousands of random positions, every legal
-//! move, with `UCI_Chess960` **both on and off**.
-//!
-//! This is the property no node count can see. Emission and parsing do not
-//! affect the search tree at all: they affect what a GUI is told, and the
-//! failure mode is an illegal move in a tournament game, or an engine that
-//! silently ignores the move the GUI asked it to play. The whole corpus could
-//! be green with emission completely broken.
-//!
-//! Both modes matter separately, and the non-960 mode is where the danger is:
-//! castling has to be spelled `e1g1` there, unless a quiet king move to `g1`
-//! is *also* legal, in which case it must fall back to king-takes-rook because
-//! `e1g1` would be ambiguous. Parsing must accept both spellings in both
-//! modes regardless: the option governs output only, and GUIs get this wrong
-//! often enough that liberality is free insurance.
+//! No node count sees emission or parsing, whose failure is an illegal move in a tournament game.
+//! Non-960 castling spells `e1g1` unless a quiet king move to `g1` is also legal; parsing accepts
+//! both spellings in both modes.
 
 mod support;
 
@@ -59,9 +45,7 @@ fn round_trip(label: &str, fen: &str) {
     }
 }
 
-/// All 960 start arrays. Castling rights are live in every one of them, and
-/// four of them can castle immediately, so this covers the spelling that only
-/// exists in Chess960.
+/// Four can castle immediately, covering the spelling only Chess960 has.
 #[test]
 fn uci_round_trips_over_all_960_start_arrays() {
     for (n, fen) in generate::all_960_start_fens().into_iter().enumerate() {
@@ -69,10 +53,7 @@ fn uci_round_trips_over_all_960_start_arrays() {
     }
 }
 
-/// Thousands of random positions, reached by walking from the corpus seeds.
-///
-/// Start arrays are all pawns and back rank; the interesting spellings
-/// (promotions, en passant, captures) only appear once the game has moved on.
+/// Promotions, en passant and captures only appear once the game has moved on.
 #[test]
 fn uci_round_trips_over_random_positions() {
     let seeds = generate::walk_seeds();

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence texel`: fits the evaluation's weights to game results by minimising the squared error
-//! between each result and a sigmoid of the evaluation. Floating point lives here and on no search
-//! path, and the search's table moves only when a tuned one is written into the source.
+//! Floating point lives here and on no search path; the search's table moves only when a tuned one
+//! is written into the source.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -16,15 +15,14 @@ use crate::eval::{
     SHIELD, SHIELD_LEN, WEIGHT_COUNT, WEIGHTS,
 };
 
-/// How many parts a sum over the data set is split into, whatever the thread count. Floating-point
-/// addition is not associative, so a fixed split summed in order is what makes a run repeat exactly.
+/// Fixed whatever the thread count: floating-point addition is not associative, so a fixed split
+/// summed in order makes a run repeat exactly.
 const CHUNKS: usize = 64;
 
-/// A weight as the tuner holds it: middlegame, endgame.
+/// Middlegame, endgame.
 pub type Real = [f64; 2];
 
-/// A labelled position reduced to what the tuner reads: the nonzero coefficients of its trace, its
-/// phase, and its game's result from White's point of view.
+/// Only the nonzero trace coefficients, the phase, and the result from White's point of view.
 #[derive(Clone, Debug)]
 pub struct Sample {
     coefficients: Vec<(u16, i16)>,
@@ -33,7 +31,7 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// Traces `board` once; `result` is 1 for a White win, 0.5 for a draw and 0 for a loss.
+    /// `result` is 1 for a White win, 0.5 for a draw and 0 for a loss.
     #[must_use]
     pub fn new(board: &Board, result: f64) -> Sample {
         let trace = eval::trace(board);
@@ -51,8 +49,8 @@ impl Sample {
         }
     }
 
-    /// White's evaluation under `weights`, neither truncated nor clamped. Under today's table its
-    /// integer part is the search's evaluation before the clamp.
+    /// Neither truncated nor clamped; under today's table its integer part is the search's
+    /// evaluation before the clamp.
     #[must_use]
     pub fn evaluate(&self, weights: &[Real]) -> f64 {
         let (mut mg, mut eg) = (0.0, 0.0);
@@ -66,13 +64,12 @@ impl Sample {
     }
 }
 
-/// One line of a data set: a FEN, a `|`, and the result from White's point of view. The result is
-/// `1-0`, `1/2-1/2` or `0-1`, or a number in `[0, 1]`; a blank line or one opening `#` is `None`.
+/// A FEN, a `|`, and the result from White's point of view: `1-0`, `1/2-1/2`, `0-1` or a number in
+/// `[0, 1]`. A blank line or one opening `#` is `None`.
 ///
 /// # Errors
 ///
-/// A line with no `|`, a FEN `from_fen` refuses, or a result that is neither form. The message
-/// names what was wrong and not where, which the caller knows.
+/// A line with no `|`, a FEN `from_fen` refuses, or a result that is neither form.
 pub fn parse_line(line: &str) -> Result<Option<(Board, f64)>, String> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -94,15 +91,13 @@ pub fn parse_line(line: &str) -> Result<Option<(Board, f64)>, String> {
     Ok(Some((board, result)))
 }
 
-/// The hand-written table as it stood before any of it was fitted, one weight per line in index
-/// order. The ridge pulls toward it, so every fit is held near one reasoned table and not the last.
+/// The table before any of it was fitted. The ridge pulls toward it, so every fit is held near one
+/// reasoned table and not the last.
 const HAND_WRITTEN: &str = include_str!("../hand-written-weights.txt");
 
-/// [`HAND_WRITTEN`] as weights.
-///
 /// # Panics
 ///
-/// If a line is malformed or out of index order. The file is checked in, so that is a broken tree.
+/// If the checked-in file is malformed or out of index order.
 #[must_use]
 pub fn hand_written_weights() -> Vec<Real> {
     let rows: Vec<Real> = HAND_WRITTEN
@@ -124,7 +119,6 @@ pub fn hand_written_weights() -> Vec<Real> {
     rows
 }
 
-/// Today's table, as the tuner's starting point.
 #[must_use]
 pub fn initial_weights() -> Vec<Real> {
     WEIGHTS
@@ -133,8 +127,7 @@ pub fn initial_weights() -> Vec<Real> {
         .collect()
 }
 
-/// The sigmoid's scaling, a middlegame and an endgame value tapered by phase as the evaluation
-/// is. One number is the same scaling in every phase, which is what `From<f64>` builds.
+/// Tapered by phase as the evaluation is; `From<f64>` builds one number for every phase.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scale {
     pub mg: f64,
@@ -142,8 +135,8 @@ pub struct Scale {
 }
 
 impl Scale {
-    /// The scaling at `phase`, `PHASE_MAX` the middlegame and zero the endgame. Written as the
-    /// endgame plus a share of the difference, so equal halves give back exactly the one number.
+    /// The endgame plus a share of the difference, so equal halves give back exactly the one
+    /// number.
     #[must_use]
     pub fn at(self, phase: f64) -> f64 {
         self.eg + (self.mg - self.eg) * phase / f64::from(PHASE_MAX)
@@ -156,14 +149,12 @@ impl From<f64> for Scale {
     }
 }
 
-/// The predicted score of an evaluation `e` for scaling `k`: `1 / (1 + 10^(-k e / 400))`.
 #[must_use]
 pub fn sigmoid(e: f64, k: f64) -> f64 {
     1.0 / (1.0 + 10f64.powf(-k * e / 400.0))
 }
 
-/// `f` over the fixed split of `samples`, one result per part in order. The thread count changes
-/// how fast this runs and never what it returns.
+/// The thread count changes how fast this runs and never what it returns.
 fn over_chunks<T: Send>(
     samples: &[Sample],
     threads: usize,
@@ -193,7 +184,6 @@ fn over_chunks<T: Send>(
     out.into_iter().map(|(_, t)| t).collect()
 }
 
-/// The mean squared error between each result and the sigmoid of its evaluation.
 #[must_use]
 #[expect(
     clippy::cast_precision_loss,
@@ -212,7 +202,6 @@ pub fn loss(samples: &[Sample], weights: &[Real], k: impl Into<Scale>, threads: 
     parts.iter().sum::<f64>() / samples.len() as f64
 }
 
-/// The loss and its gradient with respect to every weight, in one pass.
 #[must_use]
 #[expect(
     clippy::cast_precision_loss,
@@ -235,7 +224,7 @@ pub fn gradient(
             let predicted = sigmoid(s.evaluate(weights), at);
             sum += (s.result - predicted).powi(2);
             let scale = at * std::f64::consts::LN_10 / 400.0;
-            // d(loss)/d(evaluation) for this sample, before the mean.
+            // d(loss)/d(evaluation), before the mean.
             let slope = 2.0 * (predicted - s.result) * predicted * (1.0 - predicted) * scale;
             let dmg = slope * s.phase / max;
             let deg = slope * (max - s.phase) / max;
@@ -263,8 +252,8 @@ pub fn gradient(
     (total / count, grad)
 }
 
-/// The `k` that minimises the loss under `weights`, by golden-section search on `(0, 10]`. The
-/// loss is unimodal in `k` for any data set with both wins and losses in it.
+/// Golden-section search on `(0, 10]`: the loss is unimodal in `k` for any data set with both wins
+/// and losses.
 #[must_use]
 pub fn fit_k(samples: &[Sample], weights: &[Real], threads: usize) -> f64 {
     let ratio = (5f64.sqrt() - 1.0) / 2.0;
@@ -281,9 +270,8 @@ pub fn fit_k(samples: &[Sample], weights: &[Real], threads: usize) -> f64 {
     f64::midpoint(lo, hi)
 }
 
-/// The middlegame and endgame scalings that minimise the loss under `weights`, each by
-/// golden-section search with the other held, alternated from the single [`fit_k`]. A fixed
-/// number of rounds, so a run repeats exactly.
+/// Each half by golden-section search with the other held, starting from [`fit_k`]. A fixed number
+/// of rounds, so a run repeats exactly.
 #[must_use]
 pub fn fit_phase_k(samples: &[Sample], weights: &[Real], threads: usize) -> Scale {
     const ROUNDS: usize = 8;
@@ -316,7 +304,7 @@ pub fn fit_phase_k(samples: &[Sample], weights: &[Real], threads: usize) -> Scal
     k
 }
 
-/// How a run moves the weights: Adam over the weights `tuned` marks, every other weight frozen.
+/// Adam over the weights `tuned` marks; every other weight is frozen.
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub iterations: usize,
@@ -324,16 +312,15 @@ pub struct Settings {
     pub threads: usize,
     /// Print the training loss every this many iterations; zero never.
     pub report: usize,
-    /// The ridge: this times the squared distance of each tuned half from the prior is added to
-    /// what the run minimises. Zero is no pull, and the reported losses never include it.
+    /// Times the squared distance of each tuned half from the prior. The reported losses never
+    /// include it.
     pub ridge: f64,
-    /// The ridge's centre, or the starting weights where there is none. The command line always
-    /// passes [`hand_written_weights`], since the starting table is the last fit.
+    /// The starting weights where `None`. The command line always passes [`hand_written_weights`],
+    /// since the starting table is the last fit.
     pub prior: Option<Vec<Real>>,
 }
 
-/// Runs Adam from `weights` for `settings.iterations` full-batch steps and returns the result. A
-/// frozen weight is returned exactly as given.
+/// Full-batch Adam; a frozen weight is returned exactly as given.
 pub fn tune(
     samples: &[Sample],
     weights: &[Real],
@@ -346,8 +333,7 @@ pub fn tune(
     tune_halves(samples, weights, &halves, k, settings, out)
 }
 
-/// [`tune`] with the middlegame and endgame half of each weight frozen or free separately. A frozen
-/// half is returned exactly as given.
+/// Each half frozen or free separately.
 pub fn tune_halves(
     samples: &[Sample],
     weights: &[Real],
@@ -416,9 +402,8 @@ fn pin_levels(w: &mut [Real], start: &[Real], tuned: &[[bool; 2]]) {
     }
 }
 
-/// How much of the training set each half of each weight rests on: the sum over positions of the
-/// coefficient's size times that half's share of the phase. A half resting on little data is fitted
-/// to a few positions, which is what `--min-weight` freezes.
+/// The sum over positions of the coefficient's size times that half's share of the phase. A half
+/// resting on little data is fitted to a few positions, which is what `--min-weight` freezes.
 #[must_use]
 pub fn weight_mass(samples: &[Sample], threads: usize) -> Vec<Real> {
     let max = f64::from(PHASE_MAX);
@@ -443,8 +428,7 @@ pub fn weight_mass(samples: &[Sample], threads: usize) -> Vec<Real> {
     total
 }
 
-/// Which weights a run may move: every weight whose name starts with one of `prefixes`, or every
-/// weight if there are none.
+/// Every weight if `prefixes` is empty.
 #[must_use]
 pub fn mask(prefixes: &[String]) -> Vec<bool> {
     (0..WEIGHT_COUNT)
@@ -455,11 +439,9 @@ pub fn mask(prefixes: &[String]) -> Vec<bool> {
         .collect()
 }
 
-/// Reads a data set, one [`parse_line`] per line.
-///
 /// # Errors
 ///
-/// The file cannot be read, or a line does not parse. The message names the line.
+/// The file cannot be read, or a line does not parse.
 pub fn read(path: &str) -> Result<Vec<Sample>, String> {
     let file = File::open(path).map_err(|e| format!("{path}: {e}"))?;
     let mut samples = Vec::new();
@@ -474,7 +456,7 @@ pub fn read(path: &str) -> Result<Vec<Sample>, String> {
     Ok(samples)
 }
 
-/// The command-line surface. The table is printed as `name mg eg`, every weight, rounded.
+/// The table is printed as `name mg eg`, every weight, rounded.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     match tune_from_args(args) {
@@ -490,8 +472,8 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-/// The training and holdout sets. A named holdout is used whole; otherwise every `holdout`-th
-/// position is held out, so the split is a function of the file alone.
+/// A named holdout is used whole; otherwise every `holdout`-th position, so the split is a function
+/// of the file alone.
 fn split(
     all: Vec<Sample>,
     holdout: usize,
@@ -511,9 +493,8 @@ fn split(
     Ok((train, held))
 }
 
-/// The halves a run moves: those `tuned` marks, less any resting on under its floor of the training
-/// set. A weight's floor is the last of `floors` whose prefix names it, else `min_weight`; returns
-/// the halves and one `sparse` line for each half frozen.
+/// A half resting on under its floor of the training set is frozen. A weight's floor is the last of
+/// `floors` whose prefix names it, else `min_weight`.
 #[must_use]
 pub fn freeze_sparse(
     tuned: &[bool],
@@ -543,7 +524,7 @@ pub fn freeze_sparse(
     (halves, lines)
 }
 
-/// The scaling a run holds fixed: the one given, or fitted once under the starting table.
+/// The one given, or fitted once under the starting table.
 fn choose_k(
     k: Option<f64>,
     phase_k: bool,
@@ -559,7 +540,6 @@ fn choose_k(
     })
 }
 
-/// What `cadence texel` was asked for.
 struct Args {
     data: String,
     holdout: usize,

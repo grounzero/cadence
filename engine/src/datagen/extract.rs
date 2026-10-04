@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Game records to labelled positions: `FEN | result` lines for `cadence texel`, split into a
-//! training set and a holdout by game number. A position is kept if its ply is inside the window
-//! and it is not in check, its move is not noisy and its search reported no mate.
+//! Split into training and holdout by game number. A position is kept if its ply is inside the
+//! window, it is not in check, its move is not noisy and its search reported no mate.
 
 use std::io::{BufRead, Write};
 
@@ -13,23 +12,19 @@ use super::record::Record;
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
 
-/// The first ply of the game proper that is kept, the random plies not counted.
+/// The random plies not counted.
 pub const FIRST_PLY: usize = 8;
 
-/// The last ply of the game proper that is kept.
 pub const LAST_PLY: usize = 240;
 
-/// Material balance is described from -`BALANCE_CAP` to +`BALANCE_CAP` pawns, the ends holding
-/// everything past them.
+/// In pawns; the ends hold everything past them.
 pub const BALANCE_CAP: i32 = 9;
 
-/// Game plies are described in bands of this many, the last band holding everything past it.
+/// The last band holds everything past it.
 pub const PLY_BAND: usize = 10;
 
-/// How many ply bands there are.
 pub const PLY_BANDS: usize = 30;
 
-/// What one extraction saw, and what it kept, by region of the game.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub games: u64,
@@ -41,27 +36,24 @@ pub struct Stats {
     pub mate: u64,
     pub train: u64,
     pub holdout: u64,
-    /// Games by [`Ending`], in the order `Ending::word` lists them.
+    /// In the order `Ending::word` lists them.
     pub endings: [u64; 5],
-    /// Games won by White, won by Black, and drawn.
+    /// White wins, Black wins, draws.
     pub outcomes: [u64; 3],
-    /// Kept positions by phase, `0..=PHASE_MAX`.
     pub phase: Vec<u64>,
-    /// Kept positions by White's material lead in pawns, offset by [`BALANCE_CAP`].
+    /// Offset by [`BALANCE_CAP`].
     pub balance: Vec<u64>,
-    /// Kept positions by ply of the game proper, the random plies not counted.
+    /// The random plies not counted.
     pub ply: Vec<u64>,
-    /// The longest game proper, in plies.
     pub longest: usize,
 }
 
-/// Reads records from `input`, writes each kept position to `train` or, for every `every`-th game
-/// by number, to `holdout`. Comment lines are copied to both, so the data sets carry the run's
-/// provenance.
+/// Every `every`-th game by number goes to `holdout`. Comment lines go to both, so the data sets
+/// carry the run's provenance.
 ///
 /// # Errors
 ///
-/// A record that does not parse, or an output that cannot be written. The message names the line.
+/// A record that does not parse, or an output that cannot be written.
 pub fn extract(
     input: impl BufRead,
     train: &mut dyn Write,
@@ -95,7 +87,6 @@ pub fn extract(
     Ok(stats)
 }
 
-/// Writes one game's kept positions to `out` and counts them into `stats`.
 fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io::Result<u64> {
     stats.games += 1;
     stats.refused += u64::from(record.refused);
@@ -135,7 +126,6 @@ fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io
     Ok(kept)
 }
 
-/// White's material lead in pawns, counting 1, 3, 3, 5 and 9.
 fn balance(board: &cadence_core::position::Board) -> i32 {
     let values = [
         (PieceType::Pawn, 1),
@@ -167,12 +157,9 @@ fn ending_index(ending: Ending) -> usize {
 }
 
 impl Stats {
-    /// The description, as text: counts first, then the three distributions, each band with its
-    /// share of the kept positions.
-    ///
     /// # Errors
     ///
-    /// If `out` cannot be written. Nothing is retried.
+    /// If `out` cannot be written.
     #[expect(
         clippy::cast_precision_loss,
         reason = "a position count is far below 2^52"

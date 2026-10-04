@@ -1,35 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus section 1: the standard perft suite.
-//!
-//! These six positions and their node counts have been published, recomputed
-//! and argued over for decades. The corpus recomputed them independently and
-//! agrees. If Cadence disagrees with section 1, Cadence is wrong, unlike
-//! sections 2 and 3,
-//! where the corpus is a live suspect.
-//!
-//! The tiers:
+//! If Cadence disagrees with these six positions, Cadence is wrong; in the DFRC sections the corpus
+//! is a live suspect. The deep tier takes 23.56 s for all six, release, M5 Max, measured
+//! 2026-08-25.
 //!
 //! ```text
-//! fast     depth <= 5   `cargo test`                        every PR
-//! nightly  depth >= 6   `cargo test --release -- --ignored`  scheduled
-//! gate     startpos d7 and Kiwipete d6, run once by hand:
-//!            cargo test --release --test standard_perft -- --ignored \
-//!                deep_perft_startpos deep_perft_kiwipete
+//! cargo test --release --test standard_perft -- --ignored deep_perft_startpos deep_perft_kiwipete
 //! ```
-//!
-//! The gate is a filter over the nightly tests rather than a tier of its own,
-//! so that no value is ever run twice in one nightly. It asserts the corpus
-//! values these tests already carry, so the command above is the whole of it
-//! and a reader wanting it has it. What a by-hand run adds over a nightly one
-//! is a date, a machine and a wall clock, which this repository does not
-//! record.
-//!
-//! The deep tier is cheap to run: 23.56 s for all six positions together,
-//! release, M5 Max, measured 2026-08-25. An earlier ignore label said
-//! "minutes to hours per position", which was the python-chess oracle's cost
-//! to *generate* these values, not this engine's cost to check them, and the
-//! mislabel kept the tier from being run when the corpus moved.
 
 mod support;
 

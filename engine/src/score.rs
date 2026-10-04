@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Scores: centipawns, the mate scale, and the bound between them. One integer type for every
-//! score the engine computes or prints.
+//! One integer type for every score the engine computes or prints.
 
 use cadence_core::MAX_PLY;
 
-/// A score in centipawns from the side to move's point of view, or a mate score: `MATE - ply`
-/// for the side delivering mate at `ply`, negated for the side receiving it.
+/// From the side to move's point of view; a mate is `MATE - ply` for the side delivering it,
+/// negated for the side receiving it.
 pub type Score = i32;
 
-/// Larger than any score. The initial window and the sentinel for "no score yet"; never a value
-/// the search returns.
+/// Never a value the search returns.
 pub const INFINITE: Score = 32_001;
 
-/// Mate at ply zero. Mate at ply `n` scores `MATE - n`, so a shorter mate scores higher and the
-/// root prefers it.
+/// A shorter mate scores higher, so the root prefers it.
 pub const MATE: Score = 32_000;
 
-/// `MAX_PLY` as a score, for the arithmetic below. The conversion is exact: `MAX_PLY` is 256
-/// and this is checked, so the `as` cannot wrap.
+/// `MAX_PLY` is 256 and checked, so the `as` cannot wrap.
 #[expect(clippy::cast_possible_wrap, reason = "MAX_PLY is 256; asserted below")]
 const MAX_PLY_SCORE: Score = MAX_PLY as Score;
 const _: () = assert!(MAX_PLY_SCORE as usize == MAX_PLY);
@@ -31,57 +27,48 @@ const fn ply_score(ply: usize) -> Score {
     ply as Score
 }
 
-/// The lowest score that is a mate: mate at `MAX_PLY`. Anything at or above this in magnitude
-/// is a mate score; anything below is an evaluation.
+/// At or above this in magnitude is a mate; below is an evaluation.
 pub const MATE_IN_MAX_PLY: Score = MATE - MAX_PLY_SCORE;
 
-/// Every static evaluation lies strictly inside `(-MAX_EVAL, MAX_EVAL)`, and `MAX_EVAL` lies
-/// strictly below `MATE_IN_MAX_PLY`, so no evaluation can be mistaken for a mate and no mate
-/// for an evaluation.
+/// Evaluations lie strictly inside `(-MAX_EVAL, MAX_EVAL)`, below `MATE_IN_MAX_PLY`, so neither
+/// scale can be mistaken for the other.
 pub const MAX_EVAL: Score = 30_000;
 const _: () = assert!(MAX_EVAL < MATE_IN_MAX_PLY);
 
 pub const DRAW: Score = 0;
 
-/// The score of the side to move being mated at `ply`.
-///
 /// # Panics
 ///
-/// If `ply` exceeds `MAX_PLY`, which no search can reach.
+/// If `ply` exceeds `MAX_PLY`.
 #[inline]
 #[must_use]
 pub const fn mated_in(ply: usize) -> Score {
     -MATE + ply_score(ply)
 }
 
-/// The score of the side to move delivering mate at `ply`.
-///
 /// # Panics
 ///
-/// If `ply` exceeds `MAX_PLY`, which no search can reach.
+/// If `ply` exceeds `MAX_PLY`.
 #[inline]
 #[must_use]
 pub const fn mate_in(ply: usize) -> Score {
     MATE - ply_score(ply)
 }
 
-/// Whether `score` is a mate score, for either side.
 #[inline]
 #[must_use]
 pub const fn is_mate(score: Score) -> bool {
     score >= MATE_IN_MAX_PLY || score <= -MATE_IN_MAX_PLY
 }
 
-/// The UCI `score` field: `cp <n>`, or `mate <n>` in moves, positive when the side to move
-/// mates, negative when it is mated. Mate in one move is `mate 1`; being mated next move is
-/// `mate -1`.
+/// Mate in moves, positive when the side to move mates: `mate 1` is mate next move, `mate -1` being
+/// mated next move.
 #[must_use]
 pub fn uci(score: Score) -> String {
     if is_mate(score) {
         let plies = MATE - score.abs();
-        // Plies to moves, rounding up: the side to move's own mating move is ply 1 and is move
-        // 1; the opponent being mated at ply 2 is still "mate 1" for the side that delivered
-        // it.
+        // Rounding up: the mating move is ply 1 and move 1, and ply 2's mate is still mate 1 for
+        // the side that delivered it.
         let moves = (plies + 1) / 2;
         if score > 0 {
             format!("mate {moves}")
@@ -97,13 +84,12 @@ pub fn uci(score: Score) -> String {
 // The transposition table's scale
 // ---------------------------------------------------------------------------
 
-/// A score on its way into the transposition table. Every other score in the engine counts mate
-/// from the **root**: `mated_in(ply)` is `-MATE + ply`, so the same forced mate has a different
-/// number at every ply it is seen from.
+/// Elsewhere mate counts from the root, so one forced mate has a different number at every ply;
+/// the table stores it relative to the node.
 ///
 /// # Panics
 ///
-/// If `ply` exceeds `MAX_PLY`, which no search can reach.
+/// If `ply` exceeds `MAX_PLY`.
 #[inline]
 #[must_use]
 #[expect(clippy::cast_possible_truncation, reason = "asserted in range below")]
@@ -115,18 +101,17 @@ pub const fn to_tt(score: Score, ply: usize) -> i16 {
     } else {
         score
     };
-    // A mate score at `ply` is at most `MATE - ply` in magnitude, so adding `ply` back cannot
-    // leave the range; an evaluation is bounded by MAX_EVAL. Neither can reach i16's ends.
+    // Adding `ply` back to a mate cannot leave the range, and an evaluation is bounded by
+    // `MAX_EVAL`, so neither reaches `i16`'s ends.
     debug_assert!(stored >= i16::MIN as Score && stored <= i16::MAX as Score);
     stored as i16
 }
 
-/// A score on its way out of the transposition table: the inverse of [`to_tt`] at the ply doing
-/// the reading.
+/// The inverse of [`to_tt`] at the reading ply.
 ///
 /// # Panics
 ///
-/// If `ply` exceeds `MAX_PLY`, which no search can reach.
+/// If `ply` exceeds `MAX_PLY`.
 #[inline]
 #[must_use]
 pub const fn from_tt(stored: i16, ply: usize) -> Score {

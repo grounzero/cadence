@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `chess960`. The corpus's twenty arrays are keyed by their numbers, so the decoder
-//! must reproduce each FEN byte for byte; the test-support decoder, written separately, is the
-//! second opinion over all 960 back ranks.
+//! The corpus's arrays must be reproduced byte for byte; the support decoder, written separately,
+//! is the second opinion over all 960.
 
 mod support;
 

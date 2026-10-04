@@ -1,31 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Positions where the side not to move is in check.
-//!
-//! No position reachable by legal play is like this, and `from_fen` accepts
-//! one anyway: it validates that a position is representable, not that it is
-//! reachable. GUIs, analysis tools and malformed input all produce them, so
-//! the contract this file gates is that **`core` is total on any position
-//! `from_fen` accepts**. The mechanism is that a king is never a target: no
-//! generated move can take one, so the invariant `king_square` rests on
-//! survives any sequence of `make_move`, and nothing downstream has to carry
-//! an `Option` for a square that is always there.
-//!
-//! **Nothing else in the tree gates this, by construction, and that is why
-//! the file exists.** The naive generator excludes the enemy king from its
-//! target sets, so `legal_vs_naive` compared two generators that disagreed
-//! on exactly this case and was never run anywhere they would; every walk
-//! seed is a legal position; `engine/tests/bench.rs` and
-//! `engine/tests/eval.rs` each assert that their own position list holds no
-//! such FEN. Every one of those is a fence around an input. This is the
-//! fence around the engine.
-//!
-//! Two families, because they break differently. In the first the side to
-//! move can capture the enemy king, which is what the target sets decide. In
-//! the second the kings are adjacent, and the enemy king also turns up in
-//! the attacker set that decides check: it is a "checker" that no evasion
-//! can answer, and with two real checkers beside it there are three, which a
-//! position reachable by legal play cannot have.
+//! `core` must be total on any position `from_fen` accepts, which a king never being a target
+//! guarantees. Every other gate fences an unreachable input out; this is the fence around the
+//! engine.
 
 mod support;
 
@@ -35,9 +12,8 @@ use cadence_core::{Move, generate_legal, generate_noisy, perft, perft_divide};
 use support::generative::Rng;
 use support::naive;
 
-/// Placements drawn per family. The unbiased generator puts the side not to
-/// move in check about a quarter of the time, so this yields ~500 of the
-/// first family, and the coverage assertions below hold it to that.
+/// The unbiased generator puts the opponent in check about a quarter of the time, so ~500 of the
+/// first family.
 const PLACEMENTS: usize = 2000;
 
 /// The two original crash reproductions and the touching-kings cases that
@@ -53,8 +29,6 @@ fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
 }
 
-/// Random placements in which the side not to move is in check, and the
-/// count drawn to find them.
 fn placements_with_the_opponent_in_check(seed: u64) -> Vec<String> {
     let mut rng = Rng::new(seed);
     (0..PLACEMENTS)
@@ -70,8 +44,6 @@ fn placements_with_touching_kings(seed: u64) -> Vec<String> {
         .collect()
 }
 
-/// Every position this file runs on: the reported reproductions, then both
-/// random families.
 fn corpus() -> Vec<String> {
     let mut out: Vec<String> = REPORTED.iter().map(|f| (*f).to_string()).collect();
     out.extend(placements_with_the_opponent_in_check(0x1E9A_2000_0000_0011));
@@ -79,12 +51,8 @@ fn corpus() -> Vec<String> {
     out
 }
 
-/// The move set holds no move onto a square occupied by a king.
-///
-/// Stated over the mailbox rather than over `Move::is_capture`, because it
-/// is the destination's occupant that decides whether `make_move` removes a
-/// king, and a generator that spelled the capture as a quiet move would be
-/// just as fatal.
+/// Over the mailbox, not `is_capture`: the destination's occupant decides whether `make_move`
+/// removes a king.
 fn assert_no_king_is_a_target(label: &str, b: &Board) {
     let kings = b.by_type(PieceType::King);
     let offending: Vec<Move> = generate_legal(b)
@@ -105,9 +73,7 @@ fn assert_no_king_is_a_target(label: &str, b: &Board) {
 
 #[test]
 fn the_placements_reach_both_families() {
-    // The coverage assertion, not an assumption: the tests below are
-    // vacuous if the generators stop producing the case, and a generator
-    // that quietly stopped is exactly how a fence gets rebuilt.
+    // The tests below are vacuous if the generators stop producing the case.
     let in_check = placements_with_the_opponent_in_check(0x1E9A_2000_0000_0011);
     assert!(
         in_check.len() >= 300,
@@ -130,10 +96,7 @@ fn the_placements_reach_both_families() {
         "adjacent kings check each other; the side to move is in check too"
     );
 
-    // Three or more pieces attacking the king of the side to move. A
-    // position reachable by legal play cannot have it -- a discovered check
-    // reveals at most one piece besides the mover -- and generation used to
-    // assert so outright, which arbitrary input refutes.
+    // Three or more checkers, impossible by legal play, which generation once asserted outright.
     let many: usize = corpus()
         .iter()
         .filter(|fen| board(fen).checkers().count() >= 3)
@@ -181,11 +144,8 @@ fn make_and_unmake_survive_the_whole_move_list() {
 
 #[test]
 fn perft_runs_where_the_opponent_is_in_check() {
-    // There is no external oracle for a position that cannot occur, so the
-    // assertion is what perft can check about itself: it returns, and the
-    // divide sums to the total. What is being gated is that the process is
-    // still alive to be asked -- `cadence perft` on the first of these dies
-    // with SIGABRT.
+    // No external oracle exists, so perft must return and its divide sum to the total; `cadence
+    // perft` once died with SIGABRT on the first of these.
     let mut with_moves = 0;
     for fen in REPORTED {
         let mut b = board(fen);
@@ -204,12 +164,8 @@ fn perft_runs_where_the_opponent_is_in_check() {
             with_moves += 1;
         }
     }
-    // Not every one of them has a move, and the exception is instructive
-    // rather than a failure: with the kings adjacent on a8 and b8 and Black
-    // to move, both squares Black's king could go to are attacked by White's
-    // and the third is White's king, which is not a target. Zero legal moves
-    // is the right answer there. What would be wrong is all of them being
-    // zero, which is what a mask applied too widely would look like.
+    // Kings adjacent on a8 and b8 with Black to move leave Black no legal move, correctly. All of
+    // them having none would be a mask applied too widely.
     assert_eq!(with_moves, REPORTED.len() - 1, "wrong count with a move");
 
     // Deeper, over the random families, so the recursion runs on positions

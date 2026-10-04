@@ -1,36 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The gate for `position`: make/unmake and the incremental key, on a walk
-//! that needs no move generator.
-//!
-//! The moves come from `support::naive::legal` (the obvious pseudo-legal
-//! generator plus a make/unmake king-safety filter), so this runs before
-//! `generate_legal` exists. `property_make_unmake` walks the same properties
-//! over the real generator once there is one; this is the version that can
-//! fail first, when the only thing that has been written is the position.
-//!
-//! At every node of every walk:
-//!
-//! - **`key() == recompute_key()`**, and `pawn_key()` likewise. Under
-//!   copy-make "unmake restores the key" is nearly tautological, so this is
-//!   the assertion with teeth: the key can only change where the board
-//!   changes, so a disagreement is the board moving where it should not.
-//! - **The key is a function of the position, not the path**: reparsing the
-//!   position's own FEN gives the same key. That is what the ep-key rule
-//!   is for, and it is checked directly as well: the ep key is mixed in only
-//!   when an enemy pawn can actually take.
-//! - **make then unmake restores the fingerprint** (mailbox, twelve piece
-//!   bitboards, occupancy, key, both FENs) for every legal move, not just
-//!   the one the walk plays.
-//! - **`DirtyPieces` replays the mailbox**: every subtraction finds its piece,
-//!   every addition finds an empty square (the mailbox form of "no value
-//!   leaves {0, 1}"), all subtractions before any addition, and the result
-//!   is the post-move mailbox. At most three entries; never zero.
-//! - **`gives_check(m)`** agrees with making the move and reading `checkers`.
-//! - **`can_castle`** agrees with the naive predicate written from the
-//!   corpus's rules, with both pieces lifted.
-//! - **Null move** flips the side, clears ep, keys correctly, and unmakes.
-//! - The clocks and the castling rights change by the rules.
+//! Runs on the naive generator, so it can fail before `generate_legal` exists. The key against a
+//! recomputation is the assertion with teeth: under copy-make, unmake restoring the key is nearly
+//! tautological.
 
 mod support;
 
@@ -52,7 +24,6 @@ fn mailbox(board: &Board) -> [Option<Piece>; 64] {
     out
 }
 
-/// Every per-node assertion, given the legal moves at this node.
 #[expect(
     clippy::too_many_lines,
     reason = "one node, every property, in reading order"
@@ -137,8 +108,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
         );
     }
 
-    // Every legal move: unmake restores, dirty replays, gives_check agrees,
-    // the clocks and rights follow the rules.
     let before = generate::fingerprint(board);
     let before_mailbox = mailbox(board);
     let before_half = board.halfmove_clock();
@@ -166,7 +135,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
         assert_eq!(board.key(), board.recompute_key(), "{ctx}: key after make");
         assert_eq!(board.state().captured, victim, "{ctx}: captured");
 
-        // Clocks.
         let irreversible = mover.piece_type() == PieceType::Pawn || m.is_capture();
         assert_eq!(
             board.halfmove_clock(),
@@ -247,7 +215,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
             v == after_mailbox,
             "{ctx}: delta does not reach the post-move mailbox"
         );
-        // Shape per move type.
         let expected_len = if m.is_castle() {
             let i = ci(us, m.castle_side());
             usize::from(layout.king_from[us.index()] != layout.king_to[i])
@@ -278,7 +245,6 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
         );
     }
 
-    // The null move.
     let dirty = board.make_null_move();
     assert!(dirty.is_empty(), "{label}: null move delta");
     assert_eq!(
@@ -298,10 +264,8 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
     assert_eq!(board.ply(), before_ply);
 }
 
-/// The walk's move choice: uniform, except that when a castle, an en passant
-/// or a promotion is available it is taken half the time. Those are the
-/// branches of `make_move` a uniform walk from a start array reaches rarely
-/// or never, and the point of the walk is to reach them.
+/// A castle, en passant or promotion is taken half the time when available: a uniform walk from a
+/// start array reaches those branches rarely or never.
 fn pick(legal: &[Move], rng: &mut generate::Rng) -> Move {
     let rare: Vec<Move> = legal
         .iter()
@@ -367,8 +331,7 @@ fn make_unmake_and_the_key_hold_at_every_node_of_the_walks() {
     assert!(kinds[4] > 0, "no double push played");
 }
 
-/// The ep rule by name: after e2e4 the ep square is set either way, but the
-/// key differs from the no-ep position only when a black pawn can take.
+/// After e2e4 the ep square is set either way, but the key differs only when a black pawn can take.
 #[test]
 fn en_passant_key_is_mixed_in_only_when_a_capture_is_available() {
     let e2e4 = Move::new_double_push(Square::E2, Square::E4);
@@ -440,10 +403,7 @@ fn en_passant_key_is_mixed_in_only_when_a_capture_is_available() {
     );
 }
 
-/// The degenerate castles by hand: king stays, rook stays, swap, rook onto
-/// the king's origin. Each must leave the right pieces on the right squares
-/// and unmake cleanly: the ordering rule "clear both origins before setting
-/// either destination" is what these exercise.
+/// These exercise clearing both origins before setting either destination.
 #[test]
 fn degenerate_castles_make_and_unmake_by_hand() {
     let cases = [

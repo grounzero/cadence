@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Corpus perft divide.
-//!
-//! A total says a node count is wrong. A divide says which root move it is
-//! wrong under, and repeating it down the tree reaches the offending position
-//! in a handful of steps rather than by reading move generation.
-//!
-//! At depth 1 and 2 the counts are uniform, so the value of these rows is the
-//! **root move list**: they localise a missing or spurious root move before
-//! any recursion is involved.
+//! A divide says which root move a wrong count sits under. At depths 1 and 2 the value is the root
+//! move list, which localises a missing or spurious root move before any recursion.
 
 mod support;
 
