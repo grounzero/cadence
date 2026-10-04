@@ -103,6 +103,7 @@ impl Search<'_> {
         if board.halfmove_clock() >= 100 {
             return DRAW;
         }
+        // Before any move is made: the history row read here and per move below is the mover's.
         let us = board.side_to_move();
         let killers = self.order(board, &mut legal, tt_move, us, ply);
 
@@ -133,6 +134,8 @@ impl Search<'_> {
             let gives_check = board.in_check();
             let ext = extension(gives_check, ply + 1, self.root_depth);
             let child = depth - 1 + ext;
+            // The first move gets the node's own window; every later one is asked the null-window
+            // question first.
             let mut score = if i == 0 {
                 -self.negamax(board, child, ply + 1, -beta, -alpha)
             } else {
@@ -166,7 +169,8 @@ impl Search<'_> {
                 }
             }
         }
-        // Nothing an aborted search computed is stored: the loop returns before this.
+        // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
+        // aborted search computed is stored: the loop returns before this.
         let bound = bound_for(best, original_alpha, beta);
         self.tt.store(
             key,

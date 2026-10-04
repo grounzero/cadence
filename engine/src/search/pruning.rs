@@ -34,7 +34,8 @@ pub fn improving(evals: &[Option<Score>], ply: usize) -> bool {
 }
 
 /// Above eight the reduction has almost nothing left to delete: 24,000 such moves against 13.3
-/// million inside, over the bench.
+/// million inside, over the bench. From depth four up the reduction already searches 94% of the
+/// moves this rule gives up.
 const LMP_DEPTH: u32 = 8;
 
 /// Thousandths of a move per ply squared. The weak end is the large one: at zero every quiet move

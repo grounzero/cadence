@@ -12,6 +12,7 @@ use crate::score::{DRAW, INFINITE, Score, mated_in};
 use crate::see;
 
 impl Search<'_> {
+    /// Stands pat only out of check: a side in check must answer it.
     pub(super) fn quiesce(
         &mut self,
         board: &mut Position,
