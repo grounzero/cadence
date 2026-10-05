@@ -9,6 +9,7 @@ pub mod corrhist;
 pub mod datagen;
 pub mod eval;
 pub mod history;
+pub mod kpk;
 pub mod level;
 pub mod perft;
 pub mod picker;

@@ -8,7 +8,9 @@ mod support;
 
 use cadence_core::position::Board;
 use cadence_core::{CastlingRights, Colour, FenStyle, PieceType, START_FEN, generate_legal};
-use cadence_engine::eval::{PHASE_MAX, WEIGHTS, evaluate, phase, trace};
+use cadence_engine::eval::{
+    PHASE_MAX, RULE_SCALES, Rule, SCALE_FULL, WEIGHTS, evaluate, phase, rule, trace,
+};
 use cadence_engine::score::{MAX_EVAL, Score};
 use support::{Rng, mirror, mirror_fen};
 
@@ -346,7 +348,8 @@ fn from_trace(b: &Board) -> i64 {
     }
     let p = i64::from(t.phase);
     let max = i64::from(PHASE_MAX);
-    (mg * p + eg * (max - p)) / max
+    let scale = i64::from(t.rule.map_or(SCALE_FULL, |r| RULE_SCALES[r.index()]));
+    (mg * p + eg * (max - p)) * scale / (max * i64::from(SCALE_FULL))
 }
 
 #[test]
@@ -663,5 +666,221 @@ fn every_king_has_exactly_one_count_in_each_king_safety_table() {
     }
     assert_eq!(weight_name(ATTACKERS), "attackers.0");
     assert_eq!(weight_name(SHIELD), "shield.0");
-    assert_eq!(weight_name(WEIGHT_COUNT - 1), "shield.4");
+    assert_eq!(weight_name(WEIGHT_COUNT - 1), "tempo");
+}
+
+// Rook files, the bishop pair and tempo
+// ---------------------------------------------------------------------------
+
+/// Square by square through `piece_at`, so no file mask or colour mask is shared with the walk.
+fn recount(b: &Board) -> [i32; 4] {
+    let (mut open, mut semi, mut pair) = (0, 0, 0);
+    for c in Colour::ALL {
+        let sign = if c == Colour::White { 1 } else { -1 };
+        let mut colours = [false; 2];
+        for sq in cadence_core::Square::all() {
+            match b.piece_at(sq) {
+                Some(p) if p.colour() == c && p.piece_type() == PieceType::Rook => {
+                    let on_file = |own: bool| {
+                        cadence_core::Square::all().any(|s| {
+                            s.file() == sq.file()
+                                && b.piece_at(s).is_some_and(|q| {
+                                    q.piece_type() == PieceType::Pawn && (q.colour() == c) == own
+                                })
+                        })
+                    };
+                    if !on_file(true) {
+                        if on_file(false) {
+                            semi += sign;
+                        } else {
+                            open += sign;
+                        }
+                    }
+                }
+                Some(p) if p.colour() == c && p.piece_type() == PieceType::Bishop => {
+                    colours[(sq.file().index() + sq.rank().index()) % 2] = true;
+                }
+                _ => {}
+            }
+        }
+        if colours[0] && colours[1] {
+            pair += sign;
+        }
+    }
+    let tempo = if b.side_to_move() == Colour::White {
+        1
+    } else {
+        -1
+    };
+    [open, semi, pair, tempo]
+}
+
+fn traced(b: &Board) -> [i32; 4] {
+    use cadence_engine::eval::{BISHOP_PAIR, ROOK_FILE, TEMPO};
+    let t = trace(b);
+    [
+        t.coefficients[ROOK_FILE],
+        t.coefficients[ROOK_FILE + 1],
+        t.coefficients[BISHOP_PAIR],
+        t.coefficients[TEMPO],
+    ]
+}
+
+#[test]
+fn rook_files_the_pair_and_tempo_count_what_they_name() {
+    let (mut open, mut semi, mut pair, mut dfrc) = (0, 0, 0, 0);
+    for b in &positions() {
+        let expected = recount(b);
+        assert_eq!(traced(b), expected, "{}", b.to_fen(FenStyle::Shredder));
+        open += usize::from(expected[0] != 0);
+        semi += usize::from(expected[1] != 0);
+        pair += usize::from(expected[2] != 0);
+        dfrc += usize::from(is_dfrc(b) && expected[..3].iter().any(|c| *c != 0));
+    }
+    assert!(
+        open >= 500 && semi >= 500 && pair >= 500,
+        "{open} {semi} {pair}"
+    );
+    assert!(dfrc >= 100, "only {dfrc} DFRC positions with a term live");
+}
+
+#[test]
+fn each_rook_and_each_pair_is_counted_by_hand() {
+    let at = |fen: &str| traced(&board(fen));
+    // A file with no pawn, two rooks on it, and the other side's rook behind its own pawn.
+    assert_eq!(at("r3k3/p7/8/8/8/8/1PPPPPPP/R3K3 w - - 0 1"), [0, 1, 0, 1]);
+    assert_eq!(at("4k3/8/8/8/8/R7/1P6/R3K3 b - - 0 1"), [2, 0, 0, -1]);
+    assert_eq!(at("3rk3/3p4/8/8/8/8/PPP1PPPP/3RK3 w - - 0 1"), [0, 1, 0, 1]);
+    assert_eq!(at("4k3/R7/8/8/8/8/P7/4K3 w - - 0 1"), [0, 0, 0, 1]);
+    // A pair needs both colours: two light-squared bishops are not one.
+    assert_eq!(at("2b1kb2/8/8/8/8/8/8/2B1KB2 w - - 0 1"), [0, 0, 0, 1]);
+    assert_eq!(at("4k3/8/8/8/8/8/8/1B1BK3 w - - 0 1"), [0, 0, 0, 1]);
+    assert_eq!(at("4k3/8/8/8/8/8/8/2B1KB2 b - - 0 1"), [0, 0, 1, -1]);
+}
+
+/// The same position with the other side to move, where that is legal.
+fn other_side_to_move(b: &Board) -> Option<Board> {
+    if b.in_check() {
+        return None;
+    }
+    let fen = b.to_fen(FenStyle::Shredder);
+    let mut fields: Vec<&str> = fen.split_whitespace().collect();
+    fields[1] = if fields[1] == "w" { "b" } else { "w" };
+    fields[3] = "-";
+    Board::from_fen(&fields.join(" ")).ok()
+}
+
+#[test]
+fn the_side_to_move_reaches_the_evaluation_only_through_tempo() {
+    // Both symmetry gates flip the side to move with the colours, so neither sees a term that
+    // depends on it; this changes the side to move alone.
+    use cadence_engine::eval::{TEMPO, WEIGHT_COUNT};
+    let mut checked = 0;
+    for b in &positions() {
+        let Some(other) = other_side_to_move(b) else {
+            continue;
+        };
+        let (t, o) = (trace(b), trace(&other));
+        let fen = b.to_fen(FenStyle::Shredder);
+        assert_eq!(t.phase, o.phase, "{fen}");
+        for i in (0..WEIGHT_COUNT).filter(|&i| i != TEMPO) {
+            assert_eq!(t.coefficients[i], o.coefficients[i], "{fen} weight {i}");
+        }
+        let mover = if b.side_to_move() == Colour::White {
+            1
+        } else {
+            -1
+        };
+        assert_eq!(t.coefficients[TEMPO], mover, "{fen}");
+        assert_eq!(o.coefficients[TEMPO], -mover, "{fen}");
+        assert_eq!(from_trace(b), i64::from(white(b)), "{fen}");
+        assert_eq!(from_trace(&other), i64::from(white(&other)), "{fen}");
+        checked += 1;
+    }
+    assert!(checked >= 5000, "only {checked} positions");
+}
+
+// The rules
+// ---------------------------------------------------------------------------
+
+/// The FEN, the rule it should read, and the same with files a and h exchanged.
+fn file_mirror(fen: &str) -> String {
+    let (placement, rest) = fen.split_once(' ').expect("fen");
+    let rows: Vec<String> = placement
+        .split('/')
+        .map(|row| {
+            let mut cells = Vec::new();
+            for c in row.chars() {
+                match c.to_digit(10) {
+                    Some(n) => cells.extend(std::iter::repeat_n('1', n as usize)),
+                    None => cells.push(c),
+                }
+            }
+            cells.reverse();
+            let mut out = String::new();
+            let mut empty = 0;
+            for c in cells {
+                if c == '1' {
+                    empty += 1;
+                } else {
+                    if empty > 0 {
+                        out.push_str(&empty.to_string());
+                        empty = 0;
+                    }
+                    out.push(c);
+                }
+            }
+            if empty > 0 {
+                out.push_str(&empty.to_string());
+            }
+            out
+        })
+        .collect();
+    format!("{} {rest}", rows.join("/"))
+}
+
+#[test]
+fn each_rule_reads_its_positions_and_no_others() {
+    let cases: &[(&str, Option<Rule>)] = &[
+        // The defending king in the rook pawn's corner, either side to move.
+        ("k7/8/1K6/P7/8/8/8/8 w - - 0 1", Some(Rule::DrawnKpk)),
+        ("k7/8/1K6/P7/8/8/8/8 b - - 0 1", Some(Rule::DrawnKpk)),
+        // The attacking king on a key square: a win, so no rule.
+        ("4k3/8/4K3/8/4P3/8/8/8 w - - 0 1", None),
+        ("4k3/8/4K3/8/4P3/8/8/8 b - - 0 1", None),
+        // A dark-squared bishop cannot cover a8, and the defending king is on it or beside it.
+        ("k7/8/8/P7/8/8/8/2B1K3 w - - 0 1", Some(Rule::WrongBishop)),
+        ("8/1k6/8/P7/P7/8/8/2B1K3 b - - 0 1", Some(Rule::WrongBishop)),
+        ("k7/8/8/P7/8/8/3B4/2B1K3 w - - 0 1", Some(Rule::WrongBishop)),
+        // The right bishop, a king too far, a second file, a defending pawn, or a knight.
+        ("k7/8/8/P7/8/8/8/3BK3 w - - 0 1", None),
+        ("4k3/8/8/P7/8/8/8/2B1K3 w - - 0 1", None),
+        ("k7/8/8/P7/1P6/8/8/2B1K3 w - - 0 1", None),
+        ("k7/7p/8/P7/8/8/8/2B1K3 w - - 0 1", None),
+        ("k7/8/8/P7/8/8/8/2BNK3 w - - 0 1", None),
+        // A bishop pair always holds the right colour.
+        ("k7/8/8/P7/8/8/8/2BBK3 w - - 0 1", None),
+    ];
+    for &(fen, want) in cases {
+        for f in [fen.to_string(), file_mirror(fen)] {
+            assert_eq!(rule(&board(&f)), want, "{f}");
+            assert_eq!(rule(&support::mirror(&board(&f))), want, "mirror of {f}");
+        }
+    }
+}
+
+#[test]
+fn a_recognised_position_is_evaluated_through_its_scale() {
+    // The scales are full until a fit sets them, so recognising a position changes nothing yet.
+    assert_eq!(RULE_SCALES, [SCALE_FULL; Rule::ALL.len()]);
+    for fen in [
+        "k7/8/1K6/P7/8/8/8/8 w - - 0 1",
+        "8/1k6/8/P7/P7/8/8/2B1K3 b - - 0 1",
+        "7k/8/8/7P/8/8/8/3BK3 w - - 0 1",
+    ] {
+        for b in [board(fen), support::mirror(&board(fen))] {
+            assert!(trace(&b).rule.is_some(), "{fen}");
+            assert_eq!(from_trace(&b), i64::from(white(&b)), "{fen}");
+        }
+    }
 }
