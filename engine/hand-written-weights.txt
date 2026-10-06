@@ -477,7 +477,3 @@ shield.1 0 0
 shield.2 0 0
 shield.3 0 0
 shield.4 0 0
-rookfile.open 0 0
-rookfile.semiopen 0 0
-bishoppair 0 0
-tempo 0 0

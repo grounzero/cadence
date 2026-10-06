@@ -12,7 +12,7 @@ use cadence_core::position::Board;
 
 use crate::eval::{
     self, ATTACKERS, ATTACKERS_LEN, MOBILITY, MOBILITY_LEN, MOBILITY_OFFSET, PHASE_MAX, PST,
-    RULE_SCALES, Rule, SCALE_FULL, SHIELD, SHIELD_LEN, WEIGHT_COUNT, WEIGHTS,
+    SHIELD, SHIELD_LEN, WEIGHT_COUNT, WEIGHTS,
 };
 
 /// Fixed whatever the thread count: floating-point addition is not associative, so a fixed split
@@ -22,14 +22,11 @@ const CHUNKS: usize = 64;
 /// Middlegame, endgame.
 pub type Real = [f64; 2];
 
-/// Only the nonzero trace coefficients, the phase, the rule and its scale, and the result from
-/// White's point of view.
+/// Only the nonzero trace coefficients, the phase, and the result from White's point of view.
 #[derive(Clone, Debug)]
 pub struct Sample {
     coefficients: Vec<(u16, i16)>,
     phase: f64,
-    rule: Option<Rule>,
-    scale: f64,
     result: f64,
 }
 
@@ -48,21 +45,7 @@ impl Sample {
         Sample {
             coefficients,
             phase: f64::from(trace.phase),
-            rule: trace.rule,
-            scale: f64::from(trace.rule.map_or(SCALE_FULL, |r| RULE_SCALES[r.index()])),
             result,
-        }
-    }
-
-    #[must_use]
-    pub fn rule(&self) -> Option<Rule> {
-        self.rule
-    }
-
-    /// What a fit would read with `rule` at `scale` over [`SCALE_FULL`], the table left as it is.
-    pub fn set_scale(&mut self, rule: Rule, scale: i32) {
-        if self.rule == Some(rule) {
-            self.scale = f64::from(scale);
         }
     }
 
@@ -77,9 +60,7 @@ impl Sample {
             eg += f64::from(c) * w[1];
         }
         let max = f64::from(PHASE_MAX);
-        // The scale before the one division, as the search has it; at full scale the result is
-        // bit for bit what dividing by the phase alone gives.
-        (mg * self.phase + eg * (max - self.phase)) * self.scale / (max * f64::from(SCALE_FULL))
+        (mg * self.phase + eg * (max - self.phase)) / max
     }
 }
 
@@ -235,7 +216,6 @@ pub fn gradient(
     let count = samples.len().max(1) as f64;
     let k = k.into();
     let max = f64::from(PHASE_MAX);
-    let full = f64::from(SCALE_FULL);
     let parts = over_chunks(samples, threads, &|part: &[Sample]| {
         let mut sum = 0.0;
         let mut grad = vec![[0.0; 2]; weights.len()];
@@ -246,8 +226,8 @@ pub fn gradient(
             let scale = at * std::f64::consts::LN_10 / 400.0;
             // d(loss)/d(evaluation), before the mean.
             let slope = 2.0 * (predicted - s.result) * predicted * (1.0 - predicted) * scale;
-            let dmg = slope * s.phase * s.scale / (max * full);
-            let deg = slope * (max - s.phase) * s.scale / (max * full);
+            let dmg = slope * s.phase / max;
+            let deg = slope * (max - s.phase) / max;
             for &(i, c) in &s.coefficients {
                 let entry = &mut grad[usize::from(i)];
                 entry[0] += f64::from(c) * dmg;
@@ -485,8 +465,7 @@ pub fn run(args: &[String]) -> ExitCode {
             eprintln!("cadence texel: {e}");
             eprintln!(
                 "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
-                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--min-weight-for PREFIX W]... [--ridge L] [--tune PREFIX]... \
-                 [--rule-scale RULE S]..."
+                 [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--min-weight-for PREFIX W]... [--ridge L] [--tune PREFIX]..."
             );
             ExitCode::from(2)
         }
@@ -570,7 +549,6 @@ struct Args {
     min_weight: f64,
     floors: Vec<(String, f64)>,
     prefixes: Vec<String>,
-    rule_scales: Vec<(Rule, i32)>,
     settings: Settings,
 }
 
@@ -583,7 +561,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut min_weight = 0.0;
     let mut floors = Vec::new();
     let mut prefixes = Vec::new();
-    let mut rule_scales = Vec::new();
     let mut settings = Settings {
         iterations: 1000,
         rate: 1.0,
@@ -620,19 +597,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             }
             "--ridge" => settings.ridge = number(arg, value(arg)?)?,
             "--tune" => prefixes.push(value(arg)?),
-            "--rule-scale" => {
-                let name = value(arg)?;
-                let rule = Rule::ALL
-                    .into_iter()
-                    .find(|r| r.name() == name)
-                    .ok_or_else(|| format!("no rule named {name}"))?;
-                let scale = value(arg)?
-                    .parse::<i32>()
-                    .ok()
-                    .filter(|s| (0..=SCALE_FULL).contains(s))
-                    .ok_or_else(|| format!("a rule's scale is 0 to {SCALE_FULL}"))?;
-                rule_scales.push((rule, scale));
-            }
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             path if data.is_none() => data = Some(path.to_string()),
             extra => return Err(format!("unexpected argument {extra}")),
@@ -647,7 +611,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         min_weight,
         floors,
         prefixes,
-        rule_scales,
         settings,
     })
 }
@@ -662,15 +625,9 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         min_weight,
         floors,
         prefixes,
-        rule_scales,
         settings,
     } = parse_args(args)?;
-    let (mut train, mut held) = split(read(&data)?, holdout, holdout_file.as_deref())?;
-    for &(rule, scale) in &rule_scales {
-        for s in train.iter_mut().chain(held.iter_mut()) {
-            s.set_scale(rule, scale);
-        }
-    }
+    let (train, held) = split(read(&data)?, holdout, holdout_file.as_deref())?;
     if train.is_empty() {
         return Err("no training positions".to_string());
     }
@@ -700,20 +657,6 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         "tuned {} of {WEIGHT_COUNT} weights",
         tuned.iter().filter(|t| **t).count()
     );
-    for rule in Rule::ALL {
-        let count = |set: &[Sample]| set.iter().filter(|s| s.rule() == Some(rule)).count();
-        let scale = rule_scales
-            .iter()
-            .rfind(|(r, _)| *r == rule)
-            .map_or(RULE_SCALES[rule.index()], |&(_, s)| s);
-        let _ = writeln!(
-            out,
-            "rule {} train {} holdout {} scale {scale}",
-            rule.name(),
-            count(&train),
-            count(&held)
-        );
-    }
     let _ = if phase_k {
         writeln!(out, "k mg {:.6} eg {:.6}", k.mg, k.eg)
     } else {

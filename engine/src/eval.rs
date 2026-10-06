@@ -4,10 +4,8 @@
 //! Black, so a position and its mirror differ only in sign.
 
 use cadence_core::position::Board;
-use cadence_core::types::{File, Rank};
 use cadence_core::{Bitboard, Colour, PieceType, Square, attacks};
 
-use crate::kpk;
 use crate::score::{MAX_EVAL, Score};
 
 /// The start position's minor and major pieces; zero is a pawn ending.
@@ -74,18 +72,7 @@ pub const SHIELD: usize = ATTACKERS + ATTACKERS_LEN;
 /// Four or more share the last, for `ATTACKERS_LEN`'s reason.
 pub const SHIELD_LEN: usize = 5;
 
-/// Per rook: on a file holding no pawn, then on one holding only the other side's.
-pub const ROOK_FILE: usize = SHIELD + SHIELD_LEN;
-
-pub const ROOK_FILE_LEN: usize = 2;
-
-/// A bishop on each colour, so two on one colour after a promotion are not a pair.
-pub const BISHOP_PAIR: usize = ROOK_FILE + ROOK_FILE_LEN;
-
-/// The only weight whose coefficient depends on whose move it is: one for the side to move.
-pub const TEMPO: usize = BISHOP_PAIR + 1;
-
-pub const WEIGHT_COUNT: usize = TEMPO + 1;
+pub const WEIGHT_COUNT: usize = SHIELD + SHIELD_LEN;
 
 /// Fitted by `cadence texel` to self-play results; a weight carries no reason beyond the data.
 #[rustfmt::skip]
@@ -165,10 +152,6 @@ pub static WEIGHTS: [Pair; WEIGHT_COUNT] = [
     // 0 to 4, four or more sharing the last of each
     p( -41,    0), p( -40,    6), p( -10,  -23), p(  32,    2), p(  60,   15),
     p( -48,   28), p( -16,    8), p(   8,  -10), p(  33,  -26), p(  22,    0),
-    // not yet fitted: a rook on an open file, then a semi-open one; the bishop pair; tempo
-    p(   0,    0), p(   0,    0),
-    p(   0,    0),
-    p(   0,    0),
 ];
 
 const fn p(mg: i32, eg: i32) -> Pair {
@@ -184,12 +167,6 @@ pub fn weight_name(index: usize) -> String {
     assert!(index < WEIGHT_COUNT, "weight {index} of {WEIGHT_COUNT}");
     if index < PST {
         format!("material.{}", NAMES[index - MATERIAL])
-    } else if index >= TEMPO {
-        "tempo".to_string()
-    } else if index >= BISHOP_PAIR {
-        "bishoppair".to_string()
-    } else if index >= ROOK_FILE {
-        ["rookfile.open", "rookfile.semiopen"][index - ROOK_FILE].to_string()
     } else if index >= SHIELD {
         format!("shield.{}", index - SHIELD)
     } else if index >= ATTACKERS {
@@ -247,12 +224,11 @@ impl Sink for Sum {
 }
 
 /// The evaluation before its clamp is these coefficients dotted with [`WEIGHTS`], blended by
-/// `phase`, then scaled by `rule`'s entry in [`RULE_SCALES`].
+/// `phase`.
 #[derive(Clone, Debug)]
 pub struct Trace {
     pub coefficients: [i32; WEIGHT_COUNT],
     pub phase: i32,
-    pub rule: Option<Rule>,
 }
 
 impl Sink for Trace {
@@ -285,14 +261,6 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
     piece_terms(board, Colour::Black, -1, sink);
     shield(board, Colour::White, 1, sink);
     shield(board, Colour::Black, -1, sink);
-    rooks_and_bishops(board, Colour::White, 1, sink);
-    rooks_and_bishops(board, Colour::Black, -1, sink);
-    // Inside the walk and not added after `evaluate`'s flip, or the trace could not see it.
-    let mover = match board.side_to_move() {
-        Colour::White => 1,
-        Colour::Black => -1,
-    };
-    sink.add(TEMPO, mover);
     phase.min(PHASE_MAX)
 }
 
@@ -452,24 +420,6 @@ const fn king_zones() -> [[Bitboard; 64]; 2] {
     out
 }
 
-const DARK: Bitboard = Bitboard(0xAA55_AA55_AA55_AA55);
-
-#[inline(always)]
-fn rooks_and_bishops<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
-    let own = board.pieces(colour, PieceType::Pawn);
-    let pawns = board.by_type(PieceType::Pawn);
-    for sq in board.pieces(colour, PieceType::Rook) {
-        let file = sq.file().bb();
-        if (own & file).is_empty() {
-            sink.add(ROOK_FILE + usize::from((pawns & file).any()), sign);
-        }
-    }
-    let bishops = board.pieces(colour, PieceType::Bishop);
-    if (bishops & DARK).any() && (bishops & !DARK).any() {
-        sink.add(BISHOP_PAIR, sign);
-    }
-}
-
 #[inline(always)]
 fn shield<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
     let king = board.king_square(colour);
@@ -478,123 +428,14 @@ fn shield<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
     sink.add(SHIELD + count.min(SHIELD_LEN - 1), sign);
 }
 
-// --- rules -----------------------------------------------------------------
-
-/// A recognised position's evaluation is its rule's scale over this.
-pub const SCALE_FULL: i32 = 64;
-
-/// A draw the table cannot see, recognised from the board and applied as a scale.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rule {
-    /// A king and pawn against a king, held by the defending king.
-    DrawnKpk,
-    /// Bishops and pawns against a bare king, every pawn on one rook file, no bishop of its
-    /// promotion square's colour, and the defending king on that square or beside it.
-    WrongBishop,
-}
-
-impl Rule {
-    pub const ALL: [Rule; 2] = [Rule::DrawnKpk, Rule::WrongBishop];
-
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self as usize
-    }
-
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Rule::DrawnKpk => "kpk",
-            Rule::WrongBishop => "wrongbishop",
-        }
-    }
-}
-
-/// Over [`SCALE_FULL`], by [`Rule::index`]; at full a rule changes no evaluation.
-pub const RULE_SCALES: [i32; 2] = [SCALE_FULL, SCALE_FULL];
-
-/// Neither rule holds with a knight, rook or queen on the board, the common exit.
-#[must_use]
-pub fn rule(board: &Board) -> Option<Rule> {
-    let others = board.by_type(PieceType::Knight)
-        | board.by_type(PieceType::Rook)
-        | board.by_type(PieceType::Queen);
-    if others.any() {
-        return None;
-    }
-    if board.by_type(PieceType::Bishop).is_empty() {
-        let lone = board.occupied().count() == 3 && board.by_type(PieceType::Pawn).count() == 1;
-        return (lone && !kpk_wins(board)).then_some(Rule::DrawnKpk);
-    }
-    Colour::ALL
-        .into_iter()
-        .any(|strong| wrong_bishop(board, strong))
-        .then_some(Rule::WrongBishop)
-}
-
-/// The pawn's side made White and its pawn moved to files a to d, as the table is kept.
-fn kpk_wins(board: &Board) -> bool {
-    let strong = if board.pieces(Colour::White, PieceType::Pawn).any() {
-        Colour::White
-    } else {
-        Colour::Black
-    };
-    let Some(pawn) = board.by_type(PieceType::Pawn).lsb() else {
-        return false;
-    };
-    let mut squares = [
-        board.king_square(strong),
-        board.king_square(strong.flip()),
-        pawn,
-    ];
-    if strong == Colour::Black {
-        squares = squares.map(Square::flip_vertical);
-    }
-    if squares[2].file().index() >= 4 {
-        squares = squares.map(|sq| Square::new(sq.index() as u8 ^ 7));
-    }
-    kpk::wins(
-        board.side_to_move() == strong,
-        squares[0],
-        squares[1],
-        squares[2],
-    )
-}
-
-fn wrong_bishop(board: &Board, strong: Colour) -> bool {
-    let weak = strong.flip();
-    let pawns = board.pieces(strong, PieceType::Pawn);
-    if board.by_colour(weak).count() != 1 || pawns.is_empty() {
-        return false;
-    }
-    let file = if (pawns & !Bitboard::FILE_A).is_empty() {
-        File::new(0)
-    } else if (pawns & !Bitboard::FILE_H).is_empty() {
-        File::new(7)
-    } else {
-        return false;
-    };
-    let last = match strong {
-        Colour::White => Rank::new(7),
-        Colour::Black => Rank::new(0),
-    };
-    let corner = Square::from_file_rank(file, last);
-    let right = if DARK.contains(corner) { DARK } else { !DARK };
-    (board.pieces(strong, PieceType::Bishop) & right).is_empty()
-        && attacks::king_attacks(corner)
-            .with(corner)
-            .contains(board.king_square(weak))
-}
-
 /// From the side to move's point of view, strictly inside `(-MAX_EVAL, MAX_EVAL)`.
 #[must_use]
 pub fn evaluate(board: &Board) -> Score {
     let mut sum = Sum { mg: 0, eg: 0 };
     let phase = terms(board, &mut sum);
-    let scale = rule(board).map_or(SCALE_FULL, |r| RULE_SCALES[r.index()]);
-    // One truncating division, so a scaled position stays symmetric under negation and the tuner
-    // can reproduce it exactly.
-    let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) * scale / (PHASE_MAX * SCALE_FULL);
+    // Truncating division: symmetric under negation, so the mirror of a position evaluates to
+    // the exact negative.
+    let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
     // `from_fen` accepts sixty queens, which must still not reach the mate scale.
     let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
     match board.side_to_move() {
@@ -609,7 +450,6 @@ pub fn trace(board: &Board) -> Trace {
     let mut t = Trace {
         coefficients: [0; WEIGHT_COUNT],
         phase: 0,
-        rule: rule(board),
     };
     t.phase = terms(board, &mut t);
     t
