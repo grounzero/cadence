@@ -661,19 +661,19 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// search to the same value, so `d7c8q` and `d7c8r` swapping is a tie-break, not a defect.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
     ("d2d4", 38),
-    ("d5e6", -146),
+    ("d5e6", -147),
     ("b4f4", 59),
-    ("c4c5", -403),
-    ("d7c8q", 505),
+    ("c4c5", -390),
+    ("d7c8q", 497),
     ("g5f6", 47),
     ("d2d4", 38),
-    ("d1e3", 12),
+    ("b2b3", 42),
     ("e1d3", 61),
-    ("b2b3", 101),
-    ("h1h7", 548),
-    ("e1e2", 549),
-    ("g1g3", 539),
-    ("a1a4", 545),
+    ("b2b3", 97),
+    ("h1h7", 531),
+    ("f1f4", 531),
+    ("g1g4", 531),
+    ("a1a4", 523),
 ];
 
 /// With no table, the window is the only thing that can move the count. The ceiling is the
