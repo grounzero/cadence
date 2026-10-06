@@ -25,7 +25,7 @@ impl Search<'_> {
         if self.out_of_time() {
             return DRAW;
         }
-        if board.is_repetition() {
+        if board.is_repetition() || board.is_insufficient_material() {
             return DRAW;
         }
         if ply >= MAX_PLY {

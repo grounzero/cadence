@@ -54,6 +54,8 @@ fn gate_fens() -> Vec<String> {
     let arrays = support::dfrc_arrays();
     out.push(arrays.first().expect("a DFRC array").2.clone());
     out.push(arrays.last().expect("a DFRC array").2.clone());
+    // A position neither side can win ends every line at once, so a table has nothing to save.
+    out.retain(|f| !support::position(f).is_insufficient_material());
     out
 }
 
