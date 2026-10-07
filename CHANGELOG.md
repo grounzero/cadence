@@ -16,6 +16,14 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+### Fixed
+
+- Setting up a position from FEN now refuses an en passant square that no
+  double pawn push could have left, and a pawn on the first or eighth rank.
+  Either was accepted before, and the first could leave the board
+  inconsistent after an en passant capture, with no error in a release
+  build.
+
 ## [0.5.7] - 2026-10-04
 
 ### Changed

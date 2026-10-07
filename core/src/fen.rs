@@ -18,12 +18,15 @@ pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq 
 pub enum FenError {
     /// Not four to six fields.
     Fields,
+    /// Not eight ranks of eight squares, or a pawn on the first or eighth rank.
     Placement,
     SideToMove,
     /// The castling field named a rook that is not there, or a right that cannot exist given
     /// the king's square.
     Castling,
-    /// Not `-` or a rank 3 or 6 square.
+    /// Not `-`, or not the empty square a pawn of the side not to move has just crossed with its
+    /// double push. `make_move` removes that pawn without looking, so anything else corrupts the
+    /// board.
     EnPassant,
     Counter,
     /// Not exactly one king of each colour.
@@ -83,7 +86,17 @@ impl Board {
             "-" => OptSquare::NONE,
             s => {
                 let sq = Square::from_algebraic(s).ok_or(FenError::EnPassant)?;
-                if sq.rank() != Rank::Three && sq.rank() != Rank::Six {
+                if sq.rank() != Rank::Six.relative(stm) {
+                    return Err(FenError::EnPassant);
+                }
+                let (pushed, origin) = match stm {
+                    Colour::White => (sq.index() - 8, sq.index() + 8),
+                    Colour::Black => (sq.index() + 8, sq.index() - 8),
+                };
+                if mailbox[sq.index()].is_some()
+                    || mailbox[origin].is_some()
+                    || mailbox[pushed] != Some(Piece::new(stm.flip(), PieceType::Pawn))
+                {
                     return Err(FenError::EnPassant);
                 }
                 OptSquare::some(sq)
@@ -206,7 +219,7 @@ fn parse_placement(field: &str) -> Result<[Option<Piece>; 64], FenError> {
                 f = f.checked_add(d as u8).ok_or(FenError::Placement)?;
             } else {
                 let p = Piece::from_char(ch).ok_or(FenError::Placement)?;
-                if f >= 8 {
+                if f >= 8 || (p.piece_type() == PieceType::Pawn && (r == 0 || r == 7)) {
                     return Err(FenError::Placement);
                 }
                 mailbox[Square::from_file_rank(File::new(f), Rank::new(r)).index()] = Some(p);
