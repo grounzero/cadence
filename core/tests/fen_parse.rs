@@ -386,7 +386,7 @@ fn the_other_fields_parse_and_emit_faithfully() {
     assert_eq!((b.halfmove_clock(), b.fullmove_number()), (7, 1));
     assert_eq!(b.to_fen(FenStyle::XFen), "4k3/8/8/8/8/8/8/4K3 w - - 7 1");
 
-    // The ep square must be on rank 3 or 6, and is otherwise kept as given.
+    // An ep square behind a pawn that has just double-pushed is kept as given, takers or not.
     for (fen, want) in [
         ("4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1", Some(Square::E3)),
         ("4k3/8/8/4p3/8/8/8/4K3 w - e6 0 1", Some(Square::E6)),
@@ -396,4 +396,64 @@ fn the_other_fields_parse_and_emit_faithfully() {
     }
     let sq = Square::from_file_rank(File::E, Rank::Three);
     assert_eq!(sq, Square::E3);
+}
+
+/// Each shape left a different inconsistency in a release build, where `make_move` takes the pawn
+/// without looking: a pawn added on unmake, a typeless occupied square, or two pieces on one.
+#[test]
+fn an_ep_square_no_double_push_could_leave_is_refused() {
+    for (fen, shape) in [
+        (
+            "4k3/8/8/3P4/8/8/8/4K3 w - e6 0 1",
+            "no pawn on the victim square",
+        ),
+        (
+            "4k3/8/8/8/4P3/8/3P4/4K3 w - e3 0 1",
+            "White to move with a rank 3 square: the victim square holds our own pawn",
+        ),
+        (
+            "4k3/8/8/4p3/8/8/8/4K3 b - e6 0 1",
+            "Black to move with a rank 6 square",
+        ),
+        (
+            "4k3/8/4n3/3Pp3/8/8/8/4K3 w - e6 0 1",
+            "the ep square itself occupied",
+        ),
+        (
+            "4k3/8/8/3PP3/8/8/8/4K3 w - e6 0 1",
+            "our own pawn on the victim square",
+        ),
+        (
+            "4k3/4p3/8/3Pp3/8/8/8/4K3 w - e6 0 1",
+            "the double push's origin square occupied",
+        ),
+        (
+            "4k3/8/8/8/3pP3/8/4P3/4K3 b - e3 0 1",
+            "the origin square occupied, Black to move",
+        ),
+    ] {
+        assert_eq!(
+            Board::from_fen(fen).err(),
+            Some(FenError::EnPassant),
+            "{shape}: {fen}"
+        );
+    }
+}
+
+/// The evaluation reads a passed pawn's weight by its rank, and a back-rank pawn reads a
+/// neighbour's.
+#[test]
+fn a_pawn_on_a_back_rank_is_refused() {
+    for fen in [
+        "P3k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        "4k3/8/8/8/8/8/8/P3K3 w - - 0 1",
+        "p3k3/8/8/8/8/8/8/4K3 w - - 0 1",
+        "4k3/8/8/8/8/8/8/p3K3 w - - 0 1",
+    ] {
+        assert_eq!(
+            Board::from_fen(fen).err(),
+            Some(FenError::Placement),
+            "{fen}"
+        );
+    }
 }
