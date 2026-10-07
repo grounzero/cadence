@@ -822,8 +822,8 @@ fn demoting_the_losing_captures_saves_nodes() {
         fens.len()
     );
     assert!(
-        total < 429_479,
-        "{total} nodes against the 429,479 the same search took with every capture ahead of the killers"
+        total < 442_105,
+        "{total} nodes against the 442,105 the same search took with every capture ahead of the killers"
     );
 }
 

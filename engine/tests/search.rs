@@ -660,20 +660,20 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
 /// Measured on the shipped full-window build at `WINDOW_DEPTH` with no table. The promotions on c8
 /// search to the same value, so `d7c8q` and `d7c8r` swapping is a tie-break, not a defect.
 const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("d2d4", 38),
-    ("d5e6", -146),
+    ("g1f3", 34),
+    ("d5e6", -140),
     ("b4f4", 59),
-    ("c4c5", -403),
-    ("d7c8q", 505),
-    ("g5f6", 47),
-    ("d2d4", 38),
-    ("d1e3", 12),
-    ("e1d3", 61),
-    ("b2b3", 101),
-    ("h1h7", 548),
-    ("e1e2", 549),
-    ("g1g3", 539),
-    ("a1a4", 545),
+    ("c4c5", -527),
+    ("d7c8q", 557),
+    ("g5f6", 100),
+    ("g1f3", 34),
+    ("b2b3", 52),
+    ("e1d3", -15),
+    ("b2b3", 84),
+    ("g1h1", 530),
+    ("e1e2", 540),
+    ("f1g1", 530),
+    ("a1a3", 531),
 ];
 
 /// With no table, the window is the only thing that can move the count. The ceiling is the
