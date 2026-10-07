@@ -16,6 +16,16 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-10-07
+
+### Changed
+
+- Evaluation: every weight refitted together against the same positions,
+  then scaled so the pieces keep their usual values.
+
+Test 51: +39.02 (between +25.34 and +52.83), a self-play estimate against
+0.5.7 at the short control, not a rating.
+
 ### Fixed
 
 - Setting up a position from FEN now refuses an en passant square that no
@@ -226,7 +236,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.7...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.8...main
+[0.5.8]: https://github.com/grounzero/cadence/compare/0.5.7...0.5.8
 [0.5.7]: https://github.com/grounzero/cadence/compare/0.5.6...0.5.7
 [0.5.6]: https://github.com/grounzero/cadence/compare/0.5.5...0.5.6
 [0.5.5]: https://github.com/grounzero/cadence/compare/0.5.4...0.5.5
