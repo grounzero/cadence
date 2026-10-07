@@ -20,8 +20,8 @@ const ORDER_DEPTH: u32 = 6;
 
 /// The reduction reads the tails of the score distribution, which need a well-written table, and
 /// late move pruning gives up most of the refuted moves the malus marks. No reduction is lengthened
-/// at depth eight on this position and some are at nine; ten is one past.
-const MODULATION_DEPTH: u32 = 10;
+/// at depth ten on this position and some are at eleven; twelve is one past.
+const MODULATION_DEPTH: u32 = 12;
 
 /// The same quiet moves recur from node to node, so the score separates them; Kiwipete serves the
 /// opposite purpose, a noisy prefix long enough to show the other bands undisturbed.
