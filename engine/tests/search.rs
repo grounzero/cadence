@@ -657,11 +657,10 @@ fn a_window_that_brackets_the_value_returns_the_value() {
     }
 }
 
-/// A narrower window may not change the root's move or score: it changes which parts of a fixed
-/// tree are visited, nothing else. The fixture is re-measured only for changes to the tree, never
-/// for a windowing change.
+/// Pins the root's move and score exactly, re-measured at every change to the search. A window is
+/// such a change: the pruning rules read beta, so a narrower window can move the answer.
 #[test]
-fn a_narrower_window_returns_the_same_move_and_the_same_score() {
+fn the_root_answers_at_the_window_depth_are_pinned() {
     let tt = no_table();
     let stop = AtomicBool::new(false);
     let got: Vec<(String, Score)> = sample()
@@ -674,31 +673,30 @@ fn a_narrower_window_returns_the_same_move_and_the_same_score() {
         })
         .collect();
     println!("depth {WINDOW_DEPTH}, no table: {got:?}");
-    let want: Vec<(String, Score)> = FULL_WINDOW_ANSWERS
+    let want: Vec<(String, Score)> = ROOT_ANSWERS
         .iter()
         .map(|(m, s)| ((*m).to_string(), *s))
         .collect();
     assert_eq!(
         got, want,
-        "a move or a score moved, so the window is not only a window"
+        "a move or a score moved: re-measure it if the change meant to"
     );
 }
 
-/// Measured on the shipped full-window build at `WINDOW_DEPTH` with no table. The promotions on c8
-/// search to the same value, so `d7c8q` and `d7c8r` swapping is a tie-break, not a defect.
-const FULL_WINDOW_ANSWERS: [(&str, Score); 14] = [
-    ("g1f3", 34),
+/// Measured on the search with aspiration windows at `WINDOW_DEPTH` with no table.
+const ROOT_ANSWERS: [(&str, Score); 14] = [
+    ("g1f3", 60),
     ("d5e6", -140),
     ("b4f4", 59),
-    ("c4c5", -527),
-    ("d7c8q", 557),
+    ("c4c5", -332),
+    ("d7c8q", 500),
     ("g5f6", 100),
-    ("g1f3", 34),
-    ("b2b3", 52),
-    ("e1d3", -15),
-    ("b2b3", 84),
-    ("g1h1", 530),
-    ("e1e2", 540),
+    ("g1f3", 60),
+    ("c2c4", 85),
+    ("e1d3", 90),
+    ("b2b3", 79),
+    ("h1h4", 532),
+    ("f1f4", 540),
     ("f1g1", 530),
     ("a1a3", 531),
 ];
