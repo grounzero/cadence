@@ -190,6 +190,7 @@ impl Session {
             "ucinewgame" => {
                 self.stop_search();
                 self.tt.clear();
+                crate::history_keep::new_game();
             }
             "quit" => return false,
             // Ignored, per the protocol.

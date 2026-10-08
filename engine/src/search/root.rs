@@ -19,7 +19,9 @@ impl Search<'_> {
     pub fn run(&mut self, board: &mut Position, out: &mut dyn Write) -> Move {
         // Once per group, which is why not in `begin`.
         self.tt.new_search();
-        self.run_in_current_generation(board, out)
+        let best = self.run_in_current_generation(board, out);
+        crate::history_keep::save(&mut self.history);
+        best
     }
 
     /// For a worker whose caller has advanced the generation for the group.

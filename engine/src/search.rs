@@ -268,6 +268,7 @@ impl<'a> Search<'a> {
         self.seldepth = 0;
         self.killers = [[Move::NULL; 2]; MAX_PLY];
         self.history.clear();
+        crate::history_keep::restore(&mut self.history);
         self.evals = [None; MAX_PLY];
         self.null_attempts = 0;
         self.null_cutoffs = 0;
