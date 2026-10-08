@@ -367,6 +367,33 @@ fn a_stalemate_is_a_draw_and_is_not_chosen_when_winning() {
     }
 }
 
+/// Quiescence stands pat out of check, so without its own test a stalemate there scores the
+/// evaluation, and a cut on it, rather than a draw.
+#[test]
+fn quiescence_scores_a_stalemate_as_a_draw() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for fen in [
+        "k7/2Q5/1K6/8/8/8/8/8 b - - 0 1",
+        "7k/8/8/8/8/6pp/5q2/7K w - - 0 1",
+    ] {
+        let mut b = support::position(fen);
+        assert!(
+            !b.in_check() && generate_legal(&b).is_empty(),
+            "{fen}: not stalemate"
+        );
+        let mut s = support::search(Limits::default(), &stop, &tt);
+        assert_eq!(s.node(&mut b, 0, 1), DRAW, "{fen}: full window");
+        let low = -score::MATE + 1_000;
+        let mut s = support::search(Limits::default(), &stop, &tt);
+        assert_eq!(
+            s.node_window(&mut b, 0, 1, low, low + 1),
+            DRAW,
+            "{fen}: a window below the evaluation"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------

@@ -55,6 +55,12 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
+            // Above the stand-pat cut, which would otherwise score a stalemate as the evaluation. A
+            // position with no legal move has no noisy one, so only an empty list is asked.
+            let mut noisy = generate_noisy(board);
+            if noisy.is_empty() && generate_legal(board).is_empty() {
+                return DRAW;
+            }
             let stand_pat = eval::evaluate(board);
             if stand_pat >= beta {
                 return beta;
@@ -62,7 +68,6 @@ impl Search<'_> {
             if stand_pat > alpha {
                 alpha = stand_pat;
             }
-            let mut noisy = generate_noisy(board);
             picker::sort_noisy(board, &mut noisy);
             (noisy, stand_pat)
         };
