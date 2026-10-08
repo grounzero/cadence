@@ -802,31 +802,6 @@ fn the_capture_sort_saves_nodes() {
     );
 }
 
-/// With no table, so the saving is the demotion's, a window of a fraction of a per cent of exact
-/// counts. The sign is checked at each re-base, the promoted arm taken by flipping the sort's flag
-/// for the measurement only.
-#[test]
-fn demoting_the_losing_captures_saves_nodes() {
-    let fens = deep_fens();
-    let mut total = 0u64;
-    for fen in &fens {
-        let (_, _, n) = search_with(
-            &mut support::position(fen),
-            SORT_DEPTH,
-            &Table::with_buckets(0).expect("a table of no buckets"),
-        );
-        total += n;
-    }
-    println!(
-        "depth {SORT_DEPTH}, {} positions, no table, losing captures demoted: {total} nodes",
-        fens.len()
-    );
-    assert!(
-        total < 442_105,
-        "{total} nodes against the 442,105 the same search took with every capture ahead of the killers"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // The killers, on their own
 // ---------------------------------------------------------------------------

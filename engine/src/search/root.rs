@@ -10,8 +10,14 @@ use super::depth::extension;
 use super::{MAX_DEPTH, Search};
 use crate::level;
 use crate::position::Position;
-use crate::score::{DRAW, INFINITE, Score, mated_in};
+use crate::score::{self, DRAW, INFINITE, Score, mated_in};
 use crate::time;
+
+/// Centipawns either side of the last completed iteration's score; doubled on each failure.
+const ASPIRATION_DELTA: Score = 24;
+
+/// Below it the iterations are too cheap and their scores too unsettled for a window to pay.
+const ASPIRATION_DEPTH: u32 = 4;
 
 impl Search<'_> {
     /// `Move::NULL` when there is none. Under `infinite` or an unhit ponder it returns only on
@@ -43,6 +49,7 @@ impl Search<'_> {
         root_moves.rotate_left(self.worker_index % root_count);
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
+        let mut previous: Option<Score> = None;
         for depth in 1..=max_depth {
             self.root_depth = depth;
             // Per iteration, so it belongs to the depth printed beside it.
@@ -52,7 +59,7 @@ impl Search<'_> {
             self.lines.clear();
             let mut partial = (root_moves[0], -INFINITE);
             for _ in 0..wanted {
-                let (best, score) = self.search_root(board, &legal, &root_moves, depth, out);
+                let (best, score) = self.aspirate(board, &legal, &root_moves, depth, out, previous);
                 if self.aborted {
                     partial = (best, score);
                     break;
@@ -79,6 +86,7 @@ impl Search<'_> {
             // Stable, so equal lines keep the root's order.
             self.lines.sort_by_key(|line| std::cmp::Reverse(line.score));
             let (best, score) = (self.lines[0].mv, self.lines[0].score);
+            previous = Some(score);
             self.best = best;
             self.score = score;
             // Only accepted iterations reach here, so a run of equal moves is a run of completed
@@ -141,6 +149,54 @@ impl Search<'_> {
         self.best
     }
 
+    /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded
+    /// above by the first, so a window centred on the previous best would fail low on them.
+    fn aspirate(
+        &mut self,
+        board: &mut Position,
+        legal: &MoveList,
+        moves: &[Move],
+        depth: u32,
+        out: &mut dyn Write,
+        previous: Option<Score>,
+    ) -> (Move, Score) {
+        let centre = previous
+            .filter(|&p| self.multipv == 1 && depth >= ASPIRATION_DEPTH && !score::is_mate(p));
+        let Some(centre) = centre else {
+            return self.search_root(board, legal, moves, depth, out, -INFINITE, INFINITE);
+        };
+        let mut delta = ASPIRATION_DELTA;
+        let mut alpha = centre.saturating_sub(delta).max(-INFINITE);
+        let mut beta = centre.saturating_add(delta).min(INFINITE);
+        loop {
+            let (best, score) = self.search_root(board, legal, moves, depth, out, alpha, beta);
+            if self.aborted {
+                return (best, score);
+            }
+            // A mate score or one past the evaluation's range opens that side fully.
+            let wider = delta.saturating_mul(2);
+            if score <= alpha && alpha > -INFINITE {
+                let far = score.saturating_sub(wider);
+                alpha = if score::is_mate(score) || far <= -score::MAX_EVAL {
+                    -INFINITE
+                } else {
+                    far
+                };
+            } else if score >= beta && beta < INFINITE {
+                let far = score.saturating_add(wider);
+                beta = if score::is_mate(score) || far >= score::MAX_EVAL {
+                    INFINITE
+                } else {
+                    far
+                };
+            } else {
+                return (best, score);
+            }
+            delta = wider;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn search_root(
         &mut self,
         board: &mut Position,
@@ -148,11 +204,11 @@ impl Search<'_> {
         moves: &[Move],
         depth: u32,
         out: &mut dyn Write,
+        mut alpha: Score,
+        beta: Score,
     ) -> (Move, Score) {
         self.visit(0);
         self.table.clear(0);
-        let mut alpha = -INFINITE;
-        let beta = INFINITE;
         let mut best = Move::NULL;
         let mut best_score = -INFINITE;
         // Not the list index once an earlier line has taken a move.
@@ -169,8 +225,6 @@ impl Search<'_> {
             // The root extends a checking move like any node.
             let ext = extension(board.in_check(), 1, depth);
             let child = depth - 1 + ext;
-            // `beta` is `INFINITE` here, so the second condition always holds; it is written out to
-            // keep one rule.
             let mut score = if searched == 0 {
                 -self.negamax(board, child, 1, -beta, -alpha)
             } else {
@@ -190,6 +244,9 @@ impl Search<'_> {
                 if score > alpha {
                     alpha = score;
                     self.table.update(0, m);
+                    if alpha >= beta {
+                        break;
+                    }
                 }
             }
         }
