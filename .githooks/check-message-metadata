@@ -97,6 +97,8 @@ elif [ "$SUBJECT_LINES" -gt 1 ]; then
 fi
 
 if [ "$rc" -eq 0 ]; then
+    # A check that cannot see a case says so on every pass, or a pass reads as having seen it.
+    echo "commit message: passed. A one-line body sent without its subject reads as a subject here and is not detected." >&2
     exit 0
 fi
 
