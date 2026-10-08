@@ -85,7 +85,20 @@ if [ "$MODE" = engine ]; then
         rc=1
     fi
 fi
+# A body sent without its subject reaches this hook with the body's first
+# paragraph as the subject, so the subject is refused unless it is one line.
+SUBJECT_LINES=$(printf '%s\n' "$CLEAN" | awk 'NF == 0 { exit } { n++ } END { print n + 0 }')
+if [ "$SUBJECT_LINES" -eq 0 ]; then
+    echo "commit message: no subject." >&2
+    rc=1
+elif [ "$SUBJECT_LINES" -gt 1 ]; then
+    echo "commit message: the subject runs to $SUBJECT_LINES lines; it is one line, then a blank line." >&2
+    rc=1
+fi
+
 if [ "$rc" -eq 0 ]; then
+    # A check that cannot see a case says so on every pass, or a pass reads as having seen it.
+    echo "commit message: passed. A one-line body sent without its subject reads as a subject here and is not detected." >&2
     exit 0
 fi
 
