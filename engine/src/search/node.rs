@@ -78,6 +78,7 @@ impl Search<'_> {
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
         let us_eval = board.side_to_move();
+        self.shadow_ply = ply;
         self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.

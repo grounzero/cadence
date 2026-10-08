@@ -6,6 +6,7 @@
 
 pub mod bench;
 pub mod corrhist;
+pub mod corrhist_shadow;
 pub mod datagen;
 pub mod eval;
 pub mod history;

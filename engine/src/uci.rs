@@ -190,6 +190,11 @@ impl Session {
             "ucinewgame" => {
                 self.stop_search();
                 self.tt.clear();
+                crate::corrhist_shadow::new_game();
+            }
+            "shadow" => {
+                self.stop_search();
+                crate::corrhist_shadow::report(|name, value| say(format_args!("{name} {value}")));
             }
             "quit" => return false,
             // Ignored, per the protocol.
@@ -560,6 +565,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         tunables,
     } = go;
     tt.new_search();
+    crate::corrhist_shadow::new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
         .map(|_| AtomicU64::new(0))
         .collect::<Vec<_>>()

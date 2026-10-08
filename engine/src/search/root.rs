@@ -19,6 +19,7 @@ impl Search<'_> {
     pub fn run(&mut self, board: &mut Position, out: &mut dyn Write) -> Move {
         // Once per group, which is why not in `begin`.
         self.tt.new_search();
+        crate::corrhist_shadow::new_search();
         self.run_in_current_generation(board, out)
     }
 

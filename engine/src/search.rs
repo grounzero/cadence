@@ -123,6 +123,7 @@ pub struct Search<'a> {
     /// Read on no decision path.
     corrhist_updates: u64,
     corrhist_applied: u64,
+    shadow_ply: usize,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
@@ -204,6 +205,7 @@ impl<'a> Search<'a> {
             corrhist: CorrectionHistory::new(),
             corrhist_updates: 0,
             corrhist_applied: 0,
+            shadow_ply: 0,
             root_depth: 0,
             evals: [None; MAX_PLY],
             null_attempts: 0,

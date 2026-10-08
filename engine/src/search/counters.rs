@@ -221,11 +221,14 @@ impl Search<'_> {
         side: Colour,
     ) -> Option<Score> {
         if in_check {
+            crate::corrhist_shadow::read(self.shadow_ply, pawn_key, side, None, 0);
             return None;
         }
         let correction = self.corrhist.correction(pawn_key, side);
         self.corrhist_applied += u64::from(correction != 0);
-        Some(eval::evaluate(board) + correction)
+        let raw = eval::evaluate(board);
+        crate::corrhist_shadow::read(self.shadow_ply, pawn_key, side, Some(raw), correction);
+        Some(raw + correction)
     }
 
     /// Disqualified: no static reading, a mate score, a noisy or absent best move, or a bound
@@ -241,6 +244,7 @@ impl Search<'_> {
         bound: Bound,
         depth: u32,
     ) {
+        crate::corrhist_shadow::observe(ply, pawn_key, side, best, best_move, bound, depth);
         let Some(eval) = self.evals[ply] else {
             return;
         };
