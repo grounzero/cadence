@@ -176,6 +176,9 @@ impl Search<'_> {
             // A mate score or one past the evaluation's range opens that side fully.
             let wider = delta.saturating_mul(2);
             if score <= alpha && alpha > -INFINITE {
+                // The far bound moves halfway toward the failed one, which narrows the re-search
+                // without assuming the fail low will hold.
+                beta = alpha + (beta - alpha) / 2;
                 let far = score.saturating_sub(wider);
                 alpha = if score::is_mate(score) || far <= -score::MAX_EVAL {
                     -INFINITE
