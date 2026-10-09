@@ -22,10 +22,35 @@ const DEFAULT_CONCURRENCY: usize = 6;
 /// Each pair is dev then base, as the worker benches before every workload.
 const DEFAULT_PAIRS: usize = 5;
 
+/// What `check-headers` leaves unread, printed after its verdict whatever the verdict.
+const HEADERS_NOT_EXAMINED: &[&str] = &[
+    "files other than Rust, which nothing reads for a licence line",
+    "the directories in SKIP_DIRS",
+];
+
+/// What `check-boundary` leaves unread, printed after its verdict whatever the verdict.
+/// The rules file is skipped because it spells the rules out, and the exact-name sweep run
+/// outside this tree still reads it.
+const BOUNDARY_NOT_EXAMINED: &[&str] = &[
+    "xtask/src/main.rs, which spells the rules out",
+    "commit messages (.githooks/check-message-metadata reads them)",
+    "exact names from outside this tree (a list of them here would inventory what is withheld)",
+];
+
+/// Added to [`BOUNDARY_NOT_EXAMINED`] when only the index is read.
+const STAGED_NOT_EXAMINED: &str =
+    "files this commit does not add or change, and deleted ones (CI reads the whole tree)";
+
+/// What `check-changelog` leaves unread, printed after its verdict whatever the verdict.
+const CHANGELOG_NOT_EXAMINED: &[&str] = &[
+    "what an entry says (its presence and its heading's shape are checked)",
+    "tags this clone has not fetched (the tags are the local clone's)",
+];
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("check-headers") => check_headers(),
+        Some("check-headers") => stating(check_headers(), HEADERS_NOT_EXAMINED),
         Some("check-boundary") => {
             let rest: Vec<String> = args.collect();
             match rest
@@ -34,15 +59,18 @@ fn main() -> ExitCode {
                 .collect::<Vec<_>>()
                 .as_slice()
             {
-                [] => check_boundary(Source::WorkingTree),
-                ["--staged"] => check_boundary(Source::Index),
+                [] => stating(check_boundary(Source::WorkingTree), BOUNDARY_NOT_EXAMINED),
+                ["--staged"] => stating(
+                    stating(check_boundary(Source::Index), BOUNDARY_NOT_EXAMINED),
+                    &[STAGED_NOT_EXAMINED],
+                ),
                 _ => {
                     eprintln!("xtask check-boundary: expected no argument or `--staged`");
                     ExitCode::FAILURE
                 }
             }
         }
-        Some("check-changelog") => check_changelog(),
+        Some("check-changelog") => stating(check_changelog(), CHANGELOG_NOT_EXAMINED),
         Some("install-hooks") => install_hooks(),
         Some("nps") => nps(&args.collect::<Vec<_>>()),
         Some(other) => {
@@ -55,6 +83,15 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// A pass saying only "OK" reads like one that looked at everything, so each check names what
+/// it did not.
+fn stating(code: ExitCode, spots: &[&str]) -> ExitCode {
+    for spot in spots {
+        println!("  not examined: {spot}");
+    }
+    code
 }
 
 fn usage() {
@@ -1259,6 +1296,25 @@ fn install_hooks() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_check_names_what_it_did_not_examine() {
+        let lists: [&[&str]; 4] = [
+            HEADERS_NOT_EXAMINED,
+            BOUNDARY_NOT_EXAMINED,
+            &[STAGED_NOT_EXAMINED],
+            CHANGELOG_NOT_EXAMINED,
+        ];
+        for spots in lists {
+            assert!(!spots.is_empty(), "a check with nothing listed");
+            for spot in spots {
+                assert!(
+                    !spot.trim().is_empty() && spot.is_ascii(),
+                    "an empty or non-ASCII spot: {spot:?}"
+                );
+            }
+        }
+    }
 
     /// `cargo test --workspace` does not reach this crate; CI runs these from its own manifest.
     const NOT_ALLOWED: &str = "core/src/lib.rs";

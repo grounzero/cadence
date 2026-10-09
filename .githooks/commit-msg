@@ -29,6 +29,9 @@ fail() {
 
 # --- cases where the message is not the author's to write -----------------
 
+# A merge made on GitHub carries the pull request's title and no hook runs there, so CI reads the title.
+trap 'echo "  not examined: a merge message or a fixup (exempt here)" >&2' EXIT
+
 # A merge commit's message is generated, and a conflict resolution changes no
 # node count of its own.
 if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
@@ -44,6 +47,7 @@ fi
 # --- inert until there is a bench to count --------------------------------
 
 if [ ! -f "$BENCH_FILE" ]; then
+    echo "commit-msg: no $BENCH_FILE here, so no message was checked" >&2
     exit 0
 fi
 
