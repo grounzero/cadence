@@ -811,6 +811,36 @@ fn a_ponderhit_is_answered_at_more_than_one_thread() {
     );
 }
 
+/// A ponder that has run out of iterations waits, and a hit arriving then must still be answered,
+/// or the bridge waits on a move that never comes and the clock runs out.
+#[test]
+fn a_ponderhit_after_the_ponder_has_finished_is_answered() {
+    for threads in [1, 2] {
+        let out = Engine::within(Duration::from_secs(20), move || {
+            let mut e = Engine::spawn();
+            e.send(&format!("setoption name Threads value {threads}"));
+            e.send("position startpos");
+            e.sync();
+            e.send("go ponder depth 1 wtime 20000 btime 20000");
+            let seen = e.read_until("info depth 1 ");
+            // Past the root loop's own read of the hit, so only the wait can answer it.
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(
+                !seen.iter().any(|l| l.starts_with("bestmove")),
+                "the ponder answered before the hit: {seen:?}"
+            );
+            e.send("ponderhit");
+            let out = e.read_until("bestmove ");
+            e.quit();
+            out
+        });
+        assert!(
+            out.last().is_some_and(|l| l.starts_with("bestmove ")),
+            "no move after a ponderhit on a finished ponder at Threads={threads}: {out:?}"
+        );
+    }
+}
+
 /// The gap between an `info` line's `time` and the whole exchange's wall clock is the pondering the
 /// budget no longer counts.
 #[test]
