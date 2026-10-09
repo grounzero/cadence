@@ -32,7 +32,7 @@ pub use castling::{CastleSide, CastlingRights};
 pub use dirty::{DirtyPiece, DirtyPieces, MAX_DIRTY, MAX_DIRTY_REACHABLE};
 pub use features::{NUM_INPUTS, feature_index};
 pub use fen::{FenError, FenStyle, START_FEN};
-pub use movegen::{generate_legal, generate_noisy};
+pub use movegen::{generate_legal, generate_noisy, has_legal_move};
 pub use mv::{MAX_MOVES, Move, MoveList, parse_uci, to_uci};
 pub use perft::{perft, perft_divide};
 pub use position::{Board, StateInfo};
