@@ -24,18 +24,24 @@ struct Ctx {
 /// In no defined order.
 #[must_use]
 pub fn generate_legal(board: &Board) -> MoveList {
-    generate::<false>(board)
+    generate::<false, false>(board)
 }
 
 /// The noisy subsequence of [`generate_legal`], in its order.
 #[must_use]
 pub fn generate_noisy(board: &Board) -> MoveList {
-    generate::<true>(board)
+    generate::<true, false>(board)
+}
+
+/// Stops at the first block of the generator that yields a move.
+#[must_use]
+pub fn has_legal_move(board: &Board) -> bool {
+    !generate::<false, true>(board).is_empty()
 }
 
 /// Both generators walk the branches in one order, which is what makes the noisy list a
-/// subsequence.
-fn generate<const NOISY: bool>(board: &Board) -> MoveList {
+/// subsequence. `ANY` returns at a block boundary once the list holds a move.
+fn generate<const NOISY: bool, const ANY: bool>(board: &Board) -> MoveList {
     let mut list = MoveList::new();
     let us = board.side_to_move();
     let them = us.flip();
@@ -56,7 +62,7 @@ fn generate<const NOISY: bool>(board: &Board) -> MoveList {
     }
 
     // Double check: only the king can help.
-    if checkers.more_than_one() {
+    if checkers.more_than_one() || (ANY && !list.is_empty()) {
         return list;
     }
 
@@ -89,12 +95,15 @@ fn generate<const NOISY: bool>(board: &Board) -> MoveList {
         }
     }
 
-    pieces::<NOISY>(board, &ctx, &mut list);
+    pieces::<NOISY, ANY>(board, &ctx, &mut list);
+    if ANY && !list.is_empty() {
+        return list;
+    }
     pawns::<NOISY>(board, &ctx, &mut list);
     list
 }
 
-fn pieces<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
+fn pieces<const NOISY: bool, const ANY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
     let targets = if NOISY {
         c.targets & c.enemy
     } else {
@@ -105,6 +114,9 @@ fn pieces<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
             list.push(capture_or_quiet(from, to, c.enemy));
         }
     }
+    if ANY && !list.is_empty() {
+        return;
+    }
     let queens = board.pieces(c.us, PieceType::Queen);
     for from in board.pieces(c.us, PieceType::Bishop) | queens {
         let mut to_set = attacks::bishop_attacks(from, c.occ) & targets;
@@ -114,6 +126,9 @@ fn pieces<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
         for to in to_set {
             list.push(capture_or_quiet(from, to, c.enemy));
         }
+    }
+    if ANY && !list.is_empty() {
+        return;
     }
     for from in board.pieces(c.us, PieceType::Rook) | queens {
         let mut to_set = attacks::rook_attacks(from, c.occ) & targets;

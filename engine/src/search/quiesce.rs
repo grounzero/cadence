@@ -2,7 +2,7 @@
 
 //! Out of check only noisy moves, in check every evasion.
 
-use cadence_core::{MAX_PLY, Move, generate_legal, generate_noisy};
+use cadence_core::{MAX_PLY, Move, generate_legal, generate_noisy, has_legal_move};
 
 use super::Search;
 use crate::eval;
@@ -55,18 +55,18 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            // Above the stand-pat cut, which would otherwise score a stalemate as the evaluation. A
-            // position with no legal move has no noisy one, so only an empty list is asked.
-            let mut noisy = generate_noisy(board);
-            if noisy.is_empty() && generate_legal(board).is_empty() {
-                return DRAW;
-            }
             let stand_pat = eval::evaluate(board);
             if stand_pat >= beta {
-                return beta;
+                // A stand-pat cut on a stalemate would score it as the evaluation.
+                return if has_legal_move(board) { beta } else { DRAW };
             }
             if stand_pat > alpha {
                 alpha = stand_pat;
+            }
+            let mut noisy = generate_noisy(board);
+            // A position with no legal move has no noisy one, so only an empty list is asked.
+            if noisy.is_empty() && !has_legal_move(board) {
+                return DRAW;
             }
             picker::sort_noisy(board, &mut noisy);
             (noisy, stand_pat)
