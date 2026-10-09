@@ -17,6 +17,18 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-10-09
+
+### Changed
+
+- Search: when the narrow window around the last score fails low, its upper
+  edge moves to the middle of the window that failed before the lower edge
+  widens.
+
+Test 54: +9.53 (between +3.59 and +15.47), a self-play estimate against
+0.5.10 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.10] - 2026-10-09
 
 ### Changed
@@ -272,7 +284,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.10...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.11...main
+[0.5.11]: https://github.com/grounzero/cadence/compare/0.5.10...0.5.11
 [0.5.10]: https://github.com/grounzero/cadence/compare/0.5.9...0.5.10
 [0.5.9]: https://github.com/grounzero/cadence/compare/0.5.8...0.5.9
 [0.5.8]: https://github.com/grounzero/cadence/compare/0.5.7...0.5.8
