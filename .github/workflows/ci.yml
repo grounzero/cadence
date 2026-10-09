@@ -73,6 +73,22 @@ jobs:
           done
           exit "$rc"
 
+      # A merge made on GitHub carries the pull request's title in its message, and no hook runs
+      # there, so the title is read here as the merge message it becomes.
+      - name: The pull request's title, as the merge message will carry it
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_LABEL: ${{ github.event.pull_request.head.label }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -eu
+          printf 'Merge pull request #%s from %s/%s\n\n%s\n' \
+            "$PR_NUMBER" "${PR_LABEL%%:*}" "${PR_LABEL#*:}" "$PR_TITLE" \
+            > "$RUNNER_TEMP/merge-message"
+          cat "$RUNNER_TEMP/merge-message"
+          .githooks/commit-msg "$RUNNER_TEMP/merge-message"
+
   check:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
