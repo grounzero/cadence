@@ -16,6 +16,22 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-10-09
+
+### Changed
+
+- Search: each iteration from depth four searches a narrow window around the
+  last completed score first, widening it on each failure.
+
+Test 52: +33.39 (between +21.11 and +45.75), a self-play estimate against
+0.5.8 with the fix below at the short control, not a rating.
+
+### Fixed
+
+- Quiescence scored a position with no legal move as its static evaluation
+  instead of a draw, so a stalemate at the horizon could be played into or
+  avoided for the wrong reason.
+
 ## [0.5.8] - 2026-10-07
 
 ### Changed
@@ -236,7 +252,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.8...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.9...main
+[0.5.9]: https://github.com/grounzero/cadence/compare/0.5.8...0.5.9
 [0.5.8]: https://github.com/grounzero/cadence/compare/0.5.7...0.5.8
 [0.5.7]: https://github.com/grounzero/cadence/compare/0.5.6...0.5.7
 [0.5.6]: https://github.com/grounzero/cadence/compare/0.5.5...0.5.6
