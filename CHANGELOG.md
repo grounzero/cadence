@@ -5,7 +5,8 @@ All notable changes to Cadence, newest first. The format follows
 
 How the version numbers work: the middle number starts a new stretch of
 work, and the last number goes up by one for each change that passed its
-test. A few versions say otherwise, and they say why.
+test, and for each fix to how the engine plays. A few versions say
+otherwise, and they say why.
 
 Each test played the new version against the one before it, at 8 seconds
 plus 0.08 a move unless a longer time control is named. The test result
@@ -15,6 +16,24 @@ previous version. They do not add up to a rating. The test records are
 private, so the results are reported here rather than linked.
 
 ## [Unreleased]
+
+## [0.5.10] - 2026-10-09
+
+### Changed
+
+- Quiescence search: the check for a position with no legal move now stops
+  at the first legal move it finds, and is made only where the search would
+  otherwise stop on its static evaluation.
+
+Test 53: +11.42 (between +4.84 and +18.00), a self-play estimate against
+0.5.9 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
+### Fixed
+
+- Thinking on the opponent's time, a search that had already finished when
+  the opponent played the expected move never answered it, so the engine
+  could lose on time with time on its clock.
 
 ## [0.5.9] - 2026-10-09
 
@@ -253,7 +272,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.9...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.10...main
+[0.5.10]: https://github.com/grounzero/cadence/compare/0.5.9...0.5.10
 [0.5.9]: https://github.com/grounzero/cadence/compare/0.5.8...0.5.9
 [0.5.8]: https://github.com/grounzero/cadence/compare/0.5.7...0.5.8
 [0.5.7]: https://github.com/grounzero/cadence/compare/0.5.6...0.5.7
