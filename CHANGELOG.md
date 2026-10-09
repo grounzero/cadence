@@ -24,7 +24,8 @@ private, so the results are reported here rather than linked.
   last completed score first, widening it on each failure.
 
 Test 52: +33.39 (between +21.11 and +45.75), a self-play estimate against
-0.5.8 with the fix below at the short control, not a rating.
+0.5.8 with the fix below at the short control, from a sequential test stopped
+at its first crossing, so it leans high. It is not a rating.
 
 ### Fixed
 
