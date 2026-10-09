@@ -394,6 +394,40 @@ fn quiescence_scores_a_stalemate_as_a_draw() {
     }
 }
 
+/// A stalemated side far enough ahead passes reverse futility's margin and the null move's, so a
+/// main-search node has to find its empty move list before either rule is asked.
+#[test]
+fn a_stalemate_in_the_main_search_is_a_draw_whatever_the_window() {
+    // Black's four rooks are pinned on the diagonals and every other Black piece is blocked; it is
+    // reached by a move, so the null move is not refused for following a null.
+    let mut b = support::position("KB5B/8/3rpr2/3pkp2/3rpr2/8/4P2B/B7 w - - 0 1");
+    let e3 = mv(&b, "e2e3");
+    b.make_move(e3);
+    assert!(
+        !b.in_check() && generate_legal(&b).is_empty(),
+        "e3 is not stalemate"
+    );
+    let ahead = eval::evaluate(&b);
+    assert!(
+        ahead > 250,
+        "Black is not ahead of the widest window: {ahead}"
+    );
+    let stop = AtomicBool::new(false);
+    for depth in 1..=8 {
+        for beta in [1, 100] {
+            let tt = table();
+            let score = support::search(Limits::default(), &stop, &tt).node_window(
+                &mut b,
+                depth,
+                1,
+                beta - 1,
+                beta,
+            );
+            assert_eq!(score, DRAW, "depth {depth}, window ({}, {beta})", beta - 1);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------
