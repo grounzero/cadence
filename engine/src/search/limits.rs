@@ -142,12 +142,12 @@ impl Search<'_> {
         self.budget = self.budget_on_hit;
     }
 
-    /// Under `infinite` or an unhit ponder, both of which mean do not answer until told.
-    pub(super) fn wait_if_open_ended(&self) {
-        if self.limits.infinite || self.pondering {
-            while !self.stop_requested() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+    /// Under `infinite` or an unhit ponder, both of which mean do not answer until told. A hit is a
+    /// telling too: a ponder that ran out of iterations before it would otherwise never move.
+    pub(super) fn wait_if_open_ended(&mut self) {
+        while (self.limits.infinite || self.pondering) && !self.stop_requested() {
+            self.absorb_ponder_hit();
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
