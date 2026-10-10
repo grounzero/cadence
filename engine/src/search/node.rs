@@ -83,22 +83,12 @@ impl Search<'_> {
         self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
-        // A cut at a stalemate overstates it only by returning more than a draw, since a lower bound at
-        // or below the draw score still holds there; so the two cuts before generation ask only then.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
-            return if bound <= DRAW || has_legal_move(board) {
-                bound
-            } else {
-                DRAW
-            };
+            return unless_stalemate(board, bound);
         }
 
         if let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
-            return if score <= DRAW || has_legal_move(board) {
-                score
-            } else {
-                DRAW
-            };
+            return unless_stalemate(board, score);
         }
 
         // Last in the preamble: the static readings run first and the null move's pass after
@@ -342,5 +332,16 @@ impl Search<'_> {
             }
         }
         None
+    }
+}
+
+/// A cut at a stalemate overstates it only by returning more than a draw, since a lower bound at or
+/// below the draw score still holds there; so the two cuts before generation ask only then.
+#[inline]
+fn unless_stalemate(board: &Board, value: Score) -> Score {
+    if value <= DRAW || has_legal_move(board) {
+        value
+    } else {
+        DRAW
     }
 }
