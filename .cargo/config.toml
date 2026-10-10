@@ -49,5 +49,13 @@ rustflags = ["-C", "target-feature=+neon"]
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt"]
 
+# --- aarch64-unknown-linux-gnu (the Jetson's native champion build, CI) ----
+#
+# `+neon` is a VERIFIED NO-OP: `rustc --print cfg` for this target already
+# lists target_feature="neon" and nothing else, and is identical with the flag.
+# It is written down so the bot's build flags are stated rather than defaulted.
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+neon"]
+
 [alias]
 xtask = "run --quiet --manifest-path xtask/Cargo.toml --"
