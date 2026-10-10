@@ -51,51 +51,10 @@ if [ ! -f "$BENCH_FILE" ]; then
     exit 0
 fi
 
-# --- read the trailer -----------------------------------------------------
+# --- the bench declaration -----------------------------------------------
 
-# `git stripspace --strip-comments` first: the hook sees the raw file, still
-# carrying the editor's `#` lines, which git itself removes only later.
-TRAILERS=$(git stripspace --strip-comments < "$MSG_FILE" | git interpret-trailers --parse)
-BENCH_LINES=$(printf '%s\n' "$TRAILERS" | grep -c '^Bench:' || true)
-BENCH_VALUE=$(printf '%s\n' "$TRAILERS" | sed -n 's/^Bench:[[:space:]]*//p' | head -n 1)
-
-if [ "$BENCH_LINES" -gt 1 ]; then
-    fail "$BENCH_LINES \`Bench:\` trailers in one message." \
-         "OpenBench reads the last one; a human reads the first. Keep one."
-fi
-
-if [ "$BENCH_LINES" -eq 1 ] && ! printf '%s' "$BENCH_VALUE" | grep -qE '^[0-9]+$'; then
-    fail "\`Bench: $BENCH_VALUE\` is not a node count." \
-         "The trailer must be \`Bench: <n>\` with n a plain decimal integer."
-fi
-
-# --- agree with bench.txt -------------------------------------------------
-
-# The staged content, not the working tree's: that is what is being committed.
-STAGED=$(git show ":$BENCH_FILE" 2>/dev/null | tr -d '[:space:]' || true)
-CHANGED=$(git diff --cached --name-only -- "$BENCH_FILE")
-
-if [ -n "$CHANGED" ]; then
-    if [ "$BENCH_LINES" -eq 0 ]; then
-        fail "this commit changes $BENCH_FILE but declares no node count." \
-             "Add a trailer to the message:" \
-             "" \
-             "    Bench: $STAGED" \
-             "" \
-             "An undeclared change to this number is indistinguishable from" \
-             "a bug that changed it by accident, which is the entire reason" \
-             "the number is worth having."
-    fi
-    if [ "$BENCH_VALUE" != "$STAGED" ]; then
-        fail "trailer says \`Bench: $BENCH_VALUE\`, $BENCH_FILE says \`$STAGED\`." \
-             "These have to be the same number."
-    fi
-elif [ "$BENCH_LINES" -eq 1 ] && [ "$BENCH_VALUE" != "$STAGED" ]; then
-    fail "trailer says \`Bench: $BENCH_VALUE\` but $BENCH_FILE says \`$STAGED\`," \
-         "and this commit does not change $BENCH_FILE." \
-         "A trailer that disagrees with the file is worse than no trailer:" \
-         "it is a wrong number that looks like a declared one."
-fi
+# CI runs the same script over every commit a change adds, against that commit's own bench.txt.
+"$(dirname "$0")/check-bench-declaration" "$MSG_FILE"
 
 # --- no planning labels in the message ------------------------------------
 
