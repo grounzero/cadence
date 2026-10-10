@@ -21,7 +21,8 @@ impl Session {
     /// A search still running is stopped first.
     pub(super) fn go<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
         self.stop_search();
-        let limits = Limits::parse(tokens);
+        let mut limits = Limits::parse(tokens);
+        limits.move_overhead = Some(self.move_overhead);
         // A clock not ours reads as zero, which returns the first iteration and looks like a broken
         // engine from the pipe, so say which it is.
         if !limits.infinite

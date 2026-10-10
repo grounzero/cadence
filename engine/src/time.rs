@@ -7,7 +7,7 @@ use cadence_core::Colour;
 
 use crate::search::Limits;
 
-/// For the pipe, thread scheduling and the GUI's own clock.
+/// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
 pub const MOVE_OVERHEAD_MS: u64 = 20;
 
 /// Milliseconds from the start of the search.
@@ -26,8 +26,9 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     if limits.ponder {
         return None;
     }
+    let overhead = limits.move_overhead.unwrap_or(MOVE_OVERHEAD_MS);
     if let Some(movetime) = limits.movetime {
-        let t = movetime.saturating_sub(MOVE_OVERHEAD_MS);
+        let t = movetime.saturating_sub(overhead);
         return Some(Budget { soft: t, hard: t });
     }
     if !limits.is_clocked() {
@@ -36,7 +37,7 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     // A clock that is not ours tells nothing of our time, and the safe reading is zero: the first
     // iteration and no more.
     let (time, inc) = limits.clock(us).unwrap_or((0, 0));
-    let avail = time.saturating_sub(MOVE_OVERHEAD_MS);
+    let avail = time.saturating_sub(overhead);
     let cap = avail / 2;
     let share = match limits.movestogo {
         Some(mtg) => avail / u64::from(mtg.max(1)),
