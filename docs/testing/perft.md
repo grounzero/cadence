@@ -15,7 +15,8 @@ the provenance, conventions and diagnostic meaning of those values.
 | **Host** | Apple M5 Max, macOS (Darwin 25.6.0), aarch64 |
 | **Oracle** | `python-chess` 1.11.2, installed into a throwaway directory, used solely to *compute* node counts and legal-move lists |
 | **Method** | Recursive perft with bulk counting at depth 1 (`legal_moves.count()`), which yields identical leaf totals to full recursion. Deep values were computed with an 8-process root split. |
-| **Cross-check** | Every standard-suite value below independently reproduces the long-published figures for those positions. The DFRC row `518/518` reproduces the standard start position exactly, which confirms the Chess960 code path and the standard path agree. |
+| **Cross-check** | Every standard-suite value below independently reproduces the long-published figures for those positions. The DFRC row `518/518` reproduces the standard start position exactly, which confirms the Chess960 code path and the standard path agree. Sections 2 and 3 were cross-checked on 2026-10-10, below. |
+| **Generator** | `tests/fixtures/perft-corpus-generator.py`, written 2026-10-10 against `python-chess` 1.11.2: it recomputes every count column and compares it with the fixture. Run on the M5 Max it reproduced all 390 counts at or under 20,000,000 nodes and skipped the 10 above, the deepest standard values, in 80 s. |
 
 ### Castling convention assumed: read this before comparing numbers
 
@@ -51,11 +52,22 @@ counts have been published, recomputed and argued over for decades. The values
 here were recomputed independently and agree with the long-established figures.
 If Cadence disagrees with section 1, Cadence is wrong.
 
-**Section 2 (DFRC) is not cross-checked against anything.** `python-chess` is
-the **sole oracle** for every DFRC number in the fixture. Nothing here has been
-compared against a second implementation, and there is no decades-old published
-table for double-Fischer-random start arrays to fall back on. The same is true
-of section 3 and of the constructed positions in section 4.
+**Section 2 (DFRC) was not cross-checked against anything until 2026-10-10.**
+`python-chess` was the **sole oracle** for every DFRC number in the fixture,
+and there is no decades-old published table for double-Fischer-random start
+arrays to fall back on. The same was true of section 3, and is still true of
+the constructed positions in section 4.
+
+**The cross-check of 2026-10-10, a run on the M5 Max and not a CI leg.**
+Stockfish 19's `go perft`, with `UCI_Chess960` on, reproduced every count in
+the fixture's `dfrc-arrays`, `immediate-castles` and `castling-legality`
+tables: 55 positions, 210 counts, no difference. And Cadence's own `perft`
+reproduced the Chess Programming Wiki's 960-position Chess960 table (one
+position per start array, each eight random moves in), depths 1 to 6: 5,760
+counts, no difference. Neither independent opinion shares code with
+`python-chess` or with Cadence, so a convention all three share would still
+pass; the castling rule below is the one most worth suspecting if a fourth
+ever disagrees.
 
 Therefore: **when Cadence disagrees with this corpus on a DFRC position, "the
 corpus is wrong" is a live hypothesis** and must be investigated as seriously as
@@ -71,8 +83,10 @@ corpus is wrong" is a live hypothesis** and must be investigated as seriously as
   and an engine that share a bug agree perfectly, and this corpus has never
   been given the chance to disagree with anyone.
 
-The generating scripts are not checked in: they are ~30 lines of
-`python-chess` driving the recursion.
+The original generating scripts were not checked in. Their replacement is
+`tests/fixtures/perft-corpus-generator.py`, about eighty lines of
+`python-chess` driving the recursion, which reproduces the fixture's counts
+rather than restating them.
 
 ---
 
