@@ -8,7 +8,7 @@ use cadence_core::{MAX_PLY, Move, MoveList};
 
 use crate::corrhist::CorrectionHistory;
 use crate::history::History;
-use crate::score::{DRAW, Score};
+use crate::score::{ABORTED, Score};
 use crate::time::{self, Budget};
 use crate::tt::{Bound, Table};
 use crate::tune::Tunables;
@@ -195,7 +195,7 @@ impl<'a> Search<'a> {
             aborted: false,
             completed_depth: 0,
             best: Move::NULL,
-            score: DRAW,
+            score: ABORTED,
             pv: Vec::with_capacity(MAX_PLY),
             seldepth: 0,
             table: PvTable::new(),

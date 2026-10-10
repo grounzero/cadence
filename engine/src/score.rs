@@ -35,7 +35,12 @@ pub const MATE_IN_MAX_PLY: Score = MATE - MAX_PLY_SCORE;
 pub const MAX_EVAL: Score = 30_000;
 const _: () = assert!(MAX_EVAL < MATE_IN_MAX_PLY);
 
+/// A drawn position's score, at every draw rule.
 pub const DRAW: Score = 0;
+
+/// What an aborted search returns, and what is reported before any line finishes. Every caller
+/// discards an aborted value, so it never judges the position and need not follow `DRAW`.
+pub const ABORTED: Score = 0;
 
 /// # Panics
 ///
