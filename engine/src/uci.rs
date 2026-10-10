@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,6 +15,10 @@ use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::{self, Table};
 use crate::tune::{self, Param, Tunables};
+
+mod say;
+
+use say::say;
 
 /// The version half is `version::VERSION`, not the package version, so a build off a release tag
 /// names its commit.
@@ -635,14 +639,6 @@ fn ponder_move(board: &mut Position, best: Move, pv: &[Move], chess960: bool) ->
 fn start_position() -> Board {
     #[allow(clippy::expect_used, reason = "a constant FEN")]
     Board::from_fen(START_FEN).expect("the start position parses")
-}
-
-/// Flushed: a GUI that sent `isready` blocks until it sees `readyok`, so a buffered reply is a
-/// hang.
-fn say(line: std::fmt::Arguments<'_>) {
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{line}");
-    let _ = out.flush();
 }
 
 #[must_use]
