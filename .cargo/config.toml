@@ -44,8 +44,8 @@ rustflags = ["-C", "target-feature=+neon"]
 #
 # This checkout builds the AVX2 deployment tier. Generic and AVX-512 tiers
 # cannot also live in this file: `[target.<triple>]` is keyed on the triple,
-# and all three tiers share one triple. Selecting among them needs a
-# build-time mechanism this file cannot express.
+# and all three tiers share one triple. The generic tier is therefore its own
+# file, `.cargo/x86-64-generic.toml`, selected with `cargo --config`.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt"]
 
