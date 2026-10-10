@@ -110,7 +110,7 @@ jobs:
           - os: ubuntu-24.04-arm
             name: aarch64-unknown-linux-gnu
             target: aarch64-unknown-linux-gnu
-          # No AVX2, POPCNT, BMI1 or LZCNT: the binary a machine without them would run.
+          # The baseline plus POPCNT, and no AVX2, BMI1 or LZCNT: the released generic binary.
           - os: ubuntu-latest
             name: x86_64-unknown-linux-gnu, generic
             target: x86_64-unknown-linux-gnu
@@ -254,15 +254,16 @@ jobs:
 
       # Read from the rustc command lines cargo ran, not from the files, so a flag cargo did not
       # pass is caught. The core crate is rebuilt so its line is read too, and every line must
-      # resolve to the triple's bare baseline.
-      - name: Assert the generic binary uses only the baseline features
+      # resolve to the triple's baseline plus POPCNT.
+      - name: Assert the generic binary uses only the baseline features and POPCNT
         if: matrix.config != ''
         shell: bash
         run: |
           cargo clean --release -p cadence-core
           cargo build --workspace --release -v --color never $CONFIG_ARG > release.log 2>&1 \
             || { cat release.log; exit 1; }
-          base=$(rustc --print cfg --target ${{ matrix.target }} | grep target_feature | sort)
+          base=$(rustc --print cfg --target ${{ matrix.target }} -C target-feature=+popcnt \
+            | grep target_feature | sort)
           grep -E '^ +Running `.*rustc .*--crate-name ' release.log > invocations.txt || true
           for crate in cadence_core cadence_nnue cadence_engine cadence; do
             if ! grep -q -- "--crate-name $crate " invocations.txt; then
@@ -277,12 +278,12 @@ jobs:
             got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
             if [ "$got" != "$base" ]; then
               name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
-              echo "::error::$name resolves to $(echo $got) and not the baseline"
+              echo "::error::$name resolves to $(echo $got) and not the baseline plus POPCNT"
               exit 1
             fi
             n=$((n + 1))
           done < invocations.txt
-          echo "$n rustc invocations, every one at the baseline: $(echo $base)"
+          echo "$n rustc invocations, every one at the baseline plus POPCNT: $(echo $base)"
 
       - name: Smoke-test the binary
         shell: bash
