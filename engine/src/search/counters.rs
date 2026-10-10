@@ -304,8 +304,38 @@ impl Search<'_> {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    use cadence_core::generate_legal;
+    use cadence_core::position::Board;
+
+    use crate::eval;
     use crate::search::Search;
-    use crate::tt::Table;
+    use crate::tt::{Bound, Table};
+
+    /// The fold's target is the node's corrected reading, so the correction is measured against
+    /// itself. An error the search repeats has to be learned whole, not in half.
+    #[test]
+    fn a_repeated_static_error_is_learned_whole() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let board = Board::from_fen("4k3/pppp4/8/8/8/8/PPPP4/4K3 w - - 0 1").expect("a position");
+        let quiet = generate_legal(&board)
+            .iter()
+            .find(|m| !m.is_noisy())
+            .expect("a quiet move");
+        let (key, side) = (board.pawn_key(), board.side_to_move());
+        let error = 200;
+        let searched = eval::evaluate(&board) + error;
+        for _ in 0..400 {
+            search.evals[0] = search.corrected_eval(&board, false, key, side);
+            search.remember_correction(key, side, 0, searched, quiet, Bound::Exact, 64);
+        }
+        let learned = search.corrhist.correction(key, side);
+        assert!(
+            (error - 2..=error).contains(&learned),
+            "learned {learned} of a repeated error of {error}"
+        );
+    }
 
     /// The one externally visible thing `Threads` above one changes; asserted directly because a
     /// search shows it only when helpers get scheduled.

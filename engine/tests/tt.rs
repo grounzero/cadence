@@ -718,6 +718,35 @@ fn mate_distances_survive_a_warm_table() {
     }
 }
 
+/// The key holds no halfmove clock, so a result the fifty-move rule decided must not answer for the
+/// same board on another clock. Each direction is asked on its own table.
+#[test]
+fn a_result_does_not_cross_the_fifty_move_boundary() {
+    // Any Black move and any White reply reach the hundredth half-move with no capture, pawn move or
+    // mate in one, so the board is drawn at 98 and lost at 0.
+    let late = "8/8/8/3k4/8/8/8/QQQ1K3 b - - 98 70";
+    let early = "8/8/8/3k4/8/8/8/QQQ1K3 b - - 0 70";
+    let stop = AtomicBool::new(false);
+    let node = |fen: &str, tt: &Table| {
+        support::search(Limits::default(), &stop, tt).node(&mut support::position(fen), 3, 0)
+    };
+
+    let tt = table(tt::DEFAULT_HASH_MB);
+    assert!(node(early, &tt) < -1000, "the early clock is not lost");
+    assert_eq!(
+        node(late, &tt),
+        score::DRAW,
+        "the early clock's result answered for the late one"
+    );
+
+    let tt = table(tt::DEFAULT_HASH_MB);
+    assert_eq!(node(late, &tt), score::DRAW, "the late clock is not drawn");
+    assert!(
+        node(early, &tt) < -1000,
+        "the late clock's result answered for the early one"
+    );
+}
+
 /// Interactive rather than piped: `quit` stops a running search, so a piped session prints no
 /// `info` line to read.
 fn three_searches(setup: &str, between: &[&str]) -> Vec<u64> {
