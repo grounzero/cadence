@@ -110,6 +110,13 @@ jobs:
           - os: ubuntu-24.04-arm
             name: aarch64-unknown-linux-gnu
             target: aarch64-unknown-linux-gnu
+          # No AVX2, POPCNT, BMI1 or LZCNT: the binary a machine without them would run.
+          - os: ubuntu-latest
+            name: x86_64-unknown-linux-gnu, generic
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-generic.toml
+    env:
+      CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,8 +160,14 @@ jobs:
         run: |
           flags=$(sed -n '/^\[target\.${{ matrix.target }}\]/,/^$/p' .cargo/config.toml \
                   | sed -n 's/.*"-C", "\(.*\)".*/\1/p')
-          echo "rustflags: -C $flags"
-          rustc --print cfg --target ${{ matrix.target }} -C "$flags" \
+          set -- -C "$flags"
+          if [ -n "${{ matrix.config }}" ]; then
+            more=$(sed -n '/^\[target\.${{ matrix.target }}\]/,/^$/p' "${{ matrix.config }}" \
+                   | sed -n 's/.*"-C", "\(.*\)".*/\1/p')
+            set -- "$@" -C "$more"
+          fi
+          echo "rustflags: $*"
+          rustc --print cfg --target ${{ matrix.target }} "$@" \
             | grep target_feature | tr '\n' ' '
           echo
 
@@ -167,7 +180,7 @@ jobs:
       # it. It is linted on its own manifest or not at all.
       - name: clippy
         run: |
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --workspace --all-targets --all-features $CONFIG_ARG -- -D warnings
           cargo clippy --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
 
       - name: check-headers, check-boundary and check-changelog
@@ -195,7 +208,7 @@ jobs:
           sh -n .githooks/check-bench-declaration
 
       - name: build
-        run: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets $CONFIG_ARG
 
       # The slider attack tables are const-evaluated, and
       # #[allow(long_running_const_eval)] on them is a statement of intent
@@ -208,11 +221,11 @@ jobs:
         run: |
           cargo clean -p cadence-core
           start=$(date +%s.%N)
-          cargo build -p cadence-core --quiet
+          cargo build -p cadence-core --quiet $CONFIG_ARG
           dev=$(echo "$(date +%s.%N) - $start" | bc)
           cargo clean -p cadence-core --release
           start=$(date +%s.%N)
-          cargo build -p cadence-core --release --quiet
+          cargo build -p cadence-core --release --quiet $CONFIG_ARG
           rel=$(echo "$(date +%s.%N) - $start" | bc)
           printf 'cadence-core clean build: dev %.2f s, release %.2f s\n' "$dev" "$rel"
           printf '### const-eval clean build (%s)\ndev %.2f s · release %.2f s\n' \
@@ -227,7 +240,7 @@ jobs:
       - name: test
         shell: bash
         run: |
-          cargo test --workspace --no-fail-fast 2>&1 | tee test.log
+          cargo test --workspace --no-fail-fast $CONFIG_ARG 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
           echo "### tests" >> "$GITHUB_STEP_SUMMARY"
           grep -h '^test result:' test.log >> "$GITHUB_STEP_SUMMARY" || true
@@ -237,7 +250,35 @@ jobs:
       # panic = "abort", incremental = false. A release-only link failure is
       # not something to discover at deploy time.
       - name: build --release
-        run: cargo build --workspace --release
+        shell: bash
+        run: |
+          cargo build --workspace --release -v $CONFIG_ARG 2>&1 | tee release.log
+          exit "${PIPESTATUS[0]}"
+
+      # Read from the rustc command lines cargo ran, not from the files, so a flag cargo did not
+      # pass is caught. Every unit compiled in that build must resolve to the triple's bare baseline.
+      - name: Assert the generic binary uses only the baseline features
+        if: matrix.config != ''
+        shell: bash
+        run: |
+          base=$(rustc --print cfg --target ${{ matrix.target }} | grep target_feature | sort)
+          lines=$(grep -E '^ +Running `.*rustc .*--crate-name ' release.log | grep -c 'target-feature' || true)
+          if [ "$lines" -eq 0 ]; then
+            echo "::error::no rustc invocation with target-feature flags in the release build log"
+            exit 1
+          fi
+          grep -E '^ +Running `.*rustc .*--crate-name ' release.log | grep 'target-feature' \
+            | while read -r line; do
+                set --
+                for f in $(echo "$line" | grep -oE "target-feature=[^ '\`]+"); do set -- "$@" -C "$f"; done
+                got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
+                if [ "$got" != "$base" ]; then
+                  name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
+                  echo "::error::$name resolves to $(echo $got) and not the baseline"
+                  exit 1
+                fi
+              done
+          echo "$lines rustc invocations, every one at the baseline: $(echo $base)"
 
       - name: Smoke-test the binary
         shell: bash

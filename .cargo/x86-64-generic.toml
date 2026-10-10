@@ -1,0 +1,9 @@
+# The generic x86-64 tier: the triple's own baseline (fxsr, sse, sse2) and nothing above it,
+# selected with `cargo --config .cargo/x86-64-generic.toml` on top of config.toml.
+#
+# Cargo appends this array after config.toml's and rustc lets the later sign of a feature win, so
+# every feature that section enables is turned off here, with the ones `+avx2` implies. CI asserts
+# that the features cargo actually passed resolve to the bare baseline, so a feature added to
+# config.toml and not removed here fails that leg rather than leaking into the generic binary.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=-avx2,-avx,-sse4.2,-sse4.1,-ssse3,-sse3,-bmi1,-popcnt,-lzcnt"]
