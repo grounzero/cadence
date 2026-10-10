@@ -66,11 +66,16 @@ fn repo_root() -> Option<PathBuf> {
     (toplevel == std::fs::canonicalize(&root).ok()?).then_some(root)
 }
 
-/// `packed-refs` covers refs after `git gc` folds them. Each path is named only if it exists,
-/// because a missing one reruns the script on every build.
+/// A linked worktree's `.git` is a file, so HEAD is resolved through `--git-dir` and the shared
+/// refs and `packed-refs` through `--git-common-dir`. Each path is named only if it exists, because
+/// a missing one reruns the script on every build.
 fn watch_refs(root: &Path) {
-    for rel in [".git/HEAD", ".git/refs", ".git/packed-refs"] {
-        let path = root.join(rel);
+    let own = git(root, &["rev-parse", "--git-dir"]);
+    let common = git(root, &["rev-parse", "--git-common-dir"]);
+    for (dir, name) in [(&own, "HEAD"), (&common, "refs"), (&common, "packed-refs")] {
+        let Some(dir) = dir else { continue };
+        // Either answer may be relative to the root, and joining an absolute one replaces it.
+        let path = root.join(dir).join(name);
         if path.exists() {
             println!("cargo::rerun-if-changed={}", path.display());
         }
