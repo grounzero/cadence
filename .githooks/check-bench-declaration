@@ -1,0 +1,82 @@
+#!/bin/sh
+#
+# Checks a message's bench declaration against bench.txt, staged or at COMMIT. It reads the message
+# as OpenBench does, so a stray phrase the server would take for a count fails here too.
+
+set -eu
+
+MSG_FILE="${1:?usage: check-bench-declaration <message-file> [commit]}"
+COMMIT="${2:-}"
+BENCH_FILE="bench.txt"
+
+fail() {
+    echo "check-bench-declaration: $1" >&2
+    shift
+    for line in "$@"; do echo "            $line" >&2; done
+    exit 1
+}
+
+# The index for a commit being made, and the commit itself when CI reads one already made.
+if [ -n "$COMMIT" ]; then
+    if ! git cat-file -e "$COMMIT:$BENCH_FILE" 2>/dev/null; then
+        echo "check-bench-declaration: no $BENCH_FILE at $COMMIT, so no bench declaration was checked" >&2
+        exit 0
+    fi
+    STAGED=$(git show "$COMMIT:$BENCH_FILE" | tr -d '[:space:]')
+    CHANGED=$(git diff --name-only "$COMMIT^" "$COMMIT" -- "$BENCH_FILE" 2>/dev/null || echo "$BENCH_FILE")
+else
+    if [ ! -f "$BENCH_FILE" ]; then
+        echo "check-bench-declaration: no $BENCH_FILE here, so no message was checked" >&2
+        exit 0
+    fi
+    STAGED=$(git show ":$BENCH_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+    CHANGED=$(git diff --cached --name-only -- "$BENCH_FILE")
+fi
+
+# The editor's `#` lines are stripped first, as git strips them before the message is stored.
+CLEAN=$(git stripspace --strip-comments < "$MSG_FILE")
+TRAILERS=$(printf '%s\n' "$CLEAN" | git interpret-trailers --parse)
+BENCH_LINES=$(printf '%s\n' "$TRAILERS" | grep -c '^Bench:' || true)
+BENCH_VALUE=$(printf '%s\n' "$TRAILERS" | sed -n 's/^Bench:[[:space:]]*//p' | head -n 1)
+
+# OpenBench's rule: the last `(?:BENCH|NODES)[ :=]+([0-9,]+)` anywhere, in any case, commas dropped.
+DECLARED=$(printf '%s\n' "$CLEAN" | grep -oiE '(bench|nodes)[ :=]+[0-9,]+' | tail -n 1 |
+    sed -E 's/^[A-Za-z]+[ :=]+//' | tr -d ',' || true)
+
+if [ "$BENCH_LINES" -gt 1 ]; then
+    fail "$BENCH_LINES \`Bench:\` trailers in one message." \
+         "OpenBench reads the last one; a human reads the first. Keep one."
+fi
+
+if [ "$BENCH_LINES" -eq 1 ] && ! printf '%s' "$BENCH_VALUE" | grep -qE '^[0-9]+$'; then
+    fail "\`Bench: $BENCH_VALUE\` is not a node count." \
+         "The trailer must be \`Bench: <n>\` with n a plain decimal integer."
+fi
+
+if [ -n "$CHANGED" ]; then
+    if [ "$BENCH_LINES" -eq 0 ]; then
+        fail "this commit changes $BENCH_FILE but declares no node count." \
+             "Add a trailer to the message:" \
+             "" \
+             "    Bench: $STAGED" \
+             "" \
+             "An undeclared change to this number is indistinguishable from" \
+             "a bug that changed it by accident, which is the entire reason" \
+             "the number is worth having."
+    fi
+    if [ "$BENCH_VALUE" != "$STAGED" ]; then
+        fail "trailer says \`Bench: $BENCH_VALUE\`, $BENCH_FILE says \`$STAGED\`." \
+             "These have to be the same number."
+    fi
+elif [ "$BENCH_LINES" -eq 1 ] && [ "$BENCH_VALUE" != "$STAGED" ]; then
+    fail "trailer says \`Bench: $BENCH_VALUE\` but $BENCH_FILE says \`$STAGED\`," \
+         "and this commit does not change $BENCH_FILE." \
+         "A trailer that disagrees with the file is worse than no trailer:" \
+         "it is a wrong number that looks like a declared one."
+fi
+
+if [ -n "$DECLARED" ] && [ "$DECLARED" != "$STAGED" ]; then
+    fail "OpenBench reads this message as declaring $DECLARED, and $BENCH_FILE says \`$STAGED\`." \
+         "It takes the last BENCH or NODES followed by a number, in any case, anywhere" \
+         "in the message. Write the number before the word: \"1,234 nodes\"."
+fi

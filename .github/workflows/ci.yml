@@ -41,7 +41,7 @@ jobs:
           # The default is one commit, and this reads a range of them.
           fetch-depth: 0
 
-      - name: Trailer keys and references in the messages this change adds
+      - name: Trailer keys, references and bench declarations in the messages this change adds
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -67,6 +67,10 @@ jobs:
           for sha in $(git rev-list --no-merges "$RANGE"); do
             git log -1 --format=%B "$sha" > "$RUNNER_TEMP/commit-message"
             if ! .githooks/check-message-metadata "$RUNNER_TEMP/commit-message"; then
+              git log -1 --format='            in %h %s' "$sha" >&2
+              rc=1
+            fi
+            if ! .githooks/check-bench-declaration "$RUNNER_TEMP/commit-message" "$sha"; then
               git log -1 --format='            in %h %s' "$sha" >&2
               rc=1
             fi
@@ -184,6 +188,7 @@ jobs:
         run: |
           sh -n .githooks/commit-msg
           sh -n .githooks/check-message-metadata
+          sh -n .githooks/check-bench-declaration
 
       - name: build
         run: cargo build --workspace --all-targets
@@ -240,8 +245,9 @@ jobs:
 
       # The regression detector. The last line of `cadence bench` is
       # `<nodes> nodes <nps> nps`; the count must equal bench.txt, and a commit
-      # that changes bench.txt carries a `Bench: <n>` trailer (enforced locally
-      # by .githooks/commit-msg). An undeclared change to the number fails the
+      # that changes bench.txt carries a `Bench: <n>` trailer (enforced by
+      # .githooks/check-bench-declaration, in the hook and in the message job
+      # above). An undeclared change to the number fails the
       # job on both architectures -- the count is a function of the code alone,
       # so the two runners must agree with each other as well as with the file.
       - name: bench against bench.txt
