@@ -107,6 +107,28 @@ fn the_placements_reach_both_families() {
     );
 }
 
+/// The other half of the predicate: every placement above reads true, and nothing else checked
+/// that it ever reads false.
+#[test]
+fn the_side_not_to_move_is_never_in_check_after_a_legal_move() {
+    for fen in [
+        cadence_core::START_FEN,
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    ] {
+        let mut b = board(fen);
+        assert!(!b.opponent_in_check(), "{fen}: the opponent reads in check");
+        for m in generate_legal(&b).iter() {
+            b.make_move(m);
+            assert!(
+                !b.opponent_in_check(),
+                "{fen} after {}: the mover reads in check",
+                m.to_uci_chess960()
+            );
+            b.unmake_move(m);
+        }
+    }
+}
+
 #[test]
 fn no_generated_move_takes_a_king() {
     for fen in corpus() {
