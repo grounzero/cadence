@@ -97,3 +97,14 @@ fn castling_field(fen: &str) -> String {
         .expect("a FEN has a castling field")
         .to_string()
 }
+
+/// `{:?}` is the Shredder spelling, so a board in a failing assertion names itself unambiguously.
+#[test]
+fn a_board_debugs_as_its_shredder_fen() {
+    let b = cadence_core::position::Board::from_fen(cadence_core::START_FEN)
+        .expect("the start position");
+    assert_eq!(
+        format!("{b:?}"),
+        format!("Board({})", b.to_fen(cadence_core::FenStyle::Shredder))
+    );
+}
