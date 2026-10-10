@@ -159,7 +159,11 @@ impl Search<'_> {
                 best_move = m;
                 if score > alpha {
                     alpha = score;
-                    self.table.update(ply, m);
+                    // At a null window a raise is a cutoff, so the parent fails low and never copies
+                    // this row.
+                    if beta > original_alpha + 1 {
+                        self.table.update(ply, m);
+                    }
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
                         // The moves it beat include ones the margin and count skipped, so
