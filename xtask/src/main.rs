@@ -666,6 +666,12 @@ fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, 
     out
 }
 
+/// A whole-tree read of no file would pass anything, so it is a check that did not run; a staged
+/// read of none is an empty or deletion-only commit.
+fn read_nothing(source: Source, files: usize) -> bool {
+    source == Source::WorkingTree && files == 0
+}
+
 fn check_boundary(source: Source) -> ExitCode {
     let root = repo_root();
     let inputs = match boundary_inputs(&root, source) {
@@ -675,6 +681,13 @@ fn check_boundary(source: Source) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if read_nothing(source, inputs.len()) {
+        eprintln!(
+            "check-boundary: DID NOT RUN: read no file under {}",
+            root.display()
+        );
+        return ExitCode::FAILURE;
+    }
     // Against the index in a staged run, because that is what the commit publishes.
     let cached = if source == Source::Index {
         match index_paths(&root) {
@@ -1320,6 +1333,13 @@ mod tests {
     const NOT_ALLOWED: &str = "core/src/lib.rs";
 
     /// In a worktree `.git` is a file holding an absolute path.
+    #[test]
+    fn a_whole_tree_read_of_no_file_is_refused_and_an_empty_commit_is_not() {
+        assert!(read_nothing(Source::WorkingTree, 0));
+        assert!(!read_nothing(Source::WorkingTree, 1));
+        assert!(!read_nothing(Source::Index, 0));
+    }
+
     #[test]
     fn a_worktrees_dot_git_file_is_not_collected() {
         let dir = std::env::temp_dir().join(format!("cadence-xtask-{}", std::process::id()));
