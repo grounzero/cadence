@@ -250,35 +250,39 @@ jobs:
       # panic = "abort", incremental = false. A release-only link failure is
       # not something to discover at deploy time.
       - name: build --release
-        shell: bash
-        run: |
-          cargo build --workspace --release -v $CONFIG_ARG 2>&1 | tee release.log
-          exit "${PIPESTATUS[0]}"
+        run: cargo build --workspace --release $CONFIG_ARG
 
       # Read from the rustc command lines cargo ran, not from the files, so a flag cargo did not
-      # pass is caught. Every unit compiled in that build must resolve to the triple's bare baseline.
+      # pass is caught. The core crate is rebuilt so its line is read too, and every line must
+      # resolve to the triple's bare baseline.
       - name: Assert the generic binary uses only the baseline features
         if: matrix.config != ''
         shell: bash
         run: |
+          cargo clean --release -p cadence-core
+          cargo build --workspace --release -v --color never $CONFIG_ARG > release.log 2>&1 \
+            || { cat release.log; exit 1; }
           base=$(rustc --print cfg --target ${{ matrix.target }} | grep target_feature | sort)
-          lines=$(grep -E '^ +Running `.*rustc .*--crate-name ' release.log | grep -c 'target-feature' || true)
-          if [ "$lines" -eq 0 ]; then
-            echo "::error::no rustc invocation with target-feature flags in the release build log"
-            exit 1
-          fi
-          grep -E '^ +Running `.*rustc .*--crate-name ' release.log | grep 'target-feature' \
-            | while read -r line; do
-                set --
-                for f in $(echo "$line" | grep -oE "target-feature=[^ '\`]+"); do set -- "$@" -C "$f"; done
-                got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
-                if [ "$got" != "$base" ]; then
-                  name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
-                  echo "::error::$name resolves to $(echo $got) and not the baseline"
-                  exit 1
-                fi
-              done
-          echo "$lines rustc invocations, every one at the baseline: $(echo $base)"
+          grep -E '^ +Running `.*rustc .*--crate-name ' release.log > invocations.txt || true
+          for crate in cadence_core cadence_nnue cadence_engine cadence; do
+            if ! grep -q -- "--crate-name $crate " invocations.txt; then
+              echo "::error::no rustc invocation for $crate in the release build log"
+              exit 1
+            fi
+          done
+          n=0
+          while read -r line; do
+            set --
+            for f in $(echo "$line" | grep -oE "target-feature=[^ '\`]+"); do set -- "$@" -C "$f"; done
+            got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
+            if [ "$got" != "$base" ]; then
+              name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
+              echo "::error::$name resolves to $(echo $got) and not the baseline"
+              exit 1
+            fi
+            n=$((n + 1))
+          done < invocations.txt
+          echo "$n rustc invocations, every one at the baseline: $(echo $base)"
 
       - name: Smoke-test the binary
         shell: bash
