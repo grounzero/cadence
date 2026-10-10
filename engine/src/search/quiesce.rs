@@ -8,7 +8,7 @@ use super::Search;
 use crate::eval;
 use crate::picker;
 use crate::position::Position;
-use crate::score::{DRAW, INFINITE, Score, mated_in};
+use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 
 impl Search<'_> {
@@ -23,7 +23,7 @@ impl Search<'_> {
         self.visit(ply);
         self.table.clear(ply);
         if self.out_of_time() {
-            return DRAW;
+            return ABORTED;
         }
         if board.is_repetition() {
             return DRAW;
@@ -81,7 +81,7 @@ impl Search<'_> {
             let score = -self.quiesce(board, ply + 1, -beta, -alpha);
             board.unmake_move(m);
             if self.aborted {
-                return DRAW;
+                return ABORTED;
             }
             if score > best {
                 best = score;

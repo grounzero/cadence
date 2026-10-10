@@ -10,7 +10,7 @@ use super::depth::extension;
 use super::{MAX_DEPTH, Search};
 use crate::level;
 use crate::position::Position;
-use crate::score::{self, DRAW, INFINITE, Score, mated_in};
+use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::time;
 
 /// Centipawns either side of the last completed iteration's score; doubled on each failure.
@@ -76,7 +76,7 @@ impl Search<'_> {
                         None => partial,
                     };
                     self.best = best;
-                    self.score = if score == -INFINITE { DRAW } else { score };
+                    self.score = if score == -INFINITE { ABORTED } else { score };
                     self.pv.clear();
                     self.pv.push(best);
                 }

@@ -15,7 +15,7 @@ use super::{Search, bound_for, order_first, remember_killer};
 use crate::eval;
 use crate::picker;
 use crate::position::Position;
-use crate::score::{self, DRAW, INFINITE, Score, mated_in};
+use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 use crate::tt::Bound;
 
@@ -56,7 +56,7 @@ impl Search<'_> {
         self.table.clear(ply);
         // At every node, so that `nodes N` stops at N and not at N plus a subtree.
         if self.out_of_time() {
-            return DRAW;
+            return ABORTED;
         }
 
         if board.is_repetition() {
@@ -152,7 +152,7 @@ impl Search<'_> {
             }
             board.unmake_move(m);
             if self.aborted {
-                return DRAW;
+                return ABORTED;
             }
             if score > best {
                 best = score;
@@ -276,7 +276,7 @@ impl Search<'_> {
         let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1);
         board.unmake_null_move();
         if self.aborted {
-            return Some(DRAW);
+            return Some(ABORTED);
         }
         if score >= beta {
             self.null_cutoffs += 1;
@@ -324,7 +324,7 @@ impl Search<'_> {
             }
             board.unmake_move(m);
             if self.aborted {
-                return Some(DRAW);
+                return Some(ABORTED);
             }
             if score >= raised {
                 self.probcut_cutoffs += 1;
