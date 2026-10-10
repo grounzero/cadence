@@ -83,14 +83,22 @@ impl Search<'_> {
         self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
-        // A static cut on a stalemate would score it as the evaluation, so the two cuts that return
-        // before generation ask for a legal move, and only when they are about to return.
+        // A cut at a stalemate overstates it only by returning more than a draw, since a lower bound at
+        // or below the draw score still holds there; so the two cuts before generation ask only then.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
-            return if has_legal_move(board) { bound } else { DRAW };
+            return if bound <= DRAW || has_legal_move(board) {
+                bound
+            } else {
+                DRAW
+            };
         }
 
         if let Some(score) = self.null_move(board, depth, ply, alpha, beta) {
-            return if has_legal_move(board) { score } else { DRAW };
+            return if score <= DRAW || has_legal_move(board) {
+                score
+            } else {
+                DRAW
+            };
         }
 
         // Last in the preamble: the static readings run first and the null move's pass after
