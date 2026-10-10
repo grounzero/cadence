@@ -36,7 +36,7 @@ jobs:
     name: commit messages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The default is one commit, and this reads a range of them.
           fetch-depth: 0
@@ -104,7 +104,7 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # check-changelog reads the tags, and the default one-commit
           # checkout fetches none, which the check refuses rather than passes.
