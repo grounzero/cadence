@@ -26,6 +26,8 @@ pub struct Limits {
     /// Milliseconds, indexed by `Colour`.
     pub inc: [Option<u64>; 2],
     pub movestogo: Option<u32>,
+    /// Kept back from every budget; `None` is `time::MOVE_OVERHEAD_MS`, so a literal leaves it alone.
+    pub move_overhead: Option<u64>,
 }
 
 impl Limits {

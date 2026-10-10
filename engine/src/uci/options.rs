@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cadence_core::MAX_MOVES;
 
 use super::say::say;
-use super::{MAX_THREADS, Session};
+use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, Session};
 use crate::level;
 use crate::tt::{self, Table};
 use crate::tune::{self, Param};
@@ -50,6 +50,12 @@ impl Session {
             }
         } else if name.eq_ignore_ascii_case("Threads") {
             self.set_threads(&value);
+        } else if name.eq_ignore_ascii_case("Move Overhead") {
+            self.set_move_overhead(&value);
+        } else if name.eq_ignore_ascii_case("Clear Hash") {
+            // `ucinewgame`'s table half, under the name a GUI's button sends.
+            self.stop_search();
+            self.tt.clear();
         } else if let Some(param) = tune::find(&name) {
             self.set_tunable(param, &value);
         }
@@ -141,6 +147,17 @@ impl Session {
             return;
         };
         self.elo = asked.clamp(level::MIN_ELO, level::MAX_ELO);
+    }
+
+    /// Clamped, not refused, for [`Session::set_hash`]'s reason.
+    fn set_move_overhead(&mut self, value: &str) {
+        let Ok(asked) = value.trim().parse::<u64>() else {
+            say(format_args!(
+                "info string setoption Move Overhead: `{value}` is not a number, ignoring it"
+            ));
+            return;
+        };
+        self.move_overhead = asked.min(MAX_MOVE_OVERHEAD_MS);
     }
 
     /// The only place the two options are read together.

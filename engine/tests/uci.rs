@@ -50,6 +50,38 @@ fn uci_advertises_uci_chess960() {
     }
 }
 
+/// A GUI shows each, and a rating list's tester sets the overhead for its own pipe.
+#[test]
+fn uci_advertises_move_overhead_clear_hash_and_the_about_string() {
+    let out = talk("uci\nsetoption name Move Overhead value soon\nquit\n");
+    let lines: Vec<&str> = out.lines().collect();
+    let overhead = format!(
+        "option name Move Overhead type spin default {} min 0 max {}",
+        cadence_engine::time::MOVE_OVERHEAD_MS,
+        cadence_engine::uci::MAX_MOVE_OVERHEAD_MS
+    );
+    assert!(
+        lines.contains(&overhead.as_str()),
+        "no {overhead:?} in {lines:?}"
+    );
+    assert!(
+        lines.contains(&"option name Clear Hash type button"),
+        "no Clear Hash in {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l
+            .starts_with("option name UCI_EngineAbout type string default Cadence ")
+            && l.ends_with(env!("CARGO_PKG_REPOSITORY"))),
+        "no UCI_EngineAbout naming the repository in {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("info string setoption Move Overhead: `soon` is not a number")),
+        "a non-number overhead was not refused aloud in {lines:?}"
+    );
+}
+
 #[test]
 fn isready_reports_readyok() {
     assert!(talk("isready\nquit\n").lines().any(|l| l == "readyok"));
@@ -478,6 +510,41 @@ fn hashfull_rises_within_a_search_and_ucinewgame_puts_it_back() {
     assert!(
         emptied.first().is_some_and(|&p| p < filled),
         "ucinewgame emptied the table and hashfull went from {filled} to {emptied:?}"
+    );
+    engine.quit();
+}
+
+/// The button is `ucinewgame`'s table half, so the same rise and fall is asserted of it.
+#[test]
+fn clear_hash_empties_the_table() {
+    let first_hashfull = |lines: &[String]| -> u32 {
+        lines
+            .iter()
+            .filter(|l| l.starts_with("info depth "))
+            .find_map(|l| field(l, "hashfull"))
+            .expect("an info line with hashfull")
+    };
+    let last_hashfull = |lines: &[String]| -> u32 {
+        lines
+            .iter()
+            .filter(|l| l.starts_with("info depth "))
+            .rev()
+            .find_map(|l| field(l, "hashfull"))
+            .expect("an info line with hashfull")
+    };
+    let mut engine = Engine::spawn();
+    engine.sync();
+    engine.send("position startpos");
+    engine.send("go depth 16");
+    let filled = last_hashfull(&engine.read_until("bestmove "));
+    assert!(filled > 0, "a depth 16 search left the table reading empty");
+    engine.send("setoption name Clear Hash");
+    engine.send("position startpos");
+    engine.send("go depth 1");
+    let emptied = first_hashfull(&engine.read_until("bestmove "));
+    assert!(
+        emptied < filled,
+        "Clear Hash left hashfull at {emptied} after {filled}"
     );
     engine.quit();
 }

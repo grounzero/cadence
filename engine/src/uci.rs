@@ -10,6 +10,7 @@ use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
 
 use crate::level;
+use crate::time;
 use crate::tt::{self, Table};
 use crate::tune::{self, Tunables};
 
@@ -24,6 +25,7 @@ use say::say;
 const ENGINE_NAME: &str = "Cadence";
 const ENGINE_VERSION: &str = crate::version::VERSION;
 const ENGINE_AUTHOR: &str = "Michael Grounds";
+const ENGINE_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// The only value for which a search is reproducible, and what `bench`, rating lists and every SPRT
 /// play.
@@ -31,6 +33,9 @@ pub const DEFAULT_THREADS: usize = 1;
 
 /// Each reserves `SEARCH_STACK_BYTES` of stack, so the ceiling is a real resource claim.
 pub const MAX_THREADS: usize = 64;
+
+/// Five seconds, far beyond any pipe or network a GUI or a bridge adds.
+pub const MAX_MOVE_OVERHEAD_MS: u64 = 5_000;
 
 pub struct Session {
     /// At ply zero, with the game history `position` replayed into it.
@@ -50,6 +55,7 @@ pub struct Session {
     threads: usize,
     /// Handed to every search a `go` starts and to nothing else.
     tunables: Tunables,
+    move_overhead: u64,
     /// Until `stop`, the next `go`, or shutdown joins it; it may already have finished.
     search: Option<Running>,
 }
@@ -84,6 +90,7 @@ impl Session {
             ponder: false,
             threads: DEFAULT_THREADS,
             tunables: Tunables::DEFAULT,
+            move_overhead: time::MOVE_OVERHEAD_MS,
             search: None,
         }
     }
@@ -171,6 +178,15 @@ impl Session {
                 // Off by default: pondering doubles one side's thinking, which is why every rating
                 // list disables it.
                 say(format_args!("option name Ponder type check default false"));
+                say(format_args!(
+                    "option name Move Overhead type spin default {} min 0 max {MAX_MOVE_OVERHEAD_MS}",
+                    time::MOVE_OVERHEAD_MS
+                ));
+                say(format_args!("option name Clear Hash type button"));
+                say(format_args!(
+                    "option name UCI_EngineAbout type string default {ENGINE_NAME} \
+                     {ENGINE_VERSION} by {ENGINE_AUTHOR}, {ENGINE_REPOSITORY}"
+                ));
                 // From the table `cadence spsa` prints, so a tuner's names are the names declared
                 // here.
                 for param in tune::PARAMS {

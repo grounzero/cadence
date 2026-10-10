@@ -911,3 +911,32 @@ fn a_ponder_that_is_hit_becomes_a_clocked_search() {
         s.iterations_ms()
     );
 }
+
+/// Unset, every test above runs on the constant; set, it reaches both paths `budget` has.
+#[test]
+fn a_set_move_overhead_reaches_the_movetime_and_the_clock_paths() {
+    let movetime = Limits {
+        movetime: Some(500),
+        move_overhead: Some(100),
+        ..Limits::default()
+    };
+    assert_eq!(
+        budget(&movetime, Colour::White),
+        Some(Budget {
+            soft: 400,
+            hard: 400
+        })
+    );
+    let clocked = Limits {
+        time: [Some(2_600), Some(2_600)],
+        move_overhead: Some(100),
+        ..Limits::default()
+    };
+    assert_eq!(
+        budget(&clocked, Colour::White),
+        Some(Budget {
+            soft: 100,
+            hard: 300
+        })
+    );
+}
