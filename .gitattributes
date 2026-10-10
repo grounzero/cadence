@@ -1,0 +1,2 @@
+# Checked out as LF on every platform: the hooks fail on a CR after their shebang.
+* text=auto eol=lf
