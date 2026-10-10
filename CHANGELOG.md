@@ -17,6 +17,16 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-10-10
+
+### Fixed
+
+- Search: reverse futility and the null move could cut at a stalemate before
+  generating moves, so a move stalemating a materially stronger opponent read
+  as a fail-low. Each now asks for a legal move before it returns more than a
+  draw, which costs 0.34% of speed against 0.5.11 with the same node count at
+  every bench position. Not tested in games.
+
 ## [0.5.11] - 2026-10-09
 
 ### Changed
@@ -284,7 +294,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.11...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.12...main
+[0.5.12]: https://github.com/grounzero/cadence/compare/0.5.11...0.5.12
 [0.5.11]: https://github.com/grounzero/cadence/compare/0.5.10...0.5.11
 [0.5.10]: https://github.com/grounzero/cadence/compare/0.5.9...0.5.10
 [0.5.9]: https://github.com/grounzero/cadence/compare/0.5.8...0.5.9
