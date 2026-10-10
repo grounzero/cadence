@@ -394,6 +394,25 @@ fn quiescence_scores_a_stalemate_as_a_draw() {
     }
 }
 
+/// No sequence of moves mates in these, so every search of them is a draw however much material
+/// the evaluation counts.
+#[test]
+fn a_position_neither_side_can_win_is_a_draw() {
+    for fen in [
+        "6k1/8/8/8/8/8/1B6/K7 w - - 0 1",
+        "6k1/8/8/8/8/8/1N6/K7 b - - 0 1",
+        "6k1/8/8/8/8/8/8/K7 w - - 0 1",
+        "6k1/8/8/2b5/8/8/1B6/K7 w - - 0 1",
+    ] {
+        let mut b = support::position(fen);
+        assert!(b.is_insufficient_material(), "{fen}: not a dead position");
+        for depth in 1..=4 {
+            let r = search(&mut b, Limits::depth(depth));
+            assert_eq!(r.score, DRAW, "{fen}: depth {depth}, score {}", r.score);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------
@@ -695,7 +714,7 @@ const ROOT_ANSWERS: [(&str, Score); 14] = [
     ("c2c4", 85),
     ("e1d3", 90),
     ("b2b3", 79),
-    ("h1h4", 532),
+    ("h1h8", 532),
     ("f1f4", 540),
     ("f1g1", 530),
     ("a1a3", 531),
