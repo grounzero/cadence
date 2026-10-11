@@ -233,6 +233,36 @@ fn each_exemption_alone_keeps_the_move() {
     assert!(!lmp_skips(from, noisy, [Move::NULL; 2], 8), "noisy");
 }
 
+/// At the root of a depth-one search only the root can be admitted, and alpha on the mate scale
+/// keeps futility and every cut out of its loop, so each quiet past the count is asked. Kiwipete
+/// sorts more captures ahead of its quiets than the count, which would spend it on captures alone.
+#[test]
+fn captures_ahead_of_the_quiets_do_not_spend_the_count() {
+    let fen = support::standard_fen("kiwipete");
+    let b = board(&fen);
+    let mut list = generate_legal(&b);
+    picker::sort_from(&b, &mut list, 0, [Move::NULL; 2], &[]);
+    let count = lmp_count(DEFAULT, 1);
+    let ahead = list.iter().take_while(|m| m.is_noisy()).count();
+    assert!(
+        ahead >= count,
+        "{ahead} captures ahead of the quiets, inside the count of {count}"
+    );
+    let expected = list
+        .iter()
+        .filter(|m| !m.is_noisy())
+        .skip(count)
+        .filter(|m| !b.gives_check(*m))
+        .count();
+    let (_, nodes, skipped, _) = window_node(&fen, 1, MATE_IN_MAX_PLY, MATE_IN_MAX_PLY + 1);
+    assert_eq!(nodes, 1, "the root was not the one node admitted");
+    assert_eq!(
+        skipped,
+        u64::try_from(expected).expect("a move count fits"),
+        "the root gave up a quiet inside the quiet count, or kept one past it"
+    );
+}
+
 /// Admitted nodes prove the node-level question fires; given-up moves prove the loop acts. Never
 /// admitted passes neither; admitted only where every late move is exempt passes the first.
 #[test]

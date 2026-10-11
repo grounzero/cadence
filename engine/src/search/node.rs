@@ -9,7 +9,7 @@ use cadence_core::{
 
 use super::depth::{extension, history_reduction, null_reduction, reduction};
 use super::pruning::{
-    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
+    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound, quiet_indices,
 };
 use super::{Search, bound_for, order_first, remember_killer};
 use crate::eval;
@@ -124,13 +124,13 @@ impl Search<'_> {
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
-        for (i, m) in legal.iter().enumerate() {
+        for ((i, m), quiet_index) in legal.iter().enumerate().zip(quiet_indices(&legal)) {
             if self.futile(board, futile, m, i) {
                 continue;
             }
             // Before the move is made, which is the whole saving; above the reduction, which never
             // sees a move given up.
-            if self.given_up(board, give_up, m, killers, i) {
+            if self.given_up(board, give_up, m, killers, quiet_index) {
                 continue;
             }
             board.make_move(m);
