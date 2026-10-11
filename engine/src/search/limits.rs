@@ -26,6 +26,8 @@ pub struct Limits {
     /// Milliseconds, indexed by `Colour`.
     pub inc: [Option<u64>; 2],
     pub movestogo: Option<u32>,
+    /// Stop once an iteration proves mate in this many moves or fewer.
+    pub mate: Option<u32>,
     /// Kept back from every budget; `None` is `time::MOVE_OVERHEAD_MS`, so a literal leaves it alone.
     pub move_overhead: Option<u64>,
 }
@@ -48,11 +50,7 @@ impl Limits {
                 "winc" => limits.inc[Colour::White.index()] = large(&mut it),
                 "binc" => limits.inc[Colour::Black.index()] = large(&mut it),
                 "movestogo" => limits.movestogo = small(&mut it),
-                // Accepted and ignored; `mate`'s number is consumed so it is not misread, and
-                // `searchmoves`' moves fall through as unknown tokens.
-                "mate" => {
-                    let _ = small(&mut it);
-                }
+                "mate" => limits.mate = small(&mut it),
                 _ => {}
             }
         }

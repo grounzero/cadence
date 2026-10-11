@@ -44,6 +44,9 @@ impl Search<'_> {
             return Move::NULL;
         }
         let mut root_moves: Vec<Move> = legal.iter().collect();
+        if root_moves.iter().any(|m| self.root_filter.contains(m)) {
+            root_moves.retain(|m| self.root_filter.contains(m));
+        }
         // The list is not empty, so the remainder is safe.
         let root_count = root_moves.len();
         root_moves.rotate_left(self.worker_index % root_count);
@@ -103,6 +106,12 @@ impl Search<'_> {
             }
             // A swap, not a copy: `lines` is cleared at the next iteration's head.
             std::mem::swap(&mut self.lines, &mut self.accepted);
+            // `go mate`: a proved mate in that many moves or fewer answers the question asked.
+            if let Some(n) = self.limits.mate
+                && score >= score::MATE - (2 * i32::try_from(n).unwrap_or(i32::MAX / 2) - 1)
+            {
+                break;
+            }
             // Before the budget is read, so the first clocked decision uses the new clock.
             self.absorb_ponder_hit();
             if let Some(b) = self.budget {

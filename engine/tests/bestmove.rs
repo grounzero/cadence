@@ -167,9 +167,10 @@ fn limits_parse_every_go_token() {
     let l = Limits::parse("wtime 500".split_whitespace());
     assert_eq!(l.clock(cadence_core::Colour::White), Some((500, 0)));
     assert_eq!(l.clock(cadence_core::Colour::Black), None);
-    // Unknown and ignored tokens do not disturb the rest.
+    // Unknown tokens, and `searchmoves`' moves, which `go` reads, do not disturb the rest.
     let l = Limits::parse("ponder searchmoves e2e4 d2d4 mate 3 depth 4 frob".split_whitespace());
     assert_eq!(l.depth, Some(4));
+    assert_eq!(l.mate, Some(3));
     // A token without its number, or with a non-number, is skipped.
     let l = Limits::parse("depth".split_whitespace());
     assert_eq!(l, Limits::default());
