@@ -17,6 +17,23 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-10-11
+
+### Added
+
+- UCI: the `Move Overhead`, `Clear Hash` and `UCI_EngineAbout` options.
+- UCI: `go searchmoves` searches only the moves it names, and `go mate N`
+  stops once a mate in N or fewer is proved.
+
+### Changed
+
+- Search: late move pruning no longer gives quiet moves up at a node searched
+  with an open window, the line the search reports.
+
+Test 55: +11.00 (between +4.43 and +17.58), a self-play estimate against
+0.5.12 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.12] - 2026-10-10
 
 ### Fixed
@@ -294,7 +311,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.12...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.13...main
+[0.5.13]: https://github.com/grounzero/cadence/compare/0.5.12...0.5.13
 [0.5.12]: https://github.com/grounzero/cadence/compare/0.5.11...0.5.12
 [0.5.11]: https://github.com/grounzero/cadence/compare/0.5.10...0.5.11
 [0.5.10]: https://github.com/grounzero/cadence/compare/0.5.9...0.5.10
