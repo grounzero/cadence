@@ -645,10 +645,9 @@ fn no_table() -> Table {
     Table::with_buckets(0).expect("a table of no buckets")
 }
 
-/// Fail-soft, so `(v - 1, v)` and `(v, v + 1)` around a full-window value `v` both return `v`; a
-/// null window off by one, inverted or negated on the wrong side breaks it at depth one. Pruning
-/// and ordering make the value window-dependent past depth one, so it is asserted at depth one
-/// everywhere and to `BRACKET_DEPTH` on the pawn endgames, with no table.
+/// Fail-soft, so an open window `(v - 1, v + 1)` around a full-window value `v` returns `v`.
+/// Pruning and ordering make the value window-dependent past depth one, so it is asserted at depth
+/// one everywhere and to `BRACKET_DEPTH` on the pawn endgames, with no table.
 #[test]
 fn a_window_that_brackets_the_value_returns_the_value() {
     let stop = AtomicBool::new(false);
@@ -661,34 +660,62 @@ fn a_window_that_brackets_the_value_returns_the_value() {
         for depth in depths {
             let tt = no_table();
             let full = support::search(Limits::default(), &stop, &tt).node(&mut b, depth, 0);
-            let below = support::search(Limits::default(), &stop, &tt).node_window(
+            let open = support::search(Limits::default(), &stop, &tt).node_window(
                 &mut b,
                 depth,
                 0,
                 full - 1,
-                full,
-            );
-            let above = support::search(Limits::default(), &stop, &tt).node_window(
-                &mut b,
-                depth,
-                0,
-                full,
                 full + 1,
             );
             assert_eq!(
-                below,
+                open,
                 full,
-                "{fen}: depth {depth}, the window ({}, {full}) did not agree with the full one",
-                full - 1
-            );
-            assert_eq!(
-                above,
-                full,
-                "{fen}: depth {depth}, the window ({full}, {}) did not agree with the full one",
+                "{fen}: depth {depth}, the window ({}, {}) did not agree with the full one",
+                full - 1,
                 full + 1
             );
         }
     }
+}
+
+/// A null window off by one, inverted or negated on the wrong side breaks `(v - 1, v)` or
+/// `(v, v + 1)` at depth one. Late move pruning reads the window, so they are asked in check, after
+/// every checking move from the sample, where no pruning rule runs.
+#[test]
+fn a_null_window_beside_the_value_returns_the_value_in_check() {
+    let stop = AtomicBool::new(false);
+    let mut asked = 0;
+    for fen in sample()
+        .into_iter()
+        .chain(support::PAWN_ENDGAMES.into_iter().map(str::to_string))
+    {
+        let mut b = support::position(&fen);
+        let checks: Vec<Move> = generate_legal(&b)
+            .iter()
+            .filter(|m| b.gives_check(*m))
+            .collect();
+        for m in checks {
+            b.make_move(m);
+            let tt = no_table();
+            let full = support::search(Limits::default(), &stop, &tt).node(&mut b, 1, 0);
+            for (alpha, beta) in [(full - 1, full), (full, full + 1)] {
+                let got = support::search(Limits::default(), &stop, &tt)
+                    .node_window(&mut b, 1, 0, alpha, beta);
+                assert_eq!(
+                    got,
+                    full,
+                    "{fen} after {}: the window ({alpha}, {beta}) did not agree with the full one",
+                    m.to_uci_chess960()
+                );
+            }
+            b.unmake_move(m);
+            asked += 1;
+        }
+    }
+    assert!(
+        asked > 0,
+        "no checking move in the sample, so nothing was asked"
+    );
 }
 
 /// Pins the root's move and score exactly, re-measured at every change to the search. A window is
@@ -719,20 +746,20 @@ fn the_root_answers_at_the_window_depth_are_pinned() {
 
 /// Measured on the search with aspiration windows at `WINDOW_DEPTH` with no table.
 const ROOT_ANSWERS: [(&str, Score); 14] = [
-    ("g1f3", 60),
-    ("d5e6", -140),
+    ("e2e3", 33),
+    ("d5e6", -70),
     ("b4f4", 59),
     ("c4c5", -332),
-    ("d7c8q", 500),
-    ("g5f6", 100),
-    ("g1f3", 60),
-    ("c2c4", 85),
-    ("e1d3", 90),
-    ("b2b3", 79),
-    ("h1h4", 532),
-    ("f1f4", 540),
-    ("f1g1", 530),
-    ("a1a3", 531),
+    ("d7c8r", 500),
+    ("c3d5", 84),
+    ("e2e3", 33),
+    ("d1e3", 27),
+    ("e1d3", 13),
+    ("b2b3", 114),
+    ("g1f2", 531),
+    ("f1f5", 541),
+    ("f1f2", 534),
+    ("a1a7", 534),
 ];
 
 /// With no table, the window is the only thing that can move the count. The ceiling is the

@@ -40,11 +40,15 @@ fn board(fen: &str) -> Board {
 
 /// Inside the null window `(alpha, alpha+1)`, with a table of its own.
 fn one_node(fen: &str, depth: u32, alpha: Score) -> (Score, u64, u64, u64) {
+    window_node(fen, depth, alpha, alpha + 1)
+}
+
+fn window_node(fen: &str, depth: u32, alpha: Score, beta: Score) -> (Score, u64, u64, u64) {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(fen);
     let mut s = support::search(Limits::depth(depth), &stop, &tt);
-    let score = s.node_window(&mut b, depth, 0, alpha, alpha + 1);
+    let score = s.node_window(&mut b, depth, 0, alpha, beta);
     (score, s.lmp_nodes(), s.lmp_skipped(), s.lmp_kept_check())
 }
 
@@ -91,7 +95,7 @@ fn nothing_is_deleted_that_the_reduction_will_not_shorten() {
             );
             assert!(
                 !lmp_skips(
-                    lmp_index(DEFAULT, false, depth, 64),
+                    lmp_index(DEFAULT, false, false, depth, 64),
                     quiet,
                     [Move::NULL; 2],
                     index
@@ -125,10 +129,13 @@ fn the_count_is_the_documented_count() {
 /// refuses.
 #[test]
 fn no_pruning_past_the_depth_limit() {
-    assert!(lmp_index(DEFAULT, false, 8, 256).is_some(), "depth eight");
+    assert!(
+        lmp_index(DEFAULT, false, false, 8, 256).is_some(),
+        "depth eight"
+    );
     for depth in 9..64 {
         assert!(
-            lmp_index(DEFAULT, false, depth, 256).is_none(),
+            lmp_index(DEFAULT, false, false, depth, 256).is_none(),
             "depth {depth}: the node was admitted past the limit"
         );
     }
@@ -140,11 +147,36 @@ fn a_node_in_check_never_gives_a_move_up() {
     for depth in 0..12 {
         for moves in [1, 8, 40, 256] {
             assert!(
-                lmp_index(DEFAULT, true, depth, moves).is_none(),
+                lmp_index(DEFAULT, true, false, depth, moves).is_none(),
                 "depth {depth} with {moves} moves"
             );
         }
     }
+}
+
+/// A PV node's line is the one reported, so a move it gives up is one the result never saw.
+#[test]
+fn a_pv_node_never_gives_a_move_up() {
+    for depth in 0..12 {
+        for moves in [1, 8, 40, 256] {
+            assert!(
+                lmp_index(DEFAULT, false, true, depth, moves).is_none(),
+                "depth {depth} with {moves} moves"
+            );
+        }
+    }
+}
+
+/// At depth one the root is the only node the rule can admit, a checking move's child being in
+/// check, so the window alone decides. Alpha sits far above the evaluation, where no static rule
+/// returns before the loop.
+#[test]
+fn the_same_node_is_admitted_at_a_null_window_and_not_at_an_open_one() {
+    let (_, null_window, _, _) = one_node(MIDDLEGAME, 1, 1000);
+    assert_eq!(null_window, 1, "the null-window node was not admitted");
+    let (_, open_window, skipped, _) = window_node(MIDDLEGAME, 1, 1000, 2000);
+    assert_eq!(open_window, 0, "the open-window node was admitted");
+    assert_eq!(skipped, 0, "the open-window node gave a move up");
 }
 
 /// Which makes the node-level question worth asking once.
@@ -153,11 +185,11 @@ fn a_node_inside_the_count_is_not_admitted() {
     for depth in 1..=8 {
         let count = lmp_count(DEFAULT, depth);
         assert!(
-            lmp_index(DEFAULT, false, depth, count).is_none(),
+            lmp_index(DEFAULT, false, false, depth, count).is_none(),
             "depth {depth}: a node of exactly the count was admitted"
         );
         assert!(
-            lmp_index(DEFAULT, false, depth, count + 1).is_some(),
+            lmp_index(DEFAULT, false, false, depth, count + 1).is_some(),
             "depth {depth}: a node one past the count was refused"
         );
     }
