@@ -867,17 +867,28 @@ fn the_ponder_move_is_the_second_move_of_the_principal_variation() {
 // searchmoves and mate
 // ---------------------------------------------------------------------------
 
+/// Waits for `bestmove` before quitting, so the search runs to its depth and the lines are there to
+/// read: a `quit` sent with the `go` stops it before its first iteration.
 #[test]
 fn go_searchmoves_searches_only_the_moves_named() {
     for threads in [1, 4] {
-        let out = talk(&format!(
-            "setoption name Threads value {threads}\nposition startpos\n\
-             go depth 5 searchmoves a2a3 h2h3\nquit\n"
-        ));
+        let (_, lines) = Engine::go_within(
+            &[
+                &format!("setoption name Threads value {threads}"),
+                "position startpos",
+            ],
+            "go depth 5 searchmoves a2a3 h2h3",
+            std::time::Duration::from_secs(20),
+        );
+        let out = lines.join("\n");
         let best = bestmove(&out);
         assert!(
             best == "a2a3" || best == "h2h3",
             "threads {threads}: {out:?}"
+        );
+        assert!(
+            out.lines().any(|l| l.starts_with("info depth 5 ")),
+            "threads {threads}: the search did not reach depth 5: {out:?}"
         );
         for line in out.lines().filter(|l| l.starts_with("info depth ")) {
             let first = line
