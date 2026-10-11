@@ -17,7 +17,6 @@ version      = "0.5.12"
 edition      = "2024"
 rust-version = "1.98"
 license      = "GPL-3.0-or-later"
-authors      = ["Michael Grounds"]
 repository   = "https://github.com/grounzero/cadence"
 
 # `unsafe_code = "forbid"` is deliberately NOT here. A Cargo-level `forbid`

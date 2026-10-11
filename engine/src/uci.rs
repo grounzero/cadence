@@ -24,7 +24,7 @@ use say::say;
 /// names its commit.
 const ENGINE_NAME: &str = "Cadence";
 const ENGINE_VERSION: &str = crate::version::VERSION;
-const ENGINE_AUTHOR: &str = "Michael Grounds";
+const ENGINE_AUTHOR: &str = "grounzero";
 const ENGINE_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// The only value for which a search is reproducible, and what `bench`, rating lists and every SPRT
