@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use cadence_core::{Move, generate_legal, to_uci};
+use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
 
 use super::say::say;
 use super::{Running, Session};
@@ -21,7 +21,8 @@ impl Session {
     /// A search still running is stopped first.
     pub(super) fn go<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
         self.stop_search();
-        let mut limits = Limits::parse(tokens);
+        let tokens: Vec<&str> = tokens.collect();
+        let mut limits = Limits::parse(tokens.iter().copied());
         limits.move_overhead = Some(self.move_overhead);
         // A clock not ours reads as zero, which returns the first iteration and looks like a broken
         // engine from the pipe, so say which it is.
@@ -38,6 +39,7 @@ impl Session {
         let stop = Arc::new(AtomicBool::new(false));
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let board = self.board.duplicate();
+        let root_filter = search_moves(&tokens, &generate_legal(&board));
         let chess960 = self.chess960;
         let level = self.level();
         let multipv = level.map_or(self.multipv, |policy| policy.candidates);
@@ -67,6 +69,7 @@ impl Session {
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
                         search.set_tunables(tunables);
+                        search.set_root_filter(&root_filter);
                         let mut best = search.run(&mut pos, &mut out);
                         if let Some(policy) = level {
                             best = search.sample(policy, &pos);
@@ -84,6 +87,7 @@ impl Session {
                             multipv,
                             level,
                             tunables,
+                            root_filter: &root_filter,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -147,6 +151,7 @@ struct ParallelGo<'a> {
     /// different move.
     level: Option<level::Policy>,
     tunables: Tunables,
+    root_filter: &'a [Move],
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
@@ -163,6 +168,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         multipv,
         level,
         tunables,
+        root_filter,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -176,6 +182,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         let helper_ponder_hit = Arc::clone(ponder_hit);
         let helper_tt = Arc::clone(tt);
         let helper_nodes = Arc::clone(&nodes);
+        let helper_filter = root_filter.to_vec();
         let result = std::thread::Builder::new()
             .name(format!("search-helper-{worker_index}"))
             .stack_size(SEARCH_STACK_BYTES)
@@ -188,6 +195,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 search.set_multipv(multipv);
                 search.set_tunables(tunables);
                 search.set_parallel(worker_index, &helper_nodes);
+                search.set_root_filter(&helper_filter);
                 search.run_in_current_generation(&mut helper_board, &mut sink)
             });
         match result {
@@ -206,6 +214,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_multipv(multipv);
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
+    search.set_root_filter(root_filter);
     let mut best = search.run_in_current_generation(board, &mut out);
     if let Some(policy) = level {
         best = search.sample(policy, board);
@@ -218,6 +227,43 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         let _ = helper.join();
     }
     (best, pv)
+}
+
+/// The words that end a `searchmoves` list, which UCI lets any of them follow.
+const GO_KEYWORDS: [&str; 12] = [
+    "searchmoves",
+    "ponder",
+    "wtime",
+    "btime",
+    "winc",
+    "binc",
+    "movestogo",
+    "depth",
+    "nodes",
+    "mate",
+    "movetime",
+    "infinite",
+];
+
+/// The moves after `searchmoves`; one not legal here is named and left out, and none legal leaves
+/// the root unfiltered.
+fn search_moves(tokens: &[&str], legal: &MoveList) -> Vec<Move> {
+    let Some(at) = tokens.iter().position(|&t| t == "searchmoves") else {
+        return Vec::new();
+    };
+    let mut moves = Vec::new();
+    for &token in tokens[at + 1..]
+        .iter()
+        .take_while(|t| !GO_KEYWORDS.contains(t))
+    {
+        match parse_uci(legal, token) {
+            Some(m) => moves.push(m),
+            None => say(format_args!(
+                "info string go: searchmoves {token} is not a legal move here; left out"
+            )),
+        }
+    }
+    moves
 }
 
 /// Spelled in the position it is played in, not at the root. `None` where an aborted first

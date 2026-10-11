@@ -862,3 +862,76 @@ fn the_ponder_move_is_the_second_move_of_the_principal_variation() {
         pv[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// searchmoves and mate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn go_searchmoves_searches_only_the_moves_named() {
+    for threads in [1, 4] {
+        let out = talk(&format!(
+            "setoption name Threads value {threads}\nposition startpos\n\
+             go depth 5 searchmoves a2a3 h2h3\nquit\n"
+        ));
+        let best = bestmove(&out);
+        assert!(
+            best == "a2a3" || best == "h2h3",
+            "threads {threads}: {out:?}"
+        );
+        for line in out.lines().filter(|l| l.starts_with("info depth ")) {
+            let first = line
+                .split(" pv ")
+                .nth(1)
+                .and_then(|pv| pv.split(' ').next());
+            assert!(matches!(first, Some("a2a3" | "h2h3")), "{line}");
+        }
+    }
+}
+
+#[test]
+fn go_searchmoves_names_an_illegal_move_and_leaves_it_out() {
+    let out = talk("position startpos\ngo depth 3 searchmoves e2e5 h2h3\nquit\n");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("info string") && l.contains("e2e5")),
+        "{out:?}"
+    );
+    assert_eq!(bestmove(&out), "h2h3", "{out:?}");
+}
+
+#[test]
+fn go_searchmoves_with_no_legal_move_searches_them_all() {
+    let out = talk("position startpos\ngo depth 2 searchmoves e2e5\nquit\n");
+    assert_bestmove_legal(&out, START_FEN, false);
+}
+
+/// With no other limit the search would run to its depth cap, so returning at all is the stop.
+#[test]
+fn go_mate_returns_once_the_mate_is_proved() {
+    let (_, lines) = Engine::go_within(
+        &["position fen 7k/8/5K2/8/8/8/8/Q7 w - - 0 1"],
+        "go mate 2",
+        std::time::Duration::from_secs(20),
+    );
+    let out = lines.join("\n");
+    let last = out
+        .lines()
+        .rfind(|l| l.starts_with("info depth "))
+        .unwrap_or_else(|| panic!("no info line: {out:?}"));
+    assert!(
+        last.contains(" score mate 1 ") || last.contains(" score mate 2 "),
+        "{last}"
+    );
+    assert_bestmove_legal(&out, "7k/8/5K2/8/8/8/8/Q7 w - - 0 1", false);
+}
+
+#[test]
+fn go_mate_one_plays_the_mate() {
+    let (_, lines) = Engine::go_within(
+        &["position fen 7k/8/6K1/8/8/8/8/1R6 w - - 0 1"],
+        "go mate 1",
+        std::time::Duration::from_secs(20),
+    );
+    assert_eq!(bestmove(&lines.join("\n")), "b1b8");
+}

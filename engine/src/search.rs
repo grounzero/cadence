@@ -161,6 +161,8 @@ pub struct Search<'a> {
     /// Kept under every limit: it costs no clock read and decides nothing.
     roots: Vec<(Move, Score)>,
     multipv: usize,
+    /// `go searchmoves`: the root searches only these, and every move where it is empty.
+    root_filter: Vec<Move>,
     /// Best first once the iteration is accepted.
     lines: Vec<RootLine>,
     /// What a level samples among; separate from `lines`, which an aborted iteration leaves
@@ -230,6 +232,7 @@ impl<'a> Search<'a> {
             iterations: Vec::new(),
             roots: Vec::new(),
             multipv: 1,
+            root_filter: Vec::new(),
             lines: Vec::new(),
             accepted: Vec::new(),
         }
@@ -255,6 +258,11 @@ impl<'a> Search<'a> {
 
     pub fn set_multipv(&mut self, n: usize) {
         self.multipv = n.max(1);
+    }
+
+    /// From the next run on; a move not legal at the root is never searched.
+    pub fn set_root_filter(&mut self, moves: &[Move]) {
+        self.root_filter = moves.to_vec();
     }
 
     /// The clock origin is set here and moved only by a `ponderhit`.
