@@ -141,6 +141,32 @@ fn more_time_or_increment_never_shortens_the_budget() {
     }
 }
 
+/// A clock or increment near the limit a `go` can carry saturates rather than overflowing, which
+/// panics in a debug build and wraps in a release one.
+#[test]
+fn a_clock_near_the_limit_still_gives_a_bounded_budget() {
+    let max = i64::MAX.to_string();
+    for (time, inc) in [
+        (&*max, &*max),
+        (&*max, "0"),
+        ("1000", &*max),
+        (&*max, "1000"),
+    ] {
+        let l = limits(&format!("wtime {time} btime {time} winc {inc} binc {inc}"));
+        let b = budget(&l, Colour::White).expect("a clock gives a budget");
+        let (t, _) = l.clock(Colour::White).expect("our clock");
+        assert!(b.soft <= b.hard, "time {time} inc {inc}: {b:?}");
+        assert!(b.hard <= t / 2, "time {time} inc {inc}: {b:?}");
+    }
+    let l = Limits {
+        time: [Some(u64::MAX); 2],
+        inc: [Some(u64::MAX); 2],
+        ..Limits::default()
+    };
+    let b = budget(&l, Colour::White).expect("a clock gives a budget");
+    assert!(b.soft <= b.hard && b.hard <= u64::MAX / 2, "{b:?}");
+}
+
 #[test]
 fn the_increment_is_spent() {
     let without = clock(10_000, 0, None);

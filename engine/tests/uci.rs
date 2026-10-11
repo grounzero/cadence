@@ -926,6 +926,32 @@ fn go_mate_returns_once_the_mate_is_proved() {
     assert_bestmove_legal(&out, "7k/8/5K2/8/8/8/8/Q7 w - - 0 1", false);
 }
 
+/// With no mate within the limit `go mate` must not stop on it: the search runs to its other limit,
+/// a depth here, and still answers. The second position mates in two and is asked for one.
+#[test]
+fn go_mate_with_no_mate_within_the_limit_runs_to_its_other_limit() {
+    for (fen, go, depth) in [
+        (START_FEN, "go mate 2 depth 4", 4),
+        ("7k/8/5K2/8/8/8/8/Q7 w - - 0 1", "go mate 1 depth 5", 5),
+    ] {
+        let (_, lines) = Engine::go_within(
+            &[&format!("position fen {fen}")],
+            go,
+            std::time::Duration::from_secs(20),
+        );
+        let out = lines.join("\n");
+        let last = out
+            .lines()
+            .rfind(|l| l.starts_with("info depth "))
+            .unwrap_or_else(|| panic!("{go}: no info line: {out:?}"));
+        assert!(
+            last.starts_with(&format!("info depth {depth} ")),
+            "{go}: stopped before depth {depth}: {last}"
+        );
+        assert_bestmove_legal(&out, fen, false);
+    }
+}
+
 #[test]
 fn go_mate_one_plays_the_mate() {
     let (_, lines) = Engine::go_within(
