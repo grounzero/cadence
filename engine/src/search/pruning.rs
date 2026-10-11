@@ -54,12 +54,18 @@ pub fn lmp_count(tunables: &Tunables, depth: u32) -> usize {
     REDUCTION_INDEX.saturating_add(usize::try_from(counted).unwrap_or(usize::MAX))
 }
 
-/// Refused in check, where a wrong skip loses a mate defence and, unlike a reduction, is never
-/// re-searched.
+/// Refused in check, where a wrong skip loses a mate defence, and at PV nodes, whose line is the
+/// one reported. Unlike a reduction, a skip is never re-searched.
 #[must_use]
-pub fn lmp_index(tunables: &Tunables, in_check: bool, depth: u32, moves: usize) -> Option<usize> {
+pub fn lmp_index(
+    tunables: &Tunables,
+    in_check: bool,
+    pv: bool,
+    depth: u32,
+    moves: usize,
+) -> Option<usize> {
     let count = lmp_count(tunables, depth);
-    (!in_check && depth <= LMP_DEPTH && moves > count).then_some(count)
+    (!in_check && !pv && depth <= LMP_DEPTH && moves > count).then_some(count)
 }
 
 /// The check exemption is the caller's.

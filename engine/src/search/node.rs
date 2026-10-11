@@ -114,9 +114,11 @@ impl Search<'_> {
         let futile = futile_node(self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
 
+        // The node's own window, read before the loop raises `alpha`.
+        let pv = beta > alpha + 1;
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
         // asked first keeps the moves it takes.
-        let give_up = lmp_index(&self.tunables, in_check, depth, legal.len());
+        let give_up = lmp_index(&self.tunables, in_check, pv, depth, legal.len());
         self.lmp_nodes += u64::from(give_up.is_some());
 
         let original_alpha = alpha;
