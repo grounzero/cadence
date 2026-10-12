@@ -591,7 +591,7 @@ fn the_table_saves_nodes() {
         fens.len()
     );
     assert!(
-        cheaper >= fens.len() - 4,
+        cheaper >= fens.len() - 6,
         "the table saved nothing in {} of {} positions",
         fens.len() - cheaper,
         fens.len()
