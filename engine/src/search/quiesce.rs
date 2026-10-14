@@ -2,7 +2,7 @@
 
 //! Out of check only noisy moves, in check every evasion.
 
-use cadence_core::{MAX_PLY, Move, generate_legal, generate_noisy, has_legal_move};
+use cadence_core::{MAX_PLY, generate_legal, generate_noisy, has_legal_move};
 
 use super::Search;
 use crate::eval;
@@ -44,7 +44,7 @@ impl Search<'_> {
             }
             // No killers and no history for the quiet evasions: whether they help is unmeasured.
             let generated_first = evasions.as_slice()[0];
-            picker::sort_from(board, &mut evasions, 0, [Move::NULL; 2], &[]);
+            picker::sort_evasions(board, &mut evasions);
             // The head is what a cutoff here is bought with.
             self.evasion_lists += 1;
             if evasions.as_slice()[0] != generated_first {

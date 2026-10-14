@@ -84,25 +84,36 @@ const KILLER: [i32; 2] = [-128, -129];
 /// A subtraction rather than a rank, so the group moves and nothing inside it does.
 const LOSING: i32 = 256;
 
+/// The main search's losing captures, below every quiet move and its history score.
+const LAST: i32 = 1024;
+
 const _: () = assert!(KILLER[0] > KILLER[1]);
 const _: () = assert!(KILLER[0] < NOISY_MIN);
 const _: () = assert!(NOISY_MAX - LOSING < KILLER[1]);
 const _: () = assert!(NOISY_MIN - LOSING > QUIET);
+const _: () = assert!(NOISY_MAX - LAST < QUIET);
+const _: () = assert!((NOISY_MIN - LAST) as i64 * BAND as i64 >= i32::MIN as i64);
+
+/// Where a noisy move that loses material is tried.
+#[derive(Clone, Copy)]
+enum Losing {
+    /// No exchange is evaluated.
+    Kept,
+    BehindKillers,
+    /// A losing promotion keeps its place behind the killers.
+    Last,
+}
 
 /// Rank times [`BAND`], plus the history score where there is one.
-fn move_key(
-    board: &Board,
-    m: Move,
-    killers: [Move; 2],
-    demote_losing: bool,
-    history: &[i32],
-) -> i32 {
+fn move_key(board: &Board, m: Move, killers: [Move; 2], losing: Losing, history: &[i32]) -> i32 {
     if m.is_noisy() {
         let key = noisy_key(board, m);
-        if demote_losing && see::see(board, m) < 0 {
-            (key - LOSING) * BAND
-        } else {
+        if matches!(losing, Losing::Kept) || see::see(board, m) >= 0 {
             key * BAND
+        } else if matches!(losing, Losing::Last) && m.promotion_piece().is_none() {
+            (key - LAST) * BAND
+        } else {
+            (key - LOSING) * BAND
         }
     } else if m == killers[0] {
         KILLER[0] * BAND
@@ -115,11 +126,16 @@ fn move_key(
 
 /// No exchange is evaluated: the caller is about to skip a losing move anyway.
 pub fn sort_noisy(board: &Board, list: &mut MoveList) {
-    sort_impl(board, list, 0, [Move::NULL; 2], false, &[]);
+    sort_impl(board, list, 0, [Move::NULL; 2], Losing::Kept, &[]);
 }
 
-/// Noisy moves, then killers, then losing noisy moves, then quiet moves by history. Stable, so ties
-/// keep generation order.
+/// Losing noisy moves stay ahead of the quiet evasions, which carry no history to rank them.
+pub fn sort_evasions(board: &Board, list: &mut MoveList) {
+    sort_impl(board, list, 0, [Move::NULL; 2], Losing::BehindKillers, &[]);
+}
+
+/// Noisy moves, then killers, then losing promotions, then quiet moves by history, then losing
+/// captures. Stable, so ties keep generation order.
 pub fn sort_from(
     board: &Board,
     list: &mut MoveList,
@@ -127,7 +143,7 @@ pub fn sort_from(
     killers: [Move; 2],
     history: &[i32],
 ) {
-    sort_impl(board, list, start, killers, true, history);
+    sort_impl(board, list, start, killers, Losing::Last, history);
 }
 
 fn sort_impl(
@@ -135,7 +151,7 @@ fn sort_impl(
     list: &mut MoveList,
     start: usize,
     killers: [Move; 2],
-    demote_losing: bool,
+    losing: Losing,
     history: &[i32],
 ) {
     let all = list.as_mut_slice();
@@ -145,7 +161,7 @@ fn sort_impl(
     let moves = &mut all[start..];
     let mut keys = [0i32; MAX_MOVES];
     for (key, &m) in keys.iter_mut().zip(moves.iter()) {
-        *key = move_key(board, m, killers, demote_losing, history);
+        *key = move_key(board, m, killers, losing, history);
     }
     for i in 1..moves.len() {
         let (m, k) = (moves[i], keys[i]);

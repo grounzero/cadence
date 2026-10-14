@@ -764,7 +764,7 @@ fn the_check_evasions_sort_noisy_first_and_keep_generation_order() {
         for &e in evasions {
             list.push(e);
         }
-        cadence_engine::picker::sort_from(b, &mut list, 0, [Move::NULL; 2], &[]);
+        cadence_engine::picker::sort_evasions(b, &mut list);
         let sorted = list.as_slice().to_vec();
         let mut before = evasions.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
         let mut after = sorted.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
@@ -839,6 +839,30 @@ fn the_defended_blocker_is_what_it_claims() {
         assert!(
             loses_material_to_a_recapture(&mut b, take),
             "{fen}: {take:?} is not refuted"
+        );
+        b.unmake_move(key);
+    }
+}
+
+/// Quiescence's sort keeps the losing capture of the blocker ahead of the seven king moves, where the
+/// main search's sort tries it last.
+#[test]
+fn the_evasion_sort_keeps_a_losing_capture_ahead_of_the_quiet_evasions() {
+    for (fen, key) in both_colours(DEFENDED_BLOCKER, "h3g1") {
+        let mut b = support::position(&fen);
+        let key = mv(&b, &key);
+        b.make_move(key);
+        let mut evasions = generate_legal(&b);
+        cadence_engine::picker::sort_evasions(&b, &mut evasions);
+        assert!(
+            evasions.as_slice()[0].is_noisy(),
+            "{fen}: the evasion sort moved the losing capture off the head"
+        );
+        let mut main = generate_legal(&b);
+        cadence_engine::picker::sort_from(&b, &mut main, 0, [Move::NULL; 2], &[]);
+        assert!(
+            main.as_slice().last().is_some_and(|m| m.is_noisy()),
+            "{fen}: the main search's sort did not try the losing capture last"
         );
         b.unmake_move(key);
     }
@@ -1000,7 +1024,7 @@ fn an_even_exchange_at_the_horizon_is_searched() {
 fn a_losing_evasion_is_searched_all_the_same() {
     for ((fen, _), expected) in both_colours(DEFENDED_BLOCKER, "a1a1")
         .into_iter()
-        .zip([15, 13])
+        .zip([14, 12])
     {
         let mut b = support::position(&fen);
         let r = search(&mut b, Limits::depth(1));

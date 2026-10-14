@@ -372,14 +372,17 @@ const KILLER_ONE: i32 = -1_000;
 const KILLER_TWO: i32 = -1_001;
 const LOSING_BASE: i32 = -10_000;
 const QUIET_RANK: i32 = -100_000;
+const LAST_BASE: i32 = -1_000_000;
 
 /// Written out rather than taken from the code under test: keeping noisy moves by MVV-LVA, killer
-/// one, killer two, losing noisy moves in MVV-LVA order, then every other quiet move. `see` is
-/// asked through the picker's own public function, since what is gated is where its answer puts the
-/// move.
+/// one, killer two, losing promotions, every other quiet move, then losing captures in MVV-LVA
+/// order. `see` is asked through the picker's own public function, since what is gated is where its
+/// answer puts the move.
 fn rank_with(b: &Board, m: Move, killers: [Move; 2]) -> i32 {
     if m.is_noisy() {
-        if see(b, m) < 0 {
+        if losing_capture(b, m) {
+            LAST_BASE + noisy_key(b, m)
+        } else if see(b, m) < 0 {
             LOSING_BASE + noisy_key(b, m)
         } else {
             noisy_key(b, m)
@@ -391,6 +394,11 @@ fn rank_with(b: &Board, m: Move, killers: [Move; 2]) -> i32 {
     } else {
         QUIET_RANK
     }
+}
+
+/// A promotion that loses material keeps its place behind the killers.
+fn losing_capture(b: &Board, m: Move) -> bool {
+    m.is_noisy() && m.promotion_piece().is_none() && see(b, m) < 0
 }
 
 /// Each in the order the generator emitted them.
@@ -494,31 +502,49 @@ fn the_list_comes_out_in_descending_rank_order() {
     assert!(positions > 30, "only {positions} positions had two moves");
 }
 
-/// Counted from the generated list, so a sort that dropped a noisy move could not pass by having
-/// fewer at the front.
+/// Counted from the generated list, so a sort that dropped a move could not pass by having fewer in
+/// a block. The corpus's children are read, since the corpus alone holds few losing captures.
 #[test]
-fn every_noisy_move_is_tried_before_every_quiet_one() {
-    let mut mixed = 0;
-    for fen in support::corpus_fens() {
-        let (_, generated, after) = sorted(&fen, 0);
-        let noisy = generated.iter().filter(|m| m.is_noisy()).count();
-        let quiet = generated.len() - noisy;
+fn every_quiet_move_is_tried_between_the_other_noisy_moves_and_the_losing_captures() {
+    let (mut mixed, mut losing_behind) = (0, 0);
+    for fen in corpus_and_children() {
+        let (b, generated, after) = sorted(&fen, 0);
+        let last = generated.iter().filter(|&&m| losing_capture(&b, m)).count();
+        let noisy = generated.iter().filter(|m| m.is_noisy()).count() - last;
+        let quiet = generated.len() - noisy - last;
         assert!(
-            after[..noisy].iter().all(|m| m.is_noisy()),
-            "{fen}: a quiet move is inside the first {noisy}"
+            after[..noisy]
+                .iter()
+                .all(|&m| m.is_noisy() && !losing_capture(&b, m)),
+            "{fen}: a quiet move or a losing capture is inside the first {noisy}"
         );
         assert!(
-            after[noisy..].iter().all(|m| !m.is_noisy()),
-            "{fen}: a noisy move is behind the first {noisy}"
+            after[noisy..noisy + quiet].iter().all(|m| !m.is_noisy()),
+            "{fen}: a noisy move is among the quiet ones"
+        );
+        assert!(
+            after[noisy + quiet..]
+                .iter()
+                .all(|&m| losing_capture(&b, m)),
+            "{fen}: something other than a losing capture is behind the quiet moves"
         );
         if noisy > 0 && quiet > 0 {
             mixed += 1;
         }
+        if last > 0 && quiet > 0 {
+            losing_behind += 1;
+        }
     }
-    println!("{mixed} positions had both a noisy move and a quiet one");
+    println!(
+        "{mixed} positions had a noisy move and a quiet one, {losing_behind} a losing capture and a quiet one"
+    );
     assert!(
         mixed > 10,
-        "only {mixed} positions could tell the two apart"
+        "only {mixed} positions could tell the noisy moves from the quiet ones"
+    );
+    assert!(
+        losing_behind > 50,
+        "only {losing_behind} positions could place a losing capture behind a quiet move"
     );
 }
 
@@ -614,21 +640,24 @@ fn the_tables_move_stays_in_front_of_the_sort() {
 // ---------------------------------------------------------------------------
 // The losing captures, on their own
 // ---------------------------------------------------------------------------
-// A losing capture sits in a band below both killers and above every other quiet move. Its
-// position, its membership by exchange rather than capture, and its internal order are separate
-// claims.
+// A losing capture is tried after every quiet move, and a losing promotion in a band below both
+// killers. Its position, its membership by exchange rather than capture, and its internal order are
+// separate claims.
 
 /// The stage order, stated as indices into the sorted list.
 #[test]
-fn a_losing_capture_is_tried_after_both_killers_and_ahead_of_every_other_quiet() {
+fn a_losing_capture_is_tried_after_every_quiet_move() {
     let fens = losing_capture_fens();
+    let mut with_capture = 0;
     for fen in &fens {
         let b = board(fen);
         let killers = late_killers(&b);
         let (losing, rest) = losing_and_rest(&b);
+        let promotions = losing.iter().filter(|&&m| !losing_capture(&b, m)).count();
+        let captures = losing.len() - promotions;
         let (_, _, after) = sorted_with(fen, 0, killers);
         // [ the noisy moves that do not lose ][ killer 0 ][ killer 1 ]
-        // [ the noisy moves that do lose ][ every other quiet move ]
+        // [ the promotions that lose ][ every other quiet move ][ the captures that lose ]
         let n = rest.len();
         assert!(
             after[..n].iter().all(|m| m.is_noisy() && see(&b, *m) >= 0),
@@ -640,21 +669,35 @@ fn a_losing_capture_is_tried_after_both_killers_and_ahead_of_every_other_quiet()
             killers[1],
             "{fen}: the second killer is misplaced"
         );
-        let band = &after[n + 2..n + 2 + losing.len()];
+        let band = &after[n + 2..n + 2 + promotions];
         assert!(
-            band.iter().all(|m| m.is_noisy() && see(&b, *m) < 0),
-            "{fen}: the band behind the killers is not the losing captures"
+            band.iter().all(|&m| m.is_noisy() && !losing_capture(&b, m)),
+            "{fen}: the band behind the killers is not the losing promotions"
+        );
+        let tail = after.len() - captures;
+        assert!(
+            after[n + 2 + promotions..tail]
+                .iter()
+                .all(|m| !m.is_noisy()),
+            "{fen}: a noisy move sits in the quiet block"
         );
         assert!(
-            after[n + 2 + losing.len()..].iter().all(|m| !m.is_noisy()),
-            "{fen}: a noisy move sits behind the quiet block"
+            after[tail..].iter().all(|&m| losing_capture(&b, m)),
+            "{fen}: the tail behind the quiet block is not the losing captures"
         );
+        if captures > 0 {
+            with_capture += 1;
+        }
     }
     println!(
-        "{} positions with a losing capture, a keeping one and three quiet moves",
+        "{} positions with a losing noisy move, a keeping one and three quiet moves, {with_capture} with a losing capture",
         fens.len()
     );
     assert!(fens.len() > 50, "only {} positions", fens.len());
+    assert!(
+        with_capture > 50,
+        "only {with_capture} positions with a losing capture"
+    );
 }
 
 /// Where the losing capture takes the more valuable piece, a rule reading the victim puts them the
@@ -697,7 +740,7 @@ fn the_losing_captures_keep_their_order_among_themselves() {
         let (_, _, after) = sorted_with(&fen, 0, NO_KILLERS);
         let got: Vec<Move> = after
             .into_iter()
-            .filter(|&m| m.is_noisy() && see(&b, m) < 0)
+            .filter(|&m| losing_capture(&b, m))
             .collect();
         let mut want = got.clone();
         want.sort_by_key(|&m| -noisy_key(&b, m));
