@@ -138,6 +138,9 @@ pub struct Search<'a> {
     /// Two, so a gate can tell a table that only credits from one that also debits.
     history_reduced_less: u64,
     history_reduced_more: u64,
+    /// The second is a share of the first no rule intends, so a gate asserts it is zero.
+    history_debits: u64,
+    history_debits_unsearched: u64,
     /// The check-exemption count lets a gate see the exemption decide.
     futility_nodes: u64,
     futility_skipped: u64,
@@ -215,6 +218,8 @@ impl<'a> Search<'a> {
             lmr_researches: 0,
             history_reduced_less: 0,
             history_reduced_more: 0,
+            history_debits: 0,
+            history_debits_unsearched: 0,
             futility_nodes: 0,
             futility_skipped: 0,
             futility_kept_check: 0,
@@ -284,6 +289,8 @@ impl<'a> Search<'a> {
         self.lmr_researches = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
+        self.history_debits = 0;
+        self.history_debits_unsearched = 0;
         self.corrhist.clear();
         self.corrhist_updates = 0;
         self.corrhist_applied = 0;
