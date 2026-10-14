@@ -17,6 +17,17 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.15] - 2026-10-14
+
+### Changed
+
+- Search: a capture that loses material is now tried after every quiet
+  move; a promotion that loses material keeps its earlier place.
+
+Test 57: +2.92 (between +0.62 and +5.23), a self-play estimate against
+0.5.14 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.14] - 2026-10-12
 
 ### Changed
@@ -322,7 +333,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.14...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.15...main
+[0.5.15]: https://github.com/grounzero/cadence/compare/0.5.14...0.5.15
 [0.5.14]: https://github.com/grounzero/cadence/compare/0.5.13...0.5.14
 [0.5.13]: https://github.com/grounzero/cadence/compare/0.5.12...0.5.13
 [0.5.12]: https://github.com/grounzero/cadence/compare/0.5.11...0.5.12
