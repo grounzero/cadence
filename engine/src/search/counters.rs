@@ -286,7 +286,7 @@ impl Search<'_> {
         let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
         for (i, &beaten) in passed.iter().enumerate() {
-            if beaten.is_noisy() {
+            if beaten.is_noisy() || !searched.contains(i) {
                 continue;
             }
             self.history_debits += 1;

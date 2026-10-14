@@ -170,9 +170,8 @@ impl Search<'_> {
                     }
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
-                        // The moves it beat include ones the margin and count skipped, so
-                        // unsearched moves are debited too: 29.2% of debits over the bench at
-                        // 0.4.8.
+                        // A move the margin or the count gave up was never played, so it is
+                        // passed over rather than debited.
                         self.remember_history(us, &legal.as_slice()[..i], &searched, m, depth);
                         break;
                     }
