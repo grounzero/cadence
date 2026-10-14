@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move};
 
+use super::node::Searched;
 use super::{Limits, NODE_PUBLISH_INTERVAL, Search};
 use crate::eval;
 use crate::history::{self, History};
@@ -54,6 +55,18 @@ impl Search<'_> {
     #[must_use]
     pub fn history_reduced_more(&self) -> u64 {
         self.history_reduced_more
+    }
+
+    /// Quiet moves the cutoffs debited.
+    #[must_use]
+    pub fn history_debits(&self) -> u64 {
+        self.history_debits
+    }
+
+    /// Of [`Search::history_debits`], the moves the node never searched.
+    #[must_use]
+    pub fn history_debits_unsearched(&self) -> u64 {
+        self.history_debits_unsearched
     }
 
     /// Nodes the margin admitted; its siblings count the quiet moves skipped there and the skips
@@ -259,13 +272,25 @@ impl Search<'_> {
     }
 
     /// Credits `cut` and debits every quiet move tried before it.
-    pub(super) fn remember_history(&mut self, us: Colour, tried: &[Move], cut: Move, depth: u32) {
+    pub(super) fn remember_history(
+        &mut self,
+        us: Colour,
+        passed: &[Move],
+        searched: &Searched,
+        cut: Move,
+        depth: u32,
+    ) {
         if cut.is_noisy() {
             return;
         }
         let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
-        for &beaten in tried.iter().filter(|q| !q.is_noisy()) {
+        for (i, &beaten) in passed.iter().enumerate() {
+            if beaten.is_noisy() {
+                continue;
+            }
+            self.history_debits += 1;
+            self.history_debits_unsearched += u64::from(!searched.contains(i));
             self.history.update(us, beaten, -bonus);
         }
     }
