@@ -468,6 +468,58 @@ fn the_node_limit_stops_the_search() {
     assert!(generate_legal(&b).contains(r.best));
 }
 
+/// `ABORTED` is the draw score, so this reads a position where nothing within two plies of the root
+/// is worth a draw. A node that stored after the stop would leave that value on one of those keys.
+#[test]
+fn a_stopped_search_stores_no_aborted_value() {
+    // A full army against four pawns: neither side reaches a draw this near the root.
+    let fen = "4k3/pppp4/8/8/8/8/PPPPPPPP/RNBQKBNR w KQ - 0 1";
+    let mut b = support::position(fen);
+    let mut keys = Vec::new();
+    for m in generate_legal(&b).iter() {
+        b.make_move(m);
+        keys.push(b.key());
+        for r in generate_legal(&b).iter() {
+            b.make_move(r);
+            keys.push(b.key());
+            b.unmake_move(r);
+        }
+        b.unmake_move(m);
+    }
+    let stop = AtomicBool::new(false);
+    let mut read = 0;
+    for i in 0..30u64 {
+        // Stops spread across several iterations and every ply the abort can land at.
+        let n = 1000 + 350 * i * i;
+        let tt = table();
+        let mut sink = Vec::new();
+        let limits = Limits {
+            nodes: Some(n),
+            ..Limits::default()
+        };
+        let mut s = support::search(limits, &stop, &tt);
+        s.run(&mut b, &mut sink);
+        assert!(
+            s.nodes() >= n,
+            "nodes {n}: finished at {} without stopping",
+            s.nodes()
+        );
+        for &k in &keys {
+            if let Some(hit) = tt.probe(k) {
+                read += 1;
+                assert_ne!(
+                    hit.score, 0,
+                    "nodes {n}: a stored {hit:?} reads the aborted value"
+                );
+            }
+        }
+    }
+    assert!(
+        read > 1000,
+        "only {read} entries read, too few to say anything"
+    );
+}
+
 /// Stated here, not imported: a gate reading the constant it checks cannot see it change.
 const EXTEND_WITHIN: usize = 2;
 
