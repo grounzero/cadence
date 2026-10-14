@@ -235,6 +235,86 @@ fn mate_in_two_is_found_with_the_score_mate_2() {
     }
 }
 
+/// Brute force, five plies: every reply leaves a mate in one or two.
+fn mates_in_three(b: &mut Position) -> Vec<Move> {
+    let mut out = Vec::new();
+    for m in generate_legal(b).iter() {
+        b.make_move(m);
+        let replies = generate_legal(b);
+        let forced = !replies.is_empty()
+            && replies.iter().all(|r| {
+                b.make_move(r);
+                let mated = !mates_in_one(b).is_empty() || !mates_in_two(b).is_empty();
+                b.unmake_move(r);
+                mated
+            });
+        b.unmake_move(m);
+        if forced {
+            out.push(m);
+        }
+    }
+    out
+}
+
+/// The window opens from depth four around a previous score that is not a mate, so a mate first
+/// seen at or past that depth arrives as a fail high through it. Its distance and move must still
+/// be exact.
+#[test]
+fn a_mate_first_found_behind_the_aspiration_window_is_exact() {
+    for fen in [
+        // Two rooks against a bare king: no iteration scores the mate in three before depth six.
+        "R7/8/8/2K5/8/1R6/8/3k4 w - - 0 1",
+        // The same material elsewhere on the board, first scored at depth five.
+        "5R2/8/8/8/5K2/k7/8/7R w - - 0 1",
+    ] {
+        let mut b = support::position(fen);
+        assert!(mates_in_one(&mut b).is_empty() && mates_in_two(&mut b).is_empty());
+        let keys = mates_in_three(&mut b);
+        assert!(!keys.is_empty(), "{fen} has no mate in three");
+        let stop = AtomicBool::new(false);
+        let tt = table();
+        let mut sink = Vec::new();
+        let mut s = support::search(Limits::depth(8), &stop, &tt);
+        let best = s.run(&mut b, &mut sink);
+        let roots = s.iteration_roots();
+        let first = roots
+            .iter()
+            .position(|&(_, v)| score::is_mate(v))
+            .unwrap_or_else(|| panic!("{fen}: no iteration scored a mate"));
+        let depth = first + 1;
+        assert!(
+            depth >= 4,
+            "{fen}: the mate came at depth {depth}, before the window"
+        );
+        assert!(
+            !score::is_mate(roots[first - 1].1),
+            "{fen}: depth {} was already a mate",
+            depth - 1
+        );
+        let (found, value) = roots[first];
+        assert_eq!(
+            value,
+            mate_in(5),
+            "{fen}: depth {depth} scored {}",
+            score::uci(value)
+        );
+        assert!(
+            keys.contains(&found),
+            "{fen}: depth {depth} played {found:?}, mates are {keys:?}"
+        );
+        assert_eq!(
+            s.score(),
+            mate_in(5),
+            "{fen}: final {}",
+            score::uci(s.score())
+        );
+        assert!(
+            keys.contains(&best),
+            "{fen}: played {best:?}, mates are {keys:?}"
+        );
+    }
+}
+
 #[test]
 fn mate_in_one_and_being_mated_in_one_are_scored_by_distance() {
     // Rb8# for White to move; Black to move can only walk into it.
