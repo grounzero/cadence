@@ -4,7 +4,7 @@
 
 use cadence_core::position::Board;
 use cadence_core::{
-    Colour, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, has_legal_move,
+    Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, has_legal_move,
 };
 
 use super::depth::{extension, history_reduction, null_reduction, reduction};
@@ -124,15 +124,17 @@ impl Search<'_> {
         let original_alpha = alpha;
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
+        // Written at one site above `make_move`, so every rule giving a move up is excluded unasked.
+        let mut searched = Searched::default();
         for ((i, m), quiet_index) in legal.iter().enumerate().zip(quiet_indices(&legal)) {
-            if self.futile(board, futile, m, i) {
-                continue;
-            }
             // Before the move is made, which is the whole saving; above the reduction, which never
             // sees a move given up.
-            if self.given_up(board, give_up, m, killers, quiet_index) {
+            if self.futile(board, futile, m, i)
+                || self.given_up(board, give_up, m, killers, quiet_index)
+            {
                 continue;
             }
+            searched.set(i);
             board.make_move(m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
@@ -168,10 +170,9 @@ impl Search<'_> {
                     }
                     if alpha >= beta {
                         remember_killer(&mut self.killers[ply], m);
-                        // The moves it beat include ones the margin and count skipped, so
-                        // unsearched moves are debited too: 29.2% of debits over the bench at
-                        // 0.4.8.
-                        self.remember_history(us, &legal.as_slice()[..i], m, depth);
+                        // A move the margin or the count gave up was never played, so it is
+                        // passed over rather than debited.
+                        self.remember_history(us, &legal.as_slice()[..i], &searched, m, depth);
                         break;
                     }
                 }
@@ -338,6 +339,21 @@ impl Search<'_> {
             }
         }
         None
+    }
+}
+
+/// Which of a node's moves it searched, one bit per index into its own list.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Searched([u64; MAX_MOVES / 64]);
+
+impl Searched {
+    /// Indexes rather than saturates, so an index past any list is a bounds failure, not a lost bit.
+    pub(super) fn set(&mut self, index: usize) {
+        self.0[index / 64] |= 1 << (index % 64);
+    }
+
+    pub(super) fn contains(&self, index: usize) -> bool {
+        self.0[index / 64] & (1 << (index % 64)) != 0
     }
 }
 
