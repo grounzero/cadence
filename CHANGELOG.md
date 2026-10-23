@@ -17,6 +17,19 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.16] - 2026-10-23
+
+### Fixed
+
+- Search: when a quiet move causes a cutoff, the history now marks down
+  only the quiet moves the node searched before it. Quiet moves that
+  pruning skipped without searching are no longer marked down.
+
+Test 58: +0.29 (between -1.62 and +2.20), a self-play estimate against
+0.5.15 at the short control. This was a non-regression test, which asks
+only whether the fix costs strength, and it passed: the result is
+neutral, not a gain. It is not a rating.
+
 ## [0.5.15] - 2026-10-14
 
 ### Changed
@@ -333,7 +346,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.15...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.16...main
+[0.5.16]: https://github.com/grounzero/cadence/compare/0.5.15...0.5.16
 [0.5.15]: https://github.com/grounzero/cadence/compare/0.5.14...0.5.15
 [0.5.14]: https://github.com/grounzero/cadence/compare/0.5.13...0.5.14
 [0.5.13]: https://github.com/grounzero/cadence/compare/0.5.12...0.5.13
