@@ -549,6 +549,55 @@ fn clear_hash_empties_the_table() {
     engine.quit();
 }
 
+/// Single thread at a fixed depth, so the count is a function of what the search starts from.
+const LIFETIME_DEPTH: u32 = 8;
+
+fn go_nodes(engine: &mut Engine) -> u64 {
+    engine.send(THREAD_POSITION);
+    engine.send(&format!("go depth {LIFETIME_DEPTH}"));
+    let lines = engine.read_until("bestmove ");
+    let prefix = format!("info depth {LIFETIME_DEPTH} ");
+    lines
+        .iter()
+        .rfind(|l| l.starts_with(&prefix))
+        .and_then(|l| field(l, "nodes"))
+        .unwrap_or_else(|| panic!("no nodes on a `{prefix}` line in {lines:?}"))
+}
+
+/// A replaced table, and the killers and correction history every `go` clears, leave the main
+/// history the only state a second `go` can start from. `bench` builds a fresh search per position,
+/// so only a second `go` in one process can tell its lifetime.
+#[test]
+fn history_survives_a_second_go() {
+    let second = |between: &str| {
+        let mut engine = Engine::spawn();
+        engine.sync();
+        let _ = go_nodes(&mut engine);
+        engine.send(between);
+        let nodes = go_nodes(&mut engine);
+        engine.quit();
+        nodes
+    };
+    let mut engine = Engine::spawn();
+    engine.sync();
+    let fresh = go_nodes(&mut engine);
+    engine.quit();
+    let hash = format!(
+        "setoption name Hash value {}",
+        cadence_engine::tt::DEFAULT_HASH_MB
+    );
+    let kept = second(&hash);
+    assert_ne!(
+        kept, fresh,
+        "a second go after `Hash` searched {kept} nodes, a fresh process's count: nothing carried"
+    );
+    let cleared = second("ucinewgame");
+    assert_eq!(
+        cleared, fresh,
+        "a second go after `ucinewgame` searched {cleared} nodes against a fresh process's {fresh}"
+    );
+}
+
 /// The node limit is taken from the clocked run, so the two cost the same and differ only in the
 /// limit.
 #[test]
