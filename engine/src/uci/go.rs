@@ -7,6 +7,7 @@ use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
 
 use super::say::say;
 use super::{Running, Session};
+use crate::history::History;
 use crate::level;
 use crate::position::Position;
 use crate::search::{Limits, Search};
@@ -46,6 +47,7 @@ impl Session {
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
+        let history = std::mem::take(&mut self.history);
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -61,7 +63,7 @@ impl Session {
                     let legal = generate_legal(&board);
                     let mut pos = Position::new(board);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
-                    let (best, pv) = if threads == 1 {
+                    let (best, pv, history) = if threads == 1 {
                         let mut out = std::io::stdout();
                         let mut search = Search::new(&stop, &tt);
                         search.set_limits(limits);
@@ -70,11 +72,12 @@ impl Session {
                         search.set_multipv(multipv);
                         search.set_tunables(tunables);
                         search.set_root_filter(&root_filter);
+                        search.set_history(history);
                         let mut best = search.run(&mut pos, &mut out);
                         if let Some(policy) = level {
                             best = search.sample(policy, &pos);
                         }
-                        (best, search.pv().to_vec())
+                        (best, search.pv().to_vec(), search.take_history())
                     } else {
                         parallel_search(ParallelGo {
                             board: &mut pos,
@@ -88,6 +91,7 @@ impl Session {
                             level,
                             tunables,
                             root_filter: &root_filter,
+                            history,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -100,6 +104,7 @@ impl Session {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
                         None => say(format_args!("bestmove {spelled}")),
                     }
+                    history
                 })
         };
         match thread {
@@ -128,8 +133,9 @@ impl Session {
     pub(super) fn stop_search(&mut self) {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
-            // The panic hook has already reported a panic in the search thread.
-            let _ = running.thread.join();
+            // The panic hook has already reported a panic in the search thread, and its history is
+            // lost with it.
+            self.history = running.thread.join().unwrap_or_default();
         }
     }
 }
@@ -152,11 +158,13 @@ struct ParallelGo<'a> {
     level: Option<level::Policy>,
     tunables: Tunables,
     root_filter: &'a [Move],
+    /// Every worker starts from it; only the primary's is kept, since helpers report nothing.
+    history: History,
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
 /// about the group.
-fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
+fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>, History) {
     let ParallelGo {
         board,
         limits,
@@ -169,6 +177,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         level,
         tunables,
         root_filter,
+        history,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -183,6 +192,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         let helper_tt = Arc::clone(tt);
         let helper_nodes = Arc::clone(&nodes);
         let helper_filter = root_filter.to_vec();
+        let helper_history = history.clone();
         let result = std::thread::Builder::new()
             .name(format!("search-helper-{worker_index}"))
             .stack_size(SEARCH_STACK_BYTES)
@@ -196,6 +206,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 search.set_tunables(tunables);
                 search.set_parallel(worker_index, &helper_nodes);
                 search.set_root_filter(&helper_filter);
+                search.set_history(helper_history);
                 search.run_in_current_generation(&mut helper_board, &mut sink)
             });
         match result {
@@ -215,6 +226,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
     search.set_root_filter(root_filter);
+    search.set_history(history);
     let mut best = search.run_in_current_generation(board, &mut out);
     if let Some(policy) = level {
         best = search.sample(policy, board);
@@ -226,7 +238,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     for helper in helpers {
         let _ = helper.join();
     }
-    (best, pv)
+    (best, pv, search.take_history())
 }
 
 /// The words that end a `searchmoves` list, which UCI lets any of them follow.

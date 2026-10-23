@@ -188,6 +188,34 @@ fn the_table_does_not_survive_a_second_search() {
     );
 }
 
+/// The same two runs with a table handed in, as a session hands its own: the second starts from what
+/// the first learned, so it searches a different tree.
+#[test]
+fn a_handed_table_survives_a_second_search() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(&support::standard_fen("kiwipete"));
+    let mut s = support::search(Limits::depth(ORDER_DEPTH), &stop, &tt);
+    s.set_history(History::new());
+
+    let _ = s.run(&mut b, &mut Vec::new());
+    let nodes = s.nodes();
+    tt.clear();
+    let _ = s.run(&mut b, &mut Vec::new());
+    assert_ne!(
+        s.nodes(),
+        nodes,
+        "the second run searched the first's tree, so nothing carried"
+    );
+    let kept = s.take_history();
+    assert!(
+        Colour::ALL
+            .iter()
+            .any(|&c| kept.side(c).iter().any(|&v| v != 0)),
+        "the table taken back is empty"
+    );
+}
+
 /// The scale is pinned too: at a scale of one the ageing term never engages and the cap is
 /// decoration.
 #[test]

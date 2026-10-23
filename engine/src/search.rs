@@ -82,6 +82,14 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
     killers[0] = m;
 }
 
+/// Whether a run starts from an empty history or from the one it holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryLifetime {
+    Run,
+    /// Handed in by a session, which keeps it across its searches.
+    Session,
+}
+
 /// Per thread; nothing is global.
 pub struct Search<'a> {
     limits: Limits,
@@ -119,6 +127,7 @@ pub struct Search<'a> {
     killers: [[Move; 2]; MAX_PLY],
     /// On the heap: `Search` is returned by value.
     history: History,
+    history_lifetime: HistoryLifetime,
     corrhist: CorrectionHistory,
     /// Read on no decision path.
     corrhist_updates: u64,
@@ -206,6 +215,7 @@ impl<'a> Search<'a> {
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
             history: History::new(),
+            history_lifetime: HistoryLifetime::Run,
             corrhist: CorrectionHistory::new(),
             corrhist_updates: 0,
             corrhist_applied: 0,
@@ -270,6 +280,18 @@ impl<'a> Search<'a> {
         self.root_filter = moves.to_vec();
     }
 
+    /// From the next run on, every run starts from this table and leaves it for `take_history`.
+    pub fn set_history(&mut self, history: History) {
+        self.history = history;
+        self.history_lifetime = HistoryLifetime::Session;
+    }
+
+    /// What the runs learned, for the next search to start from.
+    #[must_use]
+    pub fn take_history(&mut self) -> History {
+        std::mem::take(&mut self.history)
+    }
+
     /// The clock origin is set here and moved only by a `ponderhit`.
     fn begin(&mut self, board: &Board) {
         self.start = Instant::now();
@@ -280,7 +302,9 @@ impl<'a> Search<'a> {
         self.pv.clear();
         self.seldepth = 0;
         self.killers = [[Move::NULL; 2]; MAX_PLY];
-        self.history.clear();
+        if self.history_lifetime == HistoryLifetime::Run {
+            self.history.clear();
+        }
         self.evals = [None; MAX_PLY];
         self.null_attempts = 0;
         self.null_cutoffs = 0;

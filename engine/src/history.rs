@@ -48,6 +48,7 @@ pub fn shift(history: i32) -> i32 {
 }
 
 /// Thirty-two kibibytes, on the heap: `Search` is returned by value.
+#[derive(Clone)]
 pub struct History {
     rows: Box<[i32]>,
 }
@@ -60,7 +61,7 @@ impl History {
         }
     }
 
-    /// Called where the killers are cleared, so the two share one lifetime.
+    /// Called where the killers are cleared, unless a session handed the search a table to keep.
     pub fn clear(&mut self) {
         self.rows.fill(0);
     }

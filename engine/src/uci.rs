@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
 
+use crate::history::History;
 use crate::level;
 use crate::time;
 use crate::tt::{self, Table};
@@ -44,6 +45,9 @@ pub struct Session {
     chess960: bool,
     /// Kept across the game. `Hash` replaces it; `ucinewgame` clears it.
     tt: Arc<Table>,
+    /// Kept across the game like the table and handed to every search a `go` starts. `ucinewgame`
+    /// clears it; `Hash` and `Clear Hash` do not.
+    history: History,
     multipv: usize,
     /// A boolean, not a sentinel rating, so no arithmetic on a rating can turn the feature on.
     limit_strength: bool,
@@ -63,7 +67,8 @@ pub struct Session {
 struct Running {
     stop: Arc<AtomicBool>,
     ponder_hit: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
+    /// Returns the history the search leaves, for the session to keep.
+    thread: JoinHandle<History>,
 }
 
 impl Default for Session {
@@ -84,6 +89,7 @@ impl Session {
             board: start_position(),
             chess960: false,
             tt: Arc::new(tt),
+            history: History::new(),
             multipv: 1,
             limit_strength: false,
             elo: level::MAX_ELO,
@@ -198,13 +204,15 @@ impl Session {
             "setoption" => self.set_option(tokens),
             "position" => self.set_position(tokens),
             "go" => self.go(tokens),
-            // A running search is stopped either way. `ucinewgame` also empties the table: a
-            // surviving entry is a score for a position reached by a different route.
+            // A running search is stopped either way. `ucinewgame` also empties the table, whose
+            // surviving entry is a score for a position reached by a different route, and the
+            // history another game taught.
             "stop" => self.stop_search(),
             "ponderhit" => self.ponderhit(),
             "ucinewgame" => {
                 self.stop_search();
                 self.tt.clear();
+                self.history.clear();
             }
             "quit" => return false,
             // Ignored, per the protocol.

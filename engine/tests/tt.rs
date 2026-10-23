@@ -761,16 +761,18 @@ fn ucinewgame_makes_the_next_search_cold() {
     );
 }
 
-/// Even at the size already in use: a new size is a new table, not a resized one.
+/// Even at the size already in use: a new size is a new table, not a resized one. The history
+/// survives both, so the cold search is the one after `Clear Hash` and not the first.
 #[test]
 fn setting_hash_makes_the_next_search_cold() {
     let setup = format!("position fen {}", support::standard_fen("startpos"));
     let same = format!("setoption name Hash value {}", tt::DEFAULT_HASH_MB);
     let counts = three_searches(&setup, &[&same]);
+    let cleared = three_searches(&setup, &["setoption name Clear Hash"]);
     assert!(counts[1] < counts[0], "{counts:?}");
     assert_eq!(
-        counts[2], counts[0],
-        "the search after setting Hash did not start cold: {counts:?}"
+        counts[2], cleared[2],
+        "the search after setting Hash did not start cold: {counts:?} against {cleared:?}"
     );
 }
 
