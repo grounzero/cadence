@@ -17,6 +17,18 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.17] - 2026-10-24
+
+### Changed
+
+- Search: late moves at a node searched with an open window, the line the
+  search reports, are reduced one ply less, and a move whose reduction
+  would be one ply is searched without one.
+
+Test 60: +10.60 (between +4.25 and +16.95), a self-play estimate against
+0.5.16 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.16] - 2026-10-23
 
 ### Fixed
@@ -346,7 +358,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.16...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.17...main
+[0.5.17]: https://github.com/grounzero/cadence/compare/0.5.16...0.5.17
 [0.5.16]: https://github.com/grounzero/cadence/compare/0.5.15...0.5.16
 [0.5.15]: https://github.com/grounzero/cadence/compare/0.5.14...0.5.15
 [0.5.14]: https://github.com/grounzero/cadence/compare/0.5.13...0.5.14
