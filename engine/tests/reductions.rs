@@ -10,7 +10,8 @@ use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal};
-use cadence_engine::search::{Limits, lmr_reduction, reduction};
+use cadence_engine::history::HISTORY_MAX;
+use cadence_engine::search::{Limits, history_reduction, lmr_reduction, pv_reduction, reduction};
 use support::table;
 
 /// Deep enough that the history-ordered sort still misjudges some late quiet moves: at eight the
@@ -155,4 +156,67 @@ fn the_documented_table_is_the_table() {
     // top of one band agrees with its bottom.
     assert_eq!(lmr_reduction(7, 7), lmr_reduction(4, 4));
     assert_eq!(lmr_reduction(15, 15), lmr_reduction(8, 8));
+}
+
+/// A null-window node's moves keep the reduction the history term gave them.
+#[test]
+fn a_null_window_reduction_is_unchanged() {
+    for r in 0..64 {
+        assert_eq!(pv_reduction(r, false), r, "reduction {r}");
+    }
+}
+
+/// One ply off at a PV node, so a move whose reduction would be one is searched unreduced.
+#[test]
+fn a_pv_move_takes_one_ply_less() {
+    assert_eq!(pv_reduction(1, true), 0, "a reduction of one at a PV node");
+    for r in 1..64 {
+        assert_eq!(pv_reduction(r, true), r - 1, "reduction {r}");
+    }
+}
+
+/// Zero stays zero for every base, history score and window, so the exemptions in `reduction` hold.
+#[test]
+fn the_pv_term_never_creates_a_reduction() {
+    let scores = [
+        -HISTORY_MAX,
+        -HISTORY_MAX / 4,
+        -HISTORY_MAX / 16,
+        -1,
+        0,
+        1,
+        HISTORY_MAX / 16,
+        HISTORY_MAX / 4,
+        HISTORY_MAX,
+    ];
+    for base in 0..16 {
+        for history in scores {
+            let shifted = history_reduction(base, history);
+            for pv in [false, true] {
+                let r = pv_reduction(shifted, pv);
+                assert!(
+                    r <= shifted,
+                    "base {base} history {history} pv {pv}: raised"
+                );
+                if shifted == 0 {
+                    assert_eq!(r, 0, "base {base} history {history} pv {pv}: created");
+                }
+            }
+        }
+    }
+}
+
+/// The term reaches the search: a depth-eight search of a middlegame lowers some PV reductions.
+#[test]
+fn a_search_lessens_some_pv_reductions() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
+    assert!(!s.run(&mut b, &mut Vec::new()).is_null(), "no move");
+    assert!(
+        s.lmr_pv_lessened() > 0,
+        "depth {GATE_DEPTH} reduced {} late moves and lowered none at a PV node",
+        s.lmr_reductions()
+    );
 }

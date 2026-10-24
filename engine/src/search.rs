@@ -24,7 +24,8 @@ mod report;
 mod root;
 
 pub use depth::{
-    REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, reduction,
+    REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, pv_reduction,
+    reduction,
 };
 pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
@@ -135,6 +136,7 @@ pub struct Search<'a> {
     null_refused_material: u64,
     lmr_reductions: u64,
     lmr_researches: u64,
+    lmr_pv_lessened: u64,
     /// Two, so a gate can tell a table that only credits from one that also debits.
     history_reduced_less: u64,
     history_reduced_more: u64,
@@ -216,6 +218,7 @@ impl<'a> Search<'a> {
             null_refused_material: 0,
             lmr_reductions: 0,
             lmr_researches: 0,
+            lmr_pv_lessened: 0,
             history_reduced_less: 0,
             history_reduced_more: 0,
             history_debits: 0,
@@ -287,6 +290,7 @@ impl<'a> Search<'a> {
         self.null_refused_material = 0;
         self.lmr_reductions = 0;
         self.lmr_researches = 0;
+        self.lmr_pv_lessened = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
         self.history_debits = 0;

@@ -47,6 +47,12 @@ impl Search<'_> {
         self.lmr_researches
     }
 
+    /// Late moves at PV nodes whose reduction the PV term lowered.
+    #[must_use]
+    pub fn lmr_pv_lessened(&self) -> u64 {
+        self.lmr_pv_lessened
+    }
+
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
         self.history_reduced_less
