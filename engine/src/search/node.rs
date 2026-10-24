@@ -7,7 +7,7 @@ use cadence_core::{
     Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, has_legal_move,
 };
 
-use super::depth::{extension, history_reduction, null_reduction, reduction};
+use super::depth::{extension, history_reduction, null_reduction, pv_reduction, reduction};
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound, quiet_indices,
 };
@@ -147,7 +147,7 @@ impl Search<'_> {
             } else {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, killers, depth, i);
-                self.late_move(board, child, base, self.history.get(us, m), ply, alpha)
+                self.late_move(board, child, base, self.history.get(us, m), ply, alpha, pv)
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
@@ -232,6 +232,7 @@ impl Search<'_> {
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
+    #[allow(clippy::too_many_arguments)]
     fn late_move(
         &mut self,
         board: &mut Position,
@@ -240,10 +241,14 @@ impl Search<'_> {
         history: i32,
         ply: usize,
         alpha: Score,
+        pv: bool,
     ) -> Score {
-        let r = history_reduction(base, history);
-        self.history_reduced_less += u64::from(r < base);
-        self.history_reduced_more += u64::from(r > base);
+        // The history term first and the PV term on what it leaves, each counted where it acted.
+        let shifted = history_reduction(base, history);
+        self.history_reduced_less += u64::from(shifted < base);
+        self.history_reduced_more += u64::from(shifted > base);
+        let r = pv_reduction(shifted, pv);
+        self.lmr_pv_lessened += u64::from(r < shifted);
         if r == 0 {
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha);
         }
