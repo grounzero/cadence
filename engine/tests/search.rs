@@ -880,18 +880,18 @@ fn the_root_answers_at_the_window_depth_are_pinned() {
 const ROOT_ANSWERS: [(&str, Score); 14] = [
     ("e2e3", 33),
     ("d5e6", -65),
-    ("b4f4", 39),
+    ("b4f4", 59),
     ("c4c5", -332),
-    ("d7c8r", 504),
-    ("c3d5", 84),
+    ("d7c8r", 514),
+    ("c3d5", 38),
     ("e2e3", 33),
-    ("c2c4", 66),
-    ("e1d3", 27),
-    ("b2b3", 97),
-    ("h1h3", 532),
+    ("d1e3", 27),
+    ("f2f4", 79),
+    ("b2b3", 104),
+    ("h1h7", 531),
     ("f1f5", 541),
     ("f1f2", 534),
-    ("a1a7", 531),
+    ("a1a7", 538),
 ];
 
 /// With no table, the window is the only thing that can move the count. The ceiling is the

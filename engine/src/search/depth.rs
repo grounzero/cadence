@@ -63,6 +63,6 @@ pub fn history_reduction(base: u32, history: i32) -> u32 {
 /// The final reduction at a PV node, taken after the history term. It never creates a reduction,
 /// so every exemption in [`reduction`] holds.
 #[must_use]
-pub fn pv_reduction(r: u32, _pv: bool) -> u32 {
-    r
+pub fn pv_reduction(r: u32, pv: bool) -> u32 {
+    r.saturating_sub(u32::from(pv))
 }
