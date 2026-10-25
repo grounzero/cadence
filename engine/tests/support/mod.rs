@@ -546,3 +546,60 @@ pub fn random_mover(
         legal.as_slice()[rng.below(legal.len())]
     }
 }
+
+/// The main search's sort before the picker, kept as the order the picker reproduces: keeping
+/// noisy moves by MVV-LVA, the killers, losing promotions, quiet moves by history, then losing
+/// captures, stable so that ties keep generation order.
+pub fn sort_from(
+    board: &cadence_core::position::Board,
+    list: &mut cadence_core::MoveList,
+    start: usize,
+    killers: [cadence_core::Move; 2],
+    history: &[i32],
+) {
+    use cadence_engine::picker::noisy_key;
+    use cadence_engine::see::see;
+    const BAND: i32 = 1 << 16;
+    const QUIET: i32 = -512;
+    const KILLER: [i32; 2] = [-128, -129];
+    const LOSING: i32 = 256;
+    const LAST: i32 = 1024;
+    let key = |m: cadence_core::Move| {
+        if m.is_noisy() {
+            let key = noisy_key(board, m);
+            if see(board, m) >= 0 {
+                key * BAND
+            } else if m.promotion_piece().is_none() {
+                (key - LAST) * BAND
+            } else {
+                (key - LOSING) * BAND
+            }
+        } else if m == killers[0] {
+            KILLER[0] * BAND
+        } else if m == killers[1] {
+            KILLER[1] * BAND
+        } else {
+            QUIET * BAND + history.get(m.from_to()).copied().unwrap_or(0)
+        }
+    };
+    let all = list.as_mut_slice();
+    if start >= all.len() {
+        return;
+    }
+    let moves = &mut all[start..];
+    let mut keys = [0i32; cadence_core::MAX_MOVES];
+    for (k, &m) in keys.iter_mut().zip(moves.iter()) {
+        *k = key(m);
+    }
+    for i in 1..moves.len() {
+        let (m, k) = (moves[i], keys[i]);
+        let mut j = i;
+        while j > 0 && keys[j - 1] < k {
+            moves[j] = moves[j - 1];
+            keys[j] = keys[j - 1];
+            j -= 1;
+        }
+        moves[j] = m;
+        keys[j] = k;
+    }
+}
