@@ -3,7 +3,7 @@
 //! A skipped move is never looked at again; reductions, which a re-search can undo, are in `depth`.
 
 use cadence_core::position::Board;
-use cadence_core::{Move, MoveList, PieceType};
+use cadence_core::{Move, PieceType};
 
 use super::Search;
 use super::depth::REDUCTION_INDEX;
@@ -72,16 +72,6 @@ pub fn lmp_index(
 #[must_use]
 pub fn lmp_skips(from: Option<usize>, m: Move, killers: [Move; 2], index: usize) -> bool {
     from.is_some_and(|count| index >= count) && !m.is_noisy() && m != killers[0] && m != killers[1]
-}
-
-/// Each move's place among the quiet moves ahead of it, which is what [`lmp_skips`] counts: noisy
-/// moves ahead of the quiets do not spend the count.
-pub(super) fn quiet_indices(moves: &MoveList) -> impl Iterator<Item = usize> + '_ {
-    moves.iter().scan(0, |quiets, m| {
-        let index = *quiets;
-        *quiets += usize::from(!m.is_noisy());
-        Some(index)
-    })
 }
 
 /// Past it the rule is off rather than weaker, so only [`futility_skips`]'s exemptions have to be

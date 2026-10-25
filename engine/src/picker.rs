@@ -175,3 +175,57 @@ fn sort_impl(
         keys[j] = k;
     }
 }
+
+/// A move's place in the picker, one per move in a buffer per ply that the search allocates once.
+#[derive(Clone, Copy, Default)]
+pub struct Slot(());
+
+/// Yields the main search's moves in [`sort_from`]'s order.
+pub struct Picker {
+    next: usize,
+    quiets: usize,
+    exchanges: u32,
+}
+
+impl Picker {
+    /// The first `start` moves are yielded as they stand, as [`sort_from`] leaves them.
+    #[must_use]
+    pub fn new(
+        board: &Board,
+        list: &mut MoveList,
+        start: usize,
+        killers: [Move; 2],
+        history: &[i32],
+        _slots: &mut [Slot],
+    ) -> Picker {
+        let noisy = list.as_slice().iter().skip(start).filter(|m| m.is_noisy());
+        let exchanges = noisy.count() as u32;
+        sort_from(board, list, start, killers, history);
+        Picker {
+            next: 0,
+            quiets: 0,
+            exchanges,
+        }
+    }
+
+    /// Each move once, in order, with its index in the list and its count of the quiet moves ahead
+    /// of it, which late move pruning reads; every move yielded counts, searched or given up.
+    pub fn next(
+        &mut self,
+        _board: &Board,
+        list: &mut MoveList,
+        _slots: &mut [Slot],
+    ) -> Option<(Move, usize, usize)> {
+        let m = list.as_slice().get(self.next).copied()?;
+        let place = (m, self.next, self.quiets);
+        self.next += 1;
+        self.quiets += usize::from(!m.is_noisy());
+        Some(place)
+    }
+
+    /// Exchanges read so far, for the gate that holds them to the moves about to be tried.
+    #[must_use]
+    pub fn exchanges(&self) -> u32 {
+        self.exchanges
+    }
+}

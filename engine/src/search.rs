@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Instant;
 
 use cadence_core::position::Board;
-use cadence_core::{MAX_PLY, Move, MoveList};
+use cadence_core::{MAX_MOVES, MAX_PLY, Move, MoveList};
 
 use crate::corrhist::CorrectionHistory;
 use crate::history::History;
+use crate::picker::Slot;
 use crate::score::{ABORTED, Score};
 use crate::time::{self, Budget};
 use crate::tt::{Bound, Table};
@@ -118,6 +119,8 @@ pub struct Search<'a> {
     seldepth: usize,
     table: PvTable,
     killers: [[Move; 2]; MAX_PLY],
+    /// The picker's buffer, one row per ply, allocated once so that no node clears one.
+    slots: Box<[[Slot; MAX_MOVES]]>,
     /// On the heap: `Search` is returned by value.
     history: History,
     corrhist: CorrectionHistory,
@@ -207,6 +210,7 @@ impl<'a> Search<'a> {
             seldepth: 0,
             table: PvTable::new(),
             killers: [[Move::NULL; 2]; MAX_PLY],
+            slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
             history: History::new(),
             corrhist: CorrectionHistory::new(),
             corrhist_updates: 0,

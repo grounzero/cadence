@@ -9,11 +9,11 @@ use cadence_core::{
 
 use super::depth::{extension, history_reduction, null_reduction, pv_reduction, reduction};
 use super::pruning::{
-    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound, quiet_indices,
+    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
 };
 use super::{Search, bound_for, order_first, remember_killer};
 use crate::eval;
-use crate::picker;
+use crate::picker::{self, Picker};
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
@@ -107,7 +107,7 @@ impl Search<'_> {
         }
         // Before any move is made: the history row read here and per move below is the mover's.
         let us = board.side_to_move();
-        let killers = self.order(board, &mut legal, tt_move, us, ply);
+        let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts.
@@ -126,7 +126,7 @@ impl Search<'_> {
         let mut best_move = Move::NULL;
         // Written at one site above `make_move`, so every rule giving a move up is excluded unasked.
         let mut searched = Searched::default();
-        for ((i, m), quiet_index) in legal.iter().enumerate().zip(quiet_indices(&legal)) {
+        while let Some((m, i, quiet_index)) = picker.next(board, &mut legal, &mut self.slots[ply]) {
             // Before the move is made, which is the whole saving; above the reduction, which never
             // sees a move given up.
             if self.futile(board, futile, m, i)
@@ -193,17 +193,25 @@ impl Search<'_> {
     }
 
     fn order(
-        &self,
+        &mut self,
         board: &Board,
         legal: &mut MoveList,
         tt_move: Move,
         us: Colour,
         ply: usize,
-    ) -> [Move; 2] {
+    ) -> ([Move; 2], Picker) {
         let ordered = usize::from(order_first(legal, tt_move));
         let killers = self.killers[ply];
-        picker::sort_from(board, legal, ordered, killers, self.history.side(us));
-        killers
+        let history = self.history.side(us);
+        let picker = Picker::new(
+            board,
+            legal,
+            ordered,
+            killers,
+            history,
+            &mut self.slots[ply],
+        );
+        (killers, picker)
     }
 
     /// The move comes back whatever the depth says, so the two halves return separately.
