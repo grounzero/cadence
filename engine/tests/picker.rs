@@ -11,7 +11,7 @@ use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, Move, MoveList, generate_legal};
 use cadence_engine::history::SPAN;
-use cadence_engine::picker::{Picker, Slot, noisy_key, sort_from};
+use cadence_engine::picker::{Picker, Slot, noisy_key};
 use cadence_engine::search::{Limits, order_first};
 use cadence_engine::see::see;
 use cadence_engine::tt::{self, Table};
@@ -93,7 +93,7 @@ fn sorted(
     killers: [Move; 2],
     history: &[i32],
 ) -> Vec<Move> {
-    sort_from(b, &mut list, start, killers, history);
+    support::sort_from(b, &mut list, start, killers, history);
     list.iter().collect()
 }
 
