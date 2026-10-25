@@ -76,7 +76,7 @@ fn picked(
     history: &[i32],
 ) -> (Vec<Move>, Vec<u32>) {
     let mut slots = [Slot::default(); MAX_MOVES];
-    let mut picker = Picker::new(&list, start, killers, history, &mut slots);
+    let mut picker = Picker::new(b, &mut list, start, killers, history, &mut slots);
     let (mut moves, mut exchanges) = (Vec::new(), Vec::new());
     while let Some((m, i, _)) = picker.next(b, &mut list, &mut slots) {
         assert_eq!(i, moves.len(), "the index is the yield count");
@@ -217,7 +217,7 @@ fn checked(
     slots: &mut [Slot],
 ) -> Vec<Move> {
     let mut work = list.clone();
-    let mut picker = Picker::new(&work, start, killers, history, slots);
+    let mut picker = Picker::new(b, &mut work, start, killers, history, slots);
     let mut got = Vec::new();
     while let Some((m, _, _)) = picker.next(b, &mut work, slots) {
         got.push(m);
@@ -300,7 +300,7 @@ fn an_empty_list_yields_nothing() {
     let b = board(&support::standard_fen("startpos"));
     let mut list = MoveList::new();
     let mut slots = fresh();
-    let mut picker = Picker::new(&list, 0, [Move::NULL; 2], &[], &mut slots);
+    let mut picker = Picker::new(&b, &mut list, 0, [Move::NULL; 2], &[], &mut slots);
     assert!(picker.next(&b, &mut list, &mut slots).is_none());
     assert_eq!(picker.exchanges(), 0);
 }
@@ -465,7 +465,7 @@ fn a_high_ranked_losing_capture_before_a_winning_one_costs_two_see_calls() {
     );
     let mut list = generate_legal(&b);
     let mut slots = fresh();
-    let mut picker = Picker::new(&list, 0, [Move::NULL; 2], &[], &mut slots);
+    let mut picker = Picker::new(&b, &mut list, 0, [Move::NULL; 2], &[], &mut slots);
     let (first, _, _) = picker.next(&b, &mut list, &mut slots).expect("a move");
     assert_eq!((first, picker.exchanges()), (low, 2));
     while picker.next(&b, &mut list, &mut slots).is_some() {}
