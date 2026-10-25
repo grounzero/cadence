@@ -50,8 +50,9 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
 }
 
 /// Thousandths of the soft budget by the run of completed iterations on one move, in bins of 1, 2,
-/// 3 to 4, 5 to 8 and 9 or more. At 1000 throughout it changes nothing.
-pub const STABILITY_SCALE: [u64; 5] = [1000, 1000, 1000, 1000, 1000];
+/// 3 to 4, 5 to 8 and 9 or more. Each is proportional to how often one more iteration changed the
+/// move in self-play at that run, the first two bins pooled.
+pub const STABILITY_SCALE: [u64; 5] = [1936, 1936, 1704, 1590, 738];
 
 /// How many calls of a self-play reading stopped between iterations in each bin, the weights the
 /// table averages one over.
