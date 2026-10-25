@@ -49,6 +49,48 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     Some(Budget { soft, hard })
 }
 
+/// Thousandths of the soft budget by the run of completed iterations on one move, in bins of 1, 2,
+/// 3 to 4, 5 to 8 and 9 or more. At 1000 throughout it changes nothing.
+pub const STABILITY_SCALE: [u64; 5] = [1000, 1000, 1000, 1000, 1000];
+
+/// How many calls of a self-play reading stopped between iterations in each bin, the weights the
+/// table averages one over.
+pub const STABILITY_CALLS: [u64; 5] = [1221, 289, 398, 895, 8467];
+
+// Within half a thousandth, the table's rounding, so an edit to one value cannot move the average
+// spend unnoticed.
+const _: () = {
+    let (mut spent, mut calls, mut i) = (0, 0, 0);
+    while i < STABILITY_SCALE.len() {
+        spent += STABILITY_SCALE[i] * STABILITY_CALLS[i];
+        calls += STABILITY_CALLS[i];
+        i += 1;
+    }
+    assert!(spent.abs_diff(1000 * calls) * 2 <= calls);
+};
+
+/// A run of zero, no completed iteration, falls in the first bin.
+fn stability_bin(run: usize) -> usize {
+    match run {
+        0..=1 => 0,
+        2 => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        _ => 4,
+    }
+}
+
+/// The soft budget for a run of `run` completed iterations on one move, never past `hard`. A
+/// `movetime` means exactly that time, so its budget is not scaled.
+#[must_use]
+pub fn soft_for_run(limits: &Limits, budget: Budget, run: usize) -> u64 {
+    if limits.movetime.is_some() {
+        return budget.soft;
+    }
+    let scale = STABILITY_SCALE[stability_bin(run)];
+    (budget.soft.saturating_mul(scale) / 1000).min(budget.hard)
+}
+
 /// EBF is read over two iterations and never one; the single-ratio simplification is the bug this
 /// exists to not be.
 #[must_use]
