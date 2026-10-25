@@ -17,6 +17,20 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.18] - 2026-10-25
+
+### Changed
+
+- Time management: the time the engine aims to spend on a move now
+  depends on how many depths its best move has stood. It aims for about
+  twice the usual time while the move has just changed, and about three
+  quarters of it once the move has stood for nine depths or more. The
+  limit it never passes, and a fixed time per move, are unchanged.
+
+Test 61: +9.30 (between +3.46 and +15.15), a self-play estimate against
+0.5.17 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.17] - 2026-10-24
 
 ### Changed
@@ -358,7 +372,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.17...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.18...main
+[0.5.18]: https://github.com/grounzero/cadence/compare/0.5.17...0.5.18
 [0.5.17]: https://github.com/grounzero/cadence/compare/0.5.16...0.5.17
 [0.5.16]: https://github.com/grounzero/cadence/compare/0.5.15...0.5.16
 [0.5.15]: https://github.com/grounzero/cadence/compare/0.5.14...0.5.15
