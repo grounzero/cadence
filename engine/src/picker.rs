@@ -125,7 +125,8 @@ pub fn sort_evasions(board: &Board, list: &mut MoveList) {
     sort_impl(board, list, 0, [Move::NULL; 2], Losing::BehindKillers, &[]);
 }
 
-/// The main search's order for the whole list, as the picker yields it.
+/// The main search's order for the whole list, as the picker yields it. A start at or past the
+/// list's end leaves the list as it was.
 pub fn sort_from(
     board: &Board,
     list: &mut MoveList,
@@ -133,6 +134,9 @@ pub fn sort_from(
     killers: [Move; 2],
     history: &[i32],
 ) {
+    if start >= list.len() {
+        return;
+    }
     let mut slots = [Slot::default(); MAX_MOVES];
     let mut picker = Picker::new(list, start, killers, history, &mut slots);
     while picker.next(board, list, &mut slots).is_some() {}

@@ -11,7 +11,7 @@ use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, Move, MoveList, generate_legal};
 use cadence_engine::history::SPAN;
-use cadence_engine::picker::{Picker, Slot, noisy_key};
+use cadence_engine::picker::{Picker, Slot, noisy_key, sort_from};
 use cadence_engine::search::{Limits, order_first};
 use cadence_engine::see::see;
 use cadence_engine::tt::{self, Table};
@@ -470,4 +470,19 @@ fn a_high_ranked_losing_capture_before_a_winning_one_costs_two_see_calls() {
     assert_eq!((first, picker.exchanges()), (low, 2));
     while picker.next(&b, &mut list, &mut slots).is_some() {}
     assert_eq!(picker.exchanges(), 2, "each noisy move once");
+}
+
+/// A start at or past the list's end leaves the list as it was, as the sort did.
+#[test]
+fn sort_from_leaves_a_list_alone_from_a_start_at_or_past_its_end() {
+    let b = board(&support::standard_fen("kiwipete"));
+    let legal = generate_legal(&b);
+    for start in [legal.len(), legal.len() + 1, legal.len() + 40] {
+        let mut list = legal.clone();
+        sort_from(&b, &mut list, start, late_killers(&b), &[]);
+        assert_eq!(list.as_slice(), legal.as_slice(), "start {start}");
+    }
+    let mut empty = MoveList::new();
+    sort_from(&b, &mut empty, 1, [Move::NULL; 2], &[]);
+    assert!(empty.is_empty());
 }
