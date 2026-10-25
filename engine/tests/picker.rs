@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The main search's picker against the sort it replaces: the same moves in the same order, ties
-//! included, and an exchange read only for a noisy move about to be tried.
+//! included, and SEE computed only for noisy candidates examined in rank order.
 
 mod support;
 
@@ -163,11 +163,11 @@ fn ties_fall_in_generation_order() {
     );
 }
 
-/// The exchanges read by each yield are those of the noisy moves the picker has tested to reach
-/// it: none for the table's move, every noisy move ranked at or above a winning one when it is
-/// yielded, and each noisy move once by the end.
+/// SEE is computed only for noisy candidates examined while selecting the next move, in rank order,
+/// and never for lower-ranked, unvisited ones: none for the table's move, every noisy move ranked at
+/// or above a winning one when it is yielded, and each noisy move once by the end.
 #[test]
-fn an_exchange_is_read_only_for_a_noisy_move_about_to_be_tried() {
+fn see_is_computed_only_for_noisy_candidates_examined_in_rank_order() {
     let history = searched_history();
     let mut tested = 0;
     each_node(&history, |fen, b, list, start, killers, side| {

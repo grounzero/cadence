@@ -177,6 +177,11 @@ pub struct Slot {
     band: Band,
 }
 
+// Eight bytes, so a ply's row of slots is two kilobytes.
+const _: () = assert!(std::mem::size_of::<Slot>() == 8);
+// The generation index is a byte, so a list holds no more moves than it can number.
+const _: () = assert!(MAX_MOVES <= u8::MAX as usize + 1);
+
 /// A killer is found by its move among the quiet ones.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Band {
@@ -200,8 +205,11 @@ enum Stage {
     LosingCaptures,
 }
 
-/// Yields the main search's moves one band at a time, each band by key and then by generation
-/// order, so ties fall as they did in the sort.
+/// Yields the main search's moves in an order that is fixed: the table's move, the keeping noisy
+/// moves, killer one, killer two, the losing promotions, the quiet moves, then the losing captures,
+/// each band by key and then generation order, with the moves yielded always the list's prefix.
+/// How each band reaches that order is not fixed: `tests/picker.rs` holds any way of reaching it to
+/// the sort this replaced.
 pub struct Picker {
     next: usize,
     start: usize,
@@ -280,7 +288,7 @@ impl Picker {
         Some(place)
     }
 
-    /// Exchanges read so far, for the gate that holds them to the moves about to be tried.
+    /// SEE calls so far, for the test that holds them to the noisy candidates examined in rank order.
     #[must_use]
     pub fn exchanges(&self) -> u32 {
         self.exchanges
@@ -299,8 +307,9 @@ impl Picker {
         });
     }
 
-    /// Puts the next move at `next`, or says there is none. A noisy move has its exchange read
-    /// only when it is the greatest untested one, and one that loses stays behind in order.
+    /// Puts the next move at `next`, or says there is none. SEE is computed only for noisy
+    /// candidates examined while selecting the next move, in rank order, and never for lower-ranked,
+    /// unvisited ones.
     fn place(&mut self, board: &Board, moves: &mut [Move], slots: &mut [Slot]) -> bool {
         loop {
             match self.stage {
