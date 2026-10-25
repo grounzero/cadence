@@ -117,9 +117,10 @@ impl Search<'_> {
             if let Some(b) = self.budget {
                 let elapsed = self.elapsed_ms();
                 self.iterations.push(elapsed);
-                // The soft budget says this move has had its share; the prediction says the next
-                // iteration would not finish.
-                if elapsed >= b.soft || !time::another_iteration_fits(&self.iterations, b) {
+                // The soft budget, scaled by how long the move has stood, says this move has had
+                // its share; the prediction says the next iteration would not finish.
+                let soft = time::soft_for_run(&self.limits, b, self.stable_iterations());
+                if elapsed >= soft || !time::another_iteration_fits(&self.iterations, b) {
                     break;
                 }
             }

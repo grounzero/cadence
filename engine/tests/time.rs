@@ -12,7 +12,10 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
-use cadence_engine::time::{Budget, MOVE_OVERHEAD_MS, another_iteration_fits, budget};
+use cadence_engine::time::{
+    Budget, MOVE_OVERHEAD_MS, STABILITY_CALLS, STABILITY_SCALE, another_iteration_fits, budget,
+    soft_for_run,
+};
 use cadence_engine::tt::Table;
 use support::Engine;
 
@@ -965,4 +968,150 @@ fn a_set_move_overhead_reaches_the_movetime_and_the_clock_paths() {
             hard: 300
         })
     );
+}
+
+// ---------------------------------------------------------------------------
+// The soft budget scaled by the run of iterations on one move
+// ---------------------------------------------------------------------------
+
+/// Every bin's edges and either side of them, with the extremes.
+const RUNS: [usize; 12] = [0, 1, 2, 3, 4, 5, 8, 9, 10, 20, 100, usize::MAX];
+
+fn clocked(time: u64, inc: u64, movestogo: Option<u32>) -> Limits {
+    let mut l = limits(&format!("wtime {time} btime {time} winc {inc} binc {inc}"));
+    l.movestogo = movestogo;
+    l
+}
+
+/// The ceiling a move can spend is today's whatever the run, with or without an increment.
+#[test]
+fn the_scaled_budget_never_passes_the_hard_one() {
+    for time in TIMES {
+        for inc in INCS {
+            for mtg in MTG {
+                let l = clocked(time, inc, mtg);
+                let b = budget(&l, Colour::White).expect("a clock gives a budget");
+                for run in RUNS {
+                    let soft = soft_for_run(&l, b, run);
+                    assert!(
+                        soft <= b.hard,
+                        "run {run} at {time}+{inc}, {mtg:?} to go: soft {soft} over hard {}",
+                        b.hard
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The scale moves time from a move the search has settled to one it has not, so a move that has
+/// just changed must be given more than one that has stood nine iterations.
+#[test]
+fn a_short_run_gets_more_of_the_soft_budget_than_a_long_one() {
+    for l in [clocked(60_000, 0, None), clocked(8_000, 80, None)] {
+        let b = budget(&l, Colour::White).expect("a clock gives a budget");
+        let (short, long) = (soft_for_run(&l, b, 1), soft_for_run(&l, b, 9));
+        assert!(
+            short > long,
+            "a run of one gets {short} ms and a run of nine {long} ms of a soft budget of {}",
+            b.soft
+        );
+    }
+}
+
+/// A longer run is never given more, at any clock, and the table itself never rises.
+#[test]
+fn the_scaled_budget_never_grows_with_the_run() {
+    assert!(
+        STABILITY_SCALE.windows(2).all(|w| w[0] >= w[1]),
+        "the table rises with the run: {STABILITY_SCALE:?}"
+    );
+    for time in TIMES {
+        for inc in INCS {
+            for mtg in MTG {
+                let l = clocked(time, inc, mtg);
+                let b = budget(&l, Colour::White).expect("a clock gives a budget");
+                for w in RUNS.windows(2) {
+                    let (shorter, longer) = (soft_for_run(&l, b, w[0]), soft_for_run(&l, b, w[1]));
+                    assert!(
+                        longer <= shorter,
+                        "at {time}+{inc}, {mtg:?} to go: run {} gets {longer}, run {} {shorter}",
+                        w[1],
+                        w[0]
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Over the calls it was computed from the table spends the soft budget on average, so the expected
+/// spend per move is today's.
+#[test]
+fn the_scale_averages_one_over_the_calls_it_was_read_on() {
+    let calls: u64 = STABILITY_CALLS.iter().sum();
+    let spent: u64 = STABILITY_SCALE
+        .iter()
+        .zip(STABILITY_CALLS)
+        .map(|(&k, c)| k * c)
+        .sum();
+    assert!(
+        spent.abs_diff(1000 * calls) * 2 <= calls,
+        "the table spends {spent} thousandths over {calls} calls, against {} at one",
+        1000 * calls
+    );
+}
+
+/// A `movetime` is the time to spend, so no run changes it, even beside a clock it overrides.
+#[test]
+fn a_movetime_is_not_scaled() {
+    for spec in [
+        "movetime 1",
+        "movetime 200",
+        "movetime 5000",
+        "wtime 60000 btime 60000 movetime 500",
+    ] {
+        let l = limits(spec);
+        let b = budget(&l, Colour::White).expect("a movetime gives a budget");
+        for run in RUNS {
+            assert_eq!(soft_for_run(&l, b, run), b.soft, "`{spec}` at run {run}");
+        }
+    }
+}
+
+/// The iterations pondered searched the same position, so the run they built survives the hit that
+/// clears the ladder; a new search clearing it is `the_entries_do_not_survive_into_the_next_search`.
+#[test]
+fn the_run_survives_a_ponderhit() {
+    let stop = AtomicBool::new(false);
+    let hit = AtomicBool::new(false);
+    let tt = Table::new(HASH_MB).expect("a table");
+    let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
+    let mut s = support::search(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
+    s.set_ponder_hit(&hit);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(200));
+            hit.store(true, Ordering::Relaxed);
+        });
+        s.run(&mut board, &mut std::io::sink());
+    });
+
+    assert!(
+        !stop.load(Ordering::Relaxed),
+        "the test raised stop, so this measured nothing"
+    );
+    assert_eq!(
+        s.iteration_roots().len(),
+        s.completed_depth() as usize,
+        "the hit dropped iterations from the run: {:?}",
+        s.iteration_roots()
+    );
+    assert!(
+        s.iterations_ms().len() < s.iteration_roots().len(),
+        "no iteration completed before the hit, so nothing crossed it: {:?} against {:?}",
+        s.iterations_ms(),
+        s.iteration_roots()
+    );
+    assert_the_run_is_the_trailing_one(&s);
 }
