@@ -7,7 +7,7 @@ use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{MAX_MOVES, Move, MoveList, Piece, PieceType, Square};
 
-use crate::conthist::OFFSETS;
+use crate::conthist::{self, OFFSETS};
 use crate::history::HISTORY_MAX;
 use crate::see;
 
@@ -169,9 +169,16 @@ impl<'a> Tables<'a> {
         }
     }
 
-    /// The butterfly score; the continuation rows are not read.
-    fn quiet_key(&self, _board: &Board, m: Move) -> i32 {
-        self.butterfly.get(m.from_to()).copied().unwrap_or(0)
+    /// The butterfly score and each continuation row's, all in the history's range, so the weights
+    /// are one.
+    fn quiet_key(&self, board: &Board, m: Move) -> i32 {
+        let butterfly = self.butterfly.get(m.from_to()).copied().unwrap_or(0);
+        if self.continuation.iter().all(Option::is_none) {
+            return butterfly;
+        }
+        let column = conthist::piece_to(board, m);
+        let rows = self.continuation.iter().flatten();
+        butterfly + rows.map(|row| i32::from(row[column])).sum::<i32>()
     }
 }
 
