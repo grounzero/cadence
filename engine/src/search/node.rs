@@ -12,8 +12,9 @@ use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
 };
 use super::{Search, bound_for, order_first, remember_killer};
+use crate::conthist::{self, OFFSETS};
 use crate::eval;
-use crate::picker::{self, Picker};
+use crate::picker::{self, Picker, Tables};
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
@@ -34,8 +35,10 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Score {
-        // So the extension cap reads this depth, not what the last iteration left.
+        // So the extension cap reads this depth, not what the last iteration left, and no frame is
+        // read from an earlier run.
         self.root_depth = depth;
+        self.frames.fill(None);
         self.negamax(board, depth, ply, alpha, beta)
     }
 
@@ -135,7 +138,7 @@ impl Search<'_> {
                 continue;
             }
             searched.set(i);
-            board.make_move(m);
+            self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
             let ext = extension(gives_check, ply + 1, self.root_depth);
@@ -172,7 +175,7 @@ impl Search<'_> {
                         remember_killer(&mut self.killers[ply], m);
                         // A move the margin or the count gave up was never played, so it is
                         // passed over rather than debited.
-                        self.remember_history(us, &legal.as_slice()[..i], &searched, m, depth);
+                        self.remember_history(board, ply, legal.as_slice(), i, &searched, depth);
                         break;
                     }
                 }
@@ -202,16 +205,32 @@ impl Search<'_> {
     ) -> ([Move; 2], Picker) {
         let ordered = usize::from(order_first(legal, tt_move));
         let killers = self.killers[ply];
-        let history = self.history.side(us);
+        let mut continuation = [None; OFFSETS.len()];
+        for (row, &offset) in continuation.iter_mut().zip(OFFSETS.iter()) {
+            match conthist::context(&self.frames, ply, offset) {
+                Some(context) => *row = Some(self.conthist.row(context)),
+                None => self.continuation_absent += 1,
+            }
+        }
+        let tables = Tables {
+            butterfly: self.history.side(us),
+            continuation,
+        };
         let picker = Picker::new(
             board,
             legal,
             ordered,
             killers,
-            history,
+            &tables,
             &mut self.slots[ply],
         );
         (killers, picker)
+    }
+
+    /// Every descent into `negamax` makes its move here, so a child's frames are its path's.
+    pub(super) fn make(&mut self, board: &mut Position, ply: usize, m: Move) {
+        self.frames[ply] = conthist::frame(board, m);
+        board.make_move(m);
     }
 
     /// The move comes back whatever the depth says, so the two halves return separately.
@@ -292,6 +311,8 @@ impl Search<'_> {
         }
         self.null_attempts += 1;
         let reduced = depth.saturating_sub(1 + null_reduction(depth));
+        // No move, so the child reads none one ply up.
+        self.frames[ply] = None;
         let _ = board.make_null_move();
         let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1);
         board.unmake_null_move();
@@ -336,7 +357,7 @@ impl Search<'_> {
             if see::see(board, m) < raised - eval {
                 continue;
             }
-            board.make_move(m);
+            self.make(board, ply, m);
             let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
             if score >= raised {
                 self.probcut_searches += 1;

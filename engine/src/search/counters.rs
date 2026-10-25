@@ -9,6 +9,7 @@ use cadence_core::{Colour, Move};
 
 use super::node::Searched;
 use super::{Limits, NODE_PUBLISH_INTERVAL, Search};
+use crate::conthist::{self, ContinuationHistory, OFFSETS};
 use crate::eval;
 use crate::history::{self, History};
 use crate::score::{self, Score};
@@ -169,6 +170,35 @@ impl Search<'_> {
         &self.history
     }
 
+    #[must_use]
+    pub fn continuation(&self) -> &ContinuationHistory {
+        &self.conthist
+    }
+
+    /// Continuation entries the cutoffs credited.
+    #[must_use]
+    pub fn continuation_credits(&self) -> u64 {
+        self.continuation_credits
+    }
+
+    /// Continuation entries the cutoffs debited.
+    #[must_use]
+    pub fn continuation_debits(&self) -> u64 {
+        self.continuation_debits
+    }
+
+    /// Of [`Search::continuation_debits`], the moves the node never searched.
+    #[must_use]
+    pub fn continuation_debits_unsearched(&self) -> u64 {
+        self.continuation_debits_unsearched
+    }
+
+    /// Offsets a node found no frame for, above the root or below a null move.
+    #[must_use]
+    pub fn continuation_absent(&self) -> u64 {
+        self.continuation_absent
+    }
+
     /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
@@ -277,20 +307,31 @@ impl Search<'_> {
         }
     }
 
-    /// Credits `cut` and debits every quiet move tried before it.
+    /// Credits the cutter, `moves[cut]`, and debits every quiet move tried before it, in the
+    /// butterfly and in each continuation row the node's frames name. The board is the node's, its
+    /// moves unmade.
     pub(super) fn remember_history(
         &mut self,
-        us: Colour,
-        passed: &[Move],
+        board: &Board,
+        ply: usize,
+        moves: &[Move],
+        cut: usize,
         searched: &Searched,
-        cut: Move,
         depth: u32,
     ) {
+        let (passed, cut) = (&moves[..cut], moves[cut]);
         if cut.is_noisy() {
             return;
         }
+        let us = board.side_to_move();
+        let contexts = OFFSETS.map(|offset| conthist::context(&self.frames, ply, offset));
         let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
+        let cut_to = conthist::piece_to(board, cut);
+        for &context in contexts.iter().flatten() {
+            self.conthist.update(context, cut_to, bonus);
+            self.continuation_credits += 1;
+        }
         for (i, &beaten) in passed.iter().enumerate() {
             if beaten.is_noisy() || !searched.contains(i) {
                 continue;
@@ -298,6 +339,12 @@ impl Search<'_> {
             self.history_debits += 1;
             self.history_debits_unsearched += u64::from(!searched.contains(i));
             self.history.update(us, beaten, -bonus);
+            let beaten_to = conthist::piece_to(board, beaten);
+            for &context in contexts.iter().flatten() {
+                self.conthist.update(context, beaten_to, -bonus);
+                self.continuation_debits += 1;
+                self.continuation_debits_unsearched += u64::from(!searched.contains(i));
+            }
         }
     }
 

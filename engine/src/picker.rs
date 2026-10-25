@@ -7,6 +7,7 @@ use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{MAX_MOVES, Move, MoveList, Piece, PieceType, Square};
 
+use crate::conthist::OFFSETS;
 use crate::history::HISTORY_MAX;
 use crate::see;
 
@@ -132,14 +133,46 @@ pub fn sort_from(
     list: &mut MoveList,
     start: usize,
     killers: [Move; 2],
-    history: &[i32],
+    tables: &Tables<'_>,
 ) {
     if start >= list.len() {
         return;
     }
     let mut slots = [Slot::default(); MAX_MOVES];
-    let mut picker = Picker::new(board, list, start, killers, history, &mut slots);
+    let mut picker = Picker::new(board, list, start, killers, tables, &mut slots);
     while picker.next(board, list, &mut slots).is_some() {}
+}
+
+/// What the main search's quiet keys read: the mover's butterfly row, empty where there is none,
+/// and a continuation row per offset, absent where its frame is.
+#[derive(Clone, Copy)]
+pub struct Tables<'a> {
+    pub butterfly: &'a [i32],
+    pub continuation: [Option<&'a [i16]>; OFFSETS.len()],
+}
+
+impl<'a> Tables<'a> {
+    /// Every key is the one an empty table gives.
+    #[must_use]
+    pub const fn none() -> Tables<'static> {
+        Tables {
+            butterfly: &[],
+            continuation: [None; OFFSETS.len()],
+        }
+    }
+
+    #[must_use]
+    pub const fn butterfly(row: &'a [i32]) -> Tables<'a> {
+        Tables {
+            butterfly: row,
+            continuation: [None; OFFSETS.len()],
+        }
+    }
+
+    /// The butterfly score; the continuation rows are not read.
+    fn quiet_key(&self, _board: &Board, m: Move) -> i32 {
+        self.butterfly.get(m.from_to()).copied().unwrap_or(0)
+    }
 }
 
 fn sort_impl(
@@ -231,15 +264,15 @@ pub struct Picker {
 
 impl Picker {
     /// The first `start` moves are yielded as they stand, and the noisy moves are put ahead of the
-    /// quiet ones by key. The quiet moves are keyed by the history as it stands now, since a child's
-    /// cutoffs can change it before they are tried.
+    /// quiet ones by key. The quiet moves are keyed by the tables as they stand now, since a
+    /// child's cutoffs can change them before they are tried.
     #[must_use]
     pub fn new(
         board: &Board,
         list: &mut MoveList,
         start: usize,
         killers: [Move; 2],
-        history: &[i32],
+        tables: &Tables<'_>,
         slots: &mut [Slot],
     ) -> Picker {
         let moves = list.as_mut_slice();
@@ -255,7 +288,7 @@ impl Picker {
                 }
             } else {
                 Slot {
-                    key: history.get(m.from_to()).copied().unwrap_or(0),
+                    key: tables.quiet_key(board, m),
                     generated,
                     band: Band::Quiet,
                 }

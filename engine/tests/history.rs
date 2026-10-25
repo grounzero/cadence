@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, MoveList, START_FEN, generate_legal};
 use cadence_engine::history::{self, HISTORY_MAX, History, SHIFT_MAX, SPAN};
-use cadence_engine::picker::sort_from;
+use cadence_engine::picker::{Tables, sort_from};
 use cadence_engine::search::{Limits, history_reduction, lmr_reduction};
 use support::table;
 
@@ -70,8 +70,14 @@ fn a_cutoff_raises_a_score_and_the_order_follows() {
 
     let mut flat = generate_legal(&b);
     let mut ranked = flat.clone();
-    sort_from(&b, &mut flat, 0, [Move::NULL; 2], &[]);
-    sort_from(&b, &mut ranked, 0, [Move::NULL; 2], hist.side(us));
+    sort_from(&b, &mut flat, 0, [Move::NULL; 2], &Tables::none());
+    sort_from(
+        &b,
+        &mut ranked,
+        0,
+        [Move::NULL; 2],
+        &Tables::butterfly(hist.side(us)),
+    );
     let first_quiet = |l: &MoveList| {
         l.iter()
             .position(|m| !m.is_noisy())

@@ -241,7 +241,7 @@ fn captures_ahead_of_the_quiets_do_not_spend_the_count() {
     let fen = support::standard_fen("kiwipete");
     let b = board(&fen);
     let mut list = generate_legal(&b);
-    picker::sort_from(&b, &mut list, 0, [Move::NULL; 2], &[]);
+    picker::sort_from(&b, &mut list, 0, [Move::NULL; 2], &picker::Tables::none());
     let count = lmp_count(DEFAULT, 1);
     let ahead = list.iter().take_while(|m| m.is_noisy()).count();
     assert!(
@@ -305,7 +305,7 @@ fn a_quiet_check_survives_the_count_and_the_mate_is_found() {
     // move sorted inside the count.
     let b = board(QUIET_MATE);
     let mut list = generate_legal(&b);
-    picker::sort_from(&b, &mut list, 0, [Move::NULL; 2], &[]);
+    picker::sort_from(&b, &mut list, 0, [Move::NULL; 2], &picker::Tables::none());
     let mate = list
         .iter()
         .position(|m| board(QUIET_MATE).gives_check(m) && !m.is_noisy())

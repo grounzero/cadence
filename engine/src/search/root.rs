@@ -234,7 +234,7 @@ impl Search<'_> {
                 best = m;
             }
             self.name_current(m, i + 1, legal, out);
-            board.make_move(m);
+            self.make(board, 0, m);
             // The root extends a checking move like any node.
             let ext = extension(board.in_check(), 1, depth);
             let child = depth - 1 + ext;

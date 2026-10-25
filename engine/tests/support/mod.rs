@@ -548,14 +548,14 @@ pub fn random_mover(
 }
 
 /// The main search's sort before the picker, kept as the order the picker reproduces: keeping
-/// noisy moves by MVV-LVA, the killers, losing promotions, quiet moves by history, then losing
-/// captures, stable so that ties keep generation order.
+/// noisy moves by MVV-LVA, the killers, losing promotions, quiet moves by the summed history, then
+/// losing captures, stable so that ties keep generation order.
 pub fn sort_from(
     board: &cadence_core::position::Board,
     list: &mut cadence_core::MoveList,
     start: usize,
     killers: [cadence_core::Move; 2],
-    history: &[i32],
+    tables: &cadence_engine::picker::Tables<'_>,
 ) {
     use cadence_engine::picker::noisy_key;
     use cadence_engine::see::see;
@@ -579,7 +579,16 @@ pub fn sort_from(
         } else if m == killers[1] {
             KILLER[1] * BAND
         } else {
-            QUIET * BAND + history.get(m.from_to()).copied().unwrap_or(0)
+            // A coloured piece and destination, computed here rather than by the engine's own.
+            let piece = board.piece_at(m.from_sq()).expect("a quiet move's mover");
+            let column = piece.index() * 64 + m.to_sq().index();
+            let continuation: i32 = tables
+                .continuation
+                .iter()
+                .flatten()
+                .map(|row| i32::from(row[column]))
+                .sum();
+            QUIET * BAND + tables.butterfly.get(m.from_to()).copied().unwrap_or(0) + continuation
         }
     };
     let all = list.as_mut_slice();

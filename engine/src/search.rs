@@ -6,6 +6,7 @@ use std::time::Instant;
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, MAX_PLY, Move, MoveList};
 
+use crate::conthist::{ContinuationHistory, Frame};
 use crate::corrhist::CorrectionHistory;
 use crate::history::History;
 use crate::picker::Slot;
@@ -123,6 +124,9 @@ pub struct Search<'a> {
     slots: Box<[[Slot; MAX_MOVES]]>,
     /// On the heap: `Search` is returned by value.
     history: History,
+    conthist: ContinuationHistory,
+    /// The move made at each ply of the current path, which the continuation history reads back.
+    frames: [Frame; MAX_PLY],
     corrhist: CorrectionHistory,
     /// Read on no decision path.
     corrhist_updates: u64,
@@ -146,6 +150,12 @@ pub struct Search<'a> {
     /// The second is a share of the first no rule intends, so a gate asserts it is zero.
     history_debits: u64,
     history_debits_unsearched: u64,
+    /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
+    /// move skipped.
+    continuation_credits: u64,
+    continuation_debits: u64,
+    continuation_debits_unsearched: u64,
+    continuation_absent: u64,
     /// The check-exemption count lets a gate see the exemption decide.
     futility_nodes: u64,
     futility_skipped: u64,
@@ -212,6 +222,8 @@ impl<'a> Search<'a> {
             killers: [[Move::NULL; 2]; MAX_PLY],
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
             history: History::new(),
+            conthist: ContinuationHistory::new(),
+            frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
             corrhist_updates: 0,
             corrhist_applied: 0,
@@ -227,6 +239,10 @@ impl<'a> Search<'a> {
             history_reduced_more: 0,
             history_debits: 0,
             history_debits_unsearched: 0,
+            continuation_credits: 0,
+            continuation_debits: 0,
+            continuation_debits_unsearched: 0,
+            continuation_absent: 0,
             futility_nodes: 0,
             futility_skipped: 0,
             futility_kept_check: 0,
@@ -288,6 +304,8 @@ impl<'a> Search<'a> {
         self.seldepth = 0;
         self.killers = [[Move::NULL; 2]; MAX_PLY];
         self.history.clear();
+        self.conthist.clear();
+        self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
         self.null_attempts = 0;
         self.null_cutoffs = 0;
@@ -299,6 +317,10 @@ impl<'a> Search<'a> {
         self.history_reduced_more = 0;
         self.history_debits = 0;
         self.history_debits_unsearched = 0;
+        self.continuation_credits = 0;
+        self.continuation_debits = 0;
+        self.continuation_debits_unsearched = 0;
+        self.continuation_absent = 0;
         self.corrhist.clear();
         self.corrhist_updates = 0;
         self.corrhist_applied = 0;
