@@ -134,7 +134,7 @@ pub fn sort_from(
     history: &[i32],
 ) {
     let mut slots = [Slot::default(); MAX_MOVES];
-    let mut picker = Picker::new(board, list, start, killers, history, &mut slots);
+    let mut picker = Picker::new(list, start, killers, history, &mut slots);
     while picker.next(board, list, &mut slots).is_some() {}
 }
 
@@ -218,26 +218,25 @@ pub struct Picker {
 }
 
 impl Picker {
-    /// The first `start` moves are yielded as they stand, and the noisy moves are put ahead of the
-    /// quiet ones by key. The quiet moves are keyed by the history as it stands now, since a child's
-    /// cutoffs can change it before they are tried.
+    /// The first `start` moves are yielded as they stand, and nothing else is ordered until they
+    /// have been. The quiet moves are keyed now, by the history as it stands, since a child's cutoffs
+    /// can change it before they are tried.
     #[must_use]
     pub fn new(
-        board: &Board,
-        list: &mut MoveList,
+        list: &MoveList,
         start: usize,
         killers: [Move; 2],
         history: &[i32],
         slots: &mut [Slot],
     ) -> Picker {
-        let moves = list.as_mut_slice();
+        let moves = list.as_slice();
         let mut noisy = 0;
         for (i, &m) in moves.iter().enumerate().skip(start) {
             let generated = (i - start) as u8;
             slots[i] = if m.is_noisy() {
                 noisy += 1;
                 Slot {
-                    key: noisy_key(board, m),
+                    key: 0,
                     generated,
                     band: Band::Untested,
                 }
@@ -249,9 +248,6 @@ impl Picker {
                 }
             };
         }
-        insertion_sort(moves, slots, start, |s, t| {
-            s.band == Band::Untested && (t.band == Band::Quiet || outranks(s, t))
-        });
         Picker {
             next: 0,
             start,
@@ -290,13 +286,29 @@ impl Picker {
         self.exchanges
     }
 
+    /// The noisy moves keyed by the board and put ahead of the quiet ones, once the table's move has
+    /// been tried, so a cutoff on it orders nothing.
+    fn rank_noisy(&self, board: &Board, moves: &mut [Move], slots: &mut [Slot]) {
+        for (i, &m) in moves.iter().enumerate().skip(self.start) {
+            if slots[i].band == Band::Untested {
+                slots[i].key = noisy_key(board, m);
+            }
+        }
+        insertion_sort(moves, slots, self.start, |s, t| {
+            s.band == Band::Untested && (t.band == Band::Quiet || outranks(s, t))
+        });
+    }
+
     /// Puts the next move at `next`, or says there is none. A noisy move has its exchange read
     /// only when it is the greatest untested one, and one that loses stays behind in order.
     fn place(&mut self, board: &Board, moves: &mut [Move], slots: &mut [Slot]) -> bool {
         loop {
             match self.stage {
                 Stage::Head if self.next < self.start => return true,
-                Stage::Head => self.stage = Stage::Noisy,
+                Stage::Head => {
+                    self.rank_noisy(board, moves, slots);
+                    self.stage = Stage::Noisy;
+                }
                 Stage::Noisy => {
                     let u = self.next + self.demoted;
                     if u == self.noisy_end {

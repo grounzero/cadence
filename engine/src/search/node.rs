@@ -107,7 +107,7 @@ impl Search<'_> {
         }
         // Before any move is made: the history row read here and per move below is the mover's.
         let us = board.side_to_move();
-        let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
+        let (killers, mut picker) = self.order(&mut legal, tt_move, us, ply);
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts.
@@ -194,7 +194,6 @@ impl Search<'_> {
 
     fn order(
         &mut self,
-        board: &Board,
         legal: &mut MoveList,
         tt_move: Move,
         us: Colour,
@@ -203,14 +202,7 @@ impl Search<'_> {
         let ordered = usize::from(order_first(legal, tt_move));
         let killers = self.killers[ply];
         let history = self.history.side(us);
-        let picker = Picker::new(
-            board,
-            legal,
-            ordered,
-            killers,
-            history,
-            &mut self.slots[ply],
-        );
+        let picker = Picker::new(legal, ordered, killers, history, &mut self.slots[ply]);
         (killers, picker)
     }
 

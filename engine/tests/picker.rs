@@ -76,7 +76,7 @@ fn picked(
     history: &[i32],
 ) -> (Vec<Move>, Vec<u32>) {
     let mut slots = [Slot::default(); MAX_MOVES];
-    let mut picker = Picker::new(b, &mut list, start, killers, history, &mut slots);
+    let mut picker = Picker::new(&list, start, killers, history, &mut slots);
     let (mut moves, mut exchanges) = (Vec::new(), Vec::new());
     while let Some((m, i, _)) = picker.next(b, &mut list, &mut slots) {
         assert_eq!(i, moves.len(), "the index is the yield count");
