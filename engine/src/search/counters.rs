@@ -9,6 +9,7 @@ use cadence_core::{Colour, Move};
 
 use super::node::Searched;
 use super::{Limits, NODE_PUBLISH_INTERVAL, Search};
+use crate::conthist::{self, ContinuationHistory, OFFSETS};
 use crate::eval;
 use crate::history::{self, History};
 use crate::score::{self, Score};
@@ -169,6 +170,35 @@ impl Search<'_> {
         &self.history
     }
 
+    #[must_use]
+    pub fn continuation(&self) -> &ContinuationHistory {
+        &self.conthist
+    }
+
+    /// Continuation entries the cutoffs credited.
+    #[must_use]
+    pub fn continuation_credits(&self) -> u64 {
+        self.continuation_credits
+    }
+
+    /// Continuation entries the cutoffs debited.
+    #[must_use]
+    pub fn continuation_debits(&self) -> u64 {
+        self.continuation_debits
+    }
+
+    /// Of [`Search::continuation_debits`], the moves the node never searched.
+    #[must_use]
+    pub fn continuation_debits_unsearched(&self) -> u64 {
+        self.continuation_debits_unsearched
+    }
+
+    /// Offsets a node found no frame for, above the root or below a null move.
+    #[must_use]
+    pub fn continuation_absent(&self) -> u64 {
+        self.continuation_absent
+    }
+
     /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
@@ -277,20 +307,31 @@ impl Search<'_> {
         }
     }
 
-    /// Credits `cut` and debits every quiet move tried before it.
+    /// Credits the cutter, `moves[cut]`, and debits every quiet move tried before it, in the
+    /// butterfly and in each continuation row the node's frames name. The board is the node's, its
+    /// moves unmade.
     pub(super) fn remember_history(
         &mut self,
-        us: Colour,
-        passed: &[Move],
+        board: &Board,
+        ply: usize,
+        moves: &[Move],
+        cut: usize,
         searched: &Searched,
-        cut: Move,
         depth: u32,
     ) {
+        let (passed, cut) = (&moves[..cut], moves[cut]);
         if cut.is_noisy() {
             return;
         }
+        let us = board.side_to_move();
+        let contexts = OFFSETS.map(|offset| conthist::context(&self.frames, ply, offset));
         let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
+        let cut_to = conthist::piece_to(board, cut);
+        for &context in contexts.iter().flatten() {
+            self.conthist.update(context, cut_to, bonus);
+            self.continuation_credits += 1;
+        }
         for (i, &beaten) in passed.iter().enumerate() {
             if beaten.is_noisy() || !searched.contains(i) {
                 continue;
@@ -298,6 +339,12 @@ impl Search<'_> {
             self.history_debits += 1;
             self.history_debits_unsearched += u64::from(!searched.contains(i));
             self.history.update(us, beaten, -bonus);
+            let beaten_to = conthist::piece_to(board, beaten);
+            for &context in contexts.iter().flatten() {
+                self.conthist.update(context, beaten_to, -bonus);
+                self.continuation_debits += 1;
+                self.continuation_debits_unsearched += u64::from(!searched.contains(i));
+            }
         }
     }
 
@@ -335,7 +382,13 @@ impl Search<'_> {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    use cadence_core::position::Board;
+    use cadence_core::{START_FEN, generate_legal, parse_uci};
+
+    use crate::conthist;
+    use crate::history;
     use crate::search::Search;
+    use crate::search::node::Searched;
     use crate::tt::Table;
 
     /// The one externally visible thing `Threads` above one changes; asserted directly because a
@@ -369,5 +422,38 @@ mod tests {
         search.publish_nodes();
         assert_eq!(slots[0].load(Ordering::Relaxed), 7);
         assert_eq!(search.reported_nodes(), 130, "publishing changes no total");
+    }
+
+    /// A cutoff after a quiet move the node searched and one it gave up, read in the entries
+    /// themselves: a search's own counters filter before they count, so they cannot see this.
+    #[test]
+    fn a_cutoff_debits_the_quiet_move_searched_and_not_the_one_given_up() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let board = Board::from_fen(START_FEN).expect("the start position");
+        let legal = generate_legal(&board);
+        let quiet = |uci| parse_uci(&legal, uci).expect("a legal move");
+        let (tried, given_up, cutter) = (quiet("g1f3"), quiet("b1c3"), quiet("e2e4"));
+        let mut searched = Searched::default();
+        searched.set(0);
+        // Any two rows, as the moves one and two plies above the node.
+        let contexts = [200, 100];
+        search.frames[..2].copy_from_slice(&contexts.map(Some));
+        search.remember_history(&board, 2, &[tried, given_up, cutter], 2, &searched, 6);
+
+        let bonus = history::bonus(6);
+        let side = board.side_to_move();
+        for (m, expected) in [(tried, -bonus), (given_up, 0), (cutter, bonus)] {
+            assert_eq!(
+                search.history.get(side, m),
+                expected,
+                "the butterfly, {m:?}"
+            );
+            for context in contexts {
+                let entry = search.conthist.row(context)[conthist::piece_to(&board, m)];
+                assert_eq!(i32::from(entry), expected, "row {context}, {m:?}");
+            }
+        }
     }
 }

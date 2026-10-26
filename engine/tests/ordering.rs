@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Move, Square, generate_legal, generate_noisy};
-use cadence_engine::picker::{noisy_key, sort_from, sort_noisy};
+use cadence_engine::picker::{Tables, noisy_key, sort_from, sort_noisy};
 use cadence_engine::position::Position;
 use cadence_engine::score::Score;
 use cadence_engine::search::{Limits, order_first, remember_killer};
@@ -451,7 +451,7 @@ fn sorted_with(fen: &str, start: usize, killers: [Move; 2]) -> (Board, Vec<Move>
     let b = board(fen);
     let generated: Vec<Move> = generate_legal(&b).iter().collect();
     let mut list = generate_legal(&b);
-    sort_from(&b, &mut list, start, killers, &[]);
+    sort_from(&b, &mut list, start, killers, &Tables::none());
     let after: Vec<Move> = list.iter().collect();
     (b, generated, after)
 }
@@ -585,7 +585,7 @@ fn the_sort_leaves_the_head_of_the_list_alone() {
         let generated: Vec<Move> = generate_legal(&b).iter().collect();
         for start in 0..=generated.len() {
             let mut list = generate_legal(&b);
-            sort_from(&b, &mut list, start, NO_KILLERS, &[]);
+            sort_from(&b, &mut list, start, NO_KILLERS, &Tables::none());
             let after: Vec<Move> = list.iter().collect();
             assert_eq!(
                 after[..start],
@@ -616,7 +616,7 @@ fn the_tables_move_stays_in_front_of_the_sort() {
         for m in legal.iter() {
             let mut list = legal.clone();
             assert!(order_first(&mut list, m), "{fen}: {m:?} is legal here");
-            sort_from(&b, &mut list, 1, NO_KILLERS, &[]);
+            sort_from(&b, &mut list, 1, NO_KILLERS, &Tables::none());
             let after: Vec<Move> = list.iter().collect();
             assert_eq!(after[0], m, "{fen}: the sort moved the table's move");
             for w in after[1..].windows(2) {
@@ -795,7 +795,7 @@ fn demoting_the_moves_the_quiescence_search_refuses_would_reorder_nothing() {
         let mut plain = generate_noisy(&b);
         sort_noisy(&b, &mut plain);
         let mut demoted = generate_noisy(&b);
-        sort_from(&b, &mut demoted, 0, NO_KILLERS, &[]);
+        sort_from(&b, &mut demoted, 0, NO_KILLERS, &Tables::none());
         let searched = |l: &cadence_core::MoveList| -> Vec<Move> {
             l.iter().filter(|&m| see(&b, m) >= 0).collect()
         };
@@ -1039,7 +1039,7 @@ fn the_tables_move_stays_in_front_of_a_killer() {
                 order_first(&mut list, tt_move),
                 "{fen}: {tt_move:?} is legal here"
             );
-            sort_from(&b, &mut list, 1, [killer, Move::NULL], &[]);
+            sort_from(&b, &mut list, 1, [killer, Move::NULL], &Tables::none());
             let after: Vec<Move> = list.iter().collect();
             assert_eq!(after[0], tt_move, "{fen}: the sort moved the table's move");
             let mut bits: Vec<u16> = after.iter().map(|m| m.to_bits()).collect();

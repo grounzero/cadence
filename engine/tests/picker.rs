@@ -5,13 +5,15 @@
 
 mod support;
 
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, Move, MoveList, generate_legal};
+use cadence_engine::conthist::PIECE_TO;
 use cadence_engine::history::SPAN;
-use cadence_engine::picker::{Picker, Slot, noisy_key, sort_from};
+use cadence_engine::picker::{Picker, Slot, Tables, noisy_key, sort_from};
 use cadence_engine::search::{Limits, order_first};
 use cadence_engine::see::see;
 use cadence_engine::tt::{self, Table};
@@ -36,18 +38,64 @@ fn corpus_and_children() -> Vec<String> {
     out
 }
 
-/// Both sides' tables after a real search, so the quiet moves are ranked as a search ranks them.
+/// A real search's tables: both sides' butterfly rows, and for each side to move the continuation
+/// row at each offset that scores the most of its moves.
+struct Searched {
+    butterfly: [Vec<i32>; 2],
+    continuation: [[Vec<i16>; 2]; 2],
+}
+
+/// Searched once and shared, so the quiet moves are ranked as a search ranks them.
+fn searched() -> &'static Searched {
+    static SEARCHED: OnceLock<Searched> = OnceLock::new();
+    SEARCHED.get_or_init(|| {
+        let tt = Table::new(tt::DEFAULT_HASH_MB).expect("a default-sized transposition table");
+        let stop = AtomicBool::new(false);
+        let mut s = support::search(Limits::depth(9), &stop, &tt);
+        let mut b = support::position(&support::standard_fen("kiwipete"));
+        s.run(&mut b, &mut Vec::new());
+        let h = s.history();
+        let c = s.continuation();
+        let colour = |piece_to: usize| piece_to / 64 / 6;
+        let densest = |mover: usize, context_colour: usize| {
+            (0..PIECE_TO)
+                .filter(|&context| colour(context) == context_colour)
+                .map(|context| c.row(context as u16).to_vec())
+                .max_by_key(|row| {
+                    let scored = (0..PIECE_TO).filter(|&i| colour(i) == mover && row[i] != 0);
+                    scored.count()
+                })
+                .expect("a row")
+        };
+        Searched {
+            butterfly: [
+                h.side(Colour::White).to_vec(),
+                h.side(Colour::Black).to_vec(),
+            ],
+            continuation: [0, 1].map(|mover| [densest(mover, 1 - mover), densest(mover, mover)]),
+        }
+    })
+}
+
 fn searched_history() -> [Vec<i32>; 2] {
-    let tt = Table::new(tt::DEFAULT_HASH_MB).expect("a default-sized transposition table");
-    let stop = AtomicBool::new(false);
-    let mut s = support::search(Limits::depth(9), &stop, &tt);
-    let mut b = support::position(&support::standard_fen("kiwipete"));
-    s.run(&mut b, &mut Vec::new());
-    let h = s.history();
+    searched().butterfly.clone()
+}
+
+/// The butterfly row alone, which is the sort's order of before the continuation history.
+fn butterfly(history: &[Vec<i32>; 2]) -> [Tables<'_>; 2] {
     [
-        h.side(Colour::White).to_vec(),
-        h.side(Colour::Black).to_vec(),
+        Tables::butterfly(&history[0]),
+        Tables::butterfly(&history[1]),
     ]
+}
+
+/// The butterfly row and both offsets' continuation rows, planted from a real search.
+fn in_context(side: Colour, history: &[i32]) -> Tables<'_> {
+    let rows = &searched().continuation[side.index()];
+    Tables {
+        butterfly: history,
+        continuation: [Some(&rows[0]), Some(&rows[1])],
+    }
 }
 
 /// The two quiet moves generated last, where an unordered list would try them last.
@@ -73,10 +121,10 @@ fn picked(
     mut list: MoveList,
     start: usize,
     killers: [Move; 2],
-    history: &[i32],
+    tables: &Tables<'_>,
 ) -> (Vec<Move>, Vec<u32>) {
     let mut slots = [Slot::default(); MAX_MOVES];
-    let mut picker = Picker::new(b, &mut list, start, killers, history, &mut slots);
+    let mut picker = Picker::new(b, &mut list, start, killers, tables, &mut slots);
     let (mut moves, mut exchanges) = (Vec::new(), Vec::new());
     while let Some((m, i, _)) = picker.next(b, &mut list, &mut slots) {
         assert_eq!(i, moves.len(), "the index is the yield count");
@@ -91,17 +139,17 @@ fn sorted(
     mut list: MoveList,
     start: usize,
     killers: [Move; 2],
-    history: &[i32],
+    tables: &Tables<'_>,
 ) -> Vec<Move> {
-    support::sort_from(b, &mut list, start, killers, history);
+    support::sort_from(b, &mut list, start, killers, tables);
     list.iter().collect()
 }
 
 /// Every position with no table move and with its last legal move planted as the table's, with no
-/// killers and with two planted late, ranked by `history`.
+/// killers and with two planted late, ranked by the side to move's view.
 fn each_node(
-    history: &[Vec<i32>; 2],
-    mut check: impl FnMut(&str, &Board, MoveList, usize, [Move; 2], &[i32]),
+    views: &[Tables<'_>; 2],
+    mut check: impl FnMut(&str, &Board, MoveList, usize, [Move; 2], &Tables<'_>),
 ) -> usize {
     let mut nodes = 0;
     for fen in corpus_and_children() {
@@ -110,7 +158,7 @@ fn each_node(
         let Some(last) = legal.iter().last() else {
             continue;
         };
-        let side = &history[b.side_to_move().index()];
+        let side = &views[b.side_to_move().index()];
         for tt_move in [Move::NULL, last] {
             for killers in [[Move::NULL; 2], late_killers(&b)] {
                 let (list, start) = node_list(&b, tt_move);
@@ -125,12 +173,61 @@ fn each_node(
 #[test]
 fn the_picker_yields_the_sorted_order_in_every_position() {
     let history = searched_history();
-    let nodes = each_node(&history, |fen, b, list, start, killers, side| {
+    let nodes = each_node(
+        &butterfly(&history),
+        |fen, b, list, start, killers, side| {
+            let want = sorted(b, list.clone(), start, killers, side);
+            let (got, _) = picked(b, list, start, killers, side);
+            assert_eq!(got, want, "{fen}: start {start}, killers {killers:?}");
+        },
+    );
+    assert!(nodes > 4_000, "only {nodes} nodes checked");
+}
+
+/// A planted row is where the picker and the oracle would first disagree, so both offsets carry one
+/// that scores many of the side's moves.
+#[test]
+fn the_picker_yields_the_oracles_order_with_planted_context() {
+    let history = searched_history();
+    let views = [
+        in_context(Colour::White, &history[0]),
+        in_context(Colour::Black, &history[1]),
+    ];
+    let mut reordered = 0;
+    let nodes = each_node(&views, |fen, b, list, start, killers, side| {
         let want = sorted(b, list.clone(), start, killers, side);
+        let plain = sorted(
+            b,
+            list.clone(),
+            start,
+            killers,
+            &Tables::butterfly(side.butterfly),
+        );
+        reordered += usize::from(want != plain);
         let (got, _) = picked(b, list, start, killers, side);
         assert_eq!(got, want, "{fen}: start {start}, killers {killers:?}");
     });
     assert!(nodes > 4_000, "only {nodes} nodes checked");
+    assert!(
+        reordered > 1_000,
+        "the planted rows reorder only {reordered} lists"
+    );
+}
+
+/// The control: an empty view, and a butterfly row with no continuation row, are the sort's order
+/// before the continuation history.
+#[test]
+fn with_no_context_every_key_is_the_butterflys() {
+    let history = searched_history();
+    let none = [Tables::none(), Tables::none()];
+    for views in [none, butterfly(&history)] {
+        each_node(&views, |fen, b, list, start, killers, side| {
+            assert!(side.continuation.iter().all(Option::is_none));
+            let want = sorted(b, list.clone(), start, killers, side);
+            let (got, _) = picked(b, list, start, killers, side);
+            assert_eq!(got, want, "{fen}: start {start}, killers {killers:?}");
+        });
+    }
 }
 
 /// Every quiet move at one history score, so the quiet band is a single tie, beside the noisy
@@ -139,7 +236,7 @@ fn the_picker_yields_the_sorted_order_in_every_position() {
 fn ties_fall_in_generation_order() {
     let flat = [vec![300; SPAN], vec![300; SPAN]];
     let (mut quiet_ties, mut noisy_ties) = (0, 0);
-    each_node(&flat, |fen, b, list, start, killers, side| {
+    each_node(&butterfly(&flat), |fen, b, list, start, killers, side| {
         let rest = &list.as_slice()[start..];
         quiet_ties += usize::from(rest.iter().filter(|m| !m.is_noisy()).count() >= 3);
         let mut keys: Vec<i32> = rest
@@ -170,32 +267,35 @@ fn ties_fall_in_generation_order() {
 fn see_is_computed_only_for_noisy_candidates_examined_in_rank_order() {
     let history = searched_history();
     let mut tested = 0;
-    each_node(&history, |fen, b, list, start, killers, side| {
-        let mut ranked: Vec<(i32, usize, Move)> = list.as_slice()[start..]
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.is_noisy())
-            .map(|(generated, &m)| (noisy_key(b, m), generated, m))
-            .collect();
-        ranked.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)));
-        let total = ranked.len() as u32;
-        let (moves, exchanges) = picked(b, list, start, killers, side);
-        for (i, (&m, &read)) in moves.iter().zip(&exchanges).enumerate() {
-            let want = if i < start {
-                0
-            } else if m.is_noisy() && see(b, m) >= 0 {
-                ranked
-                    .iter()
-                    .position(|r| r.2 == m)
-                    .expect("a ranked noisy move") as u32
-                    + 1
-            } else {
-                total
-            };
-            assert_eq!(read, want, "{fen}: {read} exchanges read at move {i}");
-        }
-        tested += usize::from(total > 1);
-    });
+    each_node(
+        &butterfly(&history),
+        |fen, b, list, start, killers, side| {
+            let mut ranked: Vec<(i32, usize, Move)> = list.as_slice()[start..]
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.is_noisy())
+                .map(|(generated, &m)| (noisy_key(b, m), generated, m))
+                .collect();
+            ranked.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)));
+            let total = ranked.len() as u32;
+            let (moves, exchanges) = picked(b, list, start, killers, side);
+            for (i, (&m, &read)) in moves.iter().zip(&exchanges).enumerate() {
+                let want = if i < start {
+                    0
+                } else if m.is_noisy() && see(b, m) >= 0 {
+                    ranked
+                        .iter()
+                        .position(|r| r.2 == m)
+                        .expect("a ranked noisy move") as u32
+                        + 1
+                } else {
+                    total
+                };
+                assert_eq!(read, want, "{fen}: {read} exchanges read at move {i}");
+            }
+            tested += usize::from(total > 1);
+        },
+    );
     assert!(
         tested > 500,
         "only {tested} lists with two noisy moves to choose between"
@@ -207,7 +307,7 @@ fn fresh() -> [Slot; MAX_MOVES] {
 }
 
 /// The picker's sequence over `slots`, held to each move of the list exactly once and to the sort's
-/// order.
+/// order, by the butterfly row alone and again with continuation rows planted.
 fn checked(
     b: &Board,
     list: &MoveList,
@@ -216,23 +316,31 @@ fn checked(
     history: &[i32],
     slots: &mut [Slot],
 ) -> Vec<Move> {
-    let mut work = list.clone();
-    let mut picker = Picker::new(b, &mut work, start, killers, history, slots);
-    let mut got = Vec::new();
-    while let Some((m, _, _)) = picker.next(b, &mut work, slots) {
-        got.push(m);
+    let views = [
+        Tables::butterfly(history),
+        in_context(b.side_to_move(), history),
+    ];
+    let mut first = None;
+    for tables in &views {
+        let mut work = list.clone();
+        let mut picker = Picker::new(b, &mut work, start, killers, tables, slots);
+        let mut got = Vec::new();
+        while let Some((m, _, _)) = picker.next(b, &mut work, slots) {
+            got.push(m);
+        }
+        let mut given: Vec<u16> = list.iter().map(Move::to_bits).collect();
+        let mut yielded: Vec<u16> = got.iter().map(|m| m.to_bits()).collect();
+        given.sort_unstable();
+        yielded.sort_unstable();
+        assert_eq!(yielded, given, "each move of the list exactly once");
+        assert_eq!(
+            got,
+            sorted(b, list.clone(), start, killers, tables),
+            "the sort's order"
+        );
+        first.get_or_insert(got);
     }
-    let mut given: Vec<u16> = list.iter().map(Move::to_bits).collect();
-    let mut yielded: Vec<u16> = got.iter().map(|m| m.to_bits()).collect();
-    given.sort_unstable();
-    yielded.sort_unstable();
-    assert_eq!(yielded, given, "each move of the list exactly once");
-    assert_eq!(
-        got,
-        sorted(b, list.clone(), start, killers, history),
-        "the sort's order"
-    );
-    got
+    first.expect("a view")
 }
 
 fn one(m: Move) -> MoveList {
@@ -300,7 +408,14 @@ fn an_empty_list_yields_nothing() {
     let b = board(&support::standard_fen("startpos"));
     let mut list = MoveList::new();
     let mut slots = fresh();
-    let mut picker = Picker::new(&b, &mut list, 0, [Move::NULL; 2], &[], &mut slots);
+    let mut picker = Picker::new(
+        &b,
+        &mut list,
+        0,
+        [Move::NULL; 2],
+        &Tables::none(),
+        &mut slots,
+    );
     assert!(picker.next(&b, &mut list, &mut slots).is_none());
     assert_eq!(picker.exchanges(), 0);
 }
@@ -465,7 +580,14 @@ fn a_high_ranked_losing_capture_before_a_winning_one_costs_two_see_calls() {
     );
     let mut list = generate_legal(&b);
     let mut slots = fresh();
-    let mut picker = Picker::new(&b, &mut list, 0, [Move::NULL; 2], &[], &mut slots);
+    let mut picker = Picker::new(
+        &b,
+        &mut list,
+        0,
+        [Move::NULL; 2],
+        &Tables::none(),
+        &mut slots,
+    );
     let (first, _, _) = picker.next(&b, &mut list, &mut slots).expect("a move");
     assert_eq!((first, picker.exchanges()), (low, 2));
     while picker.next(&b, &mut list, &mut slots).is_some() {}
@@ -479,10 +601,10 @@ fn sort_from_leaves_a_list_alone_from_a_start_at_or_past_its_end() {
     let legal = generate_legal(&b);
     for start in [legal.len(), legal.len() + 1, legal.len() + 40] {
         let mut list = legal.clone();
-        sort_from(&b, &mut list, start, late_killers(&b), &[]);
+        sort_from(&b, &mut list, start, late_killers(&b), &Tables::none());
         assert_eq!(list.as_slice(), legal.as_slice(), "start {start}");
     }
     let mut empty = MoveList::new();
-    sort_from(&b, &mut empty, 1, [Move::NULL; 2], &[]);
+    sort_from(&b, &mut empty, 1, [Move::NULL; 2], &Tables::none());
     assert!(empty.is_empty());
 }

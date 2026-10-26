@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, MoveList, START_FEN, generate_legal};
 use cadence_engine::history::{self, HISTORY_MAX, History, SHIFT_MAX, SPAN};
-use cadence_engine::picker::sort_from;
+use cadence_engine::picker::{Tables, sort_from};
 use cadence_engine::search::{Limits, history_reduction, lmr_reduction};
 use support::table;
 
@@ -70,8 +70,14 @@ fn a_cutoff_raises_a_score_and_the_order_follows() {
 
     let mut flat = generate_legal(&b);
     let mut ranked = flat.clone();
-    sort_from(&b, &mut flat, 0, [Move::NULL; 2], &[]);
-    sort_from(&b, &mut ranked, 0, [Move::NULL; 2], hist.side(us));
+    sort_from(&b, &mut flat, 0, [Move::NULL; 2], &Tables::none());
+    sort_from(
+        &b,
+        &mut ranked,
+        0,
+        [Move::NULL; 2],
+        &Tables::butterfly(hist.side(us)),
+    );
     let first_quiet = |l: &MoveList| {
         l.iter()
             .position(|m| !m.is_noisy())
@@ -352,8 +358,8 @@ fn a_fresh_table_reads_zero() {
 /// is one past, so the gate asserts on a search that would otherwise make some.
 const DEBIT_GATE_DEPTH: u32 = 9;
 
-/// A cutoff debits only the quiet moves its node searched: a move the margin or the count gave up
-/// produced no evidence. The count of debits rules out a gate passing on a search that made none.
+/// A search that gives moves up makes debits; which moves they fall on is read in the entries
+/// themselves beside `remember_history`, since the counters filter before they count.
 #[test]
 fn a_cutoff_debits_only_the_quiet_moves_its_node_searched() {
     let fen = support::standard_fen("kiwipete");
@@ -366,13 +372,6 @@ fn a_cutoff_debits_only_the_quiet_moves_its_node_searched() {
     assert!(
         s.history_debits() > 100,
         "only {} debits",
-        s.history_debits()
-    );
-    assert_eq!(
-        s.history_debits_unsearched(),
-        0,
-        "{} of {} debits fell on a move the node never searched",
-        s.history_debits_unsearched(),
         s.history_debits()
     );
 }

@@ -859,7 +859,13 @@ fn the_evasion_sort_keeps_a_losing_capture_ahead_of_the_quiet_evasions() {
             "{fen}: the evasion sort moved the losing capture off the head"
         );
         let mut main = generate_legal(&b);
-        cadence_engine::picker::sort_from(&b, &mut main, 0, [Move::NULL; 2], &[]);
+        cadence_engine::picker::sort_from(
+            &b,
+            &mut main,
+            0,
+            [Move::NULL; 2],
+            &cadence_engine::picker::Tables::none(),
+        );
         assert!(
             main.as_slice().last().is_some_and(|m| m.is_noisy()),
             "{fen}: the main search's sort did not try the losing capture last"
