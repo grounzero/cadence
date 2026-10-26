@@ -17,6 +17,19 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.19] - 2026-10-26
+
+### Changed
+
+- Search: quiet moves are now ordered by how well each has done in reply
+  to the opponent's last move and after the side's own move before it, as
+  well as by its own history. Captures, the killer moves and the order of
+  the groups of moves are unchanged.
+
+Test 62: +10.68 (between +4.35 and +17.01), a self-play estimate against
+0.5.18 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.18] - 2026-10-25
 
 ### Changed
@@ -372,7 +385,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.18...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.19...main
+[0.5.19]: https://github.com/grounzero/cadence/compare/0.5.18...0.5.19
 [0.5.18]: https://github.com/grounzero/cadence/compare/0.5.17...0.5.18
 [0.5.17]: https://github.com/grounzero/cadence/compare/0.5.16...0.5.17
 [0.5.16]: https://github.com/grounzero/cadence/compare/0.5.15...0.5.16
