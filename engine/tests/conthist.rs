@@ -8,7 +8,7 @@ mod support;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
-use cadence_core::{Move, MoveList, generate_legal};
+use cadence_core::{Move, MoveList, generate_legal, parse_uci};
 use cadence_engine::conthist::{self, Frame, OFFSETS, PIECE_TO};
 use cadence_engine::history::HISTORY_MAX;
 use cadence_engine::picker::{Tables, sort_from};
@@ -196,6 +196,33 @@ fn every_frame_indexes_inside_the_table() {
         }
     }
     assert!(seen > 0, "the corpus produced no moves");
+}
+
+/// The piece numbered from white's pawn to black's king, times 64, plus the destination from a1: a
+/// promotion is keyed by its pawn, and castling by its king onto its own rook in either variant.
+#[test]
+fn a_move_indexes_its_piece_and_its_destination() {
+    let cases = [
+        (
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "g1f3",
+            85,
+        ),
+        (
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "g8f6",
+            493,
+        ),
+        ("8/4P3/8/8/8/8/k7/4K3 w - - 0 1", "e7e8q", 60),
+        ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1h1", 327),
+        ("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1", "e8a8", 760),
+        ("rk5r/8/8/8/8/8/8/RK5R w AHah - 0 1", "b1a1", 320),
+    ];
+    for (fen, uci, index) in cases {
+        let b = board(fen);
+        let m = parse_uci(&generate_legal(&b), uci).unwrap_or_else(|| panic!("{fen}: no {uci}"));
+        assert_eq!(conthist::piece_to(&b, m), index, "{fen}: {uci}");
+    }
 }
 
 #[test]
