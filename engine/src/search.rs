@@ -147,14 +147,11 @@ pub struct Search<'a> {
     /// Two, so a gate can tell a table that only credits from one that also debits.
     history_reduced_less: u64,
     history_reduced_more: u64,
-    /// The second is a share of the first no rule intends, so a gate asserts it is zero.
     history_debits: u64,
-    history_debits_unsearched: u64,
     /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
     /// move skipped.
     continuation_credits: u64,
     continuation_debits: u64,
-    continuation_debits_unsearched: u64,
     continuation_absent: u64,
     /// The check-exemption count lets a gate see the exemption decide.
     futility_nodes: u64,
@@ -238,10 +235,8 @@ impl<'a> Search<'a> {
             history_reduced_less: 0,
             history_reduced_more: 0,
             history_debits: 0,
-            history_debits_unsearched: 0,
             continuation_credits: 0,
             continuation_debits: 0,
-            continuation_debits_unsearched: 0,
             continuation_absent: 0,
             futility_nodes: 0,
             futility_skipped: 0,
@@ -316,10 +311,8 @@ impl<'a> Search<'a> {
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
         self.history_debits = 0;
-        self.history_debits_unsearched = 0;
         self.continuation_credits = 0;
         self.continuation_debits = 0;
-        self.continuation_debits_unsearched = 0;
         self.continuation_absent = 0;
         self.corrhist.clear();
         self.corrhist_updates = 0;

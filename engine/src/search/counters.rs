@@ -70,12 +70,6 @@ impl Search<'_> {
         self.history_debits
     }
 
-    /// Of [`Search::history_debits`], the moves the node never searched.
-    #[must_use]
-    pub fn history_debits_unsearched(&self) -> u64 {
-        self.history_debits_unsearched
-    }
-
     /// Nodes the margin admitted; its siblings count the quiet moves skipped there and the skips
     /// refused for giving check.
     #[must_use]
@@ -185,12 +179,6 @@ impl Search<'_> {
     #[must_use]
     pub fn continuation_debits(&self) -> u64 {
         self.continuation_debits
-    }
-
-    /// Of [`Search::continuation_debits`], the moves the node never searched.
-    #[must_use]
-    pub fn continuation_debits_unsearched(&self) -> u64 {
-        self.continuation_debits_unsearched
     }
 
     /// Offsets a node found no frame for, above the root or below a null move.
@@ -337,13 +325,11 @@ impl Search<'_> {
                 continue;
             }
             self.history_debits += 1;
-            self.history_debits_unsearched += u64::from(!searched.contains(i));
             self.history.update(us, beaten, -bonus);
             let beaten_to = conthist::piece_to(board, beaten);
             for &context in contexts.iter().flatten() {
                 self.conthist.update(context, beaten_to, -bonus);
                 self.continuation_debits += 1;
-                self.continuation_debits_unsearched += u64::from(!searched.contains(i));
             }
         }
     }
