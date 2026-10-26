@@ -548,8 +548,8 @@ pub fn random_mover(
 }
 
 /// The main search's sort before the picker, kept as the order the picker reproduces: keeping
-/// noisy moves by MVV-LVA, the killers, losing promotions, quiet moves by the summed history, then
-/// losing captures, stable so that ties keep generation order.
+/// noisy moves by MVV-LVA and their capture's score, the killers, losing promotions, quiet moves by
+/// the summed history, then losing captures, stable so that ties keep generation order.
 pub fn sort_from(
     board: &cadence_core::position::Board,
     list: &mut cadence_core::MoveList,
@@ -557,27 +557,43 @@ pub fn sort_from(
     killers: [cadence_core::Move; 2],
     tables: &cadence_engine::picker::Tables<'_>,
 ) {
+    use cadence_engine::history::HISTORY_MAX;
     use cadence_engine::picker::noisy_key;
     use cadence_engine::see::see;
-    const BAND: i32 = 1 << 16;
-    const QUIET: i32 = -512;
-    const KILLER: [i32; 2] = [-128, -129];
-    const LOSING: i32 = 256;
-    const LAST: i32 = 1024;
+    // The bands in the order they are tried, each keyed inside itself.
+    const WINNING: i32 = 4;
+    const KILLER: i32 = 3;
+    const LOSING_PROMOTION: i32 = 2;
+    const QUIET: i32 = 1;
+    const LOSING_CAPTURE: i32 = 0;
+    // A coloured piece, destination and victim, computed here rather than by the engine's own.
+    let entry = |m: cadence_core::Move| {
+        let victim = if m.is_en_passant() {
+            0
+        } else if m.is_capture() {
+            let victim = board.piece_at(m.to_sq()).expect("a capture's victim");
+            victim.piece_type().index()
+        } else {
+            return None;
+        };
+        let mover = board.piece_at(m.from_sq()).expect("a capture's mover");
+        Some((mover.index() * 64 + m.to_sq().index()) * 6 + victim)
+    };
     let key = |m: cadence_core::Move| {
         if m.is_noisy() {
-            let key = noisy_key(board, m);
+            let score = entry(m).and_then(|i| tables.capture.get(i));
+            let key = noisy_key(board, m) * (HISTORY_MAX / 8) + score.map_or(0, |&v| i32::from(v));
             if see(board, m) >= 0 {
-                key * BAND
+                (WINNING, key)
             } else if m.promotion_piece().is_none() {
-                (key - LAST) * BAND
+                (LOSING_CAPTURE, key)
             } else {
-                (key - LOSING) * BAND
+                (LOSING_PROMOTION, key)
             }
         } else if m == killers[0] {
-            KILLER[0] * BAND
+            (KILLER, 1)
         } else if m == killers[1] {
-            KILLER[1] * BAND
+            (KILLER, 0)
         } else {
             // A coloured piece and destination, computed here rather than by the engine's own.
             let piece = board.piece_at(m.from_sq()).expect("a quiet move's mover");
@@ -588,7 +604,8 @@ pub fn sort_from(
                 .flatten()
                 .map(|row| i32::from(row[column]))
                 .sum();
-            QUIET * BAND + tables.butterfly.get(m.from_to()).copied().unwrap_or(0) + continuation
+            let butterfly = tables.butterfly.get(m.from_to()).copied().unwrap_or(0);
+            (QUIET, butterfly + continuation)
         }
     };
     let all = list.as_mut_slice();
@@ -596,7 +613,7 @@ pub fn sort_from(
         return;
     }
     let moves = &mut all[start..];
-    let mut keys = [0i32; cadence_core::MAX_MOVES];
+    let mut keys = [(0i32, 0i32); cadence_core::MAX_MOVES];
     for (k, &m) in keys.iter_mut().zip(moves.iter()) {
         *k = key(m);
     }

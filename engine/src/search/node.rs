@@ -215,6 +215,7 @@ impl Search<'_> {
         let tables = Tables {
             butterfly: self.history.side(us),
             continuation,
+            capture: self.capthist.entries(),
         };
         let picker = Picker::new(
             board,

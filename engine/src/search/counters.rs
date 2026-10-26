@@ -9,6 +9,7 @@ use cadence_core::{Colour, Move};
 
 use super::node::Searched;
 use super::{Limits, NODE_PUBLISH_INTERVAL, Search};
+use crate::capthist::{self, CaptureHistory};
 use crate::conthist::{self, ContinuationHistory, OFFSETS};
 use crate::eval;
 use crate::history::{self, History};
@@ -187,6 +188,23 @@ impl Search<'_> {
         self.continuation_absent
     }
 
+    #[must_use]
+    pub fn capture_history(&self) -> &CaptureHistory {
+        &self.capthist
+    }
+
+    /// Capture entries the cutoffs credited.
+    #[must_use]
+    pub fn capture_credits(&self) -> u64 {
+        self.capture_credits
+    }
+
+    /// Capture entries the cutoffs debited.
+    #[must_use]
+    pub fn capture_debits(&self) -> u64 {
+        self.capture_debits
+    }
+
     /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
@@ -295,7 +313,8 @@ impl Search<'_> {
         }
     }
 
-    /// Credits the cutter, `moves[cut]`, and debits every quiet move tried before it, in the
+    /// Credits the cutter, `moves[cut]`, and debits the searched moves tried before it: at every
+    /// cutoff the captures in the capture history, and at a quiet one the quiet moves in the
     /// butterfly and in each continuation row the node's frames name. The board is the node's, its
     /// moves unmade.
     pub(super) fn remember_history(
@@ -308,12 +327,25 @@ impl Search<'_> {
         depth: u32,
     ) {
         let (passed, cut) = (&moves[..cut], moves[cut]);
+        let bonus = history::bonus(depth);
+        if let Some(entry) = capthist::index(board, cut) {
+            self.capthist.update(entry, bonus);
+            self.capture_credits += 1;
+        }
+        for (i, &beaten) in passed.iter().enumerate() {
+            let Some(entry) = capthist::index(board, beaten) else {
+                continue;
+            };
+            if searched.contains(i) {
+                self.capthist.update(entry, -bonus);
+                self.capture_debits += 1;
+            }
+        }
         if cut.is_noisy() {
             return;
         }
         let us = board.side_to_move();
         let contexts = OFFSETS.map(|offset| conthist::context(&self.frames, ply, offset));
-        let bonus = history::bonus(depth);
         self.history.update(us, cut, bonus);
         let cut_to = conthist::piece_to(board, cut);
         for &context in contexts.iter().flatten() {
@@ -371,6 +403,7 @@ mod tests {
     use cadence_core::position::Board;
     use cadence_core::{START_FEN, generate_legal, parse_uci};
 
+    use crate::capthist;
     use crate::conthist;
     use crate::history;
     use crate::search::Search;
@@ -440,6 +473,51 @@ mod tests {
                 let entry = search.conthist.row(context)[conthist::piece_to(&board, m)];
                 assert_eq!(i32::from(entry), expected, "row {context}, {m:?}");
             }
+        }
+    }
+
+    /// The capture history at a quiet cutoff, a capturing one and a promotion's: a capture searched
+    /// ahead is debited and one given up is not, a capturing cutter is credited, and a promotion
+    /// that captures nothing has no entry to write.
+    #[test]
+    fn a_cutoff_debits_the_captures_searched_and_credits_a_capturing_cutter() {
+        let board = Board::from_fen("k7/4P3/3p1p2/2n5/4N3/8/8/4K3 w - - 0 1").expect("a position");
+        let legal = generate_legal(&board);
+        let mv = |uci| parse_uci(&legal, uci).expect("a legal move");
+        let (d6, f6, c5) = (mv("e4d6"), mv("e4f6"), mv("e4c5"));
+        let (promotion, quiet) = (mv("e7e8q"), mv("e1d1"));
+        let bonus = history::bonus(6);
+        let cases = [
+            (
+                vec![d6, f6, promotion, quiet],
+                vec![0, 2],
+                vec![(d6, -bonus)],
+            ),
+            (
+                vec![promotion, d6, c5],
+                vec![0, 1],
+                vec![(d6, -bonus), (c5, bonus)],
+            ),
+            (vec![d6, promotion], vec![0], vec![(d6, -bonus)]),
+        ];
+        for (moves, tried, written) in cases {
+            let stop = AtomicBool::new(false);
+            let tt = Table::new(1).expect("a one mebibyte table");
+            let mut search = Search::new(&stop, &tt);
+            let mut searched = Searched::default();
+            for &i in &tried {
+                searched.set(i);
+            }
+            let cut = moves.len() - 1;
+            search.remember_history(&board, 0, &moves, cut, &searched, 6);
+
+            let entries = search.capthist.entries();
+            let entry = |m| capthist::index(&board, m).map(|i| i32::from(entries[i]));
+            for &(m, expected) in &written {
+                assert_eq!(entry(m), Some(expected), "{moves:?}: {m:?}");
+            }
+            let others = entries.iter().filter(|&&v| v != 0).count() - written.len();
+            assert_eq!(others, 0, "{moves:?}: {others} other entries written");
         }
     }
 }

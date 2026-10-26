@@ -6,6 +6,7 @@ use std::time::Instant;
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, MAX_PLY, Move, MoveList};
 
+use crate::capthist::CaptureHistory;
 use crate::conthist::{ContinuationHistory, Frame};
 use crate::corrhist::CorrectionHistory;
 use crate::history::History;
@@ -125,6 +126,7 @@ pub struct Search<'a> {
     /// On the heap: `Search` is returned by value.
     history: History,
     conthist: ContinuationHistory,
+    capthist: CaptureHistory,
     /// The move made at each ply of the current path, which the continuation history reads back.
     frames: [Frame; MAX_PLY],
     corrhist: CorrectionHistory,
@@ -153,6 +155,8 @@ pub struct Search<'a> {
     continuation_credits: u64,
     continuation_debits: u64,
     continuation_absent: u64,
+    capture_credits: u64,
+    capture_debits: u64,
     /// The check-exemption count lets a gate see the exemption decide.
     futility_nodes: u64,
     futility_skipped: u64,
@@ -220,6 +224,7 @@ impl<'a> Search<'a> {
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
             history: History::new(),
             conthist: ContinuationHistory::new(),
+            capthist: CaptureHistory::new(),
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
             corrhist_updates: 0,
@@ -238,6 +243,8 @@ impl<'a> Search<'a> {
             continuation_credits: 0,
             continuation_debits: 0,
             continuation_absent: 0,
+            capture_credits: 0,
+            capture_debits: 0,
             futility_nodes: 0,
             futility_skipped: 0,
             futility_kept_check: 0,
@@ -300,6 +307,7 @@ impl<'a> Search<'a> {
         self.killers = [[Move::NULL; 2]; MAX_PLY];
         self.history.clear();
         self.conthist.clear();
+        self.capthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
         self.null_attempts = 0;
@@ -314,6 +322,8 @@ impl<'a> Search<'a> {
         self.continuation_credits = 0;
         self.continuation_debits = 0;
         self.continuation_absent = 0;
+        self.capture_credits = 0;
+        self.capture_debits = 0;
         self.corrhist.clear();
         self.corrhist_updates = 0;
         self.corrhist_applied = 0;

@@ -11,8 +11,9 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, Move, MoveList, generate_legal};
+use cadence_engine::capthist::ENTRIES;
 use cadence_engine::conthist::PIECE_TO;
-use cadence_engine::history::SPAN;
+use cadence_engine::history::{HISTORY_MAX, SPAN};
 use cadence_engine::picker::{Picker, Slot, Tables, noisy_key, sort_from};
 use cadence_engine::search::{Limits, order_first};
 use cadence_engine::see::see;
@@ -38,11 +39,12 @@ fn corpus_and_children() -> Vec<String> {
     out
 }
 
-/// A real search's tables: both sides' butterfly rows, and for each side to move the continuation
-/// row at each offset that scores the most of its moves.
+/// A real search's tables: both sides' butterfly rows, for each side to move the continuation row
+/// at each offset that scores the most of its moves, and the capture history.
 struct Searched {
     butterfly: [Vec<i32>; 2],
     continuation: [[Vec<i16>; 2]; 2],
+    capture: Vec<i16>,
 }
 
 /// Searched once and shared, so the quiet moves are ranked as a search ranks them.
@@ -73,6 +75,7 @@ fn searched() -> &'static Searched {
                 h.side(Colour::Black).to_vec(),
             ],
             continuation: [0, 1].map(|mover| [densest(mover, 1 - mover), densest(mover, mover)]),
+            capture: s.capture_history().entries().to_vec(),
         }
     })
 }
@@ -95,8 +98,20 @@ fn in_context(side: Colour, history: &[i32]) -> Tables<'_> {
     Tables {
         butterfly: history,
         continuation: [Some(&rows[0]), Some(&rows[1])],
+        capture: &[],
     }
 }
+
+/// Both offsets' rows as [`in_context`] plants them, and a whole capture history beside them.
+fn with_captures<'a>(side: Colour, history: &'a [i32], capture: &'a [i16]) -> Tables<'a> {
+    Tables {
+        capture,
+        ..in_context(side, history)
+    }
+}
+
+/// The searched capture history reorders 218 of 4,428 lists on the rule's tree.
+const REORDERED_BY_CAPTURES: usize = 150;
 
 /// The two quiet moves generated last, where an unordered list would try them last.
 fn late_killers(b: &Board) -> [Move; 2] {
@@ -214,6 +229,46 @@ fn the_picker_yields_the_oracles_order_with_planted_context() {
     );
 }
 
+/// A real search's capture history, and every entry at the cap and at the floor, where a score
+/// could carry a noisy move past a band; only the real table separates captures of one class.
+#[test]
+fn the_picker_yields_the_oracles_order_with_a_planted_capture_table() {
+    let history = searched_history();
+    let cap = vec![HISTORY_MAX as i16; ENTRIES];
+    let floor = vec![-HISTORY_MAX as i16; ENTRIES];
+    for (name, capture) in [
+        ("searched", &searched().capture),
+        ("cap", &cap),
+        ("floor", &floor),
+    ] {
+        let views = [
+            with_captures(Colour::White, &history[0], capture),
+            with_captures(Colour::Black, &history[1], capture),
+        ];
+        let mut reordered = 0;
+        let nodes = each_node(&views, |fen, b, list, start, killers, side| {
+            let want = sorted(b, list.clone(), start, killers, side);
+            let plain = Tables {
+                capture: &[],
+                ..*side
+            };
+            reordered += usize::from(want != sorted(b, list.clone(), start, killers, &plain));
+            let (got, _) = picked(b, list, start, killers, side);
+            assert_eq!(
+                got, want,
+                "{name}: {fen}: start {start}, killers {killers:?}"
+            );
+        });
+        assert!(nodes > 4_000, "{name}: only {nodes} nodes checked");
+        if name == "searched" {
+            assert!(
+                reordered > REORDERED_BY_CAPTURES,
+                "the searched table reorders only {reordered} lists"
+            );
+        }
+    }
+}
+
 /// The control: an empty view, and a butterfly row with no continuation row, are the sort's order
 /// before the continuation history.
 #[test]
@@ -262,19 +317,24 @@ fn ties_fall_in_generation_order() {
 
 /// SEE is computed only for noisy candidates examined while selecting the next move, in rank order,
 /// and never for lower-ranked, unvisited ones: none for the table's move, every noisy move ranked at
-/// or above a winning one when it is yielded, and each noisy move once by the end.
+/// or above a winning one when it is yielded, and each noisy move once by the end. Ranked by the
+/// key the view gives, with and without a capture history.
 #[test]
 fn see_is_computed_only_for_noisy_candidates_examined_in_rank_order() {
     let history = searched_history();
+    let capture = &searched().capture;
+    let captures = [
+        with_captures(Colour::White, &history[0], capture),
+        with_captures(Colour::Black, &history[1], capture),
+    ];
     let mut tested = 0;
-    each_node(
-        &butterfly(&history),
-        |fen, b, list, start, killers, side| {
+    for views in [butterfly(&history), captures] {
+        each_node(&views, |fen, b, list, start, killers, side| {
             let mut ranked: Vec<(i32, usize, Move)> = list.as_slice()[start..]
                 .iter()
                 .enumerate()
                 .filter(|(_, m)| m.is_noisy())
-                .map(|(generated, &m)| (noisy_key(b, m), generated, m))
+                .map(|(generated, &m)| (side.noisy_key(b, m), generated, m))
                 .collect();
             ranked.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)));
             let total = ranked.len() as u32;
@@ -294,10 +354,10 @@ fn see_is_computed_only_for_noisy_candidates_examined_in_rank_order() {
                 assert_eq!(read, want, "{fen}: {read} exchanges read at move {i}");
             }
             tested += usize::from(total > 1);
-        },
-    );
+        });
+    }
     assert!(
-        tested > 500,
+        tested > 1_000,
         "only {tested} lists with two noisy moves to choose between"
     );
 }
@@ -307,7 +367,8 @@ fn fresh() -> [Slot; MAX_MOVES] {
 }
 
 /// The picker's sequence over `slots`, held to each move of the list exactly once and to the sort's
-/// order, by the butterfly row alone and again with continuation rows planted.
+/// order, by the butterfly row alone, again with continuation rows planted, and again with a capture
+/// history beside them.
 fn checked(
     b: &Board,
     list: &MoveList,
@@ -319,6 +380,7 @@ fn checked(
     let views = [
         Tables::butterfly(history),
         in_context(b.side_to_move(), history),
+        with_captures(b.side_to_move(), history, &searched().capture),
     ];
     let mut first = None;
     for tables in &views {

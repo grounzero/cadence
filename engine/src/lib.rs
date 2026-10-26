@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bench;
+pub mod capthist;
 pub mod conthist;
 pub mod corrhist;
 pub mod datagen;

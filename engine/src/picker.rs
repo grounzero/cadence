@@ -143,12 +143,14 @@ pub fn sort_from(
     while picker.next(board, list, &mut slots).is_some() {}
 }
 
-/// What the main search's quiet keys read: the mover's butterfly row, empty where there is none,
-/// and a continuation row per offset, absent where its frame is.
+/// What the main search's keys read: the mover's butterfly row, empty where there is none, a
+/// continuation row per offset, absent where its frame is, and the capture history, empty where
+/// there is none.
 #[derive(Clone, Copy)]
 pub struct Tables<'a> {
     pub butterfly: &'a [i32],
     pub continuation: [Option<&'a [i16]>; OFFSETS.len()],
+    pub capture: &'a [i16],
 }
 
 impl<'a> Tables<'a> {
@@ -158,6 +160,7 @@ impl<'a> Tables<'a> {
         Tables {
             butterfly: &[],
             continuation: [None; OFFSETS.len()],
+            capture: &[],
         }
     }
 
@@ -166,7 +169,18 @@ impl<'a> Tables<'a> {
         Tables {
             butterfly: row,
             continuation: [None; OFFSETS.len()],
+            capture: &[],
         }
+    }
+
+    /// A noisy move's MVV-LVA key.
+    ///
+    /// # Panics
+    ///
+    /// If a capture's squares do not hold pieces.
+    #[must_use]
+    pub fn noisy_key(&self, board: &Board, m: Move) -> i32 {
+        noisy_key(board, m)
     }
 
     /// The butterfly score and each continuation row's, all in the history's range, so the weights
@@ -289,7 +303,7 @@ impl Picker {
             slots[i] = if m.is_noisy() {
                 noisy += 1;
                 Slot {
-                    key: noisy_key(board, m),
+                    key: tables.noisy_key(board, m),
                     generated,
                     band: Band::Untested,
                 }
