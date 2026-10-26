@@ -382,7 +382,13 @@ impl Search<'_> {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    use cadence_core::position::Board;
+    use cadence_core::{START_FEN, generate_legal, parse_uci};
+
+    use crate::conthist;
+    use crate::history;
     use crate::search::Search;
+    use crate::search::node::Searched;
     use crate::tt::Table;
 
     /// The one externally visible thing `Threads` above one changes; asserted directly because a
@@ -416,5 +422,38 @@ mod tests {
         search.publish_nodes();
         assert_eq!(slots[0].load(Ordering::Relaxed), 7);
         assert_eq!(search.reported_nodes(), 130, "publishing changes no total");
+    }
+
+    /// A cutoff after a quiet move the node searched and one it gave up, read in the entries
+    /// themselves: a search's own counters filter before they count, so they cannot see this.
+    #[test]
+    fn a_cutoff_debits_the_quiet_move_searched_and_not_the_one_given_up() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let board = Board::from_fen(START_FEN).expect("the start position");
+        let legal = generate_legal(&board);
+        let quiet = |uci| parse_uci(&legal, uci).expect("a legal move");
+        let (tried, given_up, cutter) = (quiet("g1f3"), quiet("b1c3"), quiet("e2e4"));
+        let mut searched = Searched::default();
+        searched.set(0);
+        // Any two rows, as the moves one and two plies above the node.
+        let contexts = [200, 100];
+        search.frames[..2].copy_from_slice(&contexts.map(Some));
+        search.remember_history(&board, 2, &[tried, given_up, cutter], 2, &searched, 6);
+
+        let bonus = history::bonus(6);
+        let side = board.side_to_move();
+        for (m, expected) in [(tried, -bonus), (given_up, 0), (cutter, bonus)] {
+            assert_eq!(
+                search.history.get(side, m),
+                expected,
+                "the butterfly, {m:?}"
+            );
+            for context in contexts {
+                let entry = search.conthist.row(context)[conthist::piece_to(&board, m)];
+                assert_eq!(i32::from(entry), expected, "row {context}, {m:?}");
+            }
+        }
     }
 }

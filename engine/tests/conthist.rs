@@ -136,8 +136,8 @@ fn a_null_move_leaves_its_ply_absent_and_the_ply_above_it_present() {
     assert!(s.continuation_absent() > 0, "no node read an absent frame");
 }
 
-/// The butterfly's rule in every table: a move the margin or the count gave up produced no
-/// evidence, and the count of debits rules out a search that made none.
+/// A search that gives moves up makes debits in every table; which moves they fall on is read in
+/// the entries themselves beside `remember_history`, since the counters filter before they count.
 #[test]
 fn a_cutoff_debits_only_the_quiet_moves_its_node_searched_in_every_table() {
     let stop = AtomicBool::new(false);
@@ -151,13 +151,6 @@ fn a_cutoff_debits_only_the_quiet_moves_its_node_searched_in_every_table() {
         s.continuation_debits()
     );
     assert!(s.continuation_credits() > 0, "no credits");
-    assert_eq!(
-        s.continuation_debits_unsearched(),
-        0,
-        "{} of {} debits fell on a move the node never searched",
-        s.continuation_debits_unsearched(),
-        s.continuation_debits()
-    );
 }
 
 /// With the transposition table cleared, identical runs of one `Search` show neither the table nor
