@@ -401,3 +401,62 @@ fn unless_stalemate(board: &Board, value: Score) -> Score {
         DRAW
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use cadence_core::position::Board;
+    use cadence_core::{generate_legal, parse_uci};
+
+    use crate::conthist;
+    use crate::position::Position;
+    use crate::score::Score;
+    use crate::search::Search;
+    use crate::tt::Table;
+
+    const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
+
+    /// Deep enough, and beta far enough above the child's evaluation, that the nodes below the null
+    /// move search quiet moves to a cutoff and so write the rows they read.
+    const DEPTH: u32 = 9;
+    const BETA: Score = 300;
+
+    /// A null move at ply 1 over the frame an earlier node left there, its static evaluation planted
+    /// above beta: the child reads no move one ply up and the root's move two plies up.
+    #[test]
+    fn a_null_move_hides_the_frame_below_it_and_not_the_one_above() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        let mut board = Position::new(root);
+        search.root_depth = DEPTH;
+        search.make(&mut board, 0, m);
+        let root_frame = search.frames[0].expect("the root move's frame");
+        // Black's king onto a1, which no move below the null move can be.
+        let stale = 11 * 64;
+        search.frames[1] = Some(stale);
+        search.evals[1] = Some(BETA + 200);
+        let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
+
+        // Nodes below it try their own, but only after this one was admitted.
+        assert!(search.null_attempts > 0, "the null move was refused");
+        assert_eq!(conthist::context(&search.frames, 2, 1), None, "one ply up");
+        assert_eq!(
+            conthist::context(&search.frames, 2, 2),
+            Some(root_frame),
+            "two plies up"
+        );
+        let written = |context| search.conthist.row(context).iter().any(|&v| v != 0);
+        assert!(
+            !written(stale),
+            "a node below the null move read its ply's old frame"
+        );
+        assert!(
+            written(root_frame),
+            "no node below the null move read the root's move"
+        );
+    }
+}
