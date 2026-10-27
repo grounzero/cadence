@@ -369,7 +369,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use cadence_core::position::Board;
-    use cadence_core::{START_FEN, generate_legal, parse_uci};
+    use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
 
     use crate::conthist;
     use crate::history;
@@ -440,6 +440,41 @@ mod tests {
                 let entry = search.conthist.row(context)[conthist::piece_to(&board, m)];
                 assert_eq!(i32::from(entry), expected, "row {context}, {m:?}");
             }
+        }
+    }
+
+    /// A quiet cutoff at ply 6 after one searched quiet move, each frame above it a different row.
+    fn cut_six_plies_down<'a>(
+        stop: &'a AtomicBool,
+        tt: &'a Table,
+    ) -> (Search<'a>, Board, [Move; 2]) {
+        let mut search = Search::new(stop, tt);
+        let board = Board::from_fen(START_FEN).expect("the start position");
+        let legal = generate_legal(&board);
+        let quiet = |uci| parse_uci(&legal, uci).expect("a legal move");
+        let (tried, cutter) = (quiet("g1f3"), quiet("e2e4"));
+        let mut searched = Searched::default();
+        searched.set(0);
+        let frames = [600, 500, 400, 300, 200, 100];
+        search.frames[..6].copy_from_slice(&frames.map(Some));
+        search.remember_history(&board, 6, &[tried, cutter], 1, &searched, 6);
+        (search, board, [tried, cutter])
+    }
+
+    /// Three and five plies up are not offsets, so their rows stay empty beside the one four up.
+    #[test]
+    fn a_cutoff_writes_the_row_four_plies_up_and_not_three_or_five() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let (search, board, [tried, cutter]) = cut_six_plies_down(&stop, &tt);
+        let bonus = history::bonus(6);
+        let entry = |context: u16, m| {
+            i32::from(search.conthist.row(context)[conthist::piece_to(&board, m)])
+        };
+        for (m, expected) in [(tried, -bonus), (cutter, bonus)] {
+            assert_eq!(entry(400, m), expected, "four plies up, {m:?}");
+            assert_eq!(entry(300, m), 0, "three plies up, {m:?}");
+            assert_eq!(entry(500, m), 0, "five plies up, {m:?}");
         }
     }
 }

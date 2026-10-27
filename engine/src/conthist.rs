@@ -11,8 +11,9 @@ use crate::history::{HISTORY_MAX, apply};
 /// Twelve coloured pieces by sixty-four destinations: a frame's range and a move's column.
 pub const PIECE_TO: usize = 12 * 64;
 
-/// Plies back from the node. The colours alternate, so the two offsets never share an entry.
-pub const OFFSETS: [usize; 2] = [1, 2];
+/// Plies back from the node. The colours alternate, so offset 1 reads the opponent's rows and the
+/// even offsets share the side's own.
+pub const OFFSETS: [usize; 3] = [1, 2, 4];
 
 /// The move made at a ply as its [`piece_to`], or `None` for a null move and a ply nothing wrote.
 pub type Frame = Option<u16>;

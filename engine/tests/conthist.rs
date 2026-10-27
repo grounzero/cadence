@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A cutoff writes the row of the move one or two plies up and the order follows, asserted as one
-//! chain, as the butterfly's gate does; the rest hold the frames, the debits and the lifetime.
+//! A cutoff writes the row of a move up the path and the order follows, asserted as one chain, as
+//! the butterfly's gate does; the rest hold the frames, the debits and the lifetime.
 
 mod support;
 
@@ -23,6 +23,9 @@ const ORDER_DEPTH: u32 = 6;
 /// The butterfly's debit gate's depth, where a node gives up quiet moves the debit must pass over.
 const DEBIT_GATE_DEPTH: u32 = 9;
 
+/// Deep enough that the principal variation reaches the plies the far offsets read.
+const FAR_DEPTH: u32 = 8;
+
 /// Quiet moves recur here, so quiet cutoffs write the rows; on Kiwipete at `ORDER_DEPTH` the
 /// cutoffs are captures and the best move's rows stay empty.
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
@@ -33,14 +36,40 @@ fn board(fen: &str) -> Board {
 
 /// The middlegame searched to `ORDER_DEPTH`, and its principal variation.
 fn searched<'a>(stop: &'a AtomicBool, tt: &'a Table) -> (Search<'a>, Vec<Move>) {
+    searched_to(ORDER_DEPTH, 2, stop, tt)
+}
+
+fn searched_to<'a>(
+    depth: u32,
+    plies: usize,
+    stop: &'a AtomicBool,
+    tt: &'a Table,
+) -> (Search<'a>, Vec<Move>) {
     let mut b = support::position(MIDDLEGAME);
-    let mut s = support::search(Limits::depth(ORDER_DEPTH), stop, tt);
+    let mut s = support::search(Limits::depth(depth), stop, tt);
     let best = s.run(&mut b, &mut Vec::new());
     assert!(!best.is_null(), "no move");
-    assert_eq!(s.completed_depth(), ORDER_DEPTH, "depth not completed");
+    assert_eq!(s.completed_depth(), depth, "depth not completed");
     let pv = s.pv().to_vec();
-    assert!(pv.len() >= 2, "a principal variation of {} moves", pv.len());
+    assert!(
+        pv.len() >= plies,
+        "a principal variation of {} moves",
+        pv.len()
+    );
     (s, pv)
+}
+
+/// The row of the root's best move, read `offset` plies down the principal variation, where the
+/// root's side is to move again.
+fn the_row_up_the_path_orders(offset: usize) {
+    let (stop, tt) = (AtomicBool::new(false), table());
+    let (s, pv) = searched_to(FAR_DEPTH, offset, &stop, &tt);
+    let mut b = board(MIDDLEGAME);
+    let context = conthist::frame(&b, pv[0]).expect("a frame");
+    for &m in &pv[..offset] {
+        b.make_move(m);
+    }
+    the_order_follows(&b, s.continuation().row(context), offset);
 }
 
 /// The search writes the row, the row separates the side's quiet moves, and a picker handed it puts
@@ -112,6 +141,30 @@ fn a_cutoff_writes_the_row_of_the_move_two_plies_up_and_the_order_follows() {
     b.make_move(pv[0]);
     b.make_move(pv[1]);
     the_order_follows(&b, s.continuation().row(context), 2);
+}
+
+#[test]
+fn a_cutoff_writes_the_row_of_the_move_four_plies_up_and_the_order_follows() {
+    the_row_up_the_path_orders(4);
+}
+
+/// Four plies up is the side's own move two turns back, and a null move or the root there leaves
+/// the offset empty.
+#[test]
+fn a_frame_four_plies_up_is_read_where_the_path_has_one() {
+    let frames: [Frame; 6] = [Some(10), Some(11), None, Some(13), Some(14), Some(15)];
+    assert_eq!(
+        conthist::context(&frames, 4, 4),
+        Some(10),
+        "the root's move"
+    );
+    assert_eq!(
+        conthist::context(&frames, 5, 4),
+        Some(11),
+        "the move at ply 1"
+    );
+    assert_eq!(conthist::context(&frames, 6, 4), None, "a null move");
+    assert_eq!(conthist::context(&frames, 3, 4), None, "above the root");
 }
 
 /// A null move at ply 1 leaves offset 1 empty at ply 2 and offset 2 the move at the root, and a

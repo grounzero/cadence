@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, Move, MoveList, generate_legal};
-use cadence_engine::conthist::PIECE_TO;
+use cadence_engine::conthist::{OFFSETS, PIECE_TO};
 use cadence_engine::history::SPAN;
 use cadence_engine::picker::{Picker, Slot, Tables, noisy_key, sort_from};
 use cadence_engine::search::{Limits, order_first};
@@ -38,11 +38,11 @@ fn corpus_and_children() -> Vec<String> {
     out
 }
 
-/// A real search's tables: both sides' butterfly rows, and for each side to move the continuation
-/// row at each offset that scores the most of its moves.
+/// A real search's tables: both sides' butterfly rows, and for each side to move a continuation row
+/// per offset, the densest of the opponent's rows at offset 1 and of its own in turn at the others.
 struct Searched {
     butterfly: [Vec<i32>; 2],
-    continuation: [[Vec<i16>; 2]; 2],
+    continuation: [Vec<Vec<i16>>; 2],
 }
 
 /// Searched once and shared, so the quiet moves are ranked as a search ranks them.
@@ -57,22 +57,40 @@ fn searched() -> &'static Searched {
         let h = s.history();
         let c = s.continuation();
         let colour = |piece_to: usize| piece_to / 64 / 6;
-        let densest = |mover: usize, context_colour: usize| {
-            (0..PIECE_TO)
+        // Densest first, and the later context first among equals, as `max_by_key` picks.
+        let ranked = |mover: usize, context_colour: usize| {
+            let mut rows: Vec<(usize, usize)> = (0..PIECE_TO)
                 .filter(|&context| colour(context) == context_colour)
-                .map(|context| c.row(context as u16).to_vec())
-                .max_by_key(|row| {
+                .map(|context| {
+                    let row = c.row(context as u16);
                     let scored = (0..PIECE_TO).filter(|&i| colour(i) == mover && row[i] != 0);
-                    scored.count()
+                    (scored.count(), context)
                 })
-                .expect("a row")
+                .collect();
+            rows.sort_unstable_by(|a, b| b.cmp(a));
+            rows.into_iter()
+                .map(|(_, context)| c.row(context as u16).to_vec())
+        };
+        let planted = |mover: usize| {
+            let (mut theirs, mut ours) = (ranked(mover, 1 - mover), ranked(mover, mover));
+            OFFSETS
+                .iter()
+                .map(|&offset| {
+                    let rows = if offset % 2 == 1 {
+                        &mut theirs
+                    } else {
+                        &mut ours
+                    };
+                    rows.next().expect("a row")
+                })
+                .collect()
         };
         Searched {
             butterfly: [
                 h.side(Colour::White).to_vec(),
                 h.side(Colour::Black).to_vec(),
             ],
-            continuation: [0, 1].map(|mover| [densest(mover, 1 - mover), densest(mover, mover)]),
+            continuation: [0, 1].map(planted),
         }
     })
 }
@@ -89,12 +107,12 @@ fn butterfly(history: &[Vec<i32>; 2]) -> [Tables<'_>; 2] {
     ]
 }
 
-/// The butterfly row and both offsets' continuation rows, planted from a real search.
+/// The butterfly row and every offset's continuation row, planted from a real search.
 fn in_context(side: Colour, history: &[i32]) -> Tables<'_> {
     let rows = &searched().continuation[side.index()];
     Tables {
         butterfly: history,
-        continuation: [Some(&rows[0]), Some(&rows[1])],
+        continuation: std::array::from_fn(|i| Some(rows[i].as_slice())),
     }
 }
 
