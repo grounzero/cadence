@@ -477,4 +477,17 @@ mod tests {
             assert_eq!(entry(500, m), 0, "five plies up, {m:?}");
         }
     }
+
+    /// Six plies up is the root's move here, the farthest frame the cutoff can read.
+    #[test]
+    fn a_cutoff_writes_the_row_six_plies_up() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let (search, board, [tried, cutter]) = cut_six_plies_down(&stop, &tt);
+        let bonus = history::bonus(6);
+        for (m, expected) in [(tried, -bonus), (cutter, bonus)] {
+            let entry = search.conthist.row(600)[conthist::piece_to(&board, m)];
+            assert_eq!(i32::from(entry), expected, "six plies up, {m:?}");
+        }
+    }
 }

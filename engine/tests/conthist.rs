@@ -148,6 +148,39 @@ fn a_cutoff_writes_the_row_of_the_move_four_plies_up_and_the_order_follows() {
     the_row_up_the_path_orders(4);
 }
 
+#[test]
+fn a_cutoff_writes_the_row_of_the_move_six_plies_up_and_the_order_follows() {
+    the_row_up_the_path_orders(6);
+}
+
+/// Six plies up is the side's own move three turns back, and a null move or the root there leaves
+/// the offset empty.
+#[test]
+fn a_frame_six_plies_up_is_read_where_the_path_has_one() {
+    let frames: [Frame; 8] = [
+        Some(10),
+        None,
+        Some(12),
+        Some(13),
+        Some(14),
+        Some(15),
+        Some(16),
+        Some(17),
+    ];
+    assert_eq!(
+        conthist::context(&frames, 6, 6),
+        Some(10),
+        "the root's move"
+    );
+    assert_eq!(conthist::context(&frames, 7, 6), None, "a null move");
+    assert_eq!(
+        conthist::context(&frames, 8, 6),
+        Some(12),
+        "the move at ply 2"
+    );
+    assert_eq!(conthist::context(&frames, 5, 6), None, "above the root");
+}
+
 /// Four plies up is the side's own move two turns back, and a null move or the root there leaves
 /// the offset empty.
 #[test]
