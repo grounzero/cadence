@@ -26,8 +26,8 @@ mod report;
 mod root;
 
 pub use depth::{
-    REDUCTION_INDEX, extension, history_reduction, lmr_reduction, null_reduction, pv_reduction,
-    reduction,
+    REDUCTION_INDEX, extension, history_reduction, iir_reduction, lmr_reduction, null_reduction,
+    pv_reduction, reduction,
 };
 pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
@@ -96,6 +96,9 @@ pub struct Search<'a> {
     chess960: bool,
     /// `bench` builds its own searches, so it never sees a setting.
     tunables: Tunables,
+    /// Zero only where a gate compares against a search with no table, every node of which lacks a
+    /// table move.
+    iir_plies: u32,
     nodes: u64,
     /// `None` on the single-thread path, where `bench` runs and node counts are exact.
     shared_nodes: Option<(&'a [AtomicU64], usize)>,
@@ -168,6 +171,7 @@ pub struct Search<'a> {
     probcut_searches: u64,
     probcut_cutoffs: u64,
     probcut_refused_window: u64,
+    iir_nodes: u64,
     /// The first shows the in-check horizon is reached, without which the second proves nothing.
     evasion_lists: u64,
     evasion_lists_reordered: u64,
@@ -202,6 +206,7 @@ impl<'a> Search<'a> {
             tt,
             chess960: false,
             tunables: Tunables::DEFAULT,
+            iir_plies: depth::IIR_REDUCTION,
             nodes: 0,
             shared_nodes: None,
             worker_index: 0,
@@ -250,6 +255,7 @@ impl<'a> Search<'a> {
             probcut_searches: 0,
             probcut_cutoffs: 0,
             probcut_refused_window: 0,
+            iir_nodes: 0,
             evasion_lists: 0,
             evasion_lists_reordered: 0,
             iterations: Vec::new(),
@@ -281,6 +287,11 @@ impl<'a> Search<'a> {
 
     pub fn set_multipv(&mut self, n: usize) {
         self.multipv = n.max(1);
+    }
+
+    /// For the gates alone: no UCI option and no `bench` path reaches it.
+    pub fn set_iir_reduction(&mut self, plies: u32) {
+        self.iir_plies = plies;
     }
 
     /// From the next run on; a move not legal at the root is never searched.
@@ -329,6 +340,7 @@ impl<'a> Search<'a> {
         self.probcut_searches = 0;
         self.probcut_cutoffs = 0;
         self.probcut_refused_window = 0;
+        self.iir_nodes = 0;
         self.evasion_lists = 0;
         self.evasion_lists_reordered = 0;
         self.iterations.clear();

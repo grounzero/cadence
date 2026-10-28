@@ -148,6 +148,12 @@ impl Search<'_> {
         self.probcut_refused_window
     }
 
+    /// Nodes searched shallower because their table probe named no move.
+    #[must_use]
+    pub fn iir_nodes(&self) -> u64 {
+        self.iir_nodes
+    }
+
     /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
     #[must_use]
     pub fn evasion_lists(&self) -> u64 {

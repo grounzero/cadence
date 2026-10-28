@@ -32,6 +32,16 @@ fn search_with(board: &mut Position, depth: u32, tt: &Table) -> (Move, Score, u6
     (best, s.score(), s.nodes())
 }
 
+/// With the reduction for a missing table move set to zero, since it would shorten every node of
+/// the arm with no table.
+fn nodes_without_iir(board: &mut Position, depth: u32, tt: &Table) -> u64 {
+    let stop = AtomicBool::new(false);
+    let mut s = support::search(Limits::depth(depth), &stop, tt);
+    s.set_iir_reduction(0);
+    s.run(board, &mut Vec::new());
+    s.nodes()
+}
+
 fn table(mb: usize) -> Table {
     Table::new(mb).unwrap_or_else(|| panic!("a {mb} MB table"))
 }
@@ -573,8 +583,8 @@ fn the_table_saves_nodes() {
     let fens = gate_fens();
     let (mut total_with, mut total_without) = (0u64, 0u64);
     for fen in &fens {
-        let (_, _, without) = search_with(&mut support::position(fen), GATE_DEPTH, &no_table());
-        let (_, _, with) = search_with(
+        let without = nodes_without_iir(&mut support::position(fen), GATE_DEPTH, &no_table());
+        let with = nodes_without_iir(
             &mut support::position(fen),
             GATE_DEPTH,
             &table(tt::DEFAULT_HASH_MB),
