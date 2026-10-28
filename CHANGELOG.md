@@ -26,7 +26,7 @@ private, so the results are reported here rather than linked.
   table holds no move for it and at least four plies are left. A node in
   check keeps its depth.
 
-Test 65: +37.16 (between +24.57 and +49.75), a self-play estimate against
+Test 65: +37.16 (between +24.67 and +49.75), a self-play estimate against
 0.5.19 at the short control, from a sequential test stopped at its first
 crossing, so it leans high. It is not a rating.
 
