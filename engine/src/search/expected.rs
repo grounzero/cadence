@@ -25,12 +25,13 @@ pub enum Via {
 }
 
 impl Expected {
-    /// Only the window is read: every node off the line is taken for an all node.
+    /// A full-depth null window expects the opposite of a cut parent, and a cut under any other.
     #[must_use]
     pub const fn child(self, via: Via) -> Expected {
         match (via, self) {
             (Via::Open, _) | (Via::First, Expected::Pv) => Expected::Pv,
-            _ => Expected::All,
+            (Via::First | Via::Null, Expected::Cut) => Expected::All,
+            (Via::Reduced | Via::First | Via::Null, _) => Expected::Cut,
         }
     }
 }
