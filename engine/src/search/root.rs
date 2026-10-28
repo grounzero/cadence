@@ -222,6 +222,8 @@ impl Search<'_> {
     ) -> (Move, Score) {
         self.visit(0);
         self.table.clear(0);
+        // The root's window is always open, and its children read the flag one ply up.
+        self.tt_pv[0] = true;
         let mut best = Move::NULL;
         let mut best_score = -INFINITE;
         // Not the list index once an earlier line has taken a move.

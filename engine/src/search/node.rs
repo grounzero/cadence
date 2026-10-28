@@ -37,10 +37,11 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Score {
-        // So the extension cap reads this depth, not what the last iteration left, and no frame is
-        // read from an earlier run.
+        // So the extension cap reads this depth, not what the last iteration left, and no frame or
+        // flag is read from an earlier run.
         self.root_depth = depth;
         self.frames.fill(None);
+        self.tt_pv.fill(false);
         self.negamax(board, depth, ply, alpha, beta)
     }
 
@@ -76,10 +77,12 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, cutoff) = self.probe(board, key, depth, ply, alpha, beta);
+        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return score;
         }
+        // Before any child is searched, since a child that fails low reads it.
+        self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
@@ -190,9 +193,7 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let bound = bound_for(best, original_alpha, beta);
-        let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
-        self.tt
-            .store(key, best_move, score::to_tt(best, ply), stored_depth, bound);
+        self.store(key, ply, depth, best, best_move, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
@@ -242,7 +243,8 @@ impl Search<'_> {
         depth - r
     }
 
-    /// The move comes back whatever the depth says, so the two halves return separately.
+    /// The move comes back whatever the depth says, so the two halves return separately, and the
+    /// hit's flag beside them.
     fn probe(
         &self,
         board: &Board,
@@ -251,12 +253,12 @@ impl Search<'_> {
         ply: usize,
         alpha: Score,
         beta: Score,
-    ) -> (Move, Option<Score>) {
+    ) -> (Move, Option<Score>, bool) {
         let Some(hit) = self.tt.probe(key) else {
-            return (Move::NULL, None);
+            return (Move::NULL, None, false);
         };
         if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
-            return (hit.mv, None);
+            return (hit.mv, None, hit.pv);
         }
         let score = score::from_tt(hit.score, ply);
         let cutoff = match hit.bound {
@@ -264,7 +266,16 @@ impl Search<'_> {
             Bound::Lower => score >= beta,
             Bound::Upper => score <= alpha,
         };
-        (hit.mv, cutoff.then_some(score))
+        (hit.mv, cutoff.then_some(score), hit.pv)
+    }
+
+    /// The one store, and where a node failing low takes its parent's flag.
+    fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
+        let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
+        let score = score::to_tt(best, ply);
+        // Nothing here beat alpha, so the move into it may have been the good one.
+        let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
+        self.tt.store(key, mv, score, stored_depth, bound, pv);
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
@@ -416,15 +427,43 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use cadence_core::position::Board;
-    use cadence_core::{generate_legal, parse_uci};
+    use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 
     use crate::conthist;
     use crate::position::Position;
     use crate::score::Score;
     use crate::search::Search;
-    use crate::tt::Table;
+    use crate::tt::{Bound, Table};
 
     const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
+
+    /// Only a fail low under a flagged parent adds the flag; a node's own flag is stored whatever
+    /// its bound, and a node with no parent reads none.
+    #[test]
+    fn a_node_failing_low_takes_its_parents_flag() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let cases = [
+            (2, true, false, Bound::Upper, true),
+            (2, true, false, Bound::Lower, false),
+            (2, true, false, Bound::Exact, false),
+            (2, false, false, Bound::Upper, false),
+            (2, false, true, Bound::Lower, true),
+            (0, true, false, Bound::Upper, false),
+        ];
+        for (i, &(ply, parent, own, bound, stored)) in cases.iter().enumerate() {
+            let key = 0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(i as u64 + 1);
+            search.tt_pv = [parent; MAX_PLY];
+            search.tt_pv[ply] = own;
+            search.store(key, ply, 5, 0, Move::NULL, bound);
+            let hit = tt.probe(key).expect("the entry was stored");
+            assert_eq!(
+                hit.pv, stored,
+                "ply {ply}, parent {parent}, own {own}, {bound:?}"
+            );
+        }
+    }
 
     /// Deep enough, and beta far enough above the child's evaluation, that the nodes below the null
     /// move search quiet moves to a cutoff and so write the rows they read.

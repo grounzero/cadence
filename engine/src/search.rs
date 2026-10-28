@@ -138,6 +138,8 @@ pub struct Search<'a> {
     root_depth: u32,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
     evals: [Option<Score>; MAX_PLY],
+    /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
+    tt_pv: [bool; MAX_PLY],
     /// These counters are read on no decision path, so a depth-limited search stays a function of
     /// the code.
     null_attempts: u64,
@@ -231,6 +233,7 @@ impl<'a> Search<'a> {
             corrhist_applied: 0,
             root_depth: 0,
             evals: [None; MAX_PLY],
+            tt_pv: [false; MAX_PLY],
             null_attempts: 0,
             null_cutoffs: 0,
             null_refused_material: 0,

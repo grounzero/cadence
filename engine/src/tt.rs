@@ -49,9 +49,11 @@ pub struct Hit {
     pub score: i16,
     pub depth: u8,
     pub bound: Bound,
+    /// The node that stored it had a full window, or inherited the flag.
+    pub pv: bool,
 }
 
-/// The data word of a slot. The high sixteen bits are deliberately empty.
+/// The data word of a slot. The fifteen bits above the flag are deliberately empty.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(transparent)]
 pub struct Entry(u64);
@@ -61,6 +63,7 @@ const SCORE_SHIFT: u32 = 16;
 const DEPTH_SHIFT: u32 = 32;
 const BOUND_SHIFT: u32 = 40;
 const AGE_SHIFT: u32 = 42;
+const PV_SHIFT: u32 = 48;
 
 impl Entry {
     /// No bound, so it decodes to nothing.
@@ -68,13 +71,14 @@ impl Entry {
 
     /// `age` is masked to six bits.
     #[must_use]
-    pub const fn new(mv: Move, score: i16, depth: u8, bound: Bound, age: u8) -> Entry {
+    pub const fn new(mv: Move, score: i16, depth: u8, bound: Bound, age: u8, pv: bool) -> Entry {
         Entry(
             ((mv.to_bits() as u64) << MOVE_SHIFT)
                 | ((score as u16 as u64) << SCORE_SHIFT)
                 | ((depth as u64) << DEPTH_SHIFT)
                 | ((bound as u64) << BOUND_SHIFT)
-                | (((age & AGE_MASK) as u64) << AGE_SHIFT),
+                | (((age & AGE_MASK) as u64) << AGE_SHIFT)
+                | ((pv as u64) << PV_SHIFT),
         )
     }
 
@@ -109,6 +113,7 @@ impl Entry {
             score: ((self.0 >> SCORE_SHIFT) as u16).cast_signed(),
             depth: (self.0 >> DEPTH_SHIFT) as u8,
             bound,
+            pv: (self.0 >> PV_SHIFT) & 1 == 1,
         })
     }
 }
@@ -262,12 +267,13 @@ impl Table {
         None
     }
 
-    pub fn store(&self, key: u64, mv: Move, score: i16, depth: u8, bound: Bound) {
+    /// `pv` is stored and never read here: what a full bucket gives up does not depend on it.
+    pub fn store(&self, key: u64, mv: Move, score: i16, depth: u8, bound: Bound, pv: bool) {
         let Some(bucket) = self.bucket(key) else {
             return;
         };
         let generation = self.generation();
-        let fresh = Entry::new(mv, score, depth, bound, generation);
+        let fresh = Entry::new(mv, score, depth, bound, generation, pv);
         let mut victim = 0;
         let mut worst = i32::MAX;
         for (i, slot) in bucket.slots.iter().enumerate() {

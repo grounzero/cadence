@@ -106,7 +106,7 @@ fn an_entry_round_trips_through_the_two_words() {
     for (mv, score, depth, bound) in packable() {
         for age in [0u8, 1, 31, 63] {
             let key = rng.next_u64();
-            let entry = Entry::new(mv, score, depth, bound, age);
+            let entry = Entry::new(mv, score, depth, bound, age, false);
             let word1 = entry.to_bits();
             let word0 = key ^ word1;
             let hit = tt::verify(word0, word1, key)
@@ -128,10 +128,44 @@ fn an_entry_round_trips_through_the_two_words() {
 fn the_unused_bits_of_a_slot_are_zero() {
     for (mv, score, depth, bound) in packable() {
         for age in 0..64u8 {
-            let bits = Entry::new(mv, score, depth, bound, age).to_bits();
-            assert_eq!(bits >> 48, 0, "{mv:?} {score} {depth} {bound:?} age {age}");
+            for pv in [false, true] {
+                let bits = Entry::new(mv, score, depth, bound, age, pv).to_bits();
+                assert_eq!(
+                    bits >> 49,
+                    0,
+                    "{mv:?} {score} {depth} {bound:?} age {age} {pv}"
+                );
+            }
         }
     }
+}
+
+/// Bit 48 alone, so the fifteen above it stay whole for a field that needs them.
+#[test]
+fn the_pv_flag_is_bit_48_and_round_trips() {
+    for (mv, score, depth, bound) in packable() {
+        for age in [0u8, 1, 31, 63] {
+            let off = Entry::new(mv, score, depth, bound, age, false);
+            let on = Entry::new(mv, score, depth, bound, age, true);
+            assert_eq!(
+                on.to_bits() ^ off.to_bits(),
+                1 << 48,
+                "{mv:?} {score} {depth} {bound:?}"
+            );
+            let off = off.decode().expect("a stored entry decodes");
+            let on = on.decode().expect("a stored entry decodes");
+            assert!(
+                on.pv && !off.pv,
+                "{mv:?} {score} {depth} {bound:?} age {age}"
+            );
+            assert_eq!(
+                (on.mv, on.score, on.depth, on.bound),
+                (off.mv, off.score, off.depth, off.bound)
+            );
+        }
+    }
+    // The bound still decides: the flag alone is an untouched slot.
+    assert!(Entry::from_bits(1 << 48).decode().is_none());
 }
 
 /// Two writes' words combined are what a race produces, so this is testable without one; every
@@ -146,8 +180,8 @@ fn a_torn_read_is_rejected() {
         let (mv_a, sc_a, d_a, b_a) = samples[rng.below(samples.len())];
         let (mv_b, sc_b, d_b, b_b) = samples[rng.below(samples.len())];
         let (key_a, key_b) = (rng.next_u64(), rng.next_u64());
-        let data_a = Entry::new(mv_a, sc_a, d_a, b_a, 3).to_bits();
-        let data_b = Entry::new(mv_b, sc_b, d_b, b_b, 4).to_bits();
+        let data_a = Entry::new(mv_a, sc_a, d_a, b_a, 3, false).to_bits();
+        let data_b = Entry::new(mv_b, sc_b, d_b, b_b, 4, true).to_bits();
         let (word0_a, word0_b) = (key_a ^ data_a, key_b ^ data_b);
 
         // Without this the rest passes against a `verify` that always says no.
@@ -381,7 +415,7 @@ fn a_probe_returns_only_what_was_stored_for_that_key() {
     // wrong key names itself.
     let depth_of = |key: u64| -> u8 { (key % 200) as u8 + 1 };
     for &key in &keys {
-        t.store(key, Move::NULL, 0, depth_of(key), Bound::Exact);
+        t.store(key, Move::NULL, 0, depth_of(key), Bound::Exact, false);
     }
     let mut hits = 0;
     for &key in &keys {
@@ -417,7 +451,7 @@ fn a_bucket_holds_four_results_at_once() {
     t.new_search();
     let keys: Vec<u64> = (1..=4).map(|i| i * 0x0123_4567_89AB_CDEF).collect();
     for (i, &key) in keys.iter().enumerate() {
-        t.store(key, Move::NULL, 10, 4 + i as u8, Bound::Exact);
+        t.store(key, Move::NULL, 10, 4 + i as u8, Bound::Exact, false);
     }
     for (i, &key) in keys.iter().enumerate() {
         let hit = t
@@ -435,10 +469,10 @@ fn the_shallowest_slot_is_the_one_replaced() {
     let keys: Vec<u64> = (1..=4).map(|i| i * 0x0123_4567_89AB_CDEF).collect();
     let depths = [9u8, 3, 7, 5];
     for (&key, &depth) in keys.iter().zip(&depths) {
-        t.store(key, Move::NULL, 10, depth, Bound::Exact);
+        t.store(key, Move::NULL, 10, depth, Bound::Exact, false);
     }
     let newcomer = 0xFEED_FACE_CAFE_BEEF;
-    t.store(newcomer, Move::NULL, 20, 6, Bound::Exact);
+    t.store(newcomer, Move::NULL, 20, 6, Bound::Exact, false);
     assert!(t.probe(newcomer).is_some(), "the new result was not stored");
     assert!(t.probe(keys[1]).is_none(), "the depth-3 slot survived");
     for i in [0usize, 2, 3] {
@@ -455,23 +489,58 @@ fn a_deeper_result_for_the_same_position_is_kept() {
     let t = one_bucket();
     t.new_search();
     let key = 0x0BAD_C0DE_0BAD_C0DE;
-    t.store(key, Move::NULL, 100, 8, Bound::Exact);
+    t.store(key, Move::NULL, 100, 8, Bound::Exact, false);
     // A shallower bound tells the next probe less than what is there.
-    t.store(key, Move::NULL, 200, 3, Bound::Lower);
+    t.store(key, Move::NULL, 200, 3, Bound::Lower, false);
     assert_eq!(t.probe(key).expect("still there").depth, 8);
     assert_eq!(t.probe(key).expect("still there").score, 100);
     // A shallower *exact* score is worth having: it is a value, not a bound.
-    t.store(key, Move::NULL, 300, 3, Bound::Exact);
+    t.store(key, Move::NULL, 300, 3, Bound::Exact, false);
     assert_eq!(t.probe(key).expect("still there").depth, 3);
     assert_eq!(t.probe(key).expect("still there").score, 300);
     // And a deeper result always replaces.
-    t.store(key, Move::NULL, 400, 12, Bound::Upper);
+    t.store(key, Move::NULL, 400, 12, Bound::Upper, false);
     assert_eq!(t.probe(key).expect("still there").depth, 12);
     // One position occupies one slot however many times it is stored.
     let other = 0x1111_2222_3333_4444;
-    t.store(other, Move::NULL, 1, 1, Bound::Exact);
+    t.store(other, Move::NULL, 1, 1, Bound::Exact, false);
     assert!(t.probe(other).is_some());
     assert!(t.probe(key).is_some());
+}
+
+/// A flag that bought a store two plies here would move the bench, so that belongs with a reader. A
+/// full bucket gives up its shallowest slot whatever the flags say.
+#[test]
+fn the_flag_changes_nothing_that_is_replaced() {
+    let t = one_bucket();
+    t.new_search();
+    let key = 0x0BAD_C0DE_0BAD_C0DE;
+    t.store(key, Move::NULL, 100, 8, Bound::Lower, false);
+    for depth in [7u8, 6, 5, 4] {
+        t.store(key, Move::NULL, 200, depth, Bound::Lower, true);
+        let hit = t.probe(key).expect("still there");
+        assert_eq!(
+            (hit.depth, hit.score, hit.pv),
+            (8, 100, false),
+            "a flagged depth {depth}"
+        );
+    }
+    let keys: Vec<u64> = (1..=3).map(|i| i * 0x0123_4567_89AB_CDEF).collect();
+    for (&other, depth) in keys.iter().zip([9u8, 3, 7]) {
+        t.store(other, Move::NULL, 10, depth, Bound::Exact, depth == 3);
+    }
+    t.store(
+        0xFEED_FACE_CAFE_BEEF,
+        Move::NULL,
+        20,
+        6,
+        Bound::Exact,
+        false,
+    );
+    assert!(
+        t.probe(keys[1]).is_none(),
+        "the flagged depth-3 slot survived"
+    );
 }
 
 /// A shallow store displaces a deep one once, then takes back its own slot, so a deep bucket keeps
@@ -483,12 +552,12 @@ fn a_shallow_result_takes_one_slot_of_a_deep_bucket_and_no_more() {
     t.new_search();
     let keys: Vec<u64> = (1..=4).map(|i| i * 0x0123_4567_89AB_CDEF).collect();
     for &key in &keys {
-        t.store(key, Move::NULL, 10, 20, Bound::Exact);
+        t.store(key, Move::NULL, 10, 20, Bound::Exact, false);
     }
     let mut shallow = Vec::new();
     for i in 0..4u64 {
         let key = 0xAAAA_BBBB_CCCC_DDDD ^ (i * 0x1_0000_0000);
-        t.store(key, Move::NULL, 10, 1, Bound::Exact);
+        t.store(key, Move::NULL, 10, 1, Bound::Exact, false);
         shallow.push(key);
         let deep = keys.iter().filter(|&&k| t.probe(k).is_some()).count();
         assert_eq!(
@@ -517,7 +586,7 @@ fn a_new_search_ages_what_is_already_there() {
         t.new_search();
         let keys: Vec<u64> = (1..=4).map(|i| i * 0x0123_4567_89AB_CDEF).collect();
         for &key in &keys {
-            t.store(key, Move::NULL, 10, 20, Bound::Exact);
+            t.store(key, Move::NULL, 10, 20, Bound::Exact, false);
         }
         for _ in 0..generations {
             t.new_search();
@@ -529,6 +598,7 @@ fn a_new_search_ages_what_is_already_there() {
                 10,
                 1,
                 Bound::Exact,
+                false,
             );
         }
         keys.iter().filter(|&&k| t.probe(k).is_some()).count()
@@ -559,7 +629,7 @@ fn clearing_empties_the_table_and_resets_the_generation() {
         .map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15))
         .collect();
     for &key in &keys {
-        t.store(key, Move::NULL, 7, 3, Bound::Exact);
+        t.store(key, Move::NULL, 7, 3, Bound::Exact, false);
     }
     let before = keys.iter().filter(|&&k| t.probe(k).is_some()).count();
     assert!(before > 150, "only {before} of 200 results were stored");

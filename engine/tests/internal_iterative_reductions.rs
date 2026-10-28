@@ -42,7 +42,7 @@ fn one_node(
     let tt = table();
     let mut b = support::position(fen);
     if let Some(mv) = seed {
-        tt.store(b.key(), mv, 0, 0, Bound::Upper);
+        tt.store(b.key(), mv, 0, 0, Bound::Upper, false);
     }
     let mut s = support::search(Limits::depth(depth), &stop, &tt);
     let score = s.node_window(&mut b, depth, 0, window.0, window.1);
