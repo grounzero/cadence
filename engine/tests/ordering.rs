@@ -241,7 +241,7 @@ fn poison(b: &mut Position, tt: &Table, pick: impl Fn(&Board) -> Move) {
     for m in generate_legal(b).iter() {
         b.make_move(m);
         let mv = pick(b);
-        tt.store(b.key(), mv, 0, 0, Bound::Upper);
+        tt.store(b.key(), mv, 0, 0, Bound::Upper, false);
         b.unmake_move(m);
     }
 }
