@@ -7,7 +7,9 @@ use cadence_core::{
     Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, has_legal_move,
 };
 
-use super::depth::{extension, history_reduction, null_reduction, pv_reduction, reduction};
+use super::depth::{
+    extension, history_reduction, iir_reduction, null_reduction, pv_reduction, reduction,
+};
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
 };
@@ -100,6 +102,12 @@ impl Search<'_> {
             return score;
         }
 
+        // The node's own window, read before the loop raises `alpha`.
+        let pv = beta > alpha + 1;
+        // Last above the move loop, so the margins, the count and every child read the shortened
+        // depth.
+        let depth = self.iir_depth(depth, pv, in_check, tt_move);
+
         let mut legal = generate_legal(board);
         if legal.is_empty() {
             return if in_check { mated_in(ply) } else { DRAW };
@@ -117,8 +125,6 @@ impl Search<'_> {
         let futile = futile_node(self.evals[ply], depth, alpha);
         self.futility_nodes += u64::from(futile);
 
-        // The node's own window, read before the loop raises `alpha`.
-        let pv = beta > alpha + 1;
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
         // asked first keeps the moves it takes.
         let give_up = lmp_index(&self.tunables, in_check, pv, depth, legal.len());
@@ -184,13 +190,9 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let bound = bound_for(best, original_alpha, beta);
-        self.tt.store(
-            key,
-            best_move,
-            score::to_tt(best, ply),
-            depth.min(u32::from(u8::MAX)) as u8,
-            bound,
-        );
+        let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
+        self.tt
+            .store(key, best_move, score::to_tt(best, ply), stored_depth, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
@@ -231,6 +233,13 @@ impl Search<'_> {
     pub(super) fn make(&mut self, board: &mut Position, ply: usize, m: Move) {
         self.frames[ply] = conthist::frame(board, m);
         board.make_move(m);
+    }
+
+    /// A method so the counter is written where the rule runs.
+    fn iir_depth(&mut self, depth: u32, pv: bool, in_check: bool, tt_move: Move) -> u32 {
+        let r = iir_reduction(depth, pv, in_check, tt_move != Move::NULL, self.iir_plies);
+        self.iir_nodes += u64::from(r > 0);
+        depth - r
     }
 
     /// The move comes back whatever the depth says, so the two halves return separately.

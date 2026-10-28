@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A re-search can undo everything here; the rules that cannot be undone are in `pruning`.
+//! A re-search can undo every move's reduction here; the rules that cannot be undone are in
+//! `pruning`, and [`iir_reduction`], which shortens the node itself, is the one exception.
 
 use cadence_core::Move;
 
@@ -14,6 +15,22 @@ const EXTEND_WITHIN: usize = 2;
 #[must_use]
 pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
+}
+
+/// The shallowest node searched shallower for the move its table did not name.
+const IIR_DEPTH: u32 = 4;
+
+/// What every search shortens that node by, unless a gate sets it otherwise.
+pub(crate) const IIR_REDUCTION: u32 = 2;
+
+/// `plies` where the node qualifies; a PV node and a node in check keep their depth. The node
+/// stores its result at the shortened depth, so no re-search of its own undoes the reduction.
+#[must_use]
+pub fn iir_reduction(depth: u32, pv: bool, in_check: bool, has_tt_move: bool, plies: u32) -> u32 {
+    if pv || in_check || has_tt_move || depth < IIR_DEPTH {
+        return 0;
+    }
+    plies
 }
 
 /// The reduced search runs at `depth - 1 - null_reduction(depth)`, floored at zero, where the
