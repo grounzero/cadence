@@ -69,8 +69,8 @@ pub fn reduction(
         return 0;
     }
     if m.is_noisy() {
-        let _ = losing;
-        return 0;
+        // One ply where a quiet move here would be reduced at all, and only for a losing capture.
+        return u32::from(losing).min(lmr_reduction(depth, index));
     }
     lmr_reduction(depth, index)
 }
@@ -82,11 +82,10 @@ pub fn losing_capture(board: &Board, m: Move, index: usize) -> bool {
     index >= REDUCTION_INDEX && m.is_capture() && see::see(board, m) < 0
 }
 
-/// Every move's history, as it stands.
+/// None for a capture, which the quiet history does not score.
 #[must_use]
 pub fn move_history(m: Move, history: i32) -> i32 {
-    let _ = m;
-    history
+    if m.is_noisy() { 0 } else { history }
 }
 
 /// Adjusts a reduction and never creates one, so every exemption in [`reduction`] holds.
