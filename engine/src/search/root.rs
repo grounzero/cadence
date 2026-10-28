@@ -7,7 +7,7 @@ use std::io::Write;
 use cadence_core::{Move, MoveList, generate_legal};
 
 use super::depth::extension;
-use super::{MAX_DEPTH, Search};
+use super::{Expected, MAX_DEPTH, Search, Via};
 use crate::level;
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -241,12 +241,26 @@ impl Search<'_> {
             let ext = extension(board.in_check(), 1, depth);
             let child = depth - 1 + ext;
             let mut score = if searched == 0 {
-                -self.negamax(board, child, 1, -beta, -alpha)
+                -self.negamax(
+                    board,
+                    child,
+                    1,
+                    -beta,
+                    -alpha,
+                    Expected::Pv.child(Via::First),
+                )
             } else {
-                -self.negamax(board, child, 1, -alpha - 1, -alpha)
+                -self.negamax(
+                    board,
+                    child,
+                    1,
+                    -alpha - 1,
+                    -alpha,
+                    Expected::Pv.child(Via::Null),
+                )
             };
             if searched > 0 && !self.aborted && score > alpha && score < beta {
-                score = -self.negamax(board, child, 1, -beta, -alpha);
+                score = -self.negamax(board, child, 1, -beta, -alpha, Expected::Pv);
             }
             board.unmake_move(m);
             searched += 1;

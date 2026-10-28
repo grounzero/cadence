@@ -17,6 +17,7 @@ use crate::tune::Tunables;
 
 mod counters;
 mod depth;
+mod expected;
 mod limits;
 mod node;
 mod pruning;
@@ -29,6 +30,7 @@ pub use depth::{
     REDUCTION_INDEX, extension, history_reduction, iir_reduction, lmr_reduction, null_reduction,
     pv_reduction, reduction,
 };
+pub use expected::{Expected, Via};
 pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
@@ -140,6 +142,8 @@ pub struct Search<'a> {
     evals: [Option<Score>; MAX_PLY],
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
+    /// Each node's expected kind, read by the gates and by no rule.
+    kinds: [Expected; MAX_PLY],
     /// These counters are read on no decision path, so a depth-limited search stays a function of
     /// the code.
     null_attempts: u64,
@@ -234,6 +238,7 @@ impl<'a> Search<'a> {
             root_depth: 0,
             evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
+            kinds: [Expected::Pv; MAX_PLY],
             null_attempts: 0,
             null_cutoffs: 0,
             null_refused_material: 0,
