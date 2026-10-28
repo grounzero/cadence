@@ -21,7 +21,7 @@ pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
 const IIR_DEPTH: u32 = 4;
 
 /// What every search shortens that node by, unless a gate sets it otherwise.
-pub(crate) const IIR_REDUCTION: u32 = 0;
+pub(crate) const IIR_REDUCTION: u32 = 2;
 
 /// `plies` where the node qualifies; a PV node and a node in check keep their depth. The node
 /// stores its result at the shortened depth, so no re-search of its own undoes the reduction.

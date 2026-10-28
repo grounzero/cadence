@@ -83,7 +83,10 @@ fn a_non_pv_node_with_no_table_move_is_searched_as_a_shallower_node() {
     let (shallow_score, shallow_nodes, shallow_fired) =
         one_node(NO_CHECKS, THRESHOLD - AMOUNT, NULL_WINDOW, None);
     assert_eq!(fired, 1, "the root kept its depth with no table move");
-    assert_eq!(shallow_fired, 0, "a node below the threshold lost a ply");
+    assert_eq!(
+        shallow_fired, 0,
+        "a node below the threshold was searched shallower"
+    );
     assert_eq!(
         (score, nodes),
         (shallow_score, shallow_nodes),
@@ -98,16 +101,19 @@ fn a_table_move_or_a_depth_below_the_threshold_keeps_the_depth() {
     let (_, _, below) = one_node(NO_CHECKS, THRESHOLD - 1, NULL_WINDOW, None);
     assert_eq!(
         with_move, 0,
-        "the root lost a ply with a table move in hand"
+        "the root was searched shallower with a table move in hand"
     );
-    assert_eq!(below, 0, "a node below the threshold lost a ply");
+    assert_eq!(
+        below, 0,
+        "a node below the threshold was searched shallower"
+    );
 }
 
 /// The root the null window shortens, asked with the full window.
 #[test]
 fn a_pv_node_with_no_table_move_keeps_its_depth() {
     let (_, _, fired) = one_node(NO_CHECKS, THRESHOLD, FULL_WINDOW, None);
-    assert_eq!(fired, 0, "a PV node lost a ply");
+    assert_eq!(fired, 0, "a PV node was searched shallower");
 }
 
 /// The extension hands the checking child its parent's depth, so only the in-check exemption keeps
@@ -116,7 +122,7 @@ fn a_pv_node_with_no_table_move_keeps_its_depth() {
 fn a_checking_child_at_the_threshold_keeps_its_depth() {
     let seed = Some(first_move(MIDDLEGAME));
     let (_, _, fired) = one_node(MIDDLEGAME, THRESHOLD, NULL_WINDOW, seed);
-    assert_eq!(fired, 0, "a node in check lost a ply");
+    assert_eq!(fired, 0, "a node in check was searched shallower");
 }
 
 /// What the table gates set, so that their arm with no table is not a shallower search.

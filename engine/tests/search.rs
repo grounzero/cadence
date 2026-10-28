@@ -879,19 +879,19 @@ fn the_root_answers_at_the_window_depth_are_pinned() {
 /// Measured on the search with aspiration windows at `WINDOW_DEPTH` with no table.
 const ROOT_ANSWERS: [(&str, Score); 14] = [
     ("e2e3", 33),
-    ("d5e6", -25),
-    ("b4f4", 59),
+    ("e2a6", -40),
+    ("b4f4", 53),
     ("c4c5", -332),
-    ("d7c8q", 500),
-    ("c3d5", 38),
+    ("d7c8r", 500),
+    ("c3d5", 88),
     ("e2e3", 33),
-    ("d1e3", 27),
+    ("c2c4", 66),
     ("f2f4", 63),
     ("b2b3", 108),
-    ("h1h7", 531),
+    ("h1h7", 528),
     ("f1f5", 541),
-    ("f1f2", 532),
-    ("a1a3", 539),
+    ("g1g5", 527),
+    ("a1a4", 539),
 ];
 
 /// With no table, the window is the only thing that can move the count. The ceiling is the
