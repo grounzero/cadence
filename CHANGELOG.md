@@ -17,6 +17,19 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.20] - 2026-10-28
+
+### Changed
+
+- Search: a node searched with a null window, off the line the search
+  reports, is now searched two plies shallower when the transposition
+  table holds no move for it and at least four plies are left. A node in
+  check keeps its depth.
+
+Test 65: +37.16 (between +24.57 and +49.75), a self-play estimate against
+0.5.19 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.19] - 2026-10-26
 
 ### Changed
@@ -385,7 +398,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.19...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.20...main
+[0.5.20]: https://github.com/grounzero/cadence/compare/0.5.19...0.5.20
 [0.5.19]: https://github.com/grounzero/cadence/compare/0.5.18...0.5.19
 [0.5.18]: https://github.com/grounzero/cadence/compare/0.5.17...0.5.18
 [0.5.17]: https://github.com/grounzero/cadence/compare/0.5.16...0.5.17
