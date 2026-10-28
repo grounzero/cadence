@@ -77,10 +77,12 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, cutoff, _) = self.probe(board, key, depth, ply, alpha, beta);
+        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return score;
         }
+        // Before any child is searched, since a child that fails low reads it.
+        self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
@@ -271,7 +273,9 @@ impl Search<'_> {
     fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
         let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
         let score = score::to_tt(best, ply);
-        self.tt.store(key, mv, score, stored_depth, bound, false);
+        // Nothing here beat alpha, so the move into it may have been the good one.
+        let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
+        self.tt.store(key, mv, score, stored_depth, bound, pv);
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
