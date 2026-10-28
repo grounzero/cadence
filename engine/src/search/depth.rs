@@ -4,8 +4,9 @@
 //! `pruning`, and [`iir_reduction`], which shortens the node itself, is the one exception.
 
 use cadence_core::Move;
+use cadence_core::position::Board;
 
-use crate::history;
+use crate::{history, see};
 
 /// The cap bounds the pathological line, not the ordinary tree: at bench depths an extended line
 /// ends on depth, not ply.
@@ -53,19 +54,39 @@ pub fn lmr_reduction(depth: u32, index: usize) -> u32 {
     1 + depth.ilog2() * index.ilog2() / 4
 }
 
+/// `losing` is [`losing_capture`]'s answer, read before the move was made.
 #[must_use]
 pub fn reduction(
     in_check: bool,
     gives_check: bool,
     m: Move,
+    losing: bool,
     killers: [Move; 2],
     depth: u32,
     index: usize,
 ) -> u32 {
-    if in_check || gives_check || m.is_noisy() || m == killers[0] || m == killers[1] {
+    if in_check || gives_check || m == killers[0] || m == killers[1] {
+        return 0;
+    }
+    if m.is_noisy() {
+        let _ = losing;
         return 0;
     }
     lmr_reduction(depth, index)
+}
+
+/// A capture whose exchange loses material, at an index the reduction reaches. The index is asked
+/// first, so the exchange is read only where the answer can matter.
+#[must_use]
+pub fn losing_capture(board: &Board, m: Move, index: usize) -> bool {
+    index >= REDUCTION_INDEX && m.is_capture() && see::see(board, m) < 0
+}
+
+/// Every move's history, as it stands.
+#[must_use]
+pub fn move_history(m: Move, history: i32) -> i32 {
+    let _ = m;
+    history
 }
 
 /// Adjusts a reduction and never creates one, so every exemption in [`reduction`] holds.

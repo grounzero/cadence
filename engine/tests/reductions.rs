@@ -9,9 +9,12 @@ mod support;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
-use cadence_core::{Move, START_FEN, generate_legal};
+use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::history::HISTORY_MAX;
-use cadence_engine::search::{Limits, history_reduction, lmr_reduction, pv_reduction, reduction};
+use cadence_engine::search::{
+    Limits, REDUCTION_INDEX, history_reduction, lmr_reduction, losing_capture, move_history,
+    pv_reduction, reduction,
+};
 use support::table;
 
 /// Deep enough that the history-ordered sort still misjudges some late quiet moves: at eight the
@@ -112,18 +115,26 @@ fn each_exemption_alone_refuses_the_reduction() {
         .find(|m| !m.is_noisy())
         .expect("the start position has a quiet move");
     assert!(
-        reduction(false, false, quiet, none, 8, 8) > 0,
+        reduction(false, false, quiet, false, none, 8, 8) > 0,
         "no exemption in force and no reduction"
     );
-    assert_eq!(reduction(true, false, quiet, none, 8, 8), 0, "in check");
-    assert_eq!(reduction(false, true, quiet, none, 8, 8), 0, "gives check");
     assert_eq!(
-        reduction(false, false, quiet, [quiet, Move::NULL], 8, 8),
+        reduction(true, false, quiet, false, none, 8, 8),
+        0,
+        "in check"
+    );
+    assert_eq!(
+        reduction(false, true, quiet, false, none, 8, 8),
+        0,
+        "gives check"
+    );
+    assert_eq!(
+        reduction(false, false, quiet, false, [quiet, Move::NULL], 8, 8),
         0,
         "killer, first slot"
     );
     assert_eq!(
-        reduction(false, false, quiet, [Move::NULL, quiet], 8, 8),
+        reduction(false, false, quiet, false, [Move::NULL, quiet], 8, 8),
         0,
         "killer, second slot"
     );
@@ -131,7 +142,11 @@ fn each_exemption_alone_refuses_the_reduction() {
         .iter()
         .find(|m| m.is_noisy())
         .expect("Kiwipete has a noisy move");
-    assert_eq!(reduction(false, false, noisy, none, 8, 8), 0, "noisy");
+    assert_eq!(
+        reduction(false, false, noisy, false, none, 8, 8),
+        0,
+        "noisy"
+    );
 }
 
 /// Pinned cell by cell, one probe per band plus each band's edges on the diagonal.
@@ -217,6 +232,116 @@ fn a_search_lessens_some_pv_reductions() {
     assert!(
         s.lmr_pv_lessened() > 0,
         "depth {GATE_DEPTH} reduced {} late moves and lowered none at a PV node",
+        s.lmr_reductions()
+    );
+}
+
+/// A queen taking a pawn a pawn defends, a pawn taking a queen, and a knight taking a knight a pawn
+/// defends: one exchange below zero, one above, one level.
+const LOSING: (&str, &str) = ("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1", "d2d5");
+const WINNING: (&str, &str) = ("4k3/8/8/3q4/4P3/8/8/4K3 w - - 0 1", "e4d5");
+const LEVEL: (&str, &str) = ("4k3/8/2p5/3n4/8/4N3/8/4K3 w - - 0 1", "e3d5");
+
+fn capture(case: (&str, &str)) -> (Board, Move) {
+    let b = board(case.0);
+    let m = parse_uci(&generate_legal(&b), case.1).expect("a legal capture");
+    assert!(m.is_capture(), "{} is a capture", case.1);
+    (b, m)
+}
+
+/// Only an exchange below zero is losing, and only at an index the reduction reaches.
+#[test]
+fn a_capture_is_losing_by_its_exchange_and_its_index() {
+    for (case, losing) in [(LOSING, true), (WINNING, false), (LEVEL, false)] {
+        let (b, m) = capture(case);
+        assert_eq!(losing_capture(&b, m, REDUCTION_INDEX), losing, "{}", case.1);
+        assert!(
+            !losing_capture(&b, m, REDUCTION_INDEX - 1),
+            "{} early",
+            case.1
+        );
+    }
+    let b = board(START_FEN);
+    let quiet = generate_legal(&b)
+        .iter()
+        .find(|m| !m.is_noisy())
+        .expect("a quiet move");
+    assert!(!losing_capture(&b, quiet, REDUCTION_INDEX), "a quiet move");
+}
+
+/// One ply wherever a quiet move at the same depth and index would be reduced at all.
+#[test]
+fn a_losing_capture_is_reduced_one_ply_where_a_quiet_move_would_be() {
+    let (_, m) = capture(LOSING);
+    let none = [Move::NULL; 2];
+    for depth in 0..24 {
+        for index in 0..64 {
+            let quiet = u32::from(lmr_reduction(depth, index) > 0);
+            assert_eq!(
+                reduction(false, false, m, true, none, depth, index),
+                quiet,
+                "depth {depth} index {index}"
+            );
+        }
+    }
+}
+
+/// A capture that is not losing is never reduced, and a losing one keeps the check exemptions.
+#[test]
+fn a_capture_keeps_its_exemptions_unless_it_loses() {
+    let none = [Move::NULL; 2];
+    for case in [LOSING, WINNING, LEVEL] {
+        let (_, m) = capture(case);
+        for (depth, index) in [(3, 3), (8, 8), (20, 40)] {
+            assert_eq!(
+                reduction(false, false, m, false, none, depth, index),
+                0,
+                "{}",
+                case.1
+            );
+            assert_eq!(
+                reduction(true, false, m, true, none, depth, index),
+                0,
+                "in check"
+            );
+            assert_eq!(
+                reduction(false, true, m, true, none, depth, index),
+                0,
+                "gives check"
+            );
+        }
+    }
+}
+
+/// The quiet history does not score a capture, so a capture's reduction takes no shift from it.
+#[test]
+fn a_capture_takes_no_history_shift() {
+    let (_, capture) = capture(LOSING);
+    let quiet = generate_legal(&board(START_FEN))
+        .iter()
+        .find(|m| !m.is_noisy())
+        .expect("a quiet move");
+    for history in [-HISTORY_MAX, -1, 0, 1, HISTORY_MAX] {
+        assert_eq!(move_history(capture, history), 0, "a capture at {history}");
+        assert_eq!(
+            move_history(quiet, history),
+            history,
+            "a quiet move at {history}"
+        );
+    }
+}
+
+/// The term reaches the search: a depth-eight search of a middlegame reduces some losing captures.
+#[test]
+fn a_search_reduces_some_losing_captures() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
+    assert!(!s.run(&mut b, &mut Vec::new()).is_null(), "no move");
+    assert!(
+        s.lmr_losing_captures() > 0,
+        "depth {GATE_DEPTH} reduced {} late moves and no losing capture",
         s.lmr_reductions()
     );
 }
