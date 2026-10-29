@@ -17,6 +17,19 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.21] - 2026-10-29
+
+### Changed
+
+- Search: a capture that loses material once the exchange on its square
+  is counted, tried late at a node searched with a null window, is now
+  searched one ply shallower wherever a quiet move in its place would be.
+  A capture made in check or giving check keeps its depth.
+
+Test 66: +7.50 (between +2.46 and +12.55), a self-play estimate against
+0.5.20 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.20] - 2026-10-28
 
 ### Changed
@@ -398,7 +411,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.20...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.21...main
+[0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21
 [0.5.20]: https://github.com/grounzero/cadence/compare/0.5.19...0.5.20
 [0.5.19]: https://github.com/grounzero/cadence/compare/0.5.18...0.5.19
 [0.5.18]: https://github.com/grounzero/cadence/compare/0.5.17...0.5.18
