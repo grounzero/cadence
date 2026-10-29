@@ -54,6 +54,12 @@ impl Search<'_> {
         self.lmr_pv_lessened
     }
 
+    /// Losing captures given a reduction before the PV term.
+    #[must_use]
+    pub fn lmr_losing_captures(&self) -> u64 {
+        self.lmr_losing_captures
+    }
+
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
         self.history_reduced_less

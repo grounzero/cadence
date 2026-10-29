@@ -8,7 +8,8 @@ use cadence_core::{
 };
 
 use super::depth::{
-    extension, history_reduction, iir_reduction, null_reduction, pv_reduction, reduction,
+    extension, history_reduction, iir_reduction, losing_capture, move_history, null_reduction,
+    pv_reduction, reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -169,6 +170,8 @@ impl Search<'_> {
                 continue;
             }
             searched.set(i);
+            // While the exchange is still the mover's to read.
+            let losing = losing_capture(board, m, i);
             self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
@@ -180,8 +183,9 @@ impl Search<'_> {
                 -self.negamax(board, child, ply + 1, -beta, -alpha, kind.child(Via::First))
             } else {
                 // The index decides whether to reduce, the history score by how much.
-                let base = reduction(in_check, gives_check, m, killers, depth, i);
-                let history = self.history.get(us, m);
+                let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
+                self.lmr_losing_captures += u64::from(base > 0 && m.is_noisy());
+                let history = move_history(m, self.history.get(us, m));
                 self.late_move(board, child, base, history, ply, alpha, pv, kind)
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
