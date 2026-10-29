@@ -30,6 +30,8 @@ pub use depth::{
     REDUCTION_INDEX, extension, history_reduction, iir_reduction, lmr_reduction, losing_capture,
     move_history, null_reduction, pv_reduction, reduction,
 };
+#[cfg(debug_assertions)]
+pub use expected::Call;
 pub use expected::{Expected, Via};
 pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
@@ -142,8 +144,12 @@ pub struct Search<'a> {
     evals: [Option<Score>; MAX_PLY],
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
-    /// Each node's expected kind, read by the gates and by no rule.
-    kinds: [Expected; MAX_PLY],
+    /// Every call into the main search since a gate asked for the record, in a debug build only.
+    #[cfg(debug_assertions)]
+    calls: Option<Vec<Call>>,
+    /// How the next call's kind was derived, which that call's entry takes.
+    #[cfg(debug_assertions)]
+    asked: Option<(Expected, Via)>,
     /// These counters are read on no decision path, so a depth-limited search stays a function of
     /// the code.
     null_attempts: u64,
@@ -239,7 +245,10 @@ impl<'a> Search<'a> {
             root_depth: 0,
             evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
-            kinds: [Expected::Pv; MAX_PLY],
+            #[cfg(debug_assertions)]
+            calls: None,
+            #[cfg(debug_assertions)]
+            asked: None,
             null_attempts: 0,
             null_cutoffs: 0,
             null_refused_material: 0,
@@ -302,6 +311,20 @@ impl<'a> Search<'a> {
     /// For the gates alone: no UCI option and no `bench` path reaches it.
     pub fn set_iir_reduction(&mut self, plies: u32) {
         self.iir_plies = plies;
+    }
+
+    /// For the gates alone, in a debug build: every call into the main search from here on is
+    /// recorded.
+    #[cfg(debug_assertions)]
+    pub fn trace_calls(&mut self) {
+        self.calls = Some(Vec::new());
+    }
+
+    /// In the order the calls were made.
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn calls(&self) -> &[Call] {
+        self.calls.as_deref().unwrap_or_default()
     }
 
     /// From the next run on; a move not legal at the root is never searched.
