@@ -11,7 +11,7 @@ use cadence_core::{
 use super::Call;
 use super::depth::{
     extension, history_reduction, iir_reduction, losing_capture, move_history, null_reduction,
-    pv_reduction, reduction,
+    pv_reduction, reduction, tt_pv_reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -377,12 +377,15 @@ impl Search<'_> {
         pv: bool,
         kind: Expected,
     ) -> Score {
-        // The history term first and the PV term on what it leaves, each counted where it acted.
+        // The history term first, then the PV and ttPv terms on what each leaves, each counted where
+        // it acted.
         let shifted = history_reduction(base, history);
         self.history_reduced_less += u64::from(shifted < base);
         self.history_reduced_more += u64::from(shifted > base);
-        let r = pv_reduction(shifted, pv);
-        self.lmr_pv_lessened += u64::from(r < shifted);
+        let lessened = pv_reduction(shifted, pv);
+        self.lmr_pv_lessened += u64::from(lessened < shifted);
+        let r = tt_pv_reduction(lessened, pv, self.tt_pv[ply]);
+        self.lmr_tt_pv_lessened += u64::from(r < lessened);
         if r == 0 {
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);

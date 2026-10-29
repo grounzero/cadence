@@ -103,3 +103,10 @@ pub fn history_reduction(base: u32, history: i32) -> u32 {
 pub fn pv_reduction(r: u32, pv: bool) -> u32 {
     r.saturating_sub(u32::from(pv))
 }
+
+/// The reduction the PV term left, as it stands.
+#[must_use]
+pub fn tt_pv_reduction(r: u32, pv: bool, tt_pv: bool) -> u32 {
+    let _ = (pv, tt_pv);
+    r
+}

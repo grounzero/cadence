@@ -54,6 +54,12 @@ impl Search<'_> {
         self.lmr_pv_lessened
     }
 
+    /// Late moves at flagged null-window nodes whose reduction the ttPv term lowered.
+    #[must_use]
+    pub fn lmr_tt_pv_lessened(&self) -> u64 {
+        self.lmr_tt_pv_lessened
+    }
+
     /// Losing captures given a reduction before the PV term.
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {

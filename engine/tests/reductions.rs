@@ -13,7 +13,7 @@ use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::history::HISTORY_MAX;
 use cadence_engine::search::{
     Limits, REDUCTION_INDEX, history_reduction, lmr_reduction, losing_capture, move_history,
-    pv_reduction, reduction,
+    pv_reduction, reduction, tt_pv_reduction,
 };
 use support::table;
 
@@ -342,6 +342,48 @@ fn a_search_reduces_some_losing_captures() {
     assert!(
         s.lmr_losing_captures() > 0,
         "depth {GATE_DEPTH} reduced {} late moves and no losing capture",
+        s.lmr_reductions()
+    );
+}
+
+/// A flagged node off the open window takes one ply off what the PV term left, so a reduction of one
+/// goes.
+#[test]
+fn a_flagged_null_window_move_takes_one_ply_less() {
+    for r in 0..16 {
+        assert_eq!(
+            tt_pv_reduction(r, false, true),
+            r.saturating_sub(1),
+            "r {r}"
+        );
+    }
+}
+
+/// The PV term has already acted at a PV node and an unflagged node has nothing to lessen, so both
+/// keep the reduction, and zero stays zero everywhere.
+#[test]
+fn the_tt_pv_term_leaves_pv_and_unflagged_nodes_and_never_creates_a_reduction() {
+    for r in 0..16 {
+        assert_eq!(tt_pv_reduction(r, true, true), r, "r {r} at a PV node");
+        assert_eq!(tt_pv_reduction(r, false, false), r, "r {r} unflagged");
+    }
+    for (pv, tt_pv) in [(false, false), (false, true), (true, false), (true, true)] {
+        assert_eq!(tt_pv_reduction(0, pv, tt_pv), 0, "pv {pv} flag {tt_pv}");
+    }
+}
+
+/// The term reaches the search: a depth-eight search of a middlegame lessens some reductions at
+/// flagged null-window nodes.
+#[test]
+fn a_search_lessens_some_reductions_at_flagged_nodes() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
+    assert!(!s.run(&mut b, &mut Vec::new()).is_null(), "no move");
+    assert!(
+        s.lmr_tt_pv_lessened() > 0,
+        "depth {GATE_DEPTH} reduced {} late moves and lowered none at a flagged node",
         s.lmr_reductions()
     );
 }
