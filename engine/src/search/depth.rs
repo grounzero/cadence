@@ -104,9 +104,9 @@ pub fn pv_reduction(r: u32, pv: bool) -> u32 {
     r.saturating_sub(u32::from(pv))
 }
 
-/// The reduction the PV term left, as it stands.
+/// One ply less at a node off the open window that carries the ttPv flag, after the PV term has
+/// acted at a PV node. It never creates a reduction, so every exemption in [`reduction`] holds.
 #[must_use]
 pub fn tt_pv_reduction(r: u32, pv: bool, tt_pv: bool) -> u32 {
-    let _ = (pv, tt_pv);
-    r
+    r.saturating_sub(u32::from(tt_pv && !pv))
 }
