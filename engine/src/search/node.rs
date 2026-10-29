@@ -602,15 +602,15 @@ mod tests {
     #[test]
     fn a_reduced_late_moves_child_is_a_cut_node_and_its_re_search_flips_the_parent() {
         use Expected::{All, Cut, Pv};
-        // Two plies off four, one of them taken back at a PV parent.
+        // Two plies off four, one more at a cut parent and one taken back at a PV parent.
         let cases = [
-            (HIGH, Cut, vec![(Via::Reduced, Cut, 2)]),
+            (HIGH, Cut, vec![(Via::Reduced, Cut, 1)]),
             (HIGH, All, vec![(Via::Reduced, Cut, 2)]),
             (HIGH, Pv, vec![(Via::Reduced, Cut, 3)]),
             (
                 -HIGH,
                 Cut,
-                vec![(Via::Reduced, Cut, 2), (Via::Null, All, 4)],
+                vec![(Via::Reduced, Cut, 1), (Via::Null, All, 4)],
             ),
             (
                 -HIGH,
