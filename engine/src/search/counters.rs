@@ -54,6 +54,12 @@ impl Search<'_> {
         self.lmr_pv_lessened
     }
 
+    /// Late moves at expected cut nodes whose reduction the cut-node term raised.
+    #[must_use]
+    pub fn lmr_cut_reduced_more(&self) -> u64 {
+        self.lmr_cut_reduced_more
+    }
+
     /// Losing captures given a reduction before the PV term.
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {

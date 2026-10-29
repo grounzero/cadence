@@ -103,3 +103,10 @@ pub fn history_reduction(base: u32, history: i32) -> u32 {
 pub fn pv_reduction(r: u32, pv: bool) -> u32 {
     r.saturating_sub(u32::from(pv))
 }
+
+/// The reduction the earlier terms left, as it stands.
+#[must_use]
+pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
+    let _ = cut;
+    r
+}

@@ -12,8 +12,8 @@ use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::history::HISTORY_MAX;
 use cadence_engine::search::{
-    Limits, REDUCTION_INDEX, history_reduction, lmr_reduction, losing_capture, move_history,
-    pv_reduction, reduction,
+    Limits, REDUCTION_INDEX, cut_node_reduction, history_reduction, lmr_reduction, losing_capture,
+    move_history, pv_reduction, reduction,
 };
 use support::table;
 
@@ -342,6 +342,39 @@ fn a_search_reduces_some_losing_captures() {
     assert!(
         s.lmr_losing_captures() > 0,
         "depth {GATE_DEPTH} reduced {} late moves and no losing capture",
+        s.lmr_reductions()
+    );
+}
+
+/// An expected cut node takes one ply more on whatever reduction the other terms left.
+#[test]
+fn a_late_move_at_an_expected_cut_node_takes_one_ply_more() {
+    for r in 1..16 {
+        assert_eq!(cut_node_reduction(r, true), r + 1, "r {r}");
+    }
+}
+
+/// Every other node keeps the reduction, and zero stays zero at a cut node too.
+#[test]
+fn the_cut_node_term_leaves_other_nodes_and_never_creates_a_reduction() {
+    for r in 0..16 {
+        assert_eq!(cut_node_reduction(r, false), r, "r {r}");
+    }
+    assert_eq!(cut_node_reduction(0, true), 0);
+}
+
+/// The term reaches the search: a depth-eight search of a middlegame raises some reductions at
+/// expected cut nodes.
+#[test]
+fn a_search_reduces_more_at_some_expected_cut_nodes() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
+    assert!(!s.run(&mut b, &mut Vec::new()).is_null(), "no move");
+    assert!(
+        s.lmr_cut_reduced_more() > 0,
+        "depth {GATE_DEPTH} reduced {} late moves and raised none at an expected cut node",
         s.lmr_reductions()
     );
 }
