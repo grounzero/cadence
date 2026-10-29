@@ -220,6 +220,8 @@ impl Search<'_> {
         mut alpha: Score,
         beta: Score,
     ) -> (Move, Score) {
+        // The root is checked and recorded as its children are.
+        self.expect(0, depth, Expected::Pv, alpha, beta);
         self.visit(0);
         self.table.clear(0);
         // The root's window is always open, and its children read the flag one ply up.
@@ -241,26 +243,15 @@ impl Search<'_> {
             let ext = extension(board.in_check(), 1, depth);
             let child = depth - 1 + ext;
             let mut score = if searched == 0 {
-                -self.negamax(
-                    board,
-                    child,
-                    1,
-                    -beta,
-                    -alpha,
-                    Expected::Pv.child(Via::First),
-                )
+                let first = self.derive(Expected::Pv, Via::First);
+                -self.negamax(board, child, 1, -beta, -alpha, first)
             } else {
-                -self.negamax(
-                    board,
-                    child,
-                    1,
-                    -alpha - 1,
-                    -alpha,
-                    Expected::Pv.child(Via::Null),
-                )
+                let later = self.derive(Expected::Pv, Via::Null);
+                -self.negamax(board, child, 1, -alpha - 1, -alpha, later)
             };
             if searched > 0 && !self.aborted && score > alpha && score < beta {
-                score = -self.negamax(board, child, 1, -beta, -alpha, Expected::Pv);
+                let open = self.derive(Expected::Pv, Via::Open);
+                score = -self.negamax(board, child, 1, -beta, -alpha, open);
             }
             board.unmake_move(m);
             searched += 1;

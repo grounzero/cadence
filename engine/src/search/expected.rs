@@ -35,3 +35,17 @@ impl Expected {
         }
     }
 }
+
+/// One call into the main search, as a debug build records it for the gates.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Call {
+    pub ply: usize,
+    pub depth: u32,
+    /// The parent's kind and how it searched the child; `None` where the caller named the kind
+    /// outright, as the root, the null move and the gates' seam do.
+    pub asked: Option<(Expected, Via)>,
+    pub kind: Expected,
+    /// Whether the window it was given is open.
+    pub open: bool,
+}

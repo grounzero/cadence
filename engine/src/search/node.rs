@@ -7,6 +7,8 @@ use cadence_core::{
     Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, has_legal_move,
 };
 
+#[cfg(debug_assertions)]
+use super::Call;
 use super::depth::{
     extension, history_reduction, iir_reduction, losing_capture, move_history, null_reduction,
     pv_reduction, reduction,
@@ -76,6 +78,8 @@ impl Search<'_> {
         beta: Score,
         kind: Expected,
     ) -> Score {
+        // First, so a call that returns early is checked too.
+        self.expect(ply, depth, kind, alpha, beta);
         // The quiescence search counts this node.
         if depth == 0 {
             return self.quiesce(board, ply, alpha, beta);
@@ -96,7 +100,6 @@ impl Search<'_> {
         if ply >= MAX_PLY {
             return eval::evaluate(board);
         }
-        self.expect(ply, kind, alpha, beta);
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
@@ -180,7 +183,7 @@ impl Search<'_> {
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
             let mut score = if i == 0 {
-                -self.negamax(board, child, ply + 1, -beta, -alpha, kind.child(Via::First))
+                self.own_window(board, child, ply, alpha, beta, kind, Via::First)
             } else {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
@@ -191,7 +194,7 @@ impl Search<'_> {
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
             if i > 0 && !self.aborted && score > alpha && score < beta {
-                score = -self.negamax(board, child, ply + 1, -beta, -alpha, Expected::Pv);
+                score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
             }
             board.unmake_move(m);
             if self.aborted {
@@ -296,14 +299,43 @@ impl Search<'_> {
         (hit.mv, cutoff.then_some(score), hit.pv)
     }
 
-    /// Kept per ply for the gates, and checked against the window in a debug build.
-    fn expect(&mut self, ply: usize, kind: Expected, alpha: Score, beta: Score) {
+    /// Checked against the window in a debug build, and recorded there once a gate asks.
+    pub(super) fn expect(
+        &mut self,
+        ply: usize,
+        depth: u32,
+        kind: Expected,
+        alpha: Score,
+        beta: Score,
+    ) {
         debug_assert_eq!(
             kind == Expected::Pv,
             beta > alpha + 1,
-            "ply {ply}: {kind:?}"
+            "ply {ply} depth {depth}: {kind:?}"
         );
-        self.kinds[ply] = kind;
+        #[cfg(debug_assertions)]
+        {
+            let asked = self.asked.take();
+            if let Some(calls) = &mut self.calls {
+                calls.push(Call {
+                    ply,
+                    depth,
+                    asked,
+                    kind,
+                    open: beta > alpha + 1,
+                });
+            }
+        }
+    }
+
+    /// [`Expected::child`], and in a debug build the call it is passed to records how it was
+    /// derived.
+    pub(super) fn derive(&mut self, parent: Expected, via: Via) -> Expected {
+        #[cfg(debug_assertions)]
+        {
+            self.asked = Some((parent, via));
+        }
+        parent.child(via)
     }
 
     /// The one store, and where a node failing low takes its parent's flag.
@@ -313,6 +345,23 @@ impl Search<'_> {
         // Nothing here beat alpha, so the move into it may have been the good one.
         let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
         self.tt.store(key, mv, score, stored_depth, bound, pv);
+    }
+
+    /// The child searched with the node's own window, as the first move is and a later one that
+    /// beat alpha is again.
+    #[allow(clippy::too_many_arguments)]
+    fn own_window(
+        &mut self,
+        board: &mut Position,
+        child: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+        kind: Expected,
+        via: Via,
+    ) -> Score {
+        let derived = self.derive(kind, via);
+        -self.negamax(board, child, ply + 1, -beta, -alpha, derived)
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
@@ -334,16 +383,17 @@ impl Search<'_> {
         self.history_reduced_more += u64::from(shifted > base);
         let r = pv_reduction(shifted, pv);
         self.lmr_pv_lessened += u64::from(r < shifted);
-        let full = kind.child(Via::Null);
         if r == 0 {
+            let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
         }
         self.lmr_reductions += 1;
         let reduced = child.saturating_sub(r).max(1);
-        let cut = kind.child(Via::Reduced);
+        let cut = self.derive(kind, Via::Reduced);
         let score = -self.negamax(board, reduced, ply + 1, -alpha - 1, -alpha, cut);
         if score > alpha && !self.aborted {
             self.lmr_researches += 1;
+            let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
         }
         score
@@ -423,14 +473,8 @@ impl Search<'_> {
             let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
             if score >= raised {
                 self.probcut_searches += 1;
-                score = -self.negamax(
-                    board,
-                    child,
-                    ply + 1,
-                    -raised,
-                    -raised + 1,
-                    kind.child(Via::Null),
-                );
+                let flipped = self.derive(kind, Via::Null);
+                score = -self.negamax(board, child, ply + 1, -raised, -raised + 1, flipped);
             }
             board.unmake_move(m);
             if self.aborted {
@@ -482,7 +526,7 @@ mod tests {
     use crate::eval;
     use crate::position::Position;
     use crate::score::Score;
-    use crate::search::{Expected, Search};
+    use crate::search::{Call, Expected, Search, Via};
     use crate::tt::{Bound, Table};
 
     const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
@@ -492,7 +536,19 @@ mod tests {
     const HIGH: Score = 2_000;
 
     fn searcher<'a>(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
-        Search::new(stop, tt)
+        let mut search = Search::new(stop, tt);
+        search.trace_calls();
+        search
+    }
+
+    /// Every call recorded at one ply, in order: at the ply below a call site, its children alone.
+    fn at(search: &Search<'_>, ply: usize) -> Vec<Call> {
+        search
+            .calls()
+            .iter()
+            .filter(|c| c.ply == ply)
+            .copied()
+            .collect()
     }
 
     /// Below the reduction's depth, so every child is a full-depth null window and takes the
@@ -508,40 +564,89 @@ mod tests {
             let mut search = searcher(&stop, &tt);
             let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame"));
             let _ = search.node_expected(&mut board, 2, 0, HIGH, HIGH + 1, parent);
-            assert_eq!(search.kinds[0], parent);
-            assert_eq!(search.kinds[1], child, "under {parent:?}");
+            assert_eq!(
+                at(&search, 0).iter().map(|c| c.kind).collect::<Vec<_>>(),
+                [parent]
+            );
+            let children = at(&search, 1);
+            assert!(children.len() > 1, "under {parent:?}: too few children");
+            for (i, c) in children.iter().enumerate() {
+                let via = if i == 0 { Via::First } else { Via::Null };
+                assert_eq!(c.asked, Some((parent, via)), "under {parent:?}, child {i}");
+                assert_eq!(c.kind, child, "under {parent:?}, child {i}");
+            }
         }
     }
 
-    /// The reduced search's child is expected to cut whatever the parent; the full-depth search, of
-    /// an unreduced move or a re-search, flips the parent.
-    #[test]
-    fn a_late_moves_child_is_a_cut_node_when_reduced_and_flips_at_full_depth() {
+    /// One late move searched alone from the middlegame at depth four, and the calls one ply below.
+    fn late_move_alone(base: u32, alpha: Score, parent: Expected) -> Vec<Call> {
         let stop = AtomicBool::new(false);
         let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
         let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
-        // A high alpha is never beaten, so no re-search; a low one always is.
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let mut board = Position::new(root);
+        search.root_depth = 4;
+        search.make(&mut board, 0, m);
+        let pv = parent == Expected::Pv;
+        let _ = search.late_move(&mut board, 4, base, 0, 0, alpha, pv, parent);
+        at(&search, 1)
+    }
+
+    /// The reduced search's child is expected to cut whatever the parent, and the re-search a
+    /// reduced move earns runs at full depth and flips the parent. A high alpha is never beaten, so
+    /// nothing is searched again; a low one always is.
+    #[test]
+    fn a_reduced_late_moves_child_is_a_cut_node_and_its_re_search_flips_the_parent() {
+        use Expected::{All, Cut, Pv};
+        // Two plies off four, one of them taken back at a PV parent.
         let cases = [
-            (2, HIGH, Expected::Cut, Expected::Cut),
-            (2, HIGH, Expected::All, Expected::Cut),
-            (2, HIGH, Expected::Pv, Expected::Cut),
-            (0, HIGH, Expected::Cut, Expected::All),
-            (0, HIGH, Expected::All, Expected::Cut),
-            (0, HIGH, Expected::Pv, Expected::Cut),
-            (2, -HIGH, Expected::Cut, Expected::All),
-            (2, -HIGH, Expected::All, Expected::Cut),
+            (HIGH, Cut, vec![(Via::Reduced, Cut, 2)]),
+            (HIGH, All, vec![(Via::Reduced, Cut, 2)]),
+            (HIGH, Pv, vec![(Via::Reduced, Cut, 3)]),
+            (
+                -HIGH,
+                Cut,
+                vec![(Via::Reduced, Cut, 2), (Via::Null, All, 4)],
+            ),
+            (
+                -HIGH,
+                All,
+                vec![(Via::Reduced, Cut, 2), (Via::Null, Cut, 4)],
+            ),
         ];
-        for (base, alpha, parent, child) in cases {
-            let tt = Table::new(1).expect("a one mebibyte table");
-            let mut search = searcher(&stop, &tt);
-            let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame"));
-            search.root_depth = 4;
-            search.make(&mut board, 0, m);
-            let pv = parent == Expected::Pv;
-            let _ = search.late_move(&mut board, 4, base, 0, 0, alpha, pv, parent);
+        for (alpha, parent, expected) in cases {
+            let read: Vec<(Via, Expected, u32)> = late_move_alone(2, alpha, parent)
+                .iter()
+                .map(|c| {
+                    let (from, via) = c.asked.expect("a derived kind");
+                    assert_eq!(from, parent, "alpha {alpha}, {parent:?}");
+                    (via, c.kind, c.depth)
+                })
+                .collect();
+            assert_eq!(read, expected, "alpha {alpha}, {parent:?}");
+        }
+    }
+
+    /// With no reduction the move is searched once, at full depth, flipping the parent.
+    #[test]
+    fn an_unreduced_late_move_is_searched_once_at_full_depth() {
+        use Expected::{All, Cut, Pv};
+        for (alpha, parent, child) in [
+            (HIGH, Cut, All),
+            (HIGH, All, Cut),
+            (HIGH, Pv, Cut),
+            (-HIGH, Cut, All),
+            (-HIGH, All, Cut),
+        ] {
+            let read: Vec<_> = late_move_alone(0, alpha, parent)
+                .iter()
+                .map(|c| (c.asked, c.kind, c.depth))
+                .collect();
             assert_eq!(
-                search.kinds[1], child,
-                "base {base}, alpha {alpha}, {parent:?}"
+                read,
+                [(Some((parent, Via::Null)), child, 4)],
+                "alpha {alpha}, {parent:?}"
             );
         }
     }
@@ -557,10 +662,10 @@ mod tests {
         search.root_depth = DEPTH;
         search.make(&mut board, 0, m);
         search.evals[1] = Some(BETA + 200);
-        search.kinds[2] = Expected::Pv;
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
         assert!(search.null_attempts > 0, "the null move was refused");
-        assert_eq!(search.kinds[2], Expected::All);
+        let read: Vec<_> = at(&search, 2).iter().map(|c| (c.asked, c.kind)).collect();
+        assert_eq!(read, [(None, Expected::All)]);
     }
 
     /// A queen left to a pawn: the capture clears any raised beta, so the reduced search runs.
@@ -579,12 +684,16 @@ mod tests {
             let mut board = Position::new(root);
             search.root_depth = 6;
             search.evals[0] = Some(static_eval);
-            search.kinds[1] = Expected::Pv;
             let beta = static_eval;
             let cut = search.probcut(&mut board, 6, 0, beta - 1, beta, parent);
             assert!(cut.is_some(), "the capture did not cut");
             assert_eq!(search.probcut_searches, 1, "under {parent:?}");
-            assert_eq!(search.kinds[1], child, "under {parent:?}");
+            let read: Vec<_> = at(&search, 1).iter().map(|c| (c.asked, c.kind)).collect();
+            assert_eq!(
+                read,
+                [(Some((parent, Via::Null)), child)],
+                "under {parent:?}"
+            );
         }
     }
 
