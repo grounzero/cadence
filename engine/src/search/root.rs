@@ -220,6 +220,8 @@ impl Search<'_> {
         mut alpha: Score,
         beta: Score,
     ) -> (Move, Score) {
+        // Before the root's entry is recorded, and its children read it one ply up.
+        self.follow_pv[0] = true;
         // The root is checked and recorded as its children are.
         self.expect(0, depth, Expected::Pv, alpha, beta);
         self.visit(0);

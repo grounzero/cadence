@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The kind each node is expected to be, derived from how its parent searched it. Nothing reads it
-//! yet; the call sites are gated beside them in `search::node`, and the record of each call that
-//! these read exists only in a debug build.
+//! The kind each node is expected to be, derived from how its parent searched it. The call sites
+//! are gated beside them in `search::node`, and the record of each call that these read exists
+//! only in a debug build.
 
 mod support;
 

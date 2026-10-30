@@ -65,6 +65,7 @@ impl Search<'_> {
         self.root_depth = depth;
         self.frames.fill(None);
         self.tt_pv.fill(false);
+        self.follow_pv.fill(false);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
 
@@ -260,10 +261,22 @@ impl Search<'_> {
         (killers, picker)
     }
 
-    /// Every descent into `negamax` makes its move here, so a child's frames are its path's.
+    /// Every descent into `negamax` makes its move here, so a child's frames are its path's and so
+    /// is its flag for the previous line.
     pub(super) fn make(&mut self, board: &mut Position, ply: usize, m: Move) {
         self.frames[ply] = conthist::frame(board, m);
+        self.follow_pv[ply + 1] = self.follow_pv[ply] && self.previous_move(ply) == Some(m);
+        #[cfg(debug_assertions)]
+        {
+            self.moved[ply] = m;
+        }
         board.make_move(m);
+    }
+
+    /// Read where the iteration's search left it: nothing writes a line while one runs. At `MultiPV`
+    /// above one, line k follows the previous iteration's line k.
+    fn previous_move(&self, ply: usize) -> Option<Move> {
+        self.accepted.get(self.lines.len())?.pv.get(ply).copied()
     }
 
     /// A method so the counter is written where the rule runs.
@@ -316,6 +329,12 @@ impl Search<'_> {
         #[cfg(debug_assertions)]
         {
             let asked = self.asked.take();
+            // Read, not indexed: a gate calls past the ply bound, and the call returns there.
+            let follows = self.follow_pv.get(ply).copied().unwrap_or(false);
+            let moved = ply
+                .checked_sub(1)
+                .and_then(|up| self.moved.get(up).copied())
+                .unwrap_or(Move::NULL);
             if let Some(calls) = &mut self.calls {
                 calls.push(Call {
                     ply,
@@ -323,6 +342,8 @@ impl Search<'_> {
                     asked,
                     kind,
                     open: beta > alpha + 1,
+                    follows,
+                    moved,
                 });
             }
         }
@@ -424,8 +445,13 @@ impl Search<'_> {
         }
         self.null_attempts += 1;
         let reduced = depth.saturating_sub(1 + null_reduction(depth));
-        // No move, so the child reads none one ply up.
+        // No move, so the child reads none one ply up, and no line holds one.
         self.frames[ply] = None;
+        self.follow_pv[ply + 1] = false;
+        #[cfg(debug_assertions)]
+        {
+            self.moved[ply] = Move::NULL;
+        }
         let _ = board.make_null_move();
         // The pass hands the move over, and the null move cuts only where that child fails low.
         let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1, Expected::All);
@@ -529,7 +555,7 @@ mod tests {
     use crate::eval;
     use crate::position::Position;
     use crate::score::Score;
-    use crate::search::{Call, Expected, Search, Via};
+    use crate::search::{Call, Expected, RootLine, Search, Via};
     use crate::tt::{Bound, Table};
 
     const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
@@ -669,6 +695,55 @@ mod tests {
         assert!(search.null_attempts > 0, "the null move was refused");
         let read: Vec<_> = at(&search, 2).iter().map(|c| (c.asked, c.kind)).collect();
         assert_eq!(read, [(None, Expected::All)]);
+    }
+
+    /// Under a parent on the line, and over a flag an earlier node left at the child's ply.
+    #[test]
+    fn the_null_moves_child_does_not_follow_the_line() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        let mut board = Position::new(root);
+        search.root_depth = DEPTH;
+        search.make(&mut board, 0, m);
+        search.follow_pv = [true; MAX_PLY + 1];
+        search.evals[1] = Some(BETA + 200);
+        let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
+        assert!(search.null_attempts > 0, "the null move was refused");
+        let below: Vec<_> = search.calls().iter().filter(|c| c.ply >= 2).collect();
+        assert!(!below.is_empty(), "nothing searched below the null move");
+        for c in below {
+            assert!(!c.follows, "{c:?}");
+        }
+    }
+
+    /// A line and a root flag left as an earlier run would leave them: the move they name is
+    /// searched under the full window, and no node follows it.
+    #[test]
+    fn the_gates_entry_follows_nothing_an_earlier_run_left() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        search.accepted.push(RootLine {
+            mv: m,
+            score: 0,
+            pv: vec![m],
+        });
+        search.follow_pv[0] = true;
+        let mut board = Position::new(root);
+        let _ = search.node(&mut board, 2, 0);
+        let calls = search.calls();
+        assert!(
+            calls.iter().any(|c| c.ply == 1 && c.moved == m),
+            "the line's move was not searched"
+        );
+        for c in calls {
+            assert!(!c.follows, "{c:?}");
+        }
     }
 
     /// A queen left to a pawn: the capture clears any raised beta, so the reduced search runs.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What a node is expected to return, read from how its parent searched it. Nothing decides on it
-//! yet, so a search returns the same with it as without.
+//! What a node is expected to return, read from how its parent searched it. The late move
+//! reduction reads it, taking one ply more from a late move at an expected cut node.
 
 /// A PV node has the window open; a cut node is expected to fail high, and an all node to fail low.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,6 +36,9 @@ impl Expected {
     }
 }
 
+#[cfg(debug_assertions)]
+use cadence_core::Move;
+
 /// One call into the main search, as a debug build records it for the gates.
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,4 +51,8 @@ pub struct Call {
     pub kind: Expected,
     /// Whether the window it was given is open.
     pub open: bool,
+    /// Whether it is on the previous iteration's line.
+    pub follows: bool,
+    /// The move into it: `Move::NULL` at the first ply recorded and below the null move.
+    pub moved: Move,
 }
