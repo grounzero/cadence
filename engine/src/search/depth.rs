@@ -103,3 +103,10 @@ pub fn history_reduction(base: u32, history: i32) -> u32 {
 pub fn pv_reduction(r: u32, pv: bool) -> u32 {
     r.saturating_sub(u32::from(pv))
 }
+
+/// One ply more at an expected cut node, after every other term. It never creates a reduction, so
+/// every exemption in [`reduction`] holds.
+#[must_use]
+pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
+    r + u32::from(cut && r > 0)
+}

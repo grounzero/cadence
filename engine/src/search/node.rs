@@ -10,8 +10,8 @@ use cadence_core::{
 #[cfg(debug_assertions)]
 use super::Call;
 use super::depth::{
-    extension, history_reduction, iir_reduction, losing_capture, move_history, null_reduction,
-    pv_reduction, reduction,
+    cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
+    null_reduction, pv_reduction, reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -377,12 +377,15 @@ impl Search<'_> {
         pv: bool,
         kind: Expected,
     ) -> Score {
-        // The history term first and the PV term on what it leaves, each counted where it acted.
+        // The history term first, then the PV and cut-node terms on what each leaves, each counted
+        // where it acted.
         let shifted = history_reduction(base, history);
         self.history_reduced_less += u64::from(shifted < base);
         self.history_reduced_more += u64::from(shifted > base);
-        let r = pv_reduction(shifted, pv);
-        self.lmr_pv_lessened += u64::from(r < shifted);
+        let lessened = pv_reduction(shifted, pv);
+        self.lmr_pv_lessened += u64::from(lessened < shifted);
+        let r = cut_node_reduction(lessened, kind == Expected::Cut);
+        self.lmr_cut_reduced_more += u64::from(r > lessened);
         if r == 0 {
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
@@ -599,15 +602,15 @@ mod tests {
     #[test]
     fn a_reduced_late_moves_child_is_a_cut_node_and_its_re_search_flips_the_parent() {
         use Expected::{All, Cut, Pv};
-        // Two plies off four, one of them taken back at a PV parent.
+        // Two plies off four, one more at a cut parent and one taken back at a PV parent.
         let cases = [
-            (HIGH, Cut, vec![(Via::Reduced, Cut, 2)]),
+            (HIGH, Cut, vec![(Via::Reduced, Cut, 1)]),
             (HIGH, All, vec![(Via::Reduced, Cut, 2)]),
             (HIGH, Pv, vec![(Via::Reduced, Cut, 3)]),
             (
                 -HIGH,
                 Cut,
-                vec![(Via::Reduced, Cut, 2), (Via::Null, All, 4)],
+                vec![(Via::Reduced, Cut, 1), (Via::Null, All, 4)],
             ),
             (
                 -HIGH,
