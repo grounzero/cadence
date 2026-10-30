@@ -136,7 +136,7 @@ impl Search<'_> {
         let pv = beta > alpha + 1;
         // Last above the move loop, so the margins, the count and every child read the shortened
         // depth.
-        let depth = self.iir_depth(depth, pv, in_check, tt_move);
+        let depth = self.iir_depth(depth, kind, ply, in_check, tt_move);
 
         let mut legal = generate_legal(board);
         if legal.is_empty() {
@@ -280,8 +280,23 @@ impl Search<'_> {
     }
 
     /// A method so the counter is written where the rule runs.
-    fn iir_depth(&mut self, depth: u32, pv: bool, in_check: bool, tt_move: Move) -> u32 {
-        let r = iir_reduction(depth, pv, in_check, tt_move != Move::NULL, self.iir_plies);
+    fn iir_depth(
+        &mut self,
+        depth: u32,
+        kind: Expected,
+        ply: usize,
+        in_check: bool,
+        tt_move: Move,
+    ) -> u32 {
+        let follows = self.follow_pv[ply];
+        let r = iir_reduction(
+            depth,
+            kind,
+            follows,
+            in_check,
+            tt_move != Move::NULL,
+            self.iir_plies,
+        );
         self.iir_nodes += u64::from(r > 0);
         depth - r
     }
@@ -554,7 +569,7 @@ mod tests {
     use crate::conthist;
     use crate::eval;
     use crate::position::Position;
-    use crate::score::Score;
+    use crate::score::{INFINITE, Score};
     use crate::search::{Call, Expected, RootLine, Search, Via};
     use crate::tt::{Bound, Table};
 
@@ -743,6 +758,35 @@ mod tests {
         );
         for c in calls {
             assert!(!c.follows, "{c:?}");
+        }
+    }
+
+    /// The pawn endgame's root at the shallower search's threshold with no table move, as a PV node
+    /// and as a cut node: on the previous line it keeps its depth, and off it it is shortened.
+    #[test]
+    fn a_node_on_the_previous_line_keeps_its_depth() {
+        // Restated, as the rule's own gates restate it; no move gives check within two plies, so no
+        // child reaches it.
+        const THRESHOLD: u32 = 4;
+        const PAWNS: &str = "4k3/pppp4/8/8/8/8/PPPPPPPP/4K3 w - - 0 1";
+        let stop = AtomicBool::new(false);
+        for (kind, alpha, beta) in [
+            (Expected::Pv, -INFINITE, INFINITE),
+            (Expected::Cut, HIGH, HIGH + 1),
+        ] {
+            for follows in [false, true] {
+                let tt = Table::new(1).expect("a one mebibyte table");
+                let mut search = Search::new(&stop, &tt);
+                let mut board = Position::new(Board::from_fen(PAWNS).expect("the pawn endgame"));
+                search.root_depth = THRESHOLD;
+                search.follow_pv[0] = follows;
+                let _ = search.negamax(&mut board, THRESHOLD, 0, alpha, beta, kind);
+                assert_eq!(
+                    search.iir_nodes,
+                    u64::from(!follows),
+                    "{kind:?}, on the line {follows}"
+                );
+            }
         }
     }
 

@@ -6,6 +6,7 @@
 use cadence_core::Move;
 use cadence_core::position::Board;
 
+use super::Expected;
 use crate::{history, see};
 
 /// The cap bounds the pathological line, not the ordinary tree: at bench depths an extended line
@@ -27,8 +28,15 @@ pub(crate) const IIR_REDUCTION: u32 = 2;
 /// `plies` where the node qualifies; a PV node and a node in check keep their depth. The node
 /// stores its result at the shortened depth, so no re-search of its own undoes the reduction.
 #[must_use]
-pub fn iir_reduction(depth: u32, pv: bool, in_check: bool, has_tt_move: bool, plies: u32) -> u32 {
-    if pv || in_check || has_tt_move || depth < IIR_DEPTH {
+pub fn iir_reduction(
+    depth: u32,
+    kind: Expected,
+    _follows: bool,
+    in_check: bool,
+    has_tt_move: bool,
+    plies: u32,
+) -> u32 {
+    if kind == Expected::Pv || in_check || has_tt_move || depth < IIR_DEPTH {
         return 0;
     }
     plies
