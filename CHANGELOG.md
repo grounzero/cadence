@@ -17,6 +17,18 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.22] - 2026-10-30
+
+### Changed
+
+- Search: at a node the search expects to fail high, a late move that
+  would already be searched shallower is now searched one ply shallower
+  still. A move that would be searched at full depth keeps it.
+
+Test 68: +5.95 (between +1.64 and +10.26), a self-play estimate against
+0.5.21 at the short control, from a sequential test stopped at its first
+crossing, so it leans high. It is not a rating.
+
 ## [0.5.21] - 2026-10-29
 
 ### Changed
@@ -411,7 +423,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.21...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.22...main
+[0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21
 [0.5.20]: https://github.com/grounzero/cadence/compare/0.5.19...0.5.20
 [0.5.19]: https://github.com/grounzero/cadence/compare/0.5.18...0.5.19
