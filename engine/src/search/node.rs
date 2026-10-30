@@ -65,6 +65,7 @@ impl Search<'_> {
         self.root_depth = depth;
         self.frames.fill(None);
         self.tt_pv.fill(false);
+        self.follow_pv.fill(false);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
 
@@ -260,14 +261,22 @@ impl Search<'_> {
         (killers, picker)
     }
 
-    /// Every descent into `negamax` makes its move here, so a child's frames are its path's.
+    /// Every descent into `negamax` makes its move here, so a child's frames are its path's and so
+    /// is its flag for the previous line.
     pub(super) fn make(&mut self, board: &mut Position, ply: usize, m: Move) {
         self.frames[ply] = conthist::frame(board, m);
+        self.follow_pv[ply + 1] = self.follow_pv[ply] && self.previous_move(ply) == Some(m);
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = m;
         }
         board.make_move(m);
+    }
+
+    /// Read where the iteration's search left it: nothing writes a line while one runs. At `MultiPV`
+    /// above one, line k follows the previous iteration's line k.
+    fn previous_move(&self, ply: usize) -> Option<Move> {
+        self.accepted.get(self.lines.len())?.pv.get(ply).copied()
     }
 
     /// A method so the counter is written where the rule runs.
@@ -436,8 +445,9 @@ impl Search<'_> {
         }
         self.null_attempts += 1;
         let reduced = depth.saturating_sub(1 + null_reduction(depth));
-        // No move, so the child reads none one ply up.
+        // No move, so the child reads none one ply up, and no line holds one.
         self.frames[ply] = None;
+        self.follow_pv[ply + 1] = false;
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = Move::NULL;
