@@ -160,9 +160,9 @@ fn a_reduction_set_to_zero_shortens_no_node() {
 /// qualifies.
 #[test]
 fn the_rule_is_not_inert_at_a_real_depth() {
-    let (_, _, fired) = one_node(MIDDLEGAME, 8, FULL_WINDOW, Expected::Pv, None);
+    let (_, _, fired) = one_node(MIDDLEGAME, 10, FULL_WINDOW, Expected::Pv, None);
     assert!(
-        fired > 100,
-        "the rule fired at {fired} nodes of a depth-8 search"
+        fired > 50,
+        "the rule fired at {fired} nodes of a depth-10 search"
     );
 }

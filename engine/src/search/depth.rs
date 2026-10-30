@@ -25,18 +25,19 @@ const IIR_DEPTH: u32 = 4;
 /// What every search shortens that node by, unless a gate sets it otherwise.
 pub(crate) const IIR_REDUCTION: u32 = 2;
 
-/// `plies` where the node qualifies; a PV node and a node in check keep their depth. The node
-/// stores its result at the shortened depth, so no re-search of its own undoes the reduction.
+/// `plies` where the node qualifies: a PV or cut node off the previous iteration's line, not in
+/// check, with no table move. The node stores its result at the shortened depth, so no re-search
+/// of its own undoes the reduction.
 #[must_use]
 pub fn iir_reduction(
     depth: u32,
     kind: Expected,
-    _follows: bool,
+    follows: bool,
     in_check: bool,
     has_tt_move: bool,
     plies: u32,
 ) -> u32 {
-    if kind == Expected::Pv || in_check || has_tt_move || depth < IIR_DEPTH {
+    if kind == Expected::All || follows || in_check || has_tt_move || depth < IIR_DEPTH {
         return 0;
     }
     plies

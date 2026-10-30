@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Whether each node is on the previous iteration's line, which nothing reads yet. The record of
-//! each call that these read exists only in a debug build, so these gates do too.
+//! Whether each node is on the previous iteration's line, which keeps a node on it from being
+//! searched shallower for want of a table move. The record of each call that these read exists
+//! only in a debug build, so these gates do too.
 
 #![cfg(debug_assertions)]
 
@@ -138,7 +139,7 @@ fn a_node_follows_exactly_where_its_path_is_the_previous_lines() {
 #[test]
 fn at_two_lines_each_follows_its_own_previous_line() {
     for fen in positions() {
-        let followed = checked(&fen, 9, 2);
+        let followed = checked(&fen, 11, 2);
         for (k, &on) in followed.on.iter().enumerate() {
             assert!(on > 10, "{fen}: too few nodes on line {}", k + 1);
         }
