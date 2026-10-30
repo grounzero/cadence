@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What a node is expected to return, read from how its parent searched it. Nothing decides on it
-//! yet, so a search returns the same with it as without.
+//! What a node is expected to return, read from how its parent searched it. The late move
+//! reduction reads it, taking one ply more from a late move at an expected cut node.
 
 /// A PV node has the window open; a cut node is expected to fail high, and an all node to fail low.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
