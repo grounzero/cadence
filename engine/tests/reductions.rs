@@ -12,8 +12,8 @@ use cadence_core::position::Board;
 use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::history::HISTORY_MAX;
 use cadence_engine::search::{
-    Limits, REDUCTION_INDEX, cut_node_reduction, history_reduction, lmr_reduction, losing_capture,
-    move_history, pv_reduction, reduction,
+    LMR_CAP, Limits, REDUCTION_INDEX, cut_node_reduction, history_reduction, lmr_reduction,
+    losing_capture, move_history, pv_reduction, reduction, reduction_cap,
 };
 use support::table;
 
@@ -375,6 +375,68 @@ fn a_search_reduces_more_at_some_expected_cut_nodes() {
     assert!(
         s.lmr_cut_reduced_more() > 0,
         "depth {GATE_DEPTH} reduced {} late moves and raised none at an expected cut node",
+        s.lmr_reductions()
+    );
+}
+
+/// Restated rather than exported, so moving the cap fails here and is declared.
+const CAP: u32 = 4;
+
+/// Deep enough that the history and cut-node terms carry some reductions past the cap.
+const CAP_DEPTH: u32 = 10;
+
+/// The final reduction is bounded at the cap, and one at or under it is left as it was.
+#[test]
+fn the_cap_bounds_the_final_reduction() {
+    for r in 0..32 {
+        assert_eq!(reduction_cap(r, LMR_CAP), r.min(CAP), "r {r}");
+    }
+}
+
+/// Zero stays zero and a reduction stays a reduction for any cap of one or more, so the
+/// exemptions in `reduction` hold.
+#[test]
+fn the_cap_never_creates_or_removes_a_reduction() {
+    for cap in 1..16 {
+        for r in 0..32 {
+            let capped = reduction_cap(r, cap);
+            assert_eq!(capped == 0, r == 0, "r {r} cap {cap}");
+            assert!(capped <= r, "r {r} cap {cap}: raised");
+        }
+    }
+}
+
+/// A losing capture's reduction is two plies at most after the PV and cut-node terms, so the cap
+/// leaves it whole.
+#[test]
+fn a_losing_captures_reduction_is_under_the_cap() {
+    let (_, m) = capture(LOSING);
+    let none = [Move::NULL; 2];
+    for depth in 0..64 {
+        for index in 0..128 {
+            for pv in [false, true] {
+                for cut in [false, true] {
+                    let base = reduction(false, false, m, true, none, depth, index);
+                    let r = cut_node_reduction(pv_reduction(base, pv), cut);
+                    assert!(r <= 2, "depth {depth} index {index} pv {pv} cut {cut}: {r}");
+                    assert_eq!(reduction_cap(r, LMR_CAP), r, "depth {depth} index {index}");
+                }
+            }
+        }
+    }
+}
+
+/// The cap reaches the search: a depth-ten search of a middlegame lowers some reductions.
+#[test]
+fn a_search_caps_some_reductions() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(CAP_DEPTH), &stop, &tt);
+    assert!(!s.run(&mut b, &mut Vec::new()).is_null(), "no move");
+    assert!(
+        s.lmr_capped() > 0,
+        "depth {CAP_DEPTH} reduced {} late moves and capped none",
         s.lmr_reductions()
     );
 }

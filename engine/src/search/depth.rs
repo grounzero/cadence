@@ -110,3 +110,14 @@ pub fn pv_reduction(r: u32, pv: bool) -> u32 {
 pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
     r + u32::from(cut && r > 0)
 }
+
+/// The largest reduction a late move takes once every other term has acted. At this value no
+/// reduction reaches it.
+pub const LMR_CAP: u32 = u32::MAX;
+
+/// The last term, after the cut-node term. With a cap of one or more it never creates or removes a
+/// reduction, so every exemption in [`reduction`] holds.
+#[must_use]
+pub fn reduction_cap(r: u32, cap: u32) -> u32 {
+    r.min(cap)
+}

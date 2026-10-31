@@ -10,8 +10,8 @@ use cadence_core::{
 #[cfg(debug_assertions)]
 use super::Call;
 use super::depth::{
-    cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
-    null_reduction, pv_reduction, reduction,
+    LMR_CAP, cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture,
+    move_history, null_reduction, pv_reduction, reduction, reduction_cap,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -398,15 +398,17 @@ impl Search<'_> {
         pv: bool,
         kind: Expected,
     ) -> Score {
-        // The history term first, then the PV and cut-node terms on what each leaves, each counted
-        // where it acted.
+        // The history term first, then the PV and cut-node terms on what each leaves, and the cap
+        // last, each counted where it acted.
         let shifted = history_reduction(base, history);
         self.history_reduced_less += u64::from(shifted < base);
         self.history_reduced_more += u64::from(shifted > base);
         let lessened = pv_reduction(shifted, pv);
         self.lmr_pv_lessened += u64::from(lessened < shifted);
-        let r = cut_node_reduction(lessened, kind == Expected::Cut);
-        self.lmr_cut_reduced_more += u64::from(r > lessened);
+        let raised = cut_node_reduction(lessened, kind == Expected::Cut);
+        self.lmr_cut_reduced_more += u64::from(raised > lessened);
+        let r = reduction_cap(raised, LMR_CAP);
+        self.lmr_capped += u64::from(r < raised);
         if r == 0 {
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
@@ -620,6 +622,63 @@ mod tests {
         let pv = parent == Expected::Pv;
         let _ = search.late_move(&mut board, 4, base, 0, 0, alpha, pv, parent);
         at(&search, 1)
+    }
+
+    /// One late move searched alone from the middlegame, its history score given, and the calls one
+    /// ply below.
+    fn late_move_scored(
+        child: u32,
+        base: u32,
+        history: i32,
+        alpha: Score,
+        parent: Expected,
+    ) -> Vec<Call> {
+        let stop = AtomicBool::new(false);
+        let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let mut board = Position::new(root);
+        search.root_depth = child;
+        search.make(&mut board, 0, m);
+        let pv = parent == Expected::Pv;
+        let _ = search.late_move(&mut board, child, base, history, 0, alpha, pv, parent);
+        at(&search, 1)
+    }
+
+    /// Two plies of bad history and the cut ply stacked on a base of two ask for five, and the cap
+    /// is taken last; under the cap a reduction is searched as before, and a reduced search that
+    /// beats alpha is still searched again at full depth.
+    #[test]
+    fn a_stacked_reduction_is_searched_at_the_cap() {
+        use Expected::{All, Cut};
+        // Restated rather than exported, so moving the cap fails here and is declared.
+        const CAP: u32 = 4;
+        const CHILD: u32 = 6;
+        let worst = -crate::history::HISTORY_MAX;
+        let cases = [
+            (HIGH, Cut, 2, worst, vec![(Via::Reduced, Cut, CHILD - CAP)]),
+            (
+                -HIGH,
+                Cut,
+                2,
+                worst,
+                vec![(Via::Reduced, Cut, CHILD - CAP), (Via::Null, All, CHILD)],
+            ),
+            (HIGH, All, 2, 0, vec![(Via::Reduced, Cut, CHILD - 2)]),
+        ];
+        for (alpha, parent, base, history, expected) in cases {
+            let read: Vec<(Via, Expected, u32)> =
+                late_move_scored(CHILD, base, history, alpha, parent)
+                    .iter()
+                    .map(|c| {
+                        let (from, via) = c.asked.expect("a derived kind");
+                        assert_eq!(from, parent, "alpha {alpha}, {parent:?}");
+                        (via, c.kind, c.depth)
+                    })
+                    .collect();
+            assert_eq!(read, expected, "alpha {alpha}, {parent:?}, base {base}");
+        }
     }
 
     /// The reduced search's child is expected to cut whatever the parent, and the re-search a

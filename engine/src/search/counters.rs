@@ -60,6 +60,12 @@ impl Search<'_> {
         self.lmr_cut_reduced_more
     }
 
+    /// Late moves whose reduction the cap lowered, after every other term.
+    #[must_use]
+    pub fn lmr_capped(&self) -> u64 {
+        self.lmr_capped
+    }
+
     /// Losing captures given a reduction before the PV term.
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {
