@@ -111,9 +111,9 @@ pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
     r + u32::from(cut && r > 0)
 }
 
-/// The reduction the earlier terms left, as it stands.
+/// One ply less where the position improves, after every other term. It never creates or raises
+/// a reduction, so every exemption in [`reduction`] holds.
 #[must_use]
 pub fn improving_reduction(r: u32, improving: bool) -> u32 {
-    let _ = improving;
-    r
+    r.saturating_sub(u32::from(improving))
 }

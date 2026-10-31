@@ -887,11 +887,11 @@ const ROOT_ANSWERS: [(&str, Score); 14] = [
     ("e2e3", 33),
     ("c2c4", 66),
     ("f2f4", 63),
-    ("b2b3", 108),
-    ("h1h7", 528),
+    ("b2b3", 116),
+    ("h1h2", 526),
     ("f1f5", 541),
     ("g1g5", 527),
-    ("a1a4", 539),
+    ("a1a2", 526),
 ];
 
 /// With no table, the window is the only thing that can move the count. The ceiling is the
