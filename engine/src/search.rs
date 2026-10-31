@@ -28,7 +28,8 @@ mod root;
 
 pub use depth::{
     REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
-    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduction,
+    improving_reduction, lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction,
+    reduction,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;
@@ -166,6 +167,7 @@ pub struct Search<'a> {
     lmr_researches: u64,
     lmr_pv_lessened: u64,
     lmr_cut_reduced_more: u64,
+    lmr_improving_lessened: u64,
     lmr_losing_captures: u64,
     /// Two, so a gate can tell a table that only credits from one that also debits.
     history_reduced_less: u64,
@@ -266,6 +268,7 @@ impl<'a> Search<'a> {
             lmr_researches: 0,
             lmr_pv_lessened: 0,
             lmr_cut_reduced_more: 0,
+            lmr_improving_lessened: 0,
             lmr_losing_captures: 0,
             history_reduced_less: 0,
             history_reduced_more: 0,
@@ -364,6 +367,7 @@ impl<'a> Search<'a> {
         self.lmr_researches = 0;
         self.lmr_pv_lessened = 0;
         self.lmr_cut_reduced_more = 0;
+        self.lmr_improving_lessened = 0;
         self.lmr_losing_captures = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;

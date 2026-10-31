@@ -110,3 +110,10 @@ pub fn pv_reduction(r: u32, pv: bool) -> u32 {
 pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
     r + u32::from(cut && r > 0)
 }
+
+/// The reduction the earlier terms left, as it stands.
+#[must_use]
+pub fn improving_reduction(r: u32, improving: bool) -> u32 {
+    let _ = improving;
+    r
+}
