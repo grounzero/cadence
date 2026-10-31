@@ -60,6 +60,12 @@ impl Search<'_> {
         self.lmr_cut_reduced_more
     }
 
+    /// Late moves at improving nodes whose reduction the improving term lowered.
+    #[must_use]
+    pub fn lmr_improving_lessened(&self) -> u64 {
+        self.lmr_improving_lessened
+    }
+
     /// Losing captures given a reduction before the PV term.
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {

@@ -10,11 +10,11 @@ use cadence_core::{
 #[cfg(debug_assertions)]
 use super::Call;
 use super::depth::{
-    cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
-    null_reduction, pv_reduction, reduction,
+    cut_node_reduction, extension, history_reduction, iir_reduction, improving_reduction,
+    losing_capture, move_history, null_reduction, pv_reduction, reduction,
 };
 use super::pruning::{
-    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
+    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, improving, lmp_index, probcut_bound,
 };
 use super::{Expected, Search, Via, bound_for, order_first, remember_killer};
 use crate::conthist::{self, OFFSETS};
@@ -398,15 +398,17 @@ impl Search<'_> {
         pv: bool,
         kind: Expected,
     ) -> Score {
-        // The history term first, then the PV and cut-node terms on what each leaves, each counted
-        // where it acted.
+        // The history term first, then the PV, cut-node and improving terms on what each leaves,
+        // each counted where it acted.
         let shifted = history_reduction(base, history);
         self.history_reduced_less += u64::from(shifted < base);
         self.history_reduced_more += u64::from(shifted > base);
         let lessened = pv_reduction(shifted, pv);
         self.lmr_pv_lessened += u64::from(lessened < shifted);
-        let r = cut_node_reduction(lessened, kind == Expected::Cut);
-        self.lmr_cut_reduced_more += u64::from(r > lessened);
+        let raised = cut_node_reduction(lessened, kind == Expected::Cut);
+        self.lmr_cut_reduced_more += u64::from(raised > lessened);
+        let r = improving_reduction(raised, improving(&self.evals, ply));
+        self.lmr_improving_lessened += u64::from(r < raised);
         if r == 0 {
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
@@ -843,6 +845,46 @@ mod tests {
         assert!(
             written(root_frame),
             "no node below the null move read the root's move"
+        );
+    }
+
+    /// One node at ply three of a quiet line, at a depth no node below it reduces at, in a window no
+    /// static rule cuts: its reductions, and how many the improving term lowered. The reading two
+    /// plies up is the node's evaluation plus `offset`; the parent's and a stale one at the node's
+    /// own ply sit on the other side of it.
+    fn improving_at_ply_three(offset: Score) -> (u64, u64) {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame"));
+        for (ply, uci) in ["h2h3", "h7h6", "a2a3"].into_iter().enumerate() {
+            let m = parse_uci(&generate_legal(&board), uci).expect("a legal move");
+            search.make(&mut board, ply, m);
+        }
+        let eval = eval::evaluate(&board);
+        let other = if offset < 0 { 1_000 } else { -1_000 };
+        search.evals[1] = Some(eval + offset);
+        search.evals[2] = Some(eval + other);
+        search.evals[3] = Some(eval + other);
+        let alpha = eval + 400;
+        let _ = search.negamax(&mut board, 3, 3, alpha, alpha + 1, Expected::All);
+        (search.lmr_reductions, search.lmr_improving_lessened)
+    }
+
+    /// The flag a late move takes is the node's corrected evaluation against the reading two plies
+    /// up its line: one point below it lowers reductions, and an equal one lowers none.
+    #[test]
+    fn the_improving_term_reads_the_node_against_two_plies_up() {
+        let (reduced, lessened) = improving_at_ply_three(-1);
+        assert!(
+            lessened > 0,
+            "improving: {reduced} reductions and none lowered"
+        );
+        let (reduced, lessened) = improving_at_ply_three(0);
+        assert!(reduced > 0, "level: no late move was reduced");
+        assert_eq!(
+            lessened, 0,
+            "level: {lessened} of {reduced} reductions lowered"
         );
     }
 }
