@@ -555,8 +555,9 @@ mod tests {
     use crate::eval;
     use crate::position::Position;
     use crate::score::Score;
-    use crate::search::{Call, Expected, RootLine, Search, Via};
+    use crate::search::{Call, Expected, RootLine, Search, Via, reverse_futility_margin};
     use crate::tt::{Bound, Table};
+    use crate::tune::Tunables;
 
     const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
@@ -843,6 +844,59 @@ mod tests {
         assert!(
             written(root_frame),
             "no node below the null move read the root's move"
+        );
+    }
+
+    /// One node at ply three of a quiet line at depth one, where every child is quiescence: its
+    /// reverse futility cuts, the cuts the improving reader refused and those the window refused.
+    /// Beta sits on the margin at depth one, the reading two plies up is the node's evaluation plus
+    /// `offset`, and the parent's and a stale one at the node's own ply sit on the other side.
+    fn reverse_futility_at_ply_three(offset: Score, open: bool) -> (u64, u64, u64) {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame"));
+        for (ply, uci) in ["h2h3", "h7h6", "a2a3"].into_iter().enumerate() {
+            let m = parse_uci(&generate_legal(&board), uci).expect("a legal move");
+            search.make(&mut board, ply, m);
+        }
+        let eval = eval::evaluate(&board);
+        let other = if offset < 0 { 1_000 } else { -1_000 };
+        search.evals[1] = Some(eval + offset);
+        search.evals[2] = Some(eval + other);
+        search.evals[3] = Some(eval + other);
+        let beta = eval - reverse_futility_margin(&Tunables::DEFAULT, 1);
+        let (alpha, kind) = if open {
+            (beta - 100, Expected::Pv)
+        } else {
+            (beta - 1, Expected::Cut)
+        };
+        let _ = search.negamax(&mut board, 1, 3, alpha, beta, kind);
+        (
+            search.reverse_futility_cutoffs,
+            search.reverse_futility_refused_improving,
+            search.reverse_futility_refused_window,
+        )
+    }
+
+    /// The flag the reader takes is the node's corrected evaluation against the reading two plies
+    /// up its line, and it is asked only where the window would let the margin cut.
+    #[test]
+    fn the_improving_reader_reads_the_node_against_two_plies_up() {
+        assert_eq!(
+            reverse_futility_at_ply_three(-1, false),
+            (0, 1, 0),
+            "improving: the margin was not read a ply deeper"
+        );
+        assert_eq!(
+            reverse_futility_at_ply_three(0, false),
+            (1, 0, 0),
+            "level: the margin did not cut at the node's own depth"
+        );
+        assert_eq!(
+            reverse_futility_at_ply_three(-1, true),
+            (0, 0, 1),
+            "open window: the reader was asked before the window refused the cut"
         );
     }
 }

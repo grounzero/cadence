@@ -137,6 +137,12 @@ impl Search<'_> {
         self.reverse_futility_refused_window
     }
 
+    /// Nodes the margin would have returned but for the improving reader's ply.
+    #[must_use]
+    pub fn reverse_futility_refused_by_improving(&self) -> u64 {
+        self.reverse_futility_refused_improving
+    }
+
     /// Nodes that ran the capture probe, captures it searched at reduced depth, and those that cut
     /// the node.
     #[must_use]

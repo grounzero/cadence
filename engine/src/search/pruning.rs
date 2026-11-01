@@ -130,6 +130,13 @@ pub fn reverse_futile(
     (!score::is_mate(beta) && bound >= beta).then_some(beta)
 }
 
+/// The depth the margin is read at, as it stands.
+#[must_use]
+pub fn improving_margin_depth(depth: u32, improving: bool) -> u32 {
+    let _ = improving;
+    depth
+}
+
 /// Chosen by a shadow measurement, not tuned, with the reduction and margin: the candidate whose
 /// cuts save most while disagreeing with the node's own search no more often than the null move's.
 const PROBCUT_DEPTH: u32 = 5;
@@ -196,7 +203,7 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let bound = reverse_futile(&self.tunables, self.evals[ply], depth, beta)?;
+        reverse_futile(&self.tunables, self.evals[ply], depth, beta)?;
         if board.halfmove_clock() >= 100 {
             return None;
         }
@@ -204,6 +211,12 @@ impl Search<'_> {
             self.reverse_futility_refused_window += 1;
             return None;
         }
+        // Read last, so its counter holds only cuts the rule without it would have taken.
+        let read = improving_margin_depth(depth, improving(&self.evals, ply));
+        let Some(bound) = reverse_futile(&self.tunables, self.evals[ply], read, beta) else {
+            self.reverse_futility_refused_improving += 1;
+            return None;
+        };
         self.reverse_futility_cutoffs += 1;
         Some(bound)
     }

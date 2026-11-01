@@ -12,7 +12,9 @@ use cadence_core::START_FEN;
 use cadence_core::position::Board;
 use cadence_engine::eval;
 use cadence_engine::score::{Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, reverse_futile, reverse_futility_margin};
+use cadence_engine::search::{
+    Limits, improving_margin_depth, reverse_futile, reverse_futility_margin,
+};
 use cadence_engine::tune::Tunables;
 use support::{PAWN_ENDGAMES, table};
 
@@ -244,4 +246,67 @@ fn a_pawn_endgame_takes_the_margin_where_the_null_move_refuses_it() {
             "{fen}: the margin returned no node in a tree the null move refuses entirely"
         );
     }
+}
+
+/// Where the position improves the margin is read one ply deeper, at every depth, and elsewhere at
+/// the node's own.
+#[test]
+fn an_improving_node_reads_the_margin_one_ply_deeper() {
+    for depth in 0..64 {
+        assert_eq!(
+            improving_margin_depth(depth, true),
+            depth + 1,
+            "depth {depth}: improving"
+        );
+        assert_eq!(
+            improving_margin_depth(depth, false),
+            depth,
+            "depth {depth}: not improving"
+        );
+    }
+}
+
+/// The reader only refuses: where the position is not improving every decision is today's, and
+/// where it is every cut is one today's rule takes, at the same bound.
+#[test]
+fn the_improving_reader_leaves_other_nodes_and_only_refuses_cuts() {
+    for depth in 1..12 {
+        for eval in [-2_000, -150, 0, 150, 450, 1_000, 1_650, 5_000] {
+            for beta in [-1_000, -150, 0, 150, 900] {
+                let today = reverse_futile(DEFAULT, Some(eval), depth, beta);
+                let level = improving_margin_depth(depth, false);
+                assert_eq!(
+                    reverse_futile(DEFAULT, Some(eval), level, beta),
+                    today,
+                    "not improving: depth {depth}, eval {eval}, beta {beta}"
+                );
+                let read = improving_margin_depth(depth, true);
+                let cut = reverse_futile(DEFAULT, Some(eval), read, beta);
+                assert!(
+                    cut.is_none() || cut == today,
+                    "improving: a cut today's rule does not take, depth {depth}, eval {eval}, beta {beta}"
+                );
+            }
+        }
+    }
+}
+
+/// Not inert at a real depth: a middlegame search refuses some cuts at improving nodes.
+#[test]
+fn a_search_refuses_some_cuts_at_improving_nodes() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
+    let _ = s.run(&mut b, &mut Vec::new());
+    assert_eq!(
+        s.completed_depth(),
+        GATE_DEPTH,
+        "the search did not complete depth {GATE_DEPTH}"
+    );
+    assert!(
+        s.reverse_futility_refused_by_improving() > 0,
+        "depth {GATE_DEPTH}: {} cuts and none refused at an improving node",
+        s.reverse_futility_cutoffs()
+    );
 }

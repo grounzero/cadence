@@ -37,8 +37,8 @@ pub use limits::Limits;
 pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
 pub use pruning::{
     PROBCUT_REDUCTION, futile_node, futility_margin, futility_skips, has_non_pawn_material,
-    improving, lmp_count, lmp_index, lmp_skips, probcut_bound, reverse_futile,
-    reverse_futility_margin,
+    improving, improving_margin_depth, lmp_count, lmp_index, lmp_skips, probcut_bound,
+    reverse_futile, reverse_futility_margin,
 };
 use pv::PvTable;
 
@@ -187,6 +187,7 @@ pub struct Search<'a> {
     /// The refusal count lets a gate see the full-window refusal decide.
     reverse_futility_cutoffs: u64,
     reverse_futility_refused_window: u64,
+    reverse_futility_refused_improving: u64,
     probcut_attempts: u64,
     probcut_searches: u64,
     probcut_cutoffs: u64,
@@ -281,6 +282,7 @@ impl<'a> Search<'a> {
             lmp_kept_check: 0,
             reverse_futility_cutoffs: 0,
             reverse_futility_refused_window: 0,
+            reverse_futility_refused_improving: 0,
             probcut_attempts: 0,
             probcut_searches: 0,
             probcut_cutoffs: 0,
@@ -382,6 +384,7 @@ impl<'a> Search<'a> {
         self.lmp_kept_check = 0;
         self.reverse_futility_cutoffs = 0;
         self.reverse_futility_refused_window = 0;
+        self.reverse_futility_refused_improving = 0;
         self.probcut_attempts = 0;
         self.probcut_searches = 0;
         self.probcut_cutoffs = 0;
