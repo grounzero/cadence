@@ -401,15 +401,15 @@ impl Search<'_> {
         child: u32,
         base: u32,
         history: i32,
-        _key: i32,
+        key: i32,
         ply: usize,
         alpha: Score,
         pv: bool,
         kind: Expected,
     ) -> Score {
-        // The history term first, then the PV and cut-node terms on what each leaves, each counted
-        // where it acted.
-        let shifted = history_reduction(base, history);
+        // The history term first, reading the quiet key, then the PV and cut-node terms on what each
+        // leaves, each counted where it acted.
+        let shifted = history_reduction(base, key);
         self.history_reduced_less += u64::from(shifted < base);
         self.history_reduced_more += u64::from(shifted > base);
         self.history_key_differs += u64::from(shifted != history_reduction(base, history));
