@@ -135,6 +135,22 @@ fn the_malus_reaches_a_reduction_and_so_does_the_bonus() {
     );
 }
 
+/// The quiet key's continuation rows set some reduction otherwise than the butterfly alone would,
+/// over a real search.
+#[test]
+fn the_quiet_key_moves_reductions_the_butterfly_alone_would_not() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(MODULATION_DEPTH), &stop, &tt);
+    let _ = s.run(&mut b, &mut Vec::new());
+    assert!(s.lmr_reductions() > 0, "nothing was reduced");
+    assert!(
+        s.history_key_differs() > 0,
+        "no reduction read the continuation rows"
+    );
+}
+
 /// Measured over a real search, since `picker`'s band width and the shift's divisor are sized
 /// against this bound.
 #[test]

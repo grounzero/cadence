@@ -76,6 +76,12 @@ impl Search<'_> {
         self.history_reduced_more
     }
 
+    /// Moves whose history term the quiet key set otherwise than the butterfly score alone would.
+    #[must_use]
+    pub fn history_key_differs(&self) -> u64 {
+        self.history_key_differs
+    }
+
     /// Quiet moves the cutoffs debited.
     #[must_use]
     pub fn history_debits(&self) -> u64 {

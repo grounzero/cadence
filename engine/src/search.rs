@@ -170,6 +170,7 @@ pub struct Search<'a> {
     /// Two, so a gate can tell a table that only credits from one that also debits.
     history_reduced_less: u64,
     history_reduced_more: u64,
+    history_key_differs: u64,
     history_debits: u64,
     /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
     /// move skipped.
@@ -269,6 +270,7 @@ impl<'a> Search<'a> {
             lmr_losing_captures: 0,
             history_reduced_less: 0,
             history_reduced_more: 0,
+            history_key_differs: 0,
             history_debits: 0,
             continuation_credits: 0,
             continuation_debits: 0,
@@ -367,6 +369,7 @@ impl<'a> Search<'a> {
         self.lmr_losing_captures = 0;
         self.history_reduced_less = 0;
         self.history_reduced_more = 0;
+        self.history_key_differs = 0;
         self.history_debits = 0;
         self.continuation_credits = 0;
         self.continuation_debits = 0;

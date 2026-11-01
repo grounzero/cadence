@@ -172,11 +172,16 @@ impl<'a> Tables<'a> {
     /// The butterfly score and each continuation row's, all in the history's range, so the weights
     /// are one.
     fn quiet_key(&self, board: &Board, m: Move) -> i32 {
-        let butterfly = self.butterfly.get(m.from_to()).copied().unwrap_or(0);
         if self.continuation.iter().all(Option::is_none) {
-            return butterfly;
+            return self.butterfly.get(m.from_to()).copied().unwrap_or(0);
         }
-        let column = conthist::piece_to(board, m);
+        self.key_at(m, conthist::piece_to(board, m))
+    }
+
+    /// The same key for a move whose column the caller already holds, as the search does in the
+    /// move's frame once the move is made.
+    pub(crate) fn key_at(&self, m: Move, column: usize) -> i32 {
+        let butterfly = self.butterfly.get(m.from_to()).copied().unwrap_or(0);
         let rows = self.continuation.iter().flatten();
         butterfly + rows.map(|row| i32::from(row[column])).sum::<i32>()
     }

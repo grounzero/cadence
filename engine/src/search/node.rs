@@ -17,8 +17,9 @@ use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
 };
 use super::{Expected, Search, Via, bound_for, order_first, remember_killer};
-use crate::conthist::{self, OFFSETS};
+use crate::conthist::{self, ContinuationHistory, Frame, OFFSETS};
 use crate::eval;
+use crate::history::History;
 use crate::picker::{self, Picker, Tables};
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -189,8 +190,8 @@ impl Search<'_> {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
                 self.lmr_losing_captures += u64::from(base > 0 && m.is_noisy());
-                let history = move_history(m, self.history.get(us, m));
-                self.late_move(board, child, base, history, ply, alpha, pv, kind)
+                let (history, key) = self.history_scores(us, ply, m);
+                self.late_move(board, child, base, history, key, ply, alpha, pv, kind)
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
@@ -239,17 +240,10 @@ impl Search<'_> {
     ) -> ([Move; 2], Picker) {
         let ordered = usize::from(order_first(legal, tt_move));
         let killers = self.killers[ply];
-        let mut continuation = [None; OFFSETS.len()];
-        for (row, &offset) in continuation.iter_mut().zip(OFFSETS.iter()) {
-            match conthist::context(&self.frames, ply, offset) {
-                Some(context) => *row = Some(self.conthist.row(context)),
-                None => self.continuation_absent += 1,
-            }
+        let tables = tables(&self.history, &self.conthist, &self.frames, us, ply);
+        for row in &tables.continuation {
+            self.continuation_absent += u64::from(row.is_none());
         }
-        let tables = Tables {
-            butterfly: self.history.side(us),
-            continuation,
-        };
         let picker = Picker::new(
             board,
             legal,
@@ -259,6 +253,20 @@ impl Search<'_> {
             &mut self.slots[ply],
         );
         (killers, picker)
+    }
+
+    /// The butterfly score and the key the picker sorted the move by, read once the move is made
+    /// from the frame `make` wrote for it; a capture reads neither, as no capture history is kept.
+    fn history_scores(&self, us: Colour, ply: usize, m: Move) -> (i32, i32) {
+        let butterfly = move_history(m, self.history.get(us, m));
+        let key = match self.frames[ply] {
+            Some(column) if !m.is_noisy() => {
+                tables(&self.history, &self.conthist, &self.frames, us, ply)
+                    .key_at(m, usize::from(column))
+            }
+            _ => 0,
+        };
+        (butterfly, key)
     }
 
     /// Every descent into `negamax` makes its move here, so a child's frames are its path's and so
@@ -393,6 +401,7 @@ impl Search<'_> {
         child: u32,
         base: u32,
         history: i32,
+        _key: i32,
         ply: usize,
         alpha: Score,
         pv: bool,
@@ -403,6 +412,7 @@ impl Search<'_> {
         let shifted = history_reduction(base, history);
         self.history_reduced_less += u64::from(shifted < base);
         self.history_reduced_more += u64::from(shifted > base);
+        self.history_key_differs += u64::from(shifted != history_reduction(base, history));
         let lessened = pv_reduction(shifted, pv);
         self.lmr_pv_lessened += u64::from(lessened < shifted);
         let r = cut_node_reduction(lessened, kind == Expected::Cut);
@@ -533,6 +543,25 @@ impl Searched {
     }
 }
 
+/// What the picker and the history term read at a node: the mover's butterfly row, and a
+/// continuation row per offset where its frame is present.
+fn tables<'a>(
+    history: &'a History,
+    conthist: &'a ContinuationHistory,
+    frames: &[Frame],
+    us: Colour,
+    ply: usize,
+) -> Tables<'a> {
+    let mut continuation = [None; OFFSETS.len()];
+    for (row, &offset) in continuation.iter_mut().zip(OFFSETS.iter()) {
+        *row = conthist::context(frames, ply, offset).map(|context| conthist.row(context));
+    }
+    Tables {
+        butterfly: history.side(us),
+        continuation,
+    }
+}
+
 /// A cut at a stalemate overstates it only by returning more than a draw, since a lower bound at or
 /// below the draw score still holds there; so the two cuts before generation ask only then.
 #[inline]
@@ -618,7 +647,7 @@ mod tests {
         search.root_depth = 4;
         search.make(&mut board, 0, m);
         let pv = parent == Expected::Pv;
-        let _ = search.late_move(&mut board, 4, base, 0, 0, alpha, pv, parent);
+        let _ = search.late_move(&mut board, 4, base, 0, 0, 0, alpha, pv, parent);
         at(&search, 1)
     }
 
@@ -844,5 +873,143 @@ mod tests {
             written(root_frame),
             "no node below the null move read the root's move"
         );
+    }
+
+    /// Two quiet plies from the middlegame, then at ply two a quiet move and a capture, each scored
+    /// in the butterfly and in both continuation rows.
+    #[test]
+    fn the_history_term_reads_the_butterfly_and_each_present_row_at_weight_one() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame"));
+        for (ply, uci) in ["h2h3", "h7h6"].into_iter().enumerate() {
+            let m = parse_uci(&generate_legal(&board), uci).expect("a legal move");
+            search.make(&mut board, ply, m);
+        }
+        let us = board.side_to_move();
+        let quiet = parse_uci(&generate_legal(&board), "a2a3").expect("a legal move");
+        let capture = parse_uci(&generate_legal(&board), "c4e6").expect("a legal capture");
+        let near = search.frames[1].expect("ply one's frame");
+        let far = search.frames[0].expect("the root's frame");
+        for (m, butterfly, one, two) in [
+            (quiet, 300, -5_000, -2_000),
+            (capture, -9_000, -4_000, -4_000),
+        ] {
+            let column = conthist::piece_to(&board, m);
+            search.history.update(us, m, butterfly);
+            search.conthist.update(near, column, one);
+            search.conthist.update(far, column, two);
+        }
+        search.make(&mut board, 2, quiet);
+        assert_eq!(
+            search.history_scores(us, 2, quiet),
+            (300, -6_700),
+            "both rows"
+        );
+        search.frames[1] = None;
+        assert_eq!(
+            search.history_scores(us, 2, quiet),
+            (300, -1_700),
+            "no row one ply up"
+        );
+        search.frames[1] = Some(near);
+        search.frames[0] = None;
+        assert_eq!(
+            search.history_scores(us, 2, quiet),
+            (300, -4_700),
+            "no row two plies up"
+        );
+        search.frames[0] = Some(far);
+        board.unmake_move(quiet);
+        search.make(&mut board, 2, capture);
+        assert_eq!(search.history_scores(us, 2, capture), (0, 0), "a capture");
+    }
+
+    /// One late move from the middlegame at an alpha never beaten, so never searched again, handed
+    /// the two scores: each call one ply below, as how it was asked and at what depth.
+    fn late_move_read(base: u32, butterfly: i32, key: i32, parent: Expected) -> Vec<(Via, u32)> {
+        const CHILD: u32 = 8;
+        let stop = AtomicBool::new(false);
+        let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let mut board = Position::new(root);
+        search.root_depth = CHILD;
+        search.make(&mut board, 0, m);
+        let pv = parent == Expected::Pv;
+        let _ = search.late_move(&mut board, CHILD, base, butterfly, key, 0, HIGH, pv, parent);
+        at(&search, 1)
+            .iter()
+            .map(|c| (c.asked.expect("a derived kind").1, c.depth))
+            .collect()
+    }
+
+    /// A neutral butterfly score under poor continuation scores is the case the butterfly alone
+    /// cannot see, and a good one under poor rows is read as poor.
+    #[test]
+    fn the_history_term_reads_the_quiet_key_and_not_the_butterfly_alone() {
+        let all = Expected::All;
+        for (base, butterfly, key, want) in [
+            (1, 0, -2_048, (Via::Reduced, 5)),
+            (1, 2_048, -2_048, (Via::Reduced, 5)),
+            (2, -2_048, 2_048, (Via::Null, 8)),
+        ] {
+            assert_eq!(
+                late_move_read(base, butterfly, key, all),
+                [want],
+                "base {base}, butterfly {butterfly}, key {key}"
+            );
+        }
+    }
+
+    /// The key moves the reduction a ply for each 1,024 of score toward zero, and no more than two
+    /// plies either way from twice that.
+    #[test]
+    fn the_key_saturates_at_two_plies_either_way() {
+        let all = Expected::All;
+        for (base, key, depth) in [
+            (1, -1_023, 7),
+            (1, -1_024, 6),
+            (1, -2_047, 6),
+            (1, -2_048, 5),
+            (1, -49_152, 5),
+            (3, 1_023, 5),
+            (3, 1_024, 6),
+            (3, 2_048, 7),
+            (3, 49_152, 7),
+        ] {
+            assert_eq!(
+                late_move_read(base, 0, key, all),
+                [(Via::Reduced, depth)],
+                "base {base}, key {key}"
+            );
+        }
+    }
+
+    /// However poor the key, a move the base does not reduce is searched once at full depth.
+    #[test]
+    fn the_key_never_creates_a_reduction() {
+        for parent in [Expected::All, Expected::Cut, Expected::Pv] {
+            assert_eq!(
+                late_move_read(0, 0, -49_152, parent),
+                [(Via::Null, 8)],
+                "{parent:?}"
+            );
+        }
+    }
+
+    /// The key's two plies come first, so the PV node's ply comes off them and the cut node's goes
+    /// on top of them.
+    #[test]
+    fn the_pv_and_cut_node_terms_act_on_what_the_key_leaves() {
+        for (parent, depth) in [(Expected::Pv, 6), (Expected::Cut, 4), (Expected::All, 5)] {
+            assert_eq!(
+                late_move_read(1, 0, -2_048, parent),
+                [(Via::Reduced, depth)],
+                "{parent:?}"
+            );
+        }
     }
 }
