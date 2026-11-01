@@ -130,11 +130,11 @@ pub fn reverse_futile(
     (!score::is_mate(beta) && bound >= beta).then_some(beta)
 }
 
-/// The depth the margin is read at, as it stands.
+/// One ply more of margin where the position improves, which is where the rule errs more. It only
+/// ever widens the margin, so every cut it leaves is one the unread rule takes.
 #[must_use]
 pub fn improving_margin_depth(depth: u32, improving: bool) -> u32 {
-    let _ = improving;
-    depth
+    depth.saturating_add(u32::from(improving))
 }
 
 /// Chosen by a shadow measurement, not tuned, with the reduction and margin: the candidate whose
