@@ -104,7 +104,7 @@ fn position_startpos_is_the_start_position() {
     assert_ne!(s.board().to_fen(FenStyle::XFen), START_FEN);
     s.handle_line("position startpos");
     assert_eq!(s.board().to_fen(FenStyle::XFen), START_FEN);
-    assert!(s.board().game_history().is_empty());
+    assert_eq!(s.board().game_history(), [] as [u64; 0]);
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn position_fen_without_moves_is_the_fen() {
     let mut s = Session::new();
     s.handle_line(&format!("position fen {fen}"));
     assert_eq!(s.board().to_fen(FenStyle::XFen), fen);
-    assert!(s.board().game_history().is_empty());
+    assert_eq!(s.board().game_history(), [] as [u64; 0]);
 }
 
 #[test]

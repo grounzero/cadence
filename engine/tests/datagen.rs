@@ -210,9 +210,9 @@ fn positions(text: &str) -> Vec<&str> {
 fn extraction_holds_out_whole_games_by_number() {
     let file = run(21, 12, 3);
     let (all_train, none, whole) = extract(&file, 0);
-    assert!(positions(&none).is_empty());
+    assert_eq!(positions(&none), [] as [&str; 0]);
     let (none_train, all_held, _) = extract(&file, 1);
-    assert!(positions(&none_train).is_empty());
+    assert_eq!(positions(&none_train), [] as [&str; 0]);
     assert_eq!(positions(&all_held), positions(&all_train));
 
     // Every fourth game: 0, 4 and 8, each wholly on one side.

@@ -1411,7 +1411,7 @@ mod tests {
     #[test]
     fn exempt_notation_passes_and_typography_does_not() {
         let notation: String = ALLOWED_NON_ASCII.iter().collect();
-        assert!(stray_non_ascii(&notation, &[]).is_empty());
+        assert_eq!(stray_non_ascii(&notation, &[]), [] as [char; 0]);
         // The usual arrivals, and Greek mu.
         for bad in [
             "a dash \u{2014}",

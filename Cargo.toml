@@ -15,7 +15,7 @@ resolver = "3"
 # build is and not what it played like.
 version      = "0.5.22"
 edition      = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license      = "GPL-3.0-or-later"
 repository   = "https://github.com/grounzero/cadence"
 

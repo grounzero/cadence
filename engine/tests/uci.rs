@@ -307,7 +307,7 @@ fn a_second_go_stops_the_first() {
 fn stop_without_a_search_is_harmless() {
     let out = talk("stop\nisready\nstop\nquit\n");
     assert!(out.lines().any(|l| l == "readyok"));
-    assert!(bestmoves(&out).is_empty());
+    assert_eq!(bestmoves(&out), [] as [String; 0]);
 }
 
 #[test]
