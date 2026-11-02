@@ -361,7 +361,7 @@ fn the_other_fields_parse_and_emit_faithfully() {
     assert_eq!(b.king_square(Colour::White), Square::E1);
     assert_eq!(b.king_square(Colour::Black), Square::E8);
     assert_eq!(b.ply(), 0);
-    assert!(b.game_history().is_empty());
+    assert_eq!(b.game_history(), [] as [u64; 0]);
     assert_eq!(
         b.to_fen(FenStyle::XFen),
         "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2"

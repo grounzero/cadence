@@ -161,11 +161,8 @@ fn a_per_phase_k_is_recovered() {
     assert!(loss(&samples, &weights, k, 1) < loss(&samples, &weights, single, 1));
 }
 
+/// Exact equality is the property: a plain k must reproduce earlier runs bit for bit.
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "exact equality is the property: a plain k must reproduce earlier runs bit for bit"
-)]
 fn one_number_is_the_same_scaling_in_every_phase() {
     let weights = initial_weights();
     let samples = labelled(&weights, 1.3);
@@ -203,11 +200,8 @@ fn the_gradient_under_a_per_phase_k_is_the_derivative_of_the_loss() {
     }
 }
 
+/// The masses are sums of exact binary fractions of 24ths, so equality is the claim.
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "the masses are sums of exact binary fractions of 24ths, so equality is the claim"
-)]
 fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
     // A lone knight weighs one twenty-fourth of the phase: that much middlegame, the rest endgame.
     // It reaches the zone of Black's king, so White's one attacker and Black's none carry it too.
@@ -230,11 +224,8 @@ fn the_mass_behind_a_weight_is_its_coefficient_split_by_phase() {
     assert_eq!(mass.iter().filter(|m| m[0] + m[1] > 0.0).count(), 7);
 }
 
+/// A frozen half is returned exactly as given, which is the property.
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "a frozen half is returned exactly as given, which is the property"
-)]
 fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
     let start = initial_weights();
     let mut truth = start.clone();

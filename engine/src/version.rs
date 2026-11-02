@@ -77,6 +77,6 @@ mod tests {
     /// So the dev form never trails off into `<version>-dev-`, which reads as a truncation.
     #[test]
     fn the_commit_is_always_something() {
-        assert!(!COMMIT.is_empty());
+        assert_ne!(COMMIT, "");
     }
 }
