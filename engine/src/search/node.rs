@@ -10,8 +10,8 @@ use cadence_core::{
 #[cfg(debug_assertions)]
 use super::Call;
 use super::depth::{
-    cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
-    null_reduction, pv_reduction, reduction,
+    child_depth, cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture,
+    move_history, null_reduction, pv_reduction, reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -175,8 +175,8 @@ impl Search<'_> {
             self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
-            let ext = extension(gives_check, ply + 1, self.root_depth);
-            let child = depth - 1 + ext;
+            let ext = extension(gives_check, ply + 1, self.root_depth).cast_signed();
+            let child = child_depth(depth, ext);
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
             let mut score = if i == 0 {
@@ -327,6 +327,7 @@ impl Search<'_> {
             let asked = self.asked.take();
             // Read, not indexed: a gate calls past the ply bound, and the call returns there.
             let follows = self.follow_pv.get(ply).copied().unwrap_or(false);
+            let extensions = self.extensions.get(ply).copied().unwrap_or(0);
             let moved = ply
                 .checked_sub(1)
                 .and_then(|up| self.moved.get(up).copied())
@@ -340,6 +341,7 @@ impl Search<'_> {
                     open: beta > alpha + 1,
                     follows,
                     moved,
+                    extensions,
                 });
             }
         }
@@ -752,6 +754,112 @@ mod tests {
         );
         for c in calls {
             assert!(!c.follows, "{c:?}");
+        }
+    }
+
+    /// A queen loose against a castled king, with checks to give once white has moved.
+    const CHECKS: &str = "6k1/8/8/8/3q4/8/5PPP/6K1 w - - 0 1";
+
+    /// The checking children of a node at ply one under a planted count, at a root depth of four.
+    /// Under a high window every move is searched, and a check is neither reduced nor skipped.
+    fn checking_children(taken: u32) -> Vec<Call> {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let root = Board::from_fen(CHECKS).expect("the loose queen");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        let mut board = Position::new(root);
+        search.root_depth = 4;
+        search.make(&mut board, 0, m);
+        let checks: Vec<Move> = generate_legal(&board)
+            .iter()
+            .filter(|&c| board.gives_check(c))
+            .collect();
+        assert!(checks.len() >= 3, "too few checks: {checks:?}");
+        search.extensions[1] = taken;
+        let _ = search.negamax(&mut board, 3, 1, HIGH, HIGH + 1, Expected::Cut);
+        let children: Vec<Call> = at(&search, 2)
+            .into_iter()
+            .filter(|c| checks.contains(&c.moved))
+            .collect();
+        assert_eq!(children.len(), checks.len(), "a check was not searched");
+        children
+    }
+
+    /// One ply short of the cap a check is extended and its count reaches the root depth; at the cap
+    /// it is searched one ply down and the count stays.
+    #[test]
+    fn a_line_at_its_cap_takes_no_check_extension() {
+        for c in checking_children(3) {
+            assert_eq!((c.depth, c.extensions), (3, 4), "below the cap: {c:?}");
+        }
+        for c in checking_children(4) {
+            assert_eq!((c.depth, c.extensions), (2, 4), "at the cap: {c:?}");
+        }
+    }
+
+    /// Over a stale count at its ply, the null move's child takes its parent's.
+    #[test]
+    fn the_null_moves_child_takes_its_parents_count() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+        let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
+        let mut board = Position::new(root);
+        search.root_depth = DEPTH;
+        search.make(&mut board, 0, m);
+        search.extensions[1] = 3;
+        search.extensions[2] = 7;
+        search.evals[1] = Some(BETA + 200);
+        let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
+        assert!(search.null_attempts > 0, "the null move was refused");
+        let read: Vec<_> = at(&search, 2).iter().map(|c| c.extensions).collect();
+        assert_eq!(read, [3]);
+    }
+
+    /// Over a stale count at its ply, the capture probe's child takes its parent's.
+    #[test]
+    fn probcuts_child_takes_its_parents_count() {
+        const HANGING: &str = "4k3/8/8/3q4/4P3/8/8/4K3 w - - 0 1";
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let root = Board::from_fen(HANGING).expect("the hanging queen");
+        let static_eval = eval::evaluate(&root);
+        let mut board = Position::new(root);
+        search.root_depth = 6;
+        search.evals[0] = Some(static_eval);
+        search.extensions[0] = 2;
+        search.extensions[1] = 7;
+        let cut = search.probcut(
+            &mut board,
+            6,
+            0,
+            static_eval - 1,
+            static_eval,
+            Expected::Cut,
+        );
+        assert!(cut.is_some(), "the capture did not cut");
+        let read: Vec<_> = at(&search, 1).iter().map(|c| c.extensions).collect();
+        assert_eq!(read, [2]);
+    }
+
+    /// A count left at every ply by an earlier run: the gates' entry starts the line at none, so no
+    /// call holds more than its ply.
+    #[test]
+    fn the_gates_entry_starts_every_line_at_no_extension() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let mut board = Position::new(Board::from_fen(CHECKS).expect("the loose queen"));
+        search.extensions = [7; MAX_PLY + 1];
+        let _ = search.node(&mut board, 3, 0);
+        let calls = search.calls();
+        assert!(calls.len() > 1, "nothing searched below the entry");
+        for c in calls {
+            let ply = u32::try_from(c.ply).expect("a small ply");
+            assert!(c.extensions <= ply.min(3), "{c:?}");
         }
     }
 

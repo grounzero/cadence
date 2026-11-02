@@ -27,8 +27,9 @@ mod report;
 mod root;
 
 pub use depth::{
-    REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
-    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduction,
+    REDUCTION_INDEX, child_depth, counted, cut_node_reduction, extension, granted, headroom,
+    history_reduction, iir_reduction, lmr_reduction, losing_capture, move_history, null_reduction,
+    pv_reduction, reduction,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;
@@ -147,6 +148,9 @@ pub struct Search<'a> {
     /// Whether each node is on the previous iteration's line. One longer than the plies, since a
     /// move at the last ply writes its child's.
     follow_pv: [bool; MAX_PLY + 1],
+    /// The extensions of every kind the line has taken above each ply, the root's none. One longer
+    /// than the plies, since a move at the last ply writes its child's.
+    extensions: [u32; MAX_PLY + 1],
     /// The move made at each ply of the current path, which each call's entry takes.
     #[cfg(debug_assertions)]
     moved: [Move; MAX_PLY],
@@ -253,6 +257,7 @@ impl<'a> Search<'a> {
             evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
             follow_pv: [false; MAX_PLY + 1],
+            extensions: [0; MAX_PLY + 1],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
             #[cfg(debug_assertions)]

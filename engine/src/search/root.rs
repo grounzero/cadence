@@ -6,7 +6,7 @@ use std::io::Write;
 
 use cadence_core::{Move, MoveList, generate_legal};
 
-use super::depth::extension;
+use super::depth::{child_depth, extension};
 use super::{Expected, MAX_DEPTH, Search, Via};
 use crate::level;
 use crate::position::Position;
@@ -242,8 +242,8 @@ impl Search<'_> {
             self.name_current(m, i + 1, legal, out);
             self.make(board, 0, m);
             // The root extends a checking move like any node.
-            let ext = extension(board.in_check(), 1, depth);
-            let child = depth - 1 + ext;
+            let ext = extension(board.in_check(), 1, depth).cast_signed();
+            let child = child_depth(depth, ext);
             let mut score = if searched == 0 {
                 let first = self.derive(Expected::Pv, Via::First);
                 -self.negamax(board, child, 1, -beta, -alpha, first)

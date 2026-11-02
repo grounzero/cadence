@@ -18,6 +18,32 @@ pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
 }
 
+/// What a line may still be extended by: its extensions of every kind stop at the root depth, so no
+/// interior node lies past twice the root depth from the root.
+#[must_use]
+pub fn headroom(taken: u32, root_depth: u32) -> u32 {
+    root_depth.saturating_sub(taken)
+}
+
+/// A positive extension held to the line's headroom. A negative one is a reduction of one move and
+/// reads none.
+#[must_use]
+pub fn granted(ext: i32, taken: u32, root_depth: u32) -> i32 {
+    ext.min(i32::try_from(headroom(taken, root_depth)).unwrap_or(i32::MAX))
+}
+
+/// The child's count, which never falls: a negative extension gives no headroom back.
+#[must_use]
+pub fn counted(taken: u32, ext: i32) -> u32 {
+    taken.saturating_add(ext.max(0).unsigned_abs())
+}
+
+/// One ply below the parent, moved by the extension, and never below the quiescence search.
+#[must_use]
+pub fn child_depth(depth: u32, ext: i32) -> u32 {
+    depth.saturating_add_signed(ext).saturating_sub(1)
+}
+
 /// The shallowest node searched shallower for the move its table did not name.
 const IIR_DEPTH: u32 = 4;
 

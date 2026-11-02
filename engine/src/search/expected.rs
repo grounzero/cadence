@@ -55,4 +55,6 @@ pub struct Call {
     pub follows: bool,
     /// The move into it: `Move::NULL` at the first ply recorded and below the null move.
     pub moved: Move,
+    /// The extensions its line has taken above it.
+    pub extensions: u32,
 }

@@ -13,7 +13,7 @@ use cadence_core::{Colour, MAX_PLY, Move, START_FEN, generate_legal, parse_uci, 
 use cadence_engine::eval;
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
-use cadence_engine::search::{Limits, extension};
+use cadence_engine::search::{Limits, child_depth, counted, extension, granted, headroom};
 use cadence_engine::tt::Table;
 use support::{Outcome, Rng, play_game, random_mover, table};
 
@@ -647,6 +647,49 @@ fn a_check_extends_by_one_ply_and_nothing_does_past_the_cap() {
             );
         }
     }
+}
+
+/// The line's headroom is the root depth less its count, and a positive extension is held to it at
+/// every count either side of the cap; a negative one passes whatever the headroom.
+#[test]
+fn an_extension_is_held_to_the_lines_headroom_and_a_reduction_is_not() {
+    for root_depth in [0u32, 1, 2, 7, 20] {
+        for taken in 0..root_depth + 3 {
+            let room = root_depth.saturating_sub(taken);
+            assert_eq!(headroom(taken, root_depth), room, "{root_depth}, {taken}");
+            let room = i32::try_from(room).expect("a small headroom");
+            for ext in [1, 2] {
+                assert_eq!(
+                    granted(ext, taken, root_depth),
+                    ext.min(room),
+                    "root depth {root_depth}, {taken} taken, {ext} asked"
+                );
+            }
+            assert_eq!(granted(0, taken, root_depth), 0);
+            assert_eq!(granted(-1, taken, root_depth), -1, "{root_depth}, {taken}");
+        }
+    }
+}
+
+/// The count rises by what was taken and never falls, and the child's depth is one ply less the
+/// extension, floored at the quiescence search.
+#[test]
+fn the_count_never_falls_and_the_child_is_one_ply_down_moved_by_the_extension() {
+    for taken in [0u32, 1, 5, u32::MAX - 2] {
+        assert_eq!(counted(taken, 0), taken);
+        assert_eq!(counted(taken, 1), taken + 1);
+        assert_eq!(counted(taken, 2), taken + 2);
+        assert_eq!(counted(taken, -1), taken, "a reduction gave headroom back");
+    }
+    for depth in 2u32..=20 {
+        assert_eq!(child_depth(depth, 0), depth - 1);
+        assert_eq!(child_depth(depth, 1), depth);
+        assert_eq!(child_depth(depth, 2), depth + 1);
+        assert_eq!(child_depth(depth, -1), depth - 2);
+    }
+    assert_eq!(child_depth(1, 0), 0);
+    assert_eq!(child_depth(1, -1), 0);
+    assert_eq!(child_depth(0, 0), 0);
 }
 
 /// A mate by quiet checks, which quiescence does not generate, found below its nominal depth shows
