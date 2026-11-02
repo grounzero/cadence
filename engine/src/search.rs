@@ -26,6 +26,7 @@ mod quiesce;
 mod report;
 mod root;
 
+use counters::Counter;
 pub use depth::{
     REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
     lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduction,
@@ -136,8 +137,8 @@ pub struct Search<'a> {
     frames: [Frame; MAX_PLY],
     corrhist: CorrectionHistory,
     /// Read on no decision path.
-    corrhist_updates: u64,
-    corrhist_applied: u64,
+    corrhist_updates: Counter,
+    corrhist_applied: Counter,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
@@ -155,43 +156,43 @@ pub struct Search<'a> {
     asked: Option<(Expected, Via)>,
     /// These counters are read on no decision path, so a depth-limited search stays a function of
     /// the code.
-    null_attempts: u64,
-    null_cutoffs: u64,
+    null_attempts: Counter,
+    null_cutoffs: Counter,
     /// Lets the zugzwang gate see the refusal decide, not merely no null move.
-    null_refused_material: u64,
-    lmr_reductions: u64,
-    lmr_researches: u64,
-    lmr_pv_lessened: u64,
-    lmr_cut_reduced_more: u64,
-    lmr_losing_captures: u64,
+    null_refused_material: Counter,
+    lmr_reductions: Counter,
+    lmr_researches: Counter,
+    lmr_pv_lessened: Counter,
+    lmr_cut_reduced_more: Counter,
+    lmr_losing_captures: Counter,
     /// Two, so a gate can tell a table that only credits from one that also debits.
-    history_reduced_less: u64,
-    history_reduced_more: u64,
-    history_debits: u64,
+    history_reduced_less: Counter,
+    history_reduced_more: Counter,
+    history_debits: Counter,
     /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
     /// move skipped.
-    continuation_credits: u64,
-    continuation_debits: u64,
-    continuation_absent: u64,
+    continuation_credits: Counter,
+    continuation_debits: Counter,
+    continuation_absent: Counter,
     /// The check-exemption count lets a gate see the exemption decide.
-    futility_nodes: u64,
-    futility_skipped: u64,
-    futility_kept_check: u64,
+    futility_nodes: Counter,
+    futility_skipped: Counter,
+    futility_kept_check: Counter,
     /// What this rule adds over the margin, which is asked first.
-    lmp_nodes: u64,
-    lmp_skipped: u64,
-    lmp_kept_check: u64,
+    lmp_nodes: Counter,
+    lmp_skipped: Counter,
+    lmp_kept_check: Counter,
     /// The refusal count lets a gate see the full-window refusal decide.
-    reverse_futility_cutoffs: u64,
-    reverse_futility_refused_window: u64,
-    probcut_attempts: u64,
-    probcut_searches: u64,
-    probcut_cutoffs: u64,
-    probcut_refused_window: u64,
-    iir_nodes: u64,
+    reverse_futility_cutoffs: Counter,
+    reverse_futility_refused_window: Counter,
+    probcut_attempts: Counter,
+    probcut_searches: Counter,
+    probcut_cutoffs: Counter,
+    probcut_refused_window: Counter,
+    iir_nodes: Counter,
     /// The first shows the in-check horizon is reached, without which the second proves nothing.
-    evasion_lists: u64,
-    evasion_lists_reordered: u64,
+    evasion_lists: Counter,
+    evasion_lists_reordered: Counter,
     /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
@@ -244,8 +245,8 @@ impl<'a> Search<'a> {
             conthist: ContinuationHistory::new(),
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
-            corrhist_updates: 0,
-            corrhist_applied: 0,
+            corrhist_updates: Counter::ZERO,
+            corrhist_applied: Counter::ZERO,
             root_depth: 0,
             evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
@@ -255,35 +256,35 @@ impl<'a> Search<'a> {
             calls: None,
             #[cfg(debug_assertions)]
             asked: None,
-            null_attempts: 0,
-            null_cutoffs: 0,
-            null_refused_material: 0,
-            lmr_reductions: 0,
-            lmr_researches: 0,
-            lmr_pv_lessened: 0,
-            lmr_cut_reduced_more: 0,
-            lmr_losing_captures: 0,
-            history_reduced_less: 0,
-            history_reduced_more: 0,
-            history_debits: 0,
-            continuation_credits: 0,
-            continuation_debits: 0,
-            continuation_absent: 0,
-            futility_nodes: 0,
-            futility_skipped: 0,
-            futility_kept_check: 0,
-            lmp_nodes: 0,
-            lmp_skipped: 0,
-            lmp_kept_check: 0,
-            reverse_futility_cutoffs: 0,
-            reverse_futility_refused_window: 0,
-            probcut_attempts: 0,
-            probcut_searches: 0,
-            probcut_cutoffs: 0,
-            probcut_refused_window: 0,
-            iir_nodes: 0,
-            evasion_lists: 0,
-            evasion_lists_reordered: 0,
+            null_attempts: Counter::ZERO,
+            null_cutoffs: Counter::ZERO,
+            null_refused_material: Counter::ZERO,
+            lmr_reductions: Counter::ZERO,
+            lmr_researches: Counter::ZERO,
+            lmr_pv_lessened: Counter::ZERO,
+            lmr_cut_reduced_more: Counter::ZERO,
+            lmr_losing_captures: Counter::ZERO,
+            history_reduced_less: Counter::ZERO,
+            history_reduced_more: Counter::ZERO,
+            history_debits: Counter::ZERO,
+            continuation_credits: Counter::ZERO,
+            continuation_debits: Counter::ZERO,
+            continuation_absent: Counter::ZERO,
+            futility_nodes: Counter::ZERO,
+            futility_skipped: Counter::ZERO,
+            futility_kept_check: Counter::ZERO,
+            lmp_nodes: Counter::ZERO,
+            lmp_skipped: Counter::ZERO,
+            lmp_kept_check: Counter::ZERO,
+            reverse_futility_cutoffs: Counter::ZERO,
+            reverse_futility_refused_window: Counter::ZERO,
+            probcut_attempts: Counter::ZERO,
+            probcut_searches: Counter::ZERO,
+            probcut_cutoffs: Counter::ZERO,
+            probcut_refused_window: Counter::ZERO,
+            iir_nodes: Counter::ZERO,
+            evasion_lists: Counter::ZERO,
+            evasion_lists_reordered: Counter::ZERO,
             iterations: Vec::new(),
             roots: Vec::new(),
             multipv: 1,
@@ -353,38 +354,38 @@ impl<'a> Search<'a> {
         self.conthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
-        self.null_attempts = 0;
-        self.null_cutoffs = 0;
-        self.null_refused_material = 0;
-        self.lmr_reductions = 0;
-        self.lmr_researches = 0;
-        self.lmr_pv_lessened = 0;
-        self.lmr_cut_reduced_more = 0;
-        self.lmr_losing_captures = 0;
-        self.history_reduced_less = 0;
-        self.history_reduced_more = 0;
-        self.history_debits = 0;
-        self.continuation_credits = 0;
-        self.continuation_debits = 0;
-        self.continuation_absent = 0;
+        self.null_attempts = Counter::ZERO;
+        self.null_cutoffs = Counter::ZERO;
+        self.null_refused_material = Counter::ZERO;
+        self.lmr_reductions = Counter::ZERO;
+        self.lmr_researches = Counter::ZERO;
+        self.lmr_pv_lessened = Counter::ZERO;
+        self.lmr_cut_reduced_more = Counter::ZERO;
+        self.lmr_losing_captures = Counter::ZERO;
+        self.history_reduced_less = Counter::ZERO;
+        self.history_reduced_more = Counter::ZERO;
+        self.history_debits = Counter::ZERO;
+        self.continuation_credits = Counter::ZERO;
+        self.continuation_debits = Counter::ZERO;
+        self.continuation_absent = Counter::ZERO;
         self.corrhist.clear();
-        self.corrhist_updates = 0;
-        self.corrhist_applied = 0;
-        self.futility_nodes = 0;
-        self.futility_skipped = 0;
-        self.futility_kept_check = 0;
-        self.lmp_nodes = 0;
-        self.lmp_skipped = 0;
-        self.lmp_kept_check = 0;
-        self.reverse_futility_cutoffs = 0;
-        self.reverse_futility_refused_window = 0;
-        self.probcut_attempts = 0;
-        self.probcut_searches = 0;
-        self.probcut_cutoffs = 0;
-        self.probcut_refused_window = 0;
-        self.iir_nodes = 0;
-        self.evasion_lists = 0;
-        self.evasion_lists_reordered = 0;
+        self.corrhist_updates = Counter::ZERO;
+        self.corrhist_applied = Counter::ZERO;
+        self.futility_nodes = Counter::ZERO;
+        self.futility_skipped = Counter::ZERO;
+        self.futility_kept_check = Counter::ZERO;
+        self.lmp_nodes = Counter::ZERO;
+        self.lmp_skipped = Counter::ZERO;
+        self.lmp_kept_check = Counter::ZERO;
+        self.reverse_futility_cutoffs = Counter::ZERO;
+        self.reverse_futility_refused_window = Counter::ZERO;
+        self.probcut_attempts = Counter::ZERO;
+        self.probcut_searches = Counter::ZERO;
+        self.probcut_cutoffs = Counter::ZERO;
+        self.probcut_refused_window = Counter::ZERO;
+        self.iir_nodes = Counter::ZERO;
+        self.evasion_lists = Counter::ZERO;
+        self.evasion_lists_reordered = Counter::ZERO;
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();

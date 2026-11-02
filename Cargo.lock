@@ -11,6 +11,7 @@ name = "cadence-engine"
 version = "0.5.22"
 dependencies = [
  "cadence-core",
+ "cadence-engine",
  "cadence-nnue",
 ]
 

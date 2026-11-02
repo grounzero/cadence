@@ -176,11 +176,12 @@ jobs:
           cargo fmt --all -- --check
           cargo fmt --manifest-path xtask/Cargo.toml -- --check
 
-      # xtask is excluded from the workspace, so --workspace does not reach
-      # it. It is linted on its own manifest or not at all.
+      # xtask is excluded from the workspace, so it is linted on its own manifest or not at all.
+      # Every test target turns the engine's counters on, so the build without them is linted alone.
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets --all-features $CONFIG_ARG -- -D warnings
+          cargo clippy --workspace $CONFIG_ARG -- -D warnings
           cargo clippy --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
 
       - name: check-headers, check-boundary and check-changelog
