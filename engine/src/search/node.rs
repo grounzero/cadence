@@ -10,8 +10,8 @@ use cadence_core::{
 #[cfg(debug_assertions)]
 use super::Call;
 use super::depth::{
-    child_depth, cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture,
-    move_history, null_reduction, pv_reduction, reduction,
+    child_depth, counted, cut_node_reduction, extension, granted, history_reduction, iir_reduction,
+    losing_capture, move_history, null_reduction, pv_reduction, reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -60,12 +60,13 @@ impl Search<'_> {
         beta: Score,
         kind: Expected,
     ) -> Score {
-        // So the extension cap reads this depth, not what the last iteration left, and no frame or
-        // flag is read from an earlier run.
+        // So the extension caps read this depth, not what the last iteration left, and no frame,
+        // flag or count is read from an earlier run.
         self.root_depth = depth;
         self.frames.fill(None);
         self.tt_pv.fill(false);
         self.follow_pv.fill(false);
+        self.extensions.fill(0);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
 
@@ -175,7 +176,7 @@ impl Search<'_> {
             self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
-            let ext = extension(gives_check, ply + 1, self.root_depth).cast_signed();
+            let ext = self.extend(gives_check, ply);
             let child = child_depth(depth, ext);
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
@@ -267,6 +268,16 @@ impl Search<'_> {
             self.moved[ply] = m;
         }
         board.make_move(m);
+    }
+
+    /// Every grant reads the line's headroom, and the child's count is written here, after the move
+    /// is made, so the first window, the reduced search and the re-search all read it.
+    pub(super) fn extend(&mut self, check: bool, ply: usize) -> i32 {
+        let taken = self.extensions[ply];
+        let asked = extension(check, ply + 1, self.root_depth).cast_signed();
+        let ext = granted(asked, taken, self.root_depth);
+        self.extensions[ply + 1] = counted(taken, ext);
+        ext
     }
 
     /// Read where the iteration's search left it: nothing writes a line while one runs. At `MultiPV`
@@ -443,9 +454,10 @@ impl Search<'_> {
         }
         self.null_attempts += 1;
         let reduced = depth.saturating_sub(1 + null_reduction(depth));
-        // No move, so the child reads none one ply up, and no line holds one.
+        // No move, so the child reads none one ply up, no line holds one, and nothing is extended.
         self.frames[ply] = None;
         self.follow_pv[ply + 1] = false;
+        self.extensions[ply + 1] = self.extensions[ply];
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = Move::NULL;
@@ -497,6 +509,8 @@ impl Search<'_> {
                 continue;
             }
             self.make(board, ply, m);
+            // A capture searched shallower is extended by nothing.
+            self.extensions[ply + 1] = self.extensions[ply];
             let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
             if score >= raised {
                 self.probcut_searches += 1;

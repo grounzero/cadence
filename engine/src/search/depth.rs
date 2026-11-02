@@ -8,8 +8,8 @@ use cadence_core::position::Board;
 
 use crate::{history, see};
 
-/// The cap bounds the pathological line, not the ordinary tree: at bench depths an extended line
-/// ends on depth, not ply.
+/// The backstop beside the count's cap at the root depth, which refuses a grant here first. At bench
+/// depths an extended line ends on depth, not ply.
 const EXTEND_WITHIN: usize = 2;
 
 /// `check` is the child's `in_check`, read after the move is made.
