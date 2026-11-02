@@ -173,8 +173,7 @@ impl Search<'_> {
                 continue;
             }
             searched.set(i);
-            // While the exchange is still the mover's to read.
-            let losing = losing_capture(board, m, i);
+            let losing = losing_capture(m, i, picker.lost());
             self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();

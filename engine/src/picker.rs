@@ -333,6 +333,10 @@ impl Picker {
             return None;
         }
         let m = moves[self.next];
+        self.lost = matches!(
+            slots[self.next].band,
+            Band::LosingPromotion | Band::LosingCapture
+        );
         let place = (m, self.next, self.quiets);
         self.next += 1;
         self.quiets += usize::from(!m.is_noisy());

@@ -4,9 +4,8 @@
 //! `pruning`, and [`iir_reduction`], which shortens the node itself, is the one exception.
 
 use cadence_core::Move;
-use cadence_core::position::Board;
 
-use crate::{history, see};
+use crate::history;
 
 /// The cap bounds the pathological line, not the ordinary tree: at bench depths an extended line
 /// ends on depth, not ply.
@@ -75,11 +74,11 @@ pub fn reduction(
     lmr_reduction(depth, index)
 }
 
-/// A capture whose exchange loses material, at an index the reduction reaches. The index is asked
-/// first, so the exchange is read only where the answer can matter.
+/// A capture whose exchange the picker read as losing, at an index the reduction reaches. The
+/// verdict is the picker's, so no exchange is read again here.
 #[must_use]
-pub fn losing_capture(board: &Board, m: Move, index: usize) -> bool {
-    index >= REDUCTION_INDEX && m.is_capture() && see::see(board, m) < 0
+pub fn losing_capture(m: Move, index: usize, lost: bool) -> bool {
+    index >= REDUCTION_INDEX && m.is_capture() && lost
 }
 
 /// None for a capture, which the quiet history does not score.
