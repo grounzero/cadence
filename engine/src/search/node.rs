@@ -138,14 +138,10 @@ impl Search<'_> {
         // depth.
         let depth = self.iir_depth(depth, pv, in_check, tt_move);
 
-        let mut legal = generate_legal(board);
-        if legal.is_empty() {
-            return if in_check { mated_in(ply) } else { DRAW };
-        }
-        // After the mate check: mate on the hundredth half-move is mate.
-        if board.halfmove_clock() >= 100 {
-            return DRAW;
-        }
+        let mut legal = match generate(board, in_check, ply) {
+            Ok(legal) => legal,
+            Err(score) => return score,
+        };
         // Before any move is made: the history row read here and per move below is the mover's.
         let us = board.side_to_move();
         let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
@@ -531,6 +527,19 @@ impl Searched {
     pub(super) fn contains(&self, index: usize) -> bool {
         self.0[index / 64] & (1 << (index % 64)) != 0
     }
+}
+
+/// The legal moves, or the node's score where none is searched. The draw on the hundredth half-move
+/// is asked after the mate check, since mate there is mate.
+fn generate(board: &Board, in_check: bool, ply: usize) -> Result<MoveList, Score> {
+    let legal = generate_legal(board);
+    if legal.is_empty() {
+        return Err(if in_check { mated_in(ply) } else { DRAW });
+    }
+    if board.halfmove_clock() >= 100 {
+        return Err(DRAW);
+    }
+    Ok(legal)
 }
 
 /// A cut at a stalemate overstates it only by returning more than a draw, since a lower bound at or
