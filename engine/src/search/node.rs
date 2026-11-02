@@ -1160,45 +1160,56 @@ mod tests {
         assert_eq!(search.singular_extensions, 1);
     }
 
-    /// The queen's capture, the table's move under `bound`, at a node of depth six at ply one under
-    /// a window no move reaches, so every move is searched; the calls one ply below it.
-    fn below_a_table_move(fen: &str, bound: Bound) -> (Vec<Call>, Move, u64) {
+    /// The queen's capture, the table's move under `bound`, at a node of `depth` at ply one under a
+    /// window no move reaches, so every move is searched; the calls one ply below it.
+    fn below_a_table_move(fen: &str, bound: Bound, depth: u32) -> (Vec<Call>, Move, u64) {
         let stop = AtomicBool::new(false);
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = searcher(&stop, &tt);
         let (mut board, capture) = position_and_move(fen, "e4d5");
-        tt.store(board.key(), capture, 500, 5, bound, false);
-        search.root_depth = 6;
-        let _ = search.negamax(&mut board, 6, 1, HIGH, HIGH + 1, Expected::Cut);
+        let stored = u8::try_from(depth - 1).expect("a small depth");
+        tt.store(board.key(), capture, 500, stored, bound, false);
+        search.root_depth = depth;
+        let _ = search.negamax(&mut board, depth, 1, HIGH, HIGH + 1, Expected::Cut);
         (at(&search, 2), capture, search.singular_tests)
     }
 
     /// Admitted, the capture is singular and its child keeps the node's depth while no other move
-    /// is extended; an upper bound admits nothing and the capture is searched a ply down.
+    /// is extended; an upper bound admits nothing and the capture is searched a ply down. At depth
+    /// six the verification is emptied by futility, at nine it searches moves.
     #[test]
     fn a_singular_table_move_is_searched_a_ply_deeper() {
-        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS, Bound::Lower);
-        assert_eq!(tests, 1);
-        let (table, others): (Vec<Call>, Vec<Call>) =
-            calls.into_iter().partition(|c| c.moved == capture);
-        assert_eq!(table.iter().map(|c| c.depth).collect::<Vec<_>>(), [6]);
-        assert!(others.len() > 3, "too few other moves");
-        assert!(others.iter().all(|c| c.depth <= 5), "{others:?}");
+        for depth in [6, 9] {
+            let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS, Bound::Lower, depth);
+            assert_eq!(tests, 1, "depth {depth}");
+            let (table, others): (Vec<Call>, Vec<Call>) =
+                calls.into_iter().partition(|c| c.moved == capture);
+            assert_eq!(table.iter().map(|c| c.depth).collect::<Vec<_>>(), [depth]);
+            let outer: Vec<&Call> = others.iter().filter(|c| c.verifying == 0).collect();
+            assert!(outer.len() > 3, "depth {depth}: too few other moves");
+            assert!(outer.iter().all(|c| c.depth < depth), "{outer:?}");
+            let verified = others.iter().filter(|c| c.verifying == 1).count();
+            assert_eq!(
+                verified > 0,
+                depth == 9,
+                "depth {depth}: {verified} moves verified"
+            );
 
-        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS, Bound::Upper);
-        assert_eq!(tests, 0);
-        let depths: Vec<u32> = calls
-            .iter()
-            .filter(|c| c.moved == capture)
-            .map(|c| c.depth)
-            .collect();
-        assert_eq!(depths, [5]);
+            let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS, Bound::Upper, depth);
+            assert_eq!(tests, 0);
+            let depths: Vec<u32> = calls
+                .iter()
+                .filter(|c| c.moved == capture)
+                .map(|c| c.depth)
+                .collect();
+            assert_eq!(depths, [depth - 1]);
+        }
     }
 
     /// The capture gives check as well as being singular, and takes one ply, not two.
     #[test]
     fn a_singular_table_move_that_checks_is_extended_once() {
-        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS_CHECKING, Bound::Lower);
+        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS_CHECKING, Bound::Lower, 6);
         assert_eq!(tests, 1);
         let depths: Vec<u32> = calls
             .iter()
@@ -1208,8 +1219,8 @@ mod tests {
         assert_eq!(depths, [6]);
     }
 
-    /// A stop inside the verification: the node returns the aborted value, stores nothing over the
-    /// entry that admitted it, and leaves no exclusion behind.
+    /// A stop at the verification's first move, deep enough that it searches one: the node returns
+    /// the aborted value, stores nothing over the entry that admitted it, and leaves no exclusion.
     #[test]
     fn a_stop_inside_the_verification_aborts_the_node() {
         let stop = AtomicBool::new(false);
@@ -1217,17 +1228,23 @@ mod tests {
         let mut search = searcher(&stop, &tt);
         let (mut board, capture) = position_and_move(QUEEN_HANGS, "e4d5");
         let key = board.key();
-        tt.store(key, capture, 500, 5, Bound::Lower, false);
+        tt.store(key, capture, 500, 8, Bound::Lower, false);
         let planted = tt.probe(key).expect("the planted entry");
         search.set_limits(Limits {
             nodes: Some(3),
             ..Limits::default()
         });
-        search.root_depth = 6;
-        let v = search.negamax(&mut board, 6, 1, HIGH, HIGH + 1, Expected::Cut);
+        search.root_depth = 9;
+        let v = search.negamax(&mut board, 9, 1, HIGH, HIGH + 1, Expected::Cut);
         assert_eq!(
             (v, search.aborted, search.singular_tests),
             (ABORTED, true, 1)
+        );
+        let last = search.calls().last().expect("a call");
+        assert_eq!(
+            (last.ply, last.verifying),
+            (2, 1),
+            "the stop fell outside it"
         );
         assert!(search.excluded.iter().all(|m| m.is_null()));
         assert_eq!(tt.probe(key), Some(planted));
