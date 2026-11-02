@@ -51,8 +51,6 @@ pub struct Call {
     pub kind: Expected,
     /// Whether the window it was given is open.
     pub open: bool,
-    /// Whether it is on the previous iteration's line.
-    pub follows: bool,
     /// The move into it: `Move::NULL` at the first ply recorded and below the null move.
     pub moved: Move,
 }
