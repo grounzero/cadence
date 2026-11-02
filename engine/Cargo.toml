@@ -15,10 +15,16 @@ path = "src/main.rs"
 default = []
 # Stub. Unimplemented; present so the tablebase feature name is reserved.
 syzygy  = []
+# The search's diagnostic counts, which only tests read; a release build keeps none of them.
+counters = []
 
 [dependencies]
 cadence-core = { path = "../core" }
 cadence-nnue = { path = "../nnue" }
+
+# Every test build turns the counts on, so no gate that reads one is skipped for a missing flag.
+[dev-dependencies]
+cadence-engine = { path = ".", features = ["counters"] }
 
 [lints]
 workspace = true

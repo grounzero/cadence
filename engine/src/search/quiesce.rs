@@ -46,9 +46,9 @@ impl Search<'_> {
             let generated_first = evasions.as_slice()[0];
             picker::sort_evasions(board, &mut evasions);
             // The head is what a cutoff here is bought with.
-            self.evasion_lists += 1;
+            self.evasion_lists.add_one();
             if evasions.as_slice()[0] != generated_first {
-                self.evasion_lists_reordered += 1;
+                self.evasion_lists_reordered.add_one();
             }
             (evasions, -INFINITE)
         } else {

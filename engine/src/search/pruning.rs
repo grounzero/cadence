@@ -161,10 +161,10 @@ impl Search<'_> {
             return false;
         }
         if board.gives_check(m) {
-            self.futility_kept_check += 1;
+            self.futility_kept_check.add_one();
             return false;
         }
-        self.futility_skipped += 1;
+        self.futility_skipped.add_one();
         true
     }
 
@@ -181,10 +181,10 @@ impl Search<'_> {
             return false;
         }
         if board.gives_check(m) {
-            self.lmp_kept_check += 1;
+            self.lmp_kept_check.add_one();
             return false;
         }
-        self.lmp_skipped += 1;
+        self.lmp_skipped.add_one();
         true
     }
 
@@ -201,10 +201,10 @@ impl Search<'_> {
             return None;
         }
         if beta != alpha + 1 {
-            self.reverse_futility_refused_window += 1;
+            self.reverse_futility_refused_window.add_one();
             return None;
         }
-        self.reverse_futility_cutoffs += 1;
+        self.reverse_futility_cutoffs.add_one();
         Some(bound)
     }
 }

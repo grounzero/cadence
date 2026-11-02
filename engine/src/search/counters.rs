@@ -15,166 +15,234 @@ use crate::history::{self, History};
 use crate::score::{self, Score};
 use crate::tt::Bound;
 
+/// A count only tests read, kept by the `counters` feature and compiled to nothing without it.
+/// Nothing on a decision path reads one, so a search is the same with the feature as without.
+#[derive(Clone, Copy)]
+pub(super) struct Counter {
+    #[cfg(feature = "counters")]
+    n: u64,
+}
+
+impl Counter {
+    pub(super) const ZERO: Counter = Counter {
+        #[cfg(feature = "counters")]
+        n: 0,
+    };
+
+    #[inline(always)]
+    pub(super) fn add_one(&mut self) {
+        self.add_if(true);
+    }
+
+    #[cfg(feature = "counters")]
+    #[inline(always)]
+    pub(super) fn add_if(&mut self, hit: bool) {
+        self.n += u64::from(hit);
+    }
+
+    #[cfg(not(feature = "counters"))]
+    #[inline(always)]
+    #[expect(
+        clippy::unused_self,
+        reason = "a build without the feature keeps nothing to count"
+    )]
+    pub(super) fn add_if(&mut self, _hit: bool) {}
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub(super) fn get(self) -> u64 {
+        self.n
+    }
+}
+
 impl Search<'_> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.nodes
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_attempts(&self) -> u64 {
-        self.null_attempts
+        self.null_attempts.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_cutoffs(&self) -> u64 {
-        self.null_cutoffs
+        self.null_cutoffs.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_refused_by_material(&self) -> u64 {
-        self.null_refused_material
+        self.null_refused_material.get()
     }
 
     /// Late moves first searched at reduced depth.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_reductions(&self) -> u64 {
-        self.lmr_reductions
+        self.lmr_reductions.get()
     }
 
     /// Reduced searches that beat alpha and were re-run at full depth.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_researches(&self) -> u64 {
-        self.lmr_researches
+        self.lmr_researches.get()
     }
 
     /// Late moves at PV nodes whose reduction the PV term lowered.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_pv_lessened(&self) -> u64 {
-        self.lmr_pv_lessened
+        self.lmr_pv_lessened.get()
     }
 
     /// Late moves at expected cut nodes whose reduction the cut-node term raised.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_cut_reduced_more(&self) -> u64 {
-        self.lmr_cut_reduced_more
+        self.lmr_cut_reduced_more.get()
     }
 
     /// Losing captures given a reduction before the PV term.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {
-        self.lmr_losing_captures
+        self.lmr_losing_captures.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
-        self.history_reduced_less
+        self.history_reduced_less.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_reduced_more(&self) -> u64 {
-        self.history_reduced_more
+        self.history_reduced_more.get()
     }
 
     /// Quiet moves the cutoffs debited.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_debits(&self) -> u64 {
-        self.history_debits
+        self.history_debits.get()
     }
 
     /// Nodes the margin admitted; its siblings count the quiet moves skipped there and the skips
     /// refused for giving check.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_nodes(&self) -> u64 {
-        self.futility_nodes
+        self.futility_nodes.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_skipped(&self) -> u64 {
-        self.futility_skipped
+        self.futility_skipped.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_kept_check(&self) -> u64 {
-        self.futility_kept_check
+        self.futility_kept_check.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
-        self.lmp_nodes
+        self.lmp_nodes.get()
     }
 
     /// Observations folded into the correction table, and nodes that read a non-zero correction
     /// back.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn corrhist_updates(&self) -> u64 {
-        self.corrhist_updates
+        self.corrhist_updates.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn corrhist_applied(&self) -> u64 {
-        self.corrhist_applied
+        self.corrhist_applied.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_skipped(&self) -> u64 {
-        self.lmp_skipped
+        self.lmp_skipped.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_kept_check(&self) -> u64 {
-        self.lmp_kept_check
+        self.lmp_kept_check.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn reverse_futility_cutoffs(&self) -> u64 {
-        self.reverse_futility_cutoffs
+        self.reverse_futility_cutoffs.get()
     }
 
     /// Nodes the margin would have returned but for the full window.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn reverse_futility_refused_by_window(&self) -> u64 {
-        self.reverse_futility_refused_window
+        self.reverse_futility_refused_window.get()
     }
 
     /// Nodes that ran the capture probe, captures it searched at reduced depth, and those that cut
     /// the node.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_attempts(&self) -> u64 {
-        self.probcut_attempts
+        self.probcut_attempts.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_searches(&self) -> u64 {
-        self.probcut_searches
+        self.probcut_searches.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_cutoffs(&self) -> u64 {
-        self.probcut_cutoffs
+        self.probcut_cutoffs.get()
     }
 
     /// Probes refused for the full window.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_refused_by_window(&self) -> u64 {
-        self.probcut_refused_window
+        self.probcut_refused_window.get()
     }
 
     /// Nodes searched shallower because their table probe named no move.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn iir_nodes(&self) -> u64 {
-        self.iir_nodes
+        self.iir_nodes.get()
     }
 
     /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_lists(&self) -> u64 {
-        self.evasion_lists
+        self.evasion_lists.get()
     }
 
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_lists_reordered(&self) -> u64 {
-        self.evasion_lists_reordered
+        self.evasion_lists_reordered.get()
     }
 
     #[must_use]
@@ -188,21 +256,24 @@ impl Search<'_> {
     }
 
     /// Continuation entries the cutoffs credited.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_credits(&self) -> u64 {
-        self.continuation_credits
+        self.continuation_credits.get()
     }
 
     /// Continuation entries the cutoffs debited.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_debits(&self) -> u64 {
-        self.continuation_debits
+        self.continuation_debits.get()
     }
 
     /// Offsets a node found no frame for, above the root or below a null move.
+    #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_absent(&self) -> u64 {
-        self.continuation_absent
+        self.continuation_absent.get()
     }
 
     /// Elapsed milliseconds at the end of each completed iteration.
@@ -279,7 +350,7 @@ impl Search<'_> {
             return None;
         }
         let correction = self.corrhist.correction(pawn_key, side);
-        self.corrhist_applied += u64::from(correction != 0);
+        self.corrhist_applied.add_if(correction != 0);
         Some(eval::evaluate(board) + correction)
     }
 
@@ -309,7 +380,7 @@ impl Search<'_> {
         };
         if usable {
             self.corrhist.update(pawn_key, side, best - eval, depth);
-            self.corrhist_updates += 1;
+            self.corrhist_updates.add_one();
         }
     }
 
@@ -336,18 +407,18 @@ impl Search<'_> {
         let cut_to = conthist::piece_to(board, cut);
         for &context in contexts.iter().flatten() {
             self.conthist.update(context, cut_to, bonus);
-            self.continuation_credits += 1;
+            self.continuation_credits.add_one();
         }
         for (i, &beaten) in passed.iter().enumerate() {
             if beaten.is_noisy() || !searched.contains(i) {
                 continue;
             }
-            self.history_debits += 1;
+            self.history_debits.add_one();
             self.history.update(us, beaten, -bonus);
             let beaten_to = conthist::piece_to(board, beaten);
             for &context in contexts.iter().flatten() {
                 self.conthist.update(context, beaten_to, -bonus);
-                self.continuation_debits += 1;
+                self.continuation_debits.add_one();
             }
         }
     }
