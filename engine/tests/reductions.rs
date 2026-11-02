@@ -15,6 +15,7 @@ use cadence_engine::search::{
     Limits, REDUCTION_INDEX, cut_node_reduction, history_reduction, lmr_reduction, losing_capture,
     move_history, pv_reduction, reduction,
 };
+use cadence_engine::see::see;
 use support::table;
 
 /// Deep enough that the history-ordered sort still misjudges some late quiet moves: at eight the
@@ -254,9 +255,15 @@ fn capture(case: (&str, &str)) -> (Board, Move) {
 fn a_capture_is_losing_by_its_exchange_and_its_index() {
     for (case, losing) in [(LOSING, true), (WINNING, false), (LEVEL, false)] {
         let (b, m) = capture(case);
-        assert_eq!(losing_capture(&b, m, REDUCTION_INDEX), losing, "{}", case.1);
+        let lost = see(&b, m) < 0;
+        assert_eq!(
+            losing_capture(m, REDUCTION_INDEX, lost),
+            losing,
+            "{}",
+            case.1
+        );
         assert!(
-            !losing_capture(&b, m, REDUCTION_INDEX - 1),
+            !losing_capture(m, REDUCTION_INDEX - 1, lost),
             "{} early",
             case.1
         );
@@ -266,7 +273,10 @@ fn a_capture_is_losing_by_its_exchange_and_its_index() {
         .iter()
         .find(|m| !m.is_noisy())
         .expect("a quiet move");
-    assert!(!losing_capture(&b, quiet, REDUCTION_INDEX), "a quiet move");
+    assert!(
+        !losing_capture(quiet, REDUCTION_INDEX, true),
+        "a quiet move"
+    );
 }
 
 /// One ply wherever a quiet move at the same depth and index would be reduced at all.

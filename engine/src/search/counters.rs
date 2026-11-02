@@ -31,13 +31,18 @@ impl Counter {
 
     #[inline(always)]
     pub(super) fn add_one(&mut self) {
-        self.add_if(true);
+        self.add(1);
+    }
+
+    #[inline(always)]
+    pub(super) fn add_if(&mut self, hit: bool) {
+        self.add(u64::from(hit));
     }
 
     #[cfg(feature = "counters")]
     #[inline(always)]
-    pub(super) fn add_if(&mut self, hit: bool) {
-        self.n += u64::from(hit);
+    pub(super) fn add(&mut self, by: u64) {
+        self.n += by;
     }
 
     #[cfg(not(feature = "counters"))]
@@ -46,7 +51,7 @@ impl Counter {
         clippy::unused_self,
         reason = "a build without the feature keeps nothing to count"
     )]
-    pub(super) fn add_if(&mut self, _hit: bool) {}
+    pub(super) fn add(&mut self, _by: u64) {}
 
     #[cfg(feature = "counters")]
     #[must_use]
@@ -243,6 +248,24 @@ impl Search<'_> {
     #[must_use]
     pub fn evasion_lists_reordered(&self) -> u64 {
         self.evasion_lists_reordered.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn probcut_exchanges(&self) -> u64 {
+        self.probcut_exchanges.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn quiescence_exchanges(&self) -> u64 {
+        self.quiescence_exchanges.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn evasion_exchanges(&self) -> u64 {
+        self.evasion_exchanges.get()
     }
 
     #[must_use]

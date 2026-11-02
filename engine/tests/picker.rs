@@ -13,9 +13,9 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, Move, MoveList, generate_legal};
 use cadence_engine::conthist::PIECE_TO;
 use cadence_engine::history::SPAN;
-use cadence_engine::picker::{Picker, Slot, Tables, noisy_key, sort_from};
+use cadence_engine::picker::{self, Picker, Slot, Tables, noisy_key, sort_from};
 use cadence_engine::search::{Limits, order_first};
-use cadence_engine::see::see;
+use cadence_engine::see::{self, see};
 use cadence_engine::tt::{self, Table};
 
 fn board(fen: &str) -> Board {
@@ -299,6 +299,52 @@ fn see_is_computed_only_for_noisy_candidates_examined_in_rank_order() {
     assert!(
         tested > 500,
         "only {tested} lists with two noisy moves to choose between"
+    );
+}
+
+/// Each move's verdict is its exchange read below zero for a noisy move past the table's, and false
+/// for the table's move, which is yielded unread, and for every quiet move.
+#[test]
+fn the_picker_says_which_moves_it_yields_from_a_losing_band() {
+    let history = searched_history();
+    let mut losing = 0;
+    let nodes = each_node(
+        &butterfly(&history),
+        |fen, b, mut list, start, killers, side| {
+            let mut slots = fresh();
+            let mut picker = Picker::new(b, &mut list, start, killers, side, &mut slots);
+            while let Some((m, i, _)) = picker.next(b, &mut list, &mut slots) {
+                let want = i >= start && m.is_noisy() && see(b, m) < 0;
+                assert_eq!(picker.lost(), want, "{fen}: {m:?} at {i}, start {start}");
+                losing += usize::from(want);
+            }
+        },
+    );
+    assert!(nodes > 4_000, "only {nodes} nodes checked");
+    assert!(losing > 1_000, "only {losing} losing verdicts asked");
+}
+
+/// Every exchange a search reads is one the picker, `ProbCut`, the quiescence search or the evasion
+/// sort counts where it reads it, so the main search's loop reads none of its own.
+#[test]
+fn a_search_reads_each_exchange_where_it_is_counted() {
+    const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
+    let tt = Table::new(tt::DEFAULT_HASH_MB).expect("a default-sized transposition table");
+    let stop = AtomicBool::new(false);
+    let mut s = support::search(Limits::depth(8), &stop, &tt);
+    let mut b = support::position(MIDDLEGAME);
+    let (all, picked) = (see::reads(), picker::exchanges_read());
+    let _ = s.node(&mut b, 8, 0);
+    let (all, picked) = (see::reads() - all, picker::exchanges_read() - picked);
+    let others = s.probcut_exchanges() + s.quiescence_exchanges() + s.evasion_exchanges();
+    assert!(
+        picked > 0 && s.quiescence_exchanges() > 0,
+        "the search read too few to account for"
+    );
+    assert_eq!(
+        all,
+        picked + others,
+        "{picked} picked and {others} elsewhere"
     );
 }
 

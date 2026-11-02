@@ -3,6 +3,9 @@
 //! Each side either stops or captures with its least valuable legal piece, a pawn reaching the last
 //! rank promoting to a queen.
 
+#[cfg(feature = "counters")]
+use std::cell::Cell;
+
 use cadence_core::attacks;
 use cadence_core::position::Board;
 use cadence_core::types::Rank;
@@ -39,6 +42,19 @@ const RECAPTURERS: [PieceType; 5] = [
     PieceType::Queen,
 ];
 
+#[cfg(feature = "counters")]
+thread_local! {
+    static READS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Every exchange read on this thread, which a gate holds to the counts of the places that read
+/// one; only the `counters` feature keeps it.
+#[cfg(feature = "counters")]
+#[must_use]
+pub fn reads() -> u64 {
+    READS.with(Cell::get)
+}
+
 /// Positive when the side to move comes out ahead, zero for a castle.
 ///
 /// # Panics
@@ -46,6 +62,8 @@ const RECAPTURERS: [PieceType; 5] = [
 /// If `m.from_sq()` is empty.
 #[must_use]
 pub fn see(board: &Board, m: Move) -> i32 {
+    #[cfg(feature = "counters")]
+    READS.with(|r| r.set(r.get() + 1));
     if m.is_castle() {
         return 0;
     }

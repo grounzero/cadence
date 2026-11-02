@@ -265,6 +265,8 @@ pub struct Picker {
     losing: usize,
     quiets: usize,
     exchanges: u32,
+    /// Whether the move last yielded had its exchange read as losing.
+    lost: bool,
     killers: [Move; 2],
     stage: Stage,
 }
@@ -312,6 +314,7 @@ impl Picker {
             losing: moves.len(),
             quiets: 0,
             exchanges: 0,
+            lost: false,
             killers,
             stage: Stage::Head,
         }
@@ -330,6 +333,10 @@ impl Picker {
             return None;
         }
         let m = moves[self.next];
+        self.lost = matches!(
+            slots[self.next].band,
+            Band::LosingPromotion | Band::LosingCapture
+        );
         let place = (m, self.next, self.quiets);
         self.next += 1;
         self.quiets += usize::from(!m.is_noisy());
@@ -340,6 +347,12 @@ impl Picker {
     #[must_use]
     pub fn exchanges(&self) -> u32 {
         self.exchanges
+    }
+
+    /// Whether the move `next` last yielded came from a losing band, its exchange read below zero.
+    #[must_use]
+    pub fn lost(&self) -> bool {
+        self.lost
     }
 
     /// Puts the next move at `next`, or says there is none. SEE is computed only for noisy
@@ -357,6 +370,8 @@ impl Picker {
                         continue;
                     }
                     self.exchanges += 1;
+                    #[cfg(feature = "counters")]
+                    READS.with(|r| r.set(r.get() + 1));
                     if see::see(board, moves[u]) >= 0 {
                         bring(moves, slots, self.next, u);
                         return true;
@@ -403,6 +418,19 @@ impl Picker {
             }
         }
     }
+}
+
+#[cfg(feature = "counters")]
+thread_local! {
+    static READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Exchanges every main-search picker on this thread has read, which a gate holds beside the
+/// exchange's own count; only the `counters` feature keeps it.
+#[cfg(feature = "counters")]
+#[must_use]
+pub fn exchanges_read() -> u64 {
+    READS.with(std::cell::Cell::get)
 }
 
 /// The greater key first, and the earlier generated among equals.

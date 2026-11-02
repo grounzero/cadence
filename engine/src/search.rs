@@ -193,6 +193,11 @@ pub struct Search<'a> {
     /// The first shows the in-check horizon is reached, without which the second proves nothing.
     evasion_lists: Counter,
     evasion_lists_reordered: Counter,
+    /// With the picker's own count, one for each place an exchange is read, so a gate can account
+    /// for every read.
+    probcut_exchanges: Counter,
+    quiescence_exchanges: Counter,
+    evasion_exchanges: Counter,
     /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
@@ -285,6 +290,9 @@ impl<'a> Search<'a> {
             iir_nodes: Counter::ZERO,
             evasion_lists: Counter::ZERO,
             evasion_lists_reordered: Counter::ZERO,
+            probcut_exchanges: Counter::ZERO,
+            quiescence_exchanges: Counter::ZERO,
+            evasion_exchanges: Counter::ZERO,
             iterations: Vec::new(),
             roots: Vec::new(),
             multipv: 1,
@@ -386,6 +394,9 @@ impl<'a> Search<'a> {
         self.iir_nodes = Counter::ZERO;
         self.evasion_lists = Counter::ZERO;
         self.evasion_lists_reordered = Counter::ZERO;
+        self.probcut_exchanges = Counter::ZERO;
+        self.quiescence_exchanges = Counter::ZERO;
+        self.evasion_exchanges = Counter::ZERO;
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();
