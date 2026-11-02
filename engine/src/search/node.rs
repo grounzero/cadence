@@ -483,6 +483,7 @@ impl Search<'_> {
         picker::sort_noisy(board, &mut noisy);
         let child = depth.saturating_sub(PROBCUT_REDUCTION);
         for m in noisy.iter() {
+            self.probcut_exchanges.add_one();
             if see::see(board, m) < raised - eval {
                 continue;
             }
