@@ -78,7 +78,7 @@ impl Search<'_> {
         for m in moves.iter() {
             self.quiescence_exchanges.add_if(!in_check);
             // Out of check only: in check every move answers the check.
-            if !in_check && see::see(board, m) < 0 {
+            if !in_check && !see::see_ge(board, m, 0) {
                 continue;
             }
             board.make_move(m);

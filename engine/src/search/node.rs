@@ -483,7 +483,7 @@ impl Search<'_> {
         let child = depth.saturating_sub(PROBCUT_REDUCTION);
         for m in noisy.iter() {
             self.probcut_exchanges.add_one();
-            if see::see(board, m) < raised - eval {
+            if !see::see_ge(board, m, raised - eval) {
                 continue;
             }
             self.make(board, ply, m);

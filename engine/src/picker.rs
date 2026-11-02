@@ -102,7 +102,7 @@ enum Losing {
 fn move_key(board: &Board, m: Move, killers: [Move; 2], losing: Losing, history: &[i32]) -> i32 {
     if m.is_noisy() {
         let key = noisy_key(board, m);
-        if matches!(losing, Losing::Kept) || see::see(board, m) >= 0 {
+        if matches!(losing, Losing::Kept) || see::see_ge(board, m, 0) {
             key * BAND
         } else {
             (key - LOSING) * BAND
@@ -372,7 +372,7 @@ impl Picker {
                     self.exchanges += 1;
                     #[cfg(feature = "counters")]
                     READS.with(|r| r.set(r.get() + 1));
-                    if see::see(board, moves[u]) >= 0 {
+                    if see::see_ge(board, moves[u], 0) {
                         bring(moves, slots, self.next, u);
                         return true;
                     }
