@@ -107,7 +107,7 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, cutoff, hit_pv, _) = self.probe(board, key, depth, ply, alpha, beta);
+        let (tt_move, cutoff, hit_pv, hit) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return score;
         }
@@ -145,6 +145,12 @@ impl Search<'_> {
             Ok(legal) => legal,
             Err(score) => return score,
         };
+        // After generation, so the list holds the table's move, and before the sort, whose row at
+        // this ply the verification's own picker takes first.
+        let singular = self.singular_verdict(board, &legal, hit, depth, ply, kind, pv);
+        if self.aborted {
+            return ABORTED;
+        }
         // Before any move is made: the history row read here and per move below is the mover's.
         let us = board.side_to_move();
         let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
@@ -176,7 +182,7 @@ impl Search<'_> {
             self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
-            let ext = self.extend(gives_check, false, ply);
+            let ext = self.extend(gives_check, singular && m == tt_move, ply);
             let child = child_depth(depth, ext);
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
@@ -428,6 +434,7 @@ impl Search<'_> {
                     follows,
                     moved,
                     extensions,
+                    verifying: self.verifying,
                 });
             }
         }

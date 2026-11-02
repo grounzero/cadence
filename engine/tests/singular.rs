@@ -17,14 +17,14 @@ use cadence_engine::search::{
 use cadence_engine::tt::{Bound, Hit};
 use support::table;
 
-fn hit(mv: Move, score: i16, depth: u8, bound: Bound) -> Option<Hit> {
-    Some(Hit {
+fn hit(mv: Move, score: i16, depth: u8, bound: Bound) -> Hit {
+    Hit {
         mv,
         score,
         depth,
         bound,
         pv: false,
-    })
+    }
 }
 
 /// Every refusal, each alone against an entry that is admitted, including the root; a lower bound
@@ -38,7 +38,7 @@ fn admission_refuses_each_condition_alone() {
     let s_beta = singular_beta(100, d);
     for bound in [Bound::Lower, Bound::Exact] {
         assert_eq!(
-            singular_admission(hit(m, 100, near, bound), true, d, 1),
+            singular_admission(Some(hit(m, 100, near, bound)), true, d, 1),
             Some(s_beta)
         );
     }
@@ -46,43 +46,54 @@ fn admission_refuses_each_condition_alone() {
         ("no entry", None, true, d, 1),
         (
             "no move",
-            hit(Move::NULL, 100, near, Bound::Lower),
+            Some(hit(Move::NULL, 100, near, Bound::Lower)),
             true,
             d,
             1,
         ),
         (
             "a move not listed",
-            hit(m, 100, near, Bound::Lower),
+            Some(hit(m, 100, near, Bound::Lower)),
             false,
             d,
             1,
         ),
         (
             "an upper bound",
-            hit(m, 100, near, Bound::Upper),
+            Some(hit(m, 100, near, Bound::Upper)),
             true,
             d,
             1,
         ),
         (
             "four plies short",
-            hit(m, 100, near - 1, Bound::Lower),
+            Some(hit(m, 100, near - 1, Bound::Lower)),
             true,
             d,
             1,
         ),
         (
             "too shallow",
-            hit(m, 100, near, Bound::Lower),
+            Some(hit(m, 100, near, Bound::Lower)),
             true,
             SINGULAR_DEPTH - 1,
             1,
         ),
-        ("the root", hit(m, 100, near, Bound::Lower), true, d, 0),
+        (
+            "the root",
+            Some(hit(m, 100, near, Bound::Lower)),
+            true,
+            d,
+            0,
+        ),
         (
             "a mate score",
-            hit(m, score::to_tt(score::mate_in(5), 1), near, Bound::Lower),
+            Some(hit(
+                m,
+                score::to_tt(score::mate_in(5), 1),
+                near,
+                Bound::Lower,
+            )),
             true,
             d,
             1,
@@ -96,7 +107,7 @@ fn admission_refuses_each_condition_alone() {
     let stored = score::to_tt(edge, 1);
     assert!(!score::is_mate(edge) && score::is_mate(singular_beta(edge, d)));
     assert_eq!(
-        singular_admission(hit(m, stored, near, Bound::Lower), true, d, 1),
+        singular_admission(Some(hit(m, stored, near, Bound::Lower)), true, d, 1),
         None
     );
 }

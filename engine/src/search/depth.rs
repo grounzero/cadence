@@ -47,8 +47,7 @@ pub fn child_depth(depth: u32, ext: i32) -> u32 {
 }
 
 /// The shallowest node that asks whether its table's move is singular. Chosen with the margin by a
-/// cost reading: the most extension plies per node among the members whose verifications cost under a
-/// tenth of the tree.
+/// cost reading: the most extension plies per node where the verifications cost under a tenth.
 pub const SINGULAR_DEPTH: u32 = 6;
 
 /// Centipawns a ply below the stored score at which another move counts as holding it.
