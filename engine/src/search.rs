@@ -8,6 +8,7 @@ use cadence_core::{MAX_MOVES, MAX_PLY, Move, MoveList};
 
 use crate::conthist::{ContinuationHistory, Frame};
 use crate::corrhist::CorrectionHistory;
+use crate::eval::PawnCache;
 use crate::history::History;
 use crate::picker::Slot;
 use crate::score::{ABORTED, Score};
@@ -136,6 +137,8 @@ pub struct Search<'a> {
     /// The move made at each ply of the current path, which the continuation history reads back.
     frames: [Frame; MAX_PLY],
     corrhist: CorrectionHistory,
+    /// Kept across runs, which its verification makes safe: a stale entry can only miss.
+    pawns: PawnCache,
     /// Read on no decision path.
     corrhist_updates: Counter,
     corrhist_applied: Counter,
@@ -250,6 +253,7 @@ impl<'a> Search<'a> {
             conthist: ContinuationHistory::new(),
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
+            pawns: PawnCache::new(),
             corrhist_updates: Counter::ZERO,
             corrhist_applied: Counter::ZERO,
             root_depth: 0,

@@ -29,7 +29,7 @@ impl Search<'_> {
             return DRAW;
         }
         if ply >= MAX_PLY {
-            return eval::evaluate(board);
+            return eval::evaluate_cached(board, &mut self.pawns);
         }
 
         let in_check = board.in_check();
@@ -58,7 +58,7 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            let stand_pat = eval::evaluate(board);
+            let stand_pat = eval::evaluate_cached(board, &mut self.pawns);
             if stand_pat >= beta {
                 // A stand-pat cut on a stalemate would score it as the evaluation.
                 return if has_legal_move(board) { beta } else { DRAW };
