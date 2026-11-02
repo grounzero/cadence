@@ -98,7 +98,7 @@ impl Search<'_> {
         // Above the sort, where the first read past the arrays would be; release has only a bounds
         // check.
         if ply >= MAX_PLY {
-            return eval::evaluate(board);
+            return eval::evaluate_cached(board, &mut self.pawns);
         }
 
         // Before generation: that saving is most of what the table is for.

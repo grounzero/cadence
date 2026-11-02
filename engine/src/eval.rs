@@ -4,7 +4,7 @@
 //! Black, so a position and its mirror differ only in sign.
 
 use cadence_core::position::Board;
-use cadence_core::{Bitboard, Colour, PieceType, Square, attacks};
+use cadence_core::{Bitboard, Colour, FenStyle, PieceType, Square, attacks};
 
 use crate::score::{MAX_EVAL, Score};
 
@@ -238,9 +238,9 @@ impl Sink for Trace {
     }
 }
 
-/// Returns the phase.
+/// Returns the phase. `pawns` adds both sides' pawn structure, walked or read from a cache.
 #[inline(always)]
-fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
+fn terms<S: Sink>(board: &Board, sink: &mut S, pawns: impl FnOnce(&mut S)) -> i32 {
     let mut phase = 0;
     for pt in PieceType::ALL {
         let i = pt.index();
@@ -255,8 +255,7 @@ fn terms<S: Sink>(board: &Board, sink: &mut S) -> i32 {
             phase += PHASE_WEIGHT[i];
         }
     }
-    pawn_structure(board, Colour::White, 1, sink);
-    pawn_structure(board, Colour::Black, -1, sink);
+    pawns(sink);
     piece_terms(board, Colour::White, 1, sink);
     piece_terms(board, Colour::Black, -1, sink);
     shield(board, Colour::White, 1, sink);
@@ -305,6 +304,13 @@ const ADJACENT_FILES: [Bitboard; 8] = {
     }
     out
 };
+
+/// Reads the two pawn sets and nothing else, which is what lets [`PawnCache`] hold it.
+#[inline(always)]
+fn pawn_terms<S: Sink>(board: &Board, sink: &mut S) {
+    pawn_structure(board, Colour::White, 1, sink);
+    pawn_structure(board, Colour::Black, -1, sink);
+}
 
 /// `sign` is one for White, minus one for Black.
 #[inline(always)]
@@ -432,7 +438,32 @@ fn shield<S: Sink>(board: &Board, colour: Colour, sign: i32, sink: &mut S) {
 #[must_use]
 pub fn evaluate(board: &Board) -> Score {
     let mut sum = Sum { mg: 0, eg: 0 };
-    let phase = terms(board, &mut sum);
+    let phase = terms(board, &mut sum, |s| pawn_terms(board, s));
+    blend(board, &sum, phase)
+}
+
+/// [`evaluate`], with the pawn structure's sums taken from `cache` wherever it holds them. A debug
+/// build checks every value against the walk, so any search a test runs is an equivalence gate.
+#[must_use]
+pub fn evaluate_cached(board: &Board, cache: &mut PawnCache) -> Score {
+    let mut sum = Sum { mg: 0, eg: 0 };
+    let phase = terms(board, &mut sum, |s| {
+        let (mg, eg) = cache.sums(board);
+        s.mg += mg;
+        s.eg += eg;
+    });
+    let score = blend(board, &sum, phase);
+    debug_assert_eq!(
+        score,
+        evaluate(board),
+        "{}",
+        board.to_fen(FenStyle::Shredder)
+    );
+    score
+}
+
+#[inline(always)]
+fn blend(board: &Board, sum: &Sum, phase: i32) -> Score {
     // Truncating division: symmetric under negation, so the mirror of a position evaluates to
     // the exact negative.
     let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
@@ -451,8 +482,98 @@ pub fn trace(board: &Board) -> Trace {
         coefficients: [0; WEIGHT_COUNT],
         phase: 0,
     };
-    t.phase = terms(board, &mut t);
+    t.phase = terms(board, &mut t, |s| pawn_terms(board, s));
     t
+}
+
+/// A power of two, so the pawn key's low bits are the index; 96 KiB.
+pub const PAWN_CACHE_ENTRIES: usize = 4096;
+
+/// An empty entry holds no pawns and sums of zero, which is the true value of a pawnless position.
+#[derive(Clone, Copy)]
+struct PawnEntry {
+    white: u64,
+    black: u64,
+    mg: i32,
+    eg: i32,
+}
+
+/// Indexed by the pawn key and verified by both pawn sets, so a key collision costs a miss and
+/// never a value. One per `Search`, so one per thread, and empty with each.
+pub struct PawnCache {
+    entries: Box<[PawnEntry; PAWN_CACHE_ENTRIES]>,
+    #[cfg(feature = "counters")]
+    probes: u64,
+    #[cfg(feature = "counters")]
+    hits: u64,
+}
+
+impl PawnCache {
+    const EMPTY: PawnEntry = PawnEntry {
+        white: 0,
+        black: 0,
+        mg: 0,
+        eg: 0,
+    };
+
+    #[must_use]
+    pub fn new() -> PawnCache {
+        let entries = vec![Self::EMPTY; PAWN_CACHE_ENTRIES].into_boxed_slice();
+        PawnCache {
+            entries: entries.try_into().unwrap_or_else(|_| unreachable!()),
+            #[cfg(feature = "counters")]
+            probes: 0,
+            #[cfg(feature = "counters")]
+            hits: 0,
+        }
+    }
+
+    /// The midgame and endgame sums of both sides' pawn structure, from White's point of view.
+    #[inline(always)]
+    fn sums(&mut self, board: &Board) -> (i32, i32) {
+        let white = board.pieces(Colour::White, PieceType::Pawn).0;
+        let black = board.pieces(Colour::Black, PieceType::Pawn).0;
+        #[cfg(feature = "counters")]
+        {
+            self.probes += 1;
+        }
+        let entry = &mut self.entries[board.pawn_key() as usize % PAWN_CACHE_ENTRIES];
+        if entry.white == white && entry.black == black {
+            #[cfg(feature = "counters")]
+            {
+                self.hits += 1;
+            }
+            return (entry.mg, entry.eg);
+        }
+        let mut sum = Sum { mg: 0, eg: 0 };
+        pawn_terms(board, &mut sum);
+        *entry = PawnEntry {
+            white,
+            black,
+            mg: sum.mg,
+            eg: sum.eg,
+        };
+        (sum.mg, sum.eg)
+    }
+
+    /// Lookups since the cache was built, kept only by the `counters` feature.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn probes(&self) -> u64 {
+        self.probes
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+}
+
+impl Default for PawnCache {
+    fn default() -> PawnCache {
+        PawnCache::new()
+    }
 }
 
 /// From the owner's point of view. For inspection and tests; the evaluation reads [`WEIGHTS`]
@@ -465,4 +586,36 @@ pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
     };
     let w = WEIGHTS[PST + 64 * pt.index() + s];
     (w.mg, w.eg)
+}
+
+#[cfg(test)]
+mod tests {
+    use cadence_core::position::Board;
+    use cadence_core::{Colour, PieceType};
+
+    use super::{PAWN_CACHE_ENTRIES, PawnCache, PawnEntry, evaluate, evaluate_cached};
+
+    /// Each plant matches one side's pawns at the position's own index, with sums no structure
+    /// has, so a lookup that checked one set or the key alone would take them.
+    #[test]
+    fn a_planted_entry_at_the_positions_index_is_missed_and_replaced() {
+        let board = Board::from_fen("4k3/pp3ppp/8/8/8/8/PPP2PPP/4K3 w - - 0 1").unwrap();
+        let white = board.pieces(Colour::White, PieceType::Pawn).0;
+        let black = board.pieces(Colour::Black, PieceType::Pawn).0;
+        let index = board.pawn_key() as usize % PAWN_CACHE_ENTRIES;
+        let mut cache = PawnCache::new();
+        for (w, b) in [(white, black ^ 1 << 47), (white ^ 1 << 16, black)] {
+            cache.entries[index] = PawnEntry {
+                white: w,
+                black: b,
+                mg: 10_000,
+                eg: -10_000,
+            };
+            assert_eq!(evaluate_cached(&board, &mut cache), evaluate(&board));
+            let entry = cache.entries[index];
+            assert_eq!((entry.white, entry.black), (white, black), "not replaced");
+            assert_eq!(evaluate_cached(&board, &mut cache), evaluate(&board));
+        }
+        assert_eq!((cache.probes(), cache.hits()), (4, 2));
+    }
 }

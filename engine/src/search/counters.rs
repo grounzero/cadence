@@ -268,6 +268,19 @@ impl Search<'_> {
         self.evasion_exchanges.get()
     }
 
+    /// Since the `Search` was built, not since the run: the cache is kept across runs.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn pawn_cache_probes(&self) -> u64 {
+        self.pawns.probes()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn pawn_cache_hits(&self) -> u64 {
+        self.pawns.hits()
+    }
+
     #[must_use]
     pub fn history(&self) -> &History {
         &self.history
@@ -374,7 +387,7 @@ impl Search<'_> {
         }
         let correction = self.corrhist.correction(pawn_key, side);
         self.corrhist_applied.add_if(correction != 0);
-        Some(eval::evaluate(board) + correction)
+        Some(eval::evaluate_cached(board, &mut self.pawns) + correction)
     }
 
     /// Disqualified: no static reading, a mate score, a noisy or absent best move, or a bound
