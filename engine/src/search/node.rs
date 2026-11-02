@@ -1248,6 +1248,23 @@ mod tests {
         );
         assert!(search.excluded.iter().all(|m| m.is_null()));
         assert_eq!(tt.probe(key), Some(planted));
+
+        // Asked alone across the same stop, the verdict is never singular.
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        tt.store(key, capture, 500, 8, Bound::Lower, false);
+        search.set_limits(Limits {
+            nodes: Some(2),
+            ..Limits::default()
+        });
+        search.root_depth = 9;
+        let legal = generate_legal(&board);
+        let hit = tt.probe(key);
+        let singular = search.singular_verdict(&mut board, &legal, hit, 9, 1, Expected::Cut, false);
+        assert!(
+            search.aborted && !singular,
+            "an aborted verification read as singular"
+        );
     }
 
     /// A queen left to a pawn: the capture clears any raised beta, so the reduced search runs.
