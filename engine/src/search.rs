@@ -27,9 +27,10 @@ mod report;
 mod root;
 
 pub use depth::{
-    REDUCTION_INDEX, child_depth, counted, cut_node_reduction, extension, granted, headroom,
-    history_reduction, iir_reduction, lmr_reduction, losing_capture, move_history, null_reduction,
-    pv_reduction, reduction,
+    REDUCTION_INDEX, SINGULAR_DEPTH, SINGULAR_MARGIN, child_depth, counted, cut_node_reduction,
+    extension, granted, headroom, history_reduction, iir_reduction, lmr_reduction, losing_capture,
+    move_history, null_reduction, pv_reduction, reduction, singular_admission, singular_beta,
+    verification_depth,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;
@@ -151,6 +152,10 @@ pub struct Search<'a> {
     /// The extensions of every kind the line has taken above each ply, the root's none. One longer
     /// than the plies, since a move at the last ply writes its child's.
     extensions: [u32; MAX_PLY + 1],
+    /// The move each node's verification leaves out, `Move::NULL` where none is.
+    excluded: [Move; MAX_PLY],
+    /// How many verifications enclose the node being searched.
+    verifying: u32,
     /// The move made at each ply of the current path, which each call's entry takes.
     #[cfg(debug_assertions)]
     moved: [Move; MAX_PLY],
@@ -196,6 +201,12 @@ pub struct Search<'a> {
     probcut_cutoffs: u64,
     probcut_refused_window: u64,
     iir_nodes: u64,
+    /// Verifications run, those run inside another, the table moves extended as singular, and the
+    /// nodes below the outermost verifications.
+    singular_tests: u64,
+    singular_nested: u64,
+    singular_extensions: u64,
+    singular_nodes: u64,
     /// The first shows the in-check horizon is reached, without which the second proves nothing.
     evasion_lists: u64,
     evasion_lists_reordered: u64,
@@ -258,6 +269,8 @@ impl<'a> Search<'a> {
             tt_pv: [false; MAX_PLY],
             follow_pv: [false; MAX_PLY + 1],
             extensions: [0; MAX_PLY + 1],
+            excluded: [Move::NULL; MAX_PLY],
+            verifying: 0,
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
             #[cfg(debug_assertions)]
@@ -291,6 +304,10 @@ impl<'a> Search<'a> {
             probcut_cutoffs: 0,
             probcut_refused_window: 0,
             iir_nodes: 0,
+            singular_tests: 0,
+            singular_nested: 0,
+            singular_extensions: 0,
+            singular_nodes: 0,
             evasion_lists: 0,
             evasion_lists_reordered: 0,
             iterations: Vec::new(),
@@ -362,6 +379,8 @@ impl<'a> Search<'a> {
         self.conthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
+        self.excluded = [Move::NULL; MAX_PLY];
+        self.verifying = 0;
         self.null_attempts = 0;
         self.null_cutoffs = 0;
         self.null_refused_material = 0;
@@ -392,6 +411,10 @@ impl<'a> Search<'a> {
         self.probcut_cutoffs = 0;
         self.probcut_refused_window = 0;
         self.iir_nodes = 0;
+        self.singular_tests = 0;
+        self.singular_nested = 0;
+        self.singular_extensions = 0;
+        self.singular_nodes = 0;
         self.evasion_lists = 0;
         self.evasion_lists_reordered = 0;
         self.iterations.clear();

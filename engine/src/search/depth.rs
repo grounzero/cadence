@@ -6,6 +6,8 @@
 use cadence_core::Move;
 use cadence_core::position::Board;
 
+use crate::score::{self, Score};
+use crate::tt::{Bound, Hit};
 use crate::{history, see};
 
 /// The backstop beside the count's cap at the root depth, which refuses a grant here first. At bench
@@ -42,6 +44,51 @@ pub fn counted(taken: u32, ext: i32) -> u32 {
 #[must_use]
 pub fn child_depth(depth: u32, ext: i32) -> u32 {
     depth.saturating_add_signed(ext).saturating_sub(1)
+}
+
+/// The shallowest node that asks whether its table's move is singular. Chosen with the margin by a
+/// cost reading: the most extension plies per node among the members whose verifications cost under a
+/// tenth of the tree.
+pub const SINGULAR_DEPTH: u32 = 6;
+
+/// Centipawns a ply below the stored score at which another move counts as holding it.
+pub const SINGULAR_MARGIN: Score = 4;
+
+/// How far below the node's depth a stored entry may lie and still be evidence.
+const SINGULAR_WITHIN: u32 = 3;
+
+/// Saturating, so the function is total at any depth.
+#[must_use]
+pub fn singular_beta(tt_score: Score, depth: u32) -> Score {
+    tt_score.saturating_sub(
+        SINGULAR_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX)),
+    )
+}
+
+/// Half the depth below the node, rounded down: the verification establishes a bound, not a value.
+#[must_use]
+pub fn verification_depth(depth: u32) -> u32 {
+    depth.saturating_sub(1) / 2
+}
+
+/// The singular beta where a node asks whether its table's move is singular, and `None` where it
+/// does not. It asks below the root at [`SINGULAR_DEPTH`] or deeper, of an entry naming a listed
+/// move, not an upper bound, within three plies, and with neither score on the mate scale.
+#[must_use]
+pub fn singular_admission(hit: Option<Hit>, listed: bool, depth: u32, ply: usize) -> Option<Score> {
+    let hit = hit?;
+    if ply == 0
+        || depth < SINGULAR_DEPTH
+        || hit.mv.is_null()
+        || !listed
+        || hit.bound == Bound::Upper
+        || u32::from(hit.depth) + SINGULAR_WITHIN < depth
+    {
+        return None;
+    }
+    let tt_score = score::from_tt(hit.score, ply);
+    let s_beta = singular_beta(tt_score, depth);
+    (!score::is_mate(tt_score) && !score::is_mate(s_beta)).then_some(s_beta)
 }
 
 /// The shallowest node searched shallower for the move its table did not name.

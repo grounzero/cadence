@@ -166,6 +166,29 @@ impl Search<'_> {
         self.iir_nodes
     }
 
+    /// Verifications run, and those run inside another.
+    #[must_use]
+    pub fn singular_tests(&self) -> u64 {
+        self.singular_tests
+    }
+
+    #[must_use]
+    pub fn singular_nested(&self) -> u64 {
+        self.singular_nested
+    }
+
+    /// Table moves a singular verdict extended, and the nodes searched inside the outermost
+    /// verifications.
+    #[must_use]
+    pub fn singular_extensions(&self) -> u64 {
+        self.singular_extensions
+    }
+
+    #[must_use]
+    pub fn singular_nodes(&self) -> u64 {
+        self.singular_nodes
+    }
+
     /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
     #[must_use]
     pub fn evasion_lists(&self) -> u64 {
@@ -271,10 +294,15 @@ impl Search<'_> {
     pub(super) fn corrected_eval(
         &mut self,
         board: &Board,
+        ply: usize,
         in_check: bool,
         pawn_key: u64,
         side: Colour,
     ) -> Option<Score> {
+        // The excluded node is its parent's position, read moments before.
+        if !self.excluded[ply].is_null() {
+            return self.evals[ply];
+        }
         if in_check {
             return None;
         }
@@ -296,6 +324,10 @@ impl Search<'_> {
         bound: Bound,
         depth: u32,
     ) {
+        // The excluded node's value answers another question.
+        if !self.excluded[ply].is_null() {
+            return;
+        }
         let Some(eval) = self.evals[ply] else {
             return;
         };

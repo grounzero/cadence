@@ -11,7 +11,8 @@ use cadence_core::{
 use super::Call;
 use super::depth::{
     child_depth, counted, cut_node_reduction, extension, granted, history_reduction, iir_reduction,
-    losing_capture, move_history, null_reduction, pv_reduction, reduction,
+    losing_capture, move_history, null_reduction, pv_reduction, reduction, singular_admission,
+    verification_depth,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -23,7 +24,7 @@ use crate::picker::{self, Picker, Tables};
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
-use crate::tt::Bound;
+use crate::tt::{Bound, Hit};
 
 impl Search<'_> {
     #[must_use]
@@ -61,12 +62,13 @@ impl Search<'_> {
         kind: Expected,
     ) -> Score {
         // So the extension caps read this depth, not what the last iteration left, and no frame,
-        // flag or count is read from an earlier run.
+        // flag, count or exclusion is read from an earlier run.
         self.root_depth = depth;
         self.frames.fill(None);
         self.tt_pv.fill(false);
         self.follow_pv.fill(false);
         self.extensions.fill(0);
+        self.excluded.fill(Move::NULL);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
 
@@ -105,7 +107,7 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
+        let (tt_move, cutoff, hit_pv, _) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return score;
         }
@@ -116,7 +118,7 @@ impl Search<'_> {
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
         let us_eval = board.side_to_move();
-        self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
+        self.evals[ply] = self.corrected_eval(board, ply, in_check, pawn_key, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -137,7 +139,7 @@ impl Search<'_> {
         let pv = beta > alpha + 1;
         // Last above the move loop, so the margins, the count and every child read the shortened
         // depth.
-        let depth = self.iir_depth(depth, pv, in_check, tt_move);
+        let depth = self.iir_depth(depth, ply, pv, in_check, tt_move);
 
         let mut legal = match generate(board, in_check, ply) {
             Ok(legal) => legal,
@@ -165,9 +167,7 @@ impl Search<'_> {
         while let Some((m, i, quiet_index)) = picker.next(board, &mut legal, &mut self.slots[ply]) {
             // Before the move is made, which is the whole saving; above the reduction, which never
             // sees a move given up.
-            if self.futile(board, futile, m, i)
-                || self.given_up(board, give_up, m, killers, quiet_index)
-            {
+            if self.skipped(board, ply, futile, give_up, m, killers, i, quiet_index) {
                 continue;
             }
             searched.set(i);
@@ -176,7 +176,7 @@ impl Search<'_> {
             self.make(board, ply, m);
             // Free after `make_move`, and also the reduction's check exemption.
             let gives_check = board.in_check();
-            let ext = self.extend(gives_check, ply);
+            let ext = self.extend(gives_check, false, ply);
             let child = child_depth(depth, ext);
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
@@ -270,14 +270,73 @@ impl Search<'_> {
         board.make_move(m);
     }
 
-    /// Every grant reads the line's headroom, and the child's count is written here, after the move
-    /// is made, so the first window, the reduced search and the re-search all read it.
-    pub(super) fn extend(&mut self, check: bool, ply: usize) -> i32 {
+    /// A check or a singular table move takes one ply, never two, held to the line's headroom. The
+    /// child's count is written here, after the move is made, so every search of the child reads it.
+    pub(super) fn extend(&mut self, check: bool, singular: bool, ply: usize) -> i32 {
         let taken = self.extensions[ply];
-        let asked = extension(check, ply + 1, self.root_depth).cast_signed();
+        let asked = extension(check || singular, ply + 1, self.root_depth).cast_signed();
         let ext = granted(asked, taken, self.root_depth);
+        self.singular_extensions += u64::from(singular && !check && ext > 0);
         self.extensions[ply + 1] = counted(taken, ext);
         ext
+    }
+
+    /// Whether the table's move is singular: this node searched again without it falls short of the
+    /// singular beta. Never after an abort, whose value is the draw score.
+    #[allow(clippy::too_many_arguments)]
+    fn singular_verdict(
+        &mut self,
+        board: &mut Position,
+        legal: &MoveList,
+        hit: Option<Hit>,
+        depth: u32,
+        ply: usize,
+        kind: Expected,
+        pv: bool,
+    ) -> bool {
+        let listed = hit.is_some_and(|h| legal.contains(h.mv));
+        let (Some(hit), Some(s_beta)) = (hit, singular_admission(hit, listed, depth, ply)) else {
+            return false;
+        };
+        // An open window's verification is expected to fail low where the move is singular.
+        let kind = if pv { Expected::All } else { kind };
+        let v = self.singular(board, depth, ply, hit.mv, s_beta, kind);
+        !self.aborted && v < s_beta
+    }
+
+    /// This node again at the verification depth with `excluded` left out, on the null window
+    /// below the singular beta. The slot is cleared before an abort is read.
+    pub(super) fn singular(
+        &mut self,
+        board: &mut Position,
+        depth: u32,
+        ply: usize,
+        excluded: Move,
+        s_beta: Score,
+        kind: Expected,
+    ) -> Score {
+        self.singular_tests += 1;
+        self.singular_nested += u64::from(self.verifying > 0);
+        let before = self.nodes;
+        self.verifying += 1;
+        self.excluded[ply] = excluded;
+        let v = self.negamax(
+            board,
+            verification_depth(depth),
+            ply,
+            s_beta - 1,
+            s_beta,
+            kind,
+        );
+        self.excluded[ply] = Move::NULL;
+        self.verifying -= 1;
+        if self.verifying == 0 {
+            self.singular_nodes += self.nodes - before;
+        }
+        if self.aborted {
+            return ABORTED;
+        }
+        v
     }
 
     /// Read where the iteration's search left it: nothing writes a line while one runs. At `MultiPV`
@@ -286,15 +345,26 @@ impl Search<'_> {
         self.accepted.get(self.lines.len())?.pv.get(ply).copied()
     }
 
-    /// A method so the counter is written where the rule runs.
-    fn iir_depth(&mut self, depth: u32, pv: bool, in_check: bool, tt_move: Move) -> u32 {
+    /// A method so the counter is written where the rule runs. The excluded node has no table move,
+    /// and its depth is already halved.
+    fn iir_depth(
+        &mut self,
+        depth: u32,
+        ply: usize,
+        pv: bool,
+        in_check: bool,
+        tt_move: Move,
+    ) -> u32 {
+        if !self.excluded[ply].is_null() {
+            return depth;
+        }
         let r = iir_reduction(depth, pv, in_check, tt_move != Move::NULL, self.iir_plies);
         self.iir_nodes += u64::from(r > 0);
         depth - r
     }
 
     /// The move comes back whatever the depth says, so the two halves return separately, and the
-    /// hit's flag beside them.
+    /// hit's flag and the hit beside them.
     fn probe(
         &self,
         board: &Board,
@@ -303,12 +373,17 @@ impl Search<'_> {
         ply: usize,
         alpha: Score,
         beta: Score,
-    ) -> (Move, Option<Score>, bool) {
+    ) -> (Move, Option<Score>, bool, Option<Hit>) {
+        // The excluded node's entry names the move it leaves out; its own flag goes back, so the
+        // write that follows keeps it.
+        if !self.excluded[ply].is_null() {
+            return (Move::NULL, None, self.tt_pv[ply], None);
+        }
         let Some(hit) = self.tt.probe(key) else {
-            return (Move::NULL, None, false);
+            return (Move::NULL, None, false, None);
         };
         if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
-            return (hit.mv, None, hit.pv);
+            return (hit.mv, None, hit.pv, Some(hit));
         }
         let score = score::from_tt(hit.score, ply);
         let cutoff = match hit.bound {
@@ -316,7 +391,7 @@ impl Search<'_> {
             Bound::Lower => score >= beta,
             Bound::Upper => score <= alpha,
         };
-        (hit.mv, cutoff.then_some(score), hit.pv)
+        (hit.mv, cutoff.then_some(score), hit.pv, Some(hit))
     }
 
     /// Checked against the window in a debug build, and recorded there once a gate asks.
@@ -368,8 +443,12 @@ impl Search<'_> {
         parent.child(via)
     }
 
-    /// The one store, and where a node failing low takes its parent's flag.
+    /// The one store, and where a node failing low takes its parent's flag. The excluded node's
+    /// value answers another question, and once stored nothing would tell the two apart.
     fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
+        if !self.excluded[ply].is_null() {
+            return;
+        }
         let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
         let score = score::to_tt(best, ply);
         // Nothing here beat alpha, so the move into it may have been the good one.
@@ -440,7 +519,10 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let admitted = self.evals[ply].is_some_and(|eval| eval >= beta)
+        // At the excluded node a pass would say no move is needed, where the question is whether
+        // another suffices.
+        let admitted = self.excluded[ply].is_null()
+            && self.evals[ply].is_some_and(|eval| eval >= beta)
             && beta == alpha + 1
             && !score::is_mate(beta)
             && board.plies_from_null() != 0
@@ -487,6 +569,10 @@ impl Search<'_> {
         beta: Score,
         kind: Expected,
     ) -> Option<Score> {
+        // The excluded node's capture could be the move it leaves out.
+        if !self.excluded[ply].is_null() {
+            return None;
+        }
         let eval = self.evals[ply];
         let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
             // Asked as though the window were null, so the counter sees only nodes the window
@@ -579,8 +665,8 @@ mod tests {
     use crate::conthist;
     use crate::eval;
     use crate::position::Position;
-    use crate::score::Score;
-    use crate::search::{Call, Expected, RootLine, Search, Via};
+    use crate::score::{self, ABORTED, Score};
+    use crate::search::{Call, Expected, Limits, RootLine, Search, Via, verification_depth};
     use crate::tt::{Bound, Table};
 
     const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
@@ -875,6 +961,269 @@ mod tests {
             let ply = u32::try_from(c.ply).expect("a small ply");
             assert!(c.extensions <= ply.min(3), "{c:?}");
         }
+    }
+
+    /// A back-rank mate in one, and a queen hanging to a pawn, once without and once with check.
+    const BACK_RANK: &str = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
+    const QUEEN_HANGS: &str = "4k3/8/8/3q4/4P3/8/8/4K3 w - - 0 1";
+    const QUEEN_HANGS_CHECKING: &str = "8/8/2k5/3q4/4P3/8/8/4K3 w - - 0 1";
+
+    fn position_and_move(fen: &str, uci: &str) -> (Position, Move) {
+        let root = Board::from_fen(fen).expect("a position");
+        let m = parse_uci(&generate_legal(&root), uci).expect("a legal move");
+        (Position::new(root), m)
+    }
+
+    /// The mate left out: no call below the verification makes it and its value is no mate, where
+    /// the same node searched plainly finds it.
+    #[test]
+    fn the_verification_never_searches_the_move_it_leaves_out() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, mate) = position_and_move(BACK_RANK, "a1a8");
+        search.root_depth = 7;
+        let v = search.singular(&mut board, 7, 1, mate, 1_000, Expected::Cut);
+        assert!(!score::is_mate(v), "{v}");
+        let below = at(&search, 2);
+        assert!(below.len() > 3, "too few moves searched");
+        assert!(
+            below.iter().all(|c| c.moved != mate),
+            "the mate was searched"
+        );
+
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, _) = position_and_move(BACK_RANK, "a1a8");
+        search.root_depth = 7;
+        let v = search.negamax(&mut board, 3, 1, 999, 1_000, Expected::Cut);
+        assert!(score::is_mate(v), "the control found no mate: {v}");
+        assert!(at(&search, 2).iter().any(|c| c.moved == mate));
+    }
+
+    /// An exact entry at the verification's depth, which would answer it at once: the verification
+    /// neither reads it nor overwrites it.
+    #[test]
+    fn the_excluded_node_neither_probes_nor_stores() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, mate) = position_and_move(BACK_RANK, "a1a8");
+        let key = board.key();
+        let depth = u8::try_from(verification_depth(7)).expect("a small depth");
+        tt.store(key, mate, 7_777, depth, Bound::Exact, false);
+        let planted = tt.probe(key).expect("the planted entry");
+        search.root_depth = 7;
+        let v = search.singular(&mut board, 7, 1, mate, 1_000, Expected::Cut);
+        assert_ne!(v, 7_777, "the planted entry answered the verification");
+        assert_eq!(
+            tt.probe(key),
+            Some(planted),
+            "the verification overwrote the entry"
+        );
+    }
+
+    type Counter = fn(&Search) -> u64;
+
+    /// The middlegame after h2h3, black to move at ply one, searched with its own evaluation offset
+    /// to make the window: as a verification at `depth`, or plainly at the verification's depth.
+    fn verified_or_plain(
+        depth: u32,
+        offset: Score,
+        verified: bool,
+        read: fn(&Search) -> u64,
+    ) -> u64 {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, m) = position_and_move(MIDDLEGAME, "h2h3");
+        search.root_depth = depth;
+        search.make(&mut board, 0, m);
+        let eval = eval::evaluate(&board);
+        let s_beta = eval + offset;
+        if verified {
+            let left_out = generate_legal(&board).as_slice()[0];
+            search.evals[1] = Some(eval);
+            let _ = search.singular(&mut board, depth, 1, left_out, s_beta, Expected::Cut);
+        } else {
+            let at = verification_depth(depth);
+            let _ = search.negamax(&mut board, at, 1, s_beta - 1, s_beta, Expected::Cut);
+        }
+        read(&search)
+    }
+
+    /// At depths where no node below the excluded one can take them, its own null move, capture
+    /// probe and iterative reduction are each counted at zero, where the plain node takes each.
+    #[test]
+    fn the_excluded_node_takes_no_null_move_probcut_or_iterative_reduction() {
+        let cases: [(&str, u32, Score, Counter); 3] = [
+            ("null move", 3, -50, |s| s.null_attempts),
+            ("iterative reduction", 9, 100, |s| s.iir_nodes),
+            ("capture probe", 11, 100, |s| s.probcut_attempts),
+        ];
+        for (rule, depth, offset, read) in cases {
+            assert!(
+                verified_or_plain(depth, offset, false, read) > 0,
+                "{rule}: the control"
+            );
+            assert_eq!(verified_or_plain(depth, offset, true, read), 0, "{rule}");
+        }
+    }
+
+    /// An entry that would admit a node at the excluded node's depth: no verification runs inside
+    /// the one called.
+    #[test]
+    fn the_excluded_node_asks_no_question_of_its_own() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, m) = position_and_move(MIDDLEGAME, "h2h3");
+        search.root_depth = 13;
+        search.make(&mut board, 0, m);
+        let eval = eval::evaluate(&board);
+        let legal = generate_legal(&board);
+        let (left_out, named) = (legal.as_slice()[0], legal.as_slice()[1]);
+        tt.store(
+            board.key(),
+            named,
+            i16::try_from(eval).expect("an evaluation"),
+            13,
+            Bound::Lower,
+            false,
+        );
+        search.evals[1] = Some(eval);
+        let _ = search.singular(&mut board, 13, 1, left_out, eval + 100, Expected::Cut);
+        assert_eq!(search.singular_tests, 1);
+    }
+
+    /// The flag and the evaluation the node wrote survive its verification, and its slot is empty
+    /// after; the gates' entry clears an exclusion an earlier run left.
+    #[test]
+    fn the_nodes_state_survives_its_verification() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, mate) = position_and_move(BACK_RANK, "a1a8");
+        search.root_depth = 7;
+        search.tt_pv[1] = true;
+        search.evals[1] = Some(123);
+        let _ = search.singular(&mut board, 7, 1, mate, 1_000, Expected::Cut);
+        assert!(search.tt_pv[1], "the flag was clobbered");
+        assert_eq!(search.evals[1], Some(123));
+        assert!(search.excluded.iter().all(|m| m.is_null()));
+
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        search.excluded = [mate; MAX_PLY];
+        let _ = search.node(&mut board, 2, 0);
+        assert!(
+            at(&search, 1).iter().any(|c| c.moved == mate),
+            "a planted exclusion hid the move"
+        );
+    }
+
+    /// A check or a singular table move takes one ply and the two together take one; at the cap
+    /// neither takes any, and only a singular move without a check is counted.
+    #[test]
+    fn a_singular_move_takes_one_ply_however_it_is_granted() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        search.root_depth = 8;
+        for (check, singular, want) in [
+            (false, false, 0),
+            (true, false, 1),
+            (false, true, 1),
+            (true, true, 1),
+        ] {
+            search.extensions[3] = 2;
+            assert_eq!(
+                search.extend(check, singular, 3),
+                want,
+                "{check} {singular}"
+            );
+            assert_eq!(search.extensions[4], 2 + want.unsigned_abs());
+            search.extensions[3] = 8;
+            assert_eq!(
+                search.extend(check, singular, 3),
+                0,
+                "at the cap: {check} {singular}"
+            );
+        }
+        assert_eq!(search.singular_extensions, 1);
+    }
+
+    /// The queen's capture, the table's move under `bound`, at a node of depth six at ply one under
+    /// a window no move reaches, so every move is searched; the calls one ply below it.
+    fn below_a_table_move(fen: &str, bound: Bound) -> (Vec<Call>, Move, u64) {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, capture) = position_and_move(fen, "e4d5");
+        tt.store(board.key(), capture, 500, 5, bound, false);
+        search.root_depth = 6;
+        let _ = search.negamax(&mut board, 6, 1, HIGH, HIGH + 1, Expected::Cut);
+        (at(&search, 2), capture, search.singular_tests)
+    }
+
+    /// Admitted, the capture is singular and its child keeps the node's depth while no other move
+    /// is extended; an upper bound admits nothing and the capture is searched a ply down.
+    #[test]
+    fn a_singular_table_move_is_searched_a_ply_deeper() {
+        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS, Bound::Lower);
+        assert_eq!(tests, 1);
+        let (table, others): (Vec<Call>, Vec<Call>) =
+            calls.into_iter().partition(|c| c.moved == capture);
+        assert_eq!(table.iter().map(|c| c.depth).collect::<Vec<_>>(), [6]);
+        assert!(others.len() > 3, "too few other moves");
+        assert!(others.iter().all(|c| c.depth <= 5), "{others:?}");
+
+        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS, Bound::Upper);
+        assert_eq!(tests, 0);
+        let depths: Vec<u32> = calls
+            .iter()
+            .filter(|c| c.moved == capture)
+            .map(|c| c.depth)
+            .collect();
+        assert_eq!(depths, [5]);
+    }
+
+    /// The capture gives check as well as being singular, and takes one ply, not two.
+    #[test]
+    fn a_singular_table_move_that_checks_is_extended_once() {
+        let (calls, capture, tests) = below_a_table_move(QUEEN_HANGS_CHECKING, Bound::Lower);
+        assert_eq!(tests, 1);
+        let depths: Vec<u32> = calls
+            .iter()
+            .filter(|c| c.moved == capture)
+            .map(|c| c.depth)
+            .collect();
+        assert_eq!(depths, [6]);
+    }
+
+    /// A stop inside the verification: the node returns the aborted value, stores nothing over the
+    /// entry that admitted it, and leaves no exclusion behind.
+    #[test]
+    fn a_stop_inside_the_verification_aborts_the_node() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = searcher(&stop, &tt);
+        let (mut board, capture) = position_and_move(QUEEN_HANGS, "e4d5");
+        let key = board.key();
+        tt.store(key, capture, 500, 5, Bound::Lower, false);
+        let planted = tt.probe(key).expect("the planted entry");
+        search.set_limits(Limits {
+            nodes: Some(3),
+            ..Limits::default()
+        });
+        search.root_depth = 6;
+        let v = search.negamax(&mut board, 6, 1, HIGH, HIGH + 1, Expected::Cut);
+        assert_eq!(
+            (v, search.aborted, search.singular_tests),
+            (ABORTED, true, 1)
+        );
+        assert!(search.excluded.iter().all(|m| m.is_null()));
+        assert_eq!(tt.probe(key), Some(planted));
     }
 
     /// A queen left to a pawn: the capture clears any raised beta, so the reduced search runs.
