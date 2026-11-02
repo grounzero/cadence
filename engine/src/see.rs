@@ -136,6 +136,102 @@ pub fn see(board: &Board, m: Move) -> i32 {
     taken[0] - reply
 }
 
+/// Whether [`see`] is at least `threshold`, read through the same captures in the same order and
+/// stopped as soon as the replies not yet read cannot change the answer.
+///
+/// # Panics
+///
+/// If `m.from_sq()` is empty.
+#[must_use]
+pub fn see_ge(board: &Board, m: Move, threshold: i32) -> bool {
+    #[cfg(feature = "counters")]
+    READS.with(|r| r.set(r.get() + 1));
+    if m.is_castle() {
+        return threshold <= 0;
+    }
+    let to = m.to_sq();
+    let from = m.from_sq();
+    let mut side = board.side_to_move();
+    let mover = board
+        .piece_at(from)
+        .expect("see: no piece on the from square")
+        .piece_type();
+
+    let mut taken = [0i32; MAX_CAPTURES];
+    let mut n = 1;
+    let mut occ = board.occupied().without(from).with(to);
+
+    let mut victim = board.piece_at(to).map_or(0, |p| value(p.piece_type()));
+    let mut ep_victim = None;
+    if m.is_en_passant() {
+        let cap = Square::new(to.index() as u8 ^ 8);
+        occ = occ.without(cap);
+        victim = value(PieceType::Pawn);
+        ep_victim = Some(cap);
+    }
+    let mut on_square = mover;
+    taken[0] = victim;
+    if let Some(p) = m.promotion_piece() {
+        on_square = p.piece_type();
+        taken[0] += value(on_square) - value(PieceType::Pawn);
+    }
+    // No reply is below zero, so the first gain is the most the exchange can be worth.
+    if taken[0] < threshold {
+        return false;
+    }
+
+    let mut attackers = board.attackers_to(to, occ) & occ;
+    let their_king = board.king_square(side.flip());
+    let mut discovered = uncovers(board, side, their_king, from, to, occ)
+        || ep_victim.is_some_and(|cap| uncovers(board, side, their_king, cap, to, occ));
+    side = side.flip();
+
+    while on_square != PieceType::King {
+        let Some((sq, pt)) = cheapest_legal(board, side, to, attackers, occ, discovered) else {
+            break;
+        };
+        let mut gain = value(on_square);
+        if pt == PieceType::Pawn && to.rank() == Rank::Eight.relative(side) {
+            gain += value(PieceType::Queen) - value(PieceType::Pawn);
+            on_square = PieceType::Queen;
+        } else {
+            on_square = pt;
+        }
+        taken[n] = gain;
+        n += 1;
+        if pt == PieceType::King {
+            break;
+        }
+        let (low, high) = bounds(&taken[..n]);
+        if low >= threshold {
+            return true;
+        }
+        if high < threshold {
+            return false;
+        }
+        occ = occ.without(sq);
+        attackers = (attackers | revealed(board, to, occ, pt)) & occ;
+        discovered = uncovers(board, side, board.king_square(side.flip()), sq, to, occ);
+        side = side.flip();
+    }
+
+    let mut reply = 0;
+    for &g in taken[1..n].iter().rev() {
+        reply = (g - reply).max(0);
+    }
+    taken[0] - reply >= threshold
+}
+
+/// The least and the most the exchange can be worth with `gains` read, every reply not yet read
+/// lying anywhere from zero up. Each step back is [`see`]'s minimax over the ends of an interval.
+fn bounds(gains: &[i32]) -> (i32, i32) {
+    let (mut low, mut high) = (0, i32::MAX);
+    for &g in gains[1..].iter().rev() {
+        (low, high) = ((g - high).max(0), (g - low).max(0));
+    }
+    (gains[0] - high, gains[0] - low)
+}
+
 /// Under a discovered check only the king can take, because nothing else answers it.
 fn cheapest_legal(
     board: &Board,
