@@ -144,9 +144,6 @@ pub struct Search<'a> {
     evals: [Option<Score>; MAX_PLY],
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
-    /// Whether each node is on the previous iteration's line. One longer than the plies, since a
-    /// move at the last ply writes its child's.
-    follow_pv: [bool; MAX_PLY + 1],
     /// The move made at each ply of the current path, which each call's entry takes.
     #[cfg(debug_assertions)]
     moved: [Move; MAX_PLY],
@@ -252,7 +249,6 @@ impl<'a> Search<'a> {
             root_depth: 0,
             evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
-            follow_pv: [false; MAX_PLY + 1],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
             #[cfg(debug_assertions)]
