@@ -13,7 +13,7 @@ use cadence_core::types::{File, Rank};
 use cadence_core::{
     Bitboard, Colour, Move, Piece, PieceType, START_FEN, Square, generate_legal, parse_uci,
 };
-use cadence_engine::see::{VALUES, see, value};
+use cadence_engine::see::{VALUES, see, see_ge, value};
 use support::{Rng, mirror_fen};
 
 // ---------------------------------------------------------------------------
@@ -223,6 +223,11 @@ fn check(b: &Board, uci: &str, expected: i32) {
         got,
         expected,
         "{} {uci}: see says {got}, the play-out and the hand say {expected}",
+        fen(b)
+    );
+    assert!(
+        see_ge(b, m, expected) && !see_ge(b, m, expected + 1),
+        "{} {uci}: see_ge does not place the exchange at {expected}",
         fen(b)
     );
 }
@@ -478,6 +483,11 @@ fn a_castle_evaluates_to_zero() {
     let b = board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
     for m in generate_legal(&b).iter().filter(|m| m.is_castle()) {
         assert_eq!(see(&b, m), 0, "{}", m.to_uci_chess960());
+        assert!(
+            see_ge(&b, m, 0) && !see_ge(&b, m, 1),
+            "{}",
+            m.to_uci_chess960()
+        );
     }
 }
 
@@ -718,4 +728,52 @@ fn the_function_agrees_with_the_play_out_over_the_corpus_and_random_positions() 
     assert!(census.king_recaptures >= 10_000, "{census:#?}");
     assert!(census.declined >= 13_000, "{census:#?}");
     assert!(census.longest >= 6, "{census:#?}");
+}
+
+/// The corpus's positions one move on, which the search reaches first.
+fn corpus_children() -> Vec<Board> {
+    let mut out = Vec::new();
+    for f in support::corpus_fens() {
+        let b = board(&f);
+        for m in generate_legal(&b).iter() {
+            let mut child = b.duplicate();
+            child.play(m);
+            out.push(child);
+        }
+    }
+    out
+}
+
+/// The threshold answer at every noisy move and castle of the corpus, its children and the
+/// play-out's positions, over a sweep of thresholds and the three around each exact value.
+#[test]
+fn the_threshold_answer_agrees_with_the_exchange_everywhere() {
+    let (mut moves, mut asked, mut above) = (0usize, 0usize, 0usize);
+    for b in positions().into_iter().chain(corpus_children()) {
+        for m in generate_legal(&b).iter() {
+            if !m.is_noisy() && !m.is_castle() {
+                continue;
+            }
+            moves += 1;
+            let exact = see(&b, m);
+            let sweep = (-1000..=1000).step_by(50);
+            for t in sweep.chain([exact - 1, exact, exact + 1]) {
+                let want = exact >= t;
+                assert_eq!(
+                    see_ge(&b, m, t),
+                    want,
+                    "{} {} at {t}: the exchange is {exact}",
+                    fen(&b),
+                    m.to_uci_chess960()
+                );
+                asked += 1;
+                above += usize::from(want);
+            }
+        }
+    }
+    assert!(moves >= 30_000, "only {moves} moves asked");
+    assert!(
+        above > asked / 4 && above < asked * 3 / 4,
+        "{above} of {asked} answers true, too few of one kind to tell"
+    );
 }
