@@ -189,6 +189,15 @@ impl Rng {
 /// Generous for slow CI and debug builds: a real hang is seconds of nothing, not a close call.
 pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// The binary cargo built for these tests, or the one `CADENCE_BIN` names, so CI can hold the
+/// release build to the same tests.
+pub fn binary() -> std::path::PathBuf {
+    std::env::var_os("CADENCE_BIN").map_or_else(
+        || env!("CARGO_BIN_EXE_cadence").into(),
+        std::path::PathBuf::from,
+    )
+}
+
 /// All at once. The child is killed and the test fails after `SUBPROCESS_TIMEOUT`, because a hung
 /// test is worse than a failed one.
 pub fn talk(input: &str) -> String {
@@ -197,7 +206,7 @@ pub fn talk(input: &str) -> String {
 
 /// The same, for input that is deliberately not valid UTF-8.
 pub fn talk_bytes(input: &[u8]) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let mut child = Command::new(binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -344,7 +353,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn spawn() -> Engine {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cadence"))
+        let mut child = Command::new(binary())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

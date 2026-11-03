@@ -549,6 +549,32 @@ fn clear_hash_empties_the_table() {
     engine.quit();
 }
 
+/// A size set over UCI is the table the next search fills, so the same search fills one mebibyte
+/// further than sixty-four.
+#[test]
+fn a_hash_size_set_over_uci_sizes_the_table_searched() {
+    let filled = |mb: u32| -> u32 {
+        let mut engine = Engine::spawn();
+        engine.send(&format!("setoption name Hash value {mb}"));
+        engine.sync();
+        engine.send("position startpos");
+        engine.send("go depth 12");
+        let lines = engine.read_until("bestmove ");
+        engine.quit();
+        lines
+            .iter()
+            .filter(|l| l.starts_with("info depth "))
+            .rev()
+            .find_map(|l| field(l, "hashfull"))
+            .expect("an info line with hashfull")
+    };
+    let (small, large) = (filled(1), filled(64));
+    assert!(
+        small > large,
+        "hashfull {small} at 1 MB and {large} at 64 MB after the same search"
+    );
+}
+
 /// The node limit is taken from the clocked run, so the two cost the same and differ only in the
 /// limit.
 #[test]

@@ -327,6 +327,26 @@ jobs:
           echo "$out" | grep -qx 'uciok'   || { echo "::error::no uciok";   exit 1; }
           echo "$out" | grep -qx 'readyok' || { echo "::error::no readyok"; exit 1; }
 
+      # The UCI behaviours a tester relies on, held to the binary that ships rather than the test
+      # build, which turns the counters on. A filter that matched nothing would pass, so the count is read.
+      - name: UCI tests against the release binary
+        if: startsWith(matrix.target, 'x86_64')
+        shell: bash
+        run: |
+          bin="$PWD/target/release/cadence"
+          if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -w "$bin.exe"); fi
+          CADENCE_BIN="$bin" cargo test -p cadence-engine --test uci --test time $CONFIG_ARG -- --exact \
+            go_with_a_clock_yields_a_legal_bestmove \
+            go_infinite_then_stop_yields_a_bestmove_and_isready_is_answered_meanwhile \
+            ucinewgame_is_accepted_and_the_next_go_works \
+            clear_hash_empties_the_table \
+            a_hash_size_set_over_uci_sizes_the_table_searched \
+            a_game_on_the_clock_never_runs_out_of_time 2>&1 | tee release-uci.log
+          passed=$(grep -h '^test result:' release-uci.log | awk '{n += $4} END {print n + 0}')
+          echo "### UCI tests on the release binary" >> "$GITHUB_STEP_SUMMARY"
+          grep -h '^test result:' release-uci.log >> "$GITHUB_STEP_SUMMARY"
+          [ "$passed" -eq 6 ] || { echo "::error::$passed of the 6 tests ran"; exit 1; }
+
       # The regression detector. The last line of `cadence bench` is
       # `<nodes> nodes <nps> nps`; the count must equal bench.txt, and a commit
       # that changes bench.txt carries a `Bench: <n>` trailer (enforced by
