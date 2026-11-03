@@ -263,13 +263,17 @@ jobs:
           dir="$RUNNER_TEMP/syzygy"
           list="$PWD/tests/fixtures/syzygy.sha256"
           mkdir -p "$dir"
+          # Schannel fails the handshake when a revocation server is out of reach, and every table is
+          # held to its SHA-256 below, so on Windows an unreachable server is not a failure.
+          revoke=""
+          if [ "$RUNNER_OS" = Windows ]; then revoke="--ssl-revoke-best-effort"; fi
           while read -r _ file; do
             case "$file" in
               *.rtbw) group=3-4-5-wdl ;;
               *.rtbz) group=3-4-5-dtz ;;
               *) echo "not a table: $file"; exit 1 ;;
             esac
-            curl -fsS --retry 3 --retry-all-errors -o "$dir/$file" \
+            curl -fsS --retry 3 --retry-all-errors $revoke -o "$dir/$file" \
               "https://tablebase.lichess.ovh/tables/standard/$group/$file"
           done < tests/fixtures/syzygy.sha256
           if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
