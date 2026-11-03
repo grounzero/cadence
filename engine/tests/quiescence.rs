@@ -179,10 +179,10 @@ fn root_re_searches(b: &mut Position) -> u64 {
 const LOSING_CAPTURES: &[(&str, &str)] = &[
     // Qxd5, a pawn defended by a pawn.
     ("6k1/8/4p3/3p4/8/8/8/3Q2K1 w - - 0 1", "d1d5"),
-    // Rxe5, a knight defended by a bishop.
-    ("6k1/2b5/8/4n3/8/8/8/4R1K1 w - - 0 1", "e1e5"),
-    // Bxe5, a pawn defended by a knight.
-    ("6k1/8/2n5/4p3/8/8/1B6/6K1 w - - 0 1", "b2e5"),
+    // Rxe5, a knight defended by a bishop; the pawn keeps the recapture from leaving a dead draw.
+    ("6k1/p1b5/8/4n3/8/8/8/4R1K1 w - - 0 1", "e1e5"),
+    // Bxe5, a pawn defended by a knight; the pawn keeps the recapture from leaving a dead draw.
+    ("6k1/p7/2n5/4p3/8/8/1B6/6K1 w - - 0 1", "b2e5"),
     // Nxe5, a pawn defended by a pawn.
     ("6k1/8/3p4/4p3/8/5N2/8/6K1 w - - 0 1", "f3e5"),
     // Qxf7+, a pawn defended by the king: the refutation is an evasion.
