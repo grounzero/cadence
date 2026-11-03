@@ -11,7 +11,7 @@ use cadence_core::{
 use super::Call;
 use super::depth::{
     cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
-    null_reduction, pv_reduction, reduction,
+    null_reduction, pv_reduction, reduced_depth, reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -469,7 +469,7 @@ impl Search<'_> {
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
         }
         self.lmr_reductions.add_one();
-        let reduced = child.saturating_sub(r).max(1);
+        let reduced = reduced_depth(child, r);
         let cut = self.derive(kind, Via::Reduced);
         let score = -self.negamax(board, reduced, ply + 1, -alpha - 1, -alpha, cut);
         if score > alpha && !self.aborted {
