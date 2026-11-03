@@ -17,6 +17,32 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.5.23] - 2026-11-03
+
+### Added
+
+- Search: Syzygy endgame tablebases, through the `SyzygyPath` and
+  `SyzygyProbeLimit` options. The search probes the win-draw-loss tables
+  after a capture or a pawn move, and the root ranks its moves by the
+  distance-to-zeroing tables, within the fifty-move rule. The path is
+  empty by default, which leaves probing off.
+
+### Changed
+
+- Speed: the search runs about 11% faster on the machine the tests are
+  played on, and finds the same moves at the same node counts at every
+  bench position. The pawn structure's score is cached per search, an
+  exchange question stops once its answer is decided, a losing capture's
+  exchange is read once, and release builds leave out the search's
+  diagnostic counters. Not tested in games.
+- Build: the Rust toolchain is pinned to 1.99.1.
+
+Test 75, for the tablebases: +13.53 (between +7.00 and +20.07), a
+self-play estimate against 0.5.22 with the speed changes above, both
+sides given the tables up to five pieces, which only 0.5.23 reads, at the
+short control, from a sequential test stopped at its first crossing, so
+it leans high. It is not a rating.
+
 ## [0.5.22] - 2026-10-30
 
 ### Changed
@@ -423,7 +449,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.22...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.23...main
+[0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21
 [0.5.20]: https://github.com/grounzero/cadence/compare/0.5.19...0.5.20
