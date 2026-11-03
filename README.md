@@ -11,7 +11,9 @@ including double Chess960 (DFRC).
 
 It uses a classical alpha-beta search and a hand-written evaluation. The
 evaluation's weights are tuned on Cadence's own games. There is no neural
-network, and the engine has no dependencies outside this repository.
+network. It can read Syzygy endgame tablebases, set with `SyzygyPath`. It
+reads them through the `shakmaty-syzygy` and `shakmaty` crates, which with
+the crates they use are its only dependencies from outside this repository.
 
 You can play it on Lichess, where it runs as the bot
 [Mithandros](https://lichess.org/@/Mithandros). The bot also chats. A small
@@ -56,6 +58,8 @@ quit
 | `UCI_LimitStrength` | off | Play weaker, at the level set by `UCI_Elo`. |
 | `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). |
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
+| `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
+| `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
 
 ## Strength
 
