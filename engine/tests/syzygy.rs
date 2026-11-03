@@ -17,7 +17,7 @@ use cadence_engine::score::{
 };
 use cadence_engine::search::{Limits, futile_node, probcut_bound};
 use cadence_engine::syzygy::{Rank, Tables, Wdl};
-use support::table;
+use support::{Engine, table};
 
 fn fixtures() -> String {
     std::env::var("CADENCE_SYZYGY_PATH").expect("CADENCE_SYZYGY_PATH names the fixtures")
@@ -202,6 +202,72 @@ fn outside_the_tables_there_is_no_result_and_no_panic() {
     );
     assert_eq!(tables.failures(), 1);
     let _ = std::fs::remove_dir_all(spoilt);
+}
+
+/// A path loads the tables and prints how many; an empty one turns probing off, and every line a
+/// search prints without tables is the line it was.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
+    let mut e = Engine::spawn();
+    e.send(&format!("setoption name SyzygyPath value {}", fixtures()));
+    let said = e.sync();
+    assert!(
+        said.iter()
+            .any(|l| l == "info string SyzygyPath: 12 table files, probing up to 4 pieces"),
+        "{said:?}"
+    );
+    e.send("setoption name SyzygyProbeLimit value 3");
+    let said = e.sync();
+    assert!(
+        said.iter()
+            .any(|l| l == "info string SyzygyPath: 12 table files, probing up to 3 pieces"),
+        "{said:?}"
+    );
+    e.send("position fen 8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1");
+    e.send("go depth 4");
+    let lines = e.read_until("bestmove ");
+    assert!(lines.iter().any(|l| l.contains(" tbhits ")), "{lines:?}");
+    e.send("setoption name SyzygyPath value <empty>");
+    e.send("go depth 4");
+    let lines = e.read_until("bestmove ");
+    assert!(lines.iter().all(|l| !l.contains("tbhits")), "{lines:?}");
+    e.quit();
+}
+
+#[test]
+fn uci_declares_the_two_options() {
+    let mut e = Engine::spawn();
+    e.send("uci");
+    let lines = e.read_until("uciok");
+    assert!(lines.contains(&"option name SyzygyPath type string default <empty>".to_string()));
+    assert!(
+        lines.contains(&"option name SyzygyProbeLimit type spin default 7 min 0 max 7".to_string())
+    );
+    e.quit();
+}
+
+/// A directory that cannot be read is named and probes nothing; the session goes on.
+#[test]
+fn a_path_that_cannot_be_read_is_named_and_probes_nothing() {
+    let mut e = Engine::spawn();
+    e.send("setoption name SyzygyPath value /no/such/directory/for/cadence");
+    let said = e.sync();
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("info string SyzygyPath: /no/such/directory/for/cadence:")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|l| l == "info string SyzygyPath: 0 table files, probing up to 0 pieces"),
+        "{said:?}"
+    );
+    e.send("position fen 8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1");
+    e.send("go depth 3");
+    let lines = e.read_until("bestmove ");
+    assert!(lines.iter().all(|l| !l.contains("tbhits")), "{lines:?}");
+    e.quit();
 }
 
 /// Every tablebase win sits above every evaluation and below every mate, and the table keeps it

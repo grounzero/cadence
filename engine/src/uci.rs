@@ -10,7 +10,7 @@ use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
 
 use crate::level;
-use crate::syzygy::Tables;
+use crate::syzygy::{self, Tables};
 use crate::time;
 use crate::tt::{self, Table};
 use crate::tune::{self, Tunables};
@@ -59,6 +59,8 @@ pub struct Session {
     move_overhead: u64,
     /// Loaded on `setoption` and handed to each search; `None` probes nothing.
     tables: Option<Arc<Tables>>,
+    syzygy_path: String,
+    probe_limit: usize,
     /// Until `stop`, the next `go`, or shutdown joins it; it may already have finished.
     search: Option<Running>,
 }
@@ -95,6 +97,8 @@ impl Session {
             tunables: Tunables::DEFAULT,
             move_overhead: time::MOVE_OVERHEAD_MS,
             tables: None,
+            syzygy_path: String::new(),
+            probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
         }
     }
@@ -187,6 +191,13 @@ impl Session {
                     time::MOVE_OVERHEAD_MS
                 ));
                 say(format_args!("option name Clear Hash type button"));
+                say(format_args!(
+                    "option name SyzygyPath type string default <empty>"
+                ));
+                say(format_args!(
+                    "option name SyzygyProbeLimit type spin default {0} min 0 max {0}",
+                    syzygy::MAX_PROBE_LIMIT
+                ));
                 say(format_args!(
                     "option name UCI_EngineAbout type string default {ENGINE_NAME} \
                      {ENGINE_VERSION} by {ENGINE_AUTHOR}, {ENGINE_REPOSITORY}"
