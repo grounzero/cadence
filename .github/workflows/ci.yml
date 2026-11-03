@@ -115,8 +115,16 @@ jobs:
             name: x86_64-unknown-linux-gnu, generic
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-generic.toml
+          # The AVX2 build with a static C runtime, the one a rating list is asked to rate.
+          - os: windows-latest
+            name: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
     env:
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
+    # Every step under bash, so $CONFIG_ARG and the scripts read the same on Windows as elsewhere.
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -223,11 +231,11 @@ jobs:
           cargo clean -p cadence-core
           start=$(date +%s.%N)
           cargo build -p cadence-core --quiet $CONFIG_ARG
-          dev=$(echo "$(date +%s.%N) - $start" | bc)
+          dev=$(awk -v a="$(date +%s.%N)" -v b="$start" 'BEGIN { print a - b }')
           cargo clean -p cadence-core --release
           start=$(date +%s.%N)
           cargo build -p cadence-core --release --quiet $CONFIG_ARG
-          rel=$(echo "$(date +%s.%N) - $start" | bc)
+          rel=$(awk -v a="$(date +%s.%N)" -v b="$start" 'BEGIN { print a - b }')
           printf 'cadence-core clean build: dev %.2f s, release %.2f s\n' "$dev" "$rel"
           printf '### const-eval clean build (%s)\ndev %.2f s · release %.2f s\n' \
             "${{ matrix.name }}" "$dev" "$rel" >> "$GITHUB_STEP_SUMMARY"
@@ -253,6 +261,7 @@ jobs:
         shell: bash
         run: |
           dir="$RUNNER_TEMP/syzygy"
+          list="$PWD/tests/fixtures/syzygy.sha256"
           mkdir -p "$dir"
           while read -r _ file; do
             case "$file" in
@@ -264,7 +273,7 @@ jobs:
               "https://tablebase.lichess.ovh/tables/standard/$group/$file"
           done < tests/fixtures/syzygy.sha256
           if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
-          (cd "$dir" && $hash -c "$GITHUB_WORKSPACE/tests/fixtures/syzygy.sha256")
+          (cd "$dir" && $hash -c "$list")
           CADENCE_SYZYGY_PATH="$dir" cargo test -p cadence-engine --test syzygy $CONFIG_ARG \
             -- --ignored 2>&1 | tee syzygy.log
           echo "### Syzygy gates" >> "$GITHUB_STEP_SUMMARY"
@@ -339,3 +348,12 @@ jobs:
             exit 1
           fi
           echo "bench: $got nodes, as bench.txt says"
+
+      # The Windows binary, kept with the run so it can be tried without a toolchain.
+      - name: Upload the Windows binary
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cadence-${{ matrix.target }}-${{ github.sha }}
+          path: target/release/cadence.exe
+          if-no-files-found: error
