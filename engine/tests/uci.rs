@@ -179,6 +179,40 @@ fn multicore_go_yields_one_legal_bestmove() {
     );
 }
 
+/// Each search thread reports what its own search holds as it starts, in a test build: every helper
+/// holds the primary's limits and the tunable set over UCI.
+#[test]
+fn every_search_thread_is_given_the_primary_s_limits_and_tunables() {
+    let (_, lines) = Engine::go_within(
+        &[
+            "setoption name Threads value 4",
+            "setoption name reverse_futility_margin value 299",
+            "position startpos",
+        ],
+        "go depth 3",
+        std::time::Duration::from_secs(20),
+    );
+    let given: Vec<(&str, &str)> = lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("info string search thread "))
+        .map(|l| {
+            l.split_once(" given ")
+                .expect("a thread and what it was given")
+        })
+        .collect();
+    let mut threads: Vec<&str> = given.iter().map(|(t, _)| *t).collect();
+    threads.sort_unstable();
+    assert_eq!(threads, ["0", "1", "2", "3"], "{lines:?}");
+    let primary = given.iter().find(|(t, _)| *t == "0").unwrap().1;
+    assert!(
+        primary.contains("depth: Some(3)") && primary.contains("299"),
+        "the primary's report does not show the go or the option: {primary}"
+    );
+    for (thread, held) in &given {
+        assert_eq!(*held, primary, "thread {thread} was given other settings");
+    }
+}
+
 #[test]
 fn multicore_infinite_search_stops_cleanly() {
     let out = talk(
