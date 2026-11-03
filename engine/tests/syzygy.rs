@@ -5,14 +5,14 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
 use cadence_core::{MAX_PLY, generate_legal, parse_uci};
 use cadence_engine::corrhist::MAX_CORRECTION;
 use cadence_engine::score::{
-    MAX_EVAL, TB_WIN, TB_WIN_IN_MAX_PLY, from_tt, is_decisive, is_mate, mate_in, mated_in,
+    MAX_EVAL, Score, TB_WIN, TB_WIN_IN_MAX_PLY, from_tt, is_decisive, is_mate, mate_in, mated_in,
     tb_loss_in, tb_win_in, to_tt,
 };
 use cadence_engine::search::{Limits, futile_node, probcut_bound};
@@ -250,6 +250,94 @@ fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
     assert!(lines.iter().all(|l| !l.contains("tbhits")), "{lines:?}");
     e.quit();
     let _ = std::fs::remove_dir_all(only);
+}
+
+/// The score the last finished iteration prints from `fen` at `depth`, with the tables in `dir`.
+fn reported_score(dir: &Path, fen: &str, depth: u32) -> String {
+    let mut e = Engine::spawn();
+    e.send(&format!(
+        "setoption name SyzygyPath value {}",
+        dir.display()
+    ));
+    e.sync();
+    e.send(&format!("position fen {fen}"));
+    e.send(&format!("go depth {depth}"));
+    let lines = e.read_until("bestmove ");
+    e.quit();
+    let last = lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("info depth"))
+        .unwrap_or_else(|| panic!("{fen}: no info line in {lines:?}"));
+    let words: Vec<&str> = last.split_whitespace().collect();
+    let at = words.iter().position(|&w| w == "score").expect("a score");
+    format!("{} {}", words[at + 1], words[at + 2])
+}
+
+fn centipawns(score: &str) -> Score {
+    score
+        .strip_prefix("cp ")
+        .and_then(|cp| cp.parse().ok())
+        .unwrap_or_else(|| panic!("not a centipawn score: {score}"))
+}
+
+/// A lone minor piece cannot mate, so the table reads a draw that the evaluation, a piece up, does
+/// not; the root reports the table's 0.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_drawn_root_the_tables_rank_reports_a_draw() {
+    let only = fixture_set("draw-report");
+    for fen in [
+        "8/8/8/4k3/8/8/2B5/4K3 w - - 0 1",
+        "8/8/8/4k3/8/8/2N5/4K3 b - - 0 1",
+    ] {
+        assert_eq!(reported_score(&only, fen, 6), "cp 0", "{fen}");
+    }
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// A rook against a bare king is won and too long to mate out at depth 6, so the root reports the
+/// table's win and the side being mated its loss, in the band and short of a mate.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_won_root_the_tables_rank_reports_the_table_s_win_and_a_lost_one_its_loss() {
+    let only = fixture_set("win-report");
+    let won = centipawns(&reported_score(&only, "8/8/8/3k4/8/8/8/R3K3 w - - 0 1", 6));
+    assert!((TB_WIN_IN_MAX_PLY..=TB_WIN).contains(&won), "won: {won}");
+    let lost = centipawns(&reported_score(&only, "8/8/8/3k4/8/8/8/R3K3 b - - 0 1", 6));
+    assert!(
+        (-TB_WIN..=-TB_WIN_IN_MAX_PLY).contains(&lost),
+        "lost: {lost}"
+    );
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// A mate the search finds outranks the table's win, so a ranked root still reports it as a mate.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_mate_the_search_finds_at_a_ranked_root_is_reported_as_the_mate() {
+    let only = fixture_set("mate-report");
+    assert_eq!(
+        reported_score(&only, "k7/8/1K6/8/8/8/7Q/8 w - - 0 1", 4),
+        "mate 1"
+    );
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// A drawn rank reads 0 whatever the search found, and a won or lost one the table's score unless
+/// the search found a mate for the side the table says wins.
+#[test]
+fn a_ranked_root_reports_the_table_s_verdict_unless_the_search_mated() {
+    for rank in [Rank::Draw, Rank::CursedWin, Rank::BlessedLoss] {
+        assert_eq!(rank.reported(304), 0);
+        assert_eq!(rank.reported(mate_in(3)), 0);
+    }
+    assert_eq!(Rank::Win.reported(517), tb_win_in(1));
+    assert_eq!(Rank::Win.reported(mate_in(3)), mate_in(3));
+    assert_eq!(Rank::Win.reported(mated_in(2)), tb_win_in(1));
+    assert_eq!(Rank::Loss.reported(-517), tb_loss_in(1));
+    assert_eq!(Rank::Loss.reported(mated_in(2)), mated_in(2));
+    assert_eq!(Rank::Loss.reported(mate_in(3)), tb_loss_in(1));
 }
 
 #[test]
