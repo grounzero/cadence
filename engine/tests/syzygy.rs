@@ -44,6 +44,16 @@ fn scratch(name: &str, files: &[&str]) -> PathBuf {
     dir
 }
 
+/// Only the tables `tests/fixtures/syzygy.sha256` names, for a gate that counts what loads and so
+/// must not see a fuller set installed beside them.
+fn fixture_set(name: &str) -> PathBuf {
+    let files: Vec<&str> = include_str!("../../tests/fixtures/syzygy.sha256")
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .collect();
+    scratch(name, &files)
+}
+
 /// Mate in one, the side to move's loss, a capture into a won ending, a pawn about to queen, and
 /// three draws: each outcome is the game's and not the table's, so a table read wrongly fails here.
 #[test]
@@ -175,7 +185,8 @@ fn the_search_probes_after_a_capture_and_scores_the_band() {
 #[test]
 #[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
 fn outside_the_tables_there_is_no_result_and_no_panic() {
-    let tables = loaded(&fixtures());
+    let only = fixture_set("cardinality");
+    let tables = loaded(&only.display().to_string());
     assert_eq!(tables.cardinality(), 4);
     let mut castling = board("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1");
     assert!(!tables.covers(&castling));
@@ -202,6 +213,7 @@ fn outside_the_tables_there_is_no_result_and_no_panic() {
     );
     assert_eq!(tables.failures(), 1);
     let _ = std::fs::remove_dir_all(spoilt);
+    let _ = std::fs::remove_dir_all(only);
 }
 
 /// A path loads the tables and prints how many; an empty one turns probing off, and every line a
@@ -209,8 +221,12 @@ fn outside_the_tables_there_is_no_result_and_no_panic() {
 #[test]
 #[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
 fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
+    let only = fixture_set("uci");
     let mut e = Engine::spawn();
-    e.send(&format!("setoption name SyzygyPath value {}", fixtures()));
+    e.send(&format!(
+        "setoption name SyzygyPath value {}",
+        only.display()
+    ));
     let said = e.sync();
     assert!(
         said.iter()
@@ -233,6 +249,7 @@ fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
     let lines = e.read_until("bestmove ");
     assert!(lines.iter().all(|l| !l.contains("tbhits")), "{lines:?}");
     e.quit();
+    let _ = std::fs::remove_dir_all(only);
 }
 
 #[test]
