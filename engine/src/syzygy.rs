@@ -10,6 +10,8 @@ use cadence_core::{Colour, Move, PieceType, generate_legal};
 use shakmaty::{CastlingMode, Chess, FromSetup as _};
 use shakmaty_syzygy::{MaybeRounded, Metric, SyzygyError, Tablebase};
 
+use crate::score::{DRAW, Score, is_mate, tb_loss_in, tb_win_in};
+
 /// The largest tables published, so the highest `SyzygyProbeLimit` that means anything.
 pub const MAX_PROBE_LIMIT: usize = 7;
 
@@ -42,6 +44,21 @@ pub enum Rank {
     /// A win the counter may not allow.
     CursedWin,
     Win,
+}
+
+impl Rank {
+    /// What a root of this rank reports: the search's own mate for the side the table says wins,
+    /// and otherwise the table's verdict, a draw wherever the fifty-move counter makes one.
+    #[must_use]
+    pub fn reported(self, searched: Score) -> Score {
+        match self {
+            Rank::Win if is_mate(searched) && searched > 0 => searched,
+            Rank::Win => tb_win_in(1),
+            Rank::Loss if is_mate(searched) && searched < 0 => searched,
+            Rank::Loss => tb_loss_in(1),
+            Rank::CursedWin | Rank::Draw | Rank::BlessedLoss => DRAW,
+        }
+    }
 }
 
 /// The root moves a table ranks best.

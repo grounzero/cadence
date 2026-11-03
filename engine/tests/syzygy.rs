@@ -324,6 +324,22 @@ fn a_mate_the_search_finds_at_a_ranked_root_is_reported_as_the_mate() {
     let _ = std::fs::remove_dir_all(only);
 }
 
+/// A drawn rank reads 0 whatever the search found, and a won or lost one the table's score unless
+/// the search found a mate for the side the table says wins.
+#[test]
+fn a_ranked_root_reports_the_table_s_verdict_unless_the_search_mated() {
+    for rank in [Rank::Draw, Rank::CursedWin, Rank::BlessedLoss] {
+        assert_eq!(rank.reported(304), 0);
+        assert_eq!(rank.reported(mate_in(3)), 0);
+    }
+    assert_eq!(Rank::Win.reported(517), tb_win_in(1));
+    assert_eq!(Rank::Win.reported(mate_in(3)), mate_in(3));
+    assert_eq!(Rank::Win.reported(mated_in(2)), tb_win_in(1));
+    assert_eq!(Rank::Loss.reported(-517), tb_loss_in(1));
+    assert_eq!(Rank::Loss.reported(mated_in(2)), mated_in(2));
+    assert_eq!(Rank::Loss.reported(mate_in(3)), tb_loss_in(1));
+}
+
 #[test]
 fn uci_declares_the_two_options() {
     let mut e = Engine::spawn();

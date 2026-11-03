@@ -12,7 +12,7 @@ use crate::eval::PawnCache;
 use crate::history::History;
 use crate::picker::Slot;
 use crate::score::{ABORTED, Score};
-use crate::syzygy::Tables;
+use crate::syzygy::{Rank, Tables};
 use crate::time::{self, Budget};
 use crate::tt::{Bound, Table};
 use crate::tune::Tunables;
@@ -104,6 +104,8 @@ pub struct Search<'a> {
     tables: Option<&'a Tables>,
     /// `None` where the root's ranking settled the result, so nothing below it probes.
     probing: Option<&'a Tables>,
+    /// What the tables read at the root, which the report prints in place of the search's score.
+    root_rank: Option<Rank>,
     /// Spelling in `info` lines only.
     chess960: bool,
     /// `bench` builds its own searches, so it never sees a setting.
@@ -238,6 +240,7 @@ impl<'a> Search<'a> {
             tt,
             tables: None,
             probing: None,
+            root_rank: None,
             chess960: false,
             tunables: Tunables::DEFAULT,
             iir_plies: depth::IIR_REDUCTION,
@@ -359,6 +362,11 @@ impl<'a> Search<'a> {
     pub fn set_tables(&mut self, tables: &'a Tables, decided: bool) {
         self.tables = Some(tables);
         self.probing = (!decided).then_some(tables);
+    }
+
+    /// Changes what the report prints and nothing the search decides.
+    pub fn set_root_rank(&mut self, rank: Option<Rank>) {
+        self.root_rank = rank;
     }
 
     /// From the next run on; a move not legal at the root is never searched.

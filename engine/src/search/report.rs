@@ -58,7 +58,10 @@ impl Search<'_> {
             "info depth {} seldepth {}{numbered} score {} nodes {} nps {nps} hashfull {}{tbhits} time {ms} pv",
             self.completed_depth,
             self.seldepth,
-            score::uci(reported.score),
+            score::uci(
+                self.root_rank
+                    .map_or(reported.score, |rank| rank.reported(reported.score))
+            ),
             self.reported_nodes(),
             self.tt.hashfull()
         );

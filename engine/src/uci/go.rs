@@ -11,7 +11,7 @@ use super::{Running, Session};
 use crate::level;
 use crate::position::Position;
 use crate::search::{Limits, Search};
-use crate::syzygy::Tables;
+use crate::syzygy::{Rank, Tables};
 use crate::tt::Table;
 use crate::tune::Tunables;
 
@@ -62,7 +62,7 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
-                    let (root_filter, decided) =
+                    let (root_filter, decided, rank) =
                         tablebase_root(tables.as_deref(), &mut board, root_filter);
                     let mut pos = Position::new(board);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
@@ -78,6 +78,7 @@ impl Session {
                         if let Some(tables) = &tables {
                             search.set_tables(tables, decided);
                         }
+                        search.set_root_rank(rank);
                         let mut best = search.run(&mut pos, &mut out);
                         if let Some(policy) = level {
                             best = search.sample(policy, &pos);
@@ -98,6 +99,7 @@ impl Session {
                             root_filter: &root_filter,
                             tables: tables.as_ref(),
                             decided,
+                            rank,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -165,6 +167,8 @@ struct ParallelGo<'a> {
     tables: Option<&'a Arc<Tables>>,
     /// The root's ranking settled the result, so no thread probes below it.
     decided: bool,
+    /// Only the primary reports, so only it is given what the tables read at the root.
+    rank: Option<Rank>,
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
@@ -184,6 +188,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         root_filter,
         tables,
         decided,
+        rank,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -239,6 +244,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     if let Some(tables) = tables {
         search.set_tables(tables, decided);
     }
+    search.set_root_rank(rank);
     #[cfg(feature = "counters")]
     report_given(0, &search);
     let mut best = search.run_in_current_generation(board, &mut out);
@@ -267,19 +273,19 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
 }
 
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says
-/// whether it settled the result. Untouched where no table covers the root.
+/// whether it settled the result and what it reads. Untouched where no table covers the root.
 fn tablebase_root(
     tables: Option<&Tables>,
     board: &mut Board,
     filter: Vec<Move>,
-) -> (Vec<Move>, bool) {
+) -> (Vec<Move>, bool, Option<Rank>) {
     let Some(tables) = tables else {
-        return (filter, false);
+        return (filter, false, None);
     };
     tables.reset_hits();
     match tables.rank_root(board, &filter) {
-        Some(ranked) => (ranked.moves, ranked.decided),
-        None => (filter, false),
+        Some(ranked) => (ranked.moves, ranked.decided, Some(ranked.best)),
+        None => (filter, false, None),
     }
 }
 
