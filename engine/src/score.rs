@@ -35,6 +35,14 @@ pub const MATE_IN_MAX_PLY: Score = MATE - MAX_PLY_SCORE;
 pub const MAX_EVAL: Score = 30_000;
 const _: () = assert!(MAX_EVAL < MATE_IN_MAX_PLY);
 
+/// A tablebase win at ply `p` scores `TB_WIN - p`, so every found mate outranks every tablebase
+/// win.
+pub const TB_WIN: Score = MATE_IN_MAX_PLY - 1;
+
+/// At or above this in magnitude a score is decided, by a mate or a table; below is an evaluation.
+pub const TB_WIN_IN_MAX_PLY: Score = TB_WIN - MAX_PLY_SCORE;
+const _: () = assert!(MAX_EVAL < TB_WIN_IN_MAX_PLY);
+
 /// A drawn position's score, at every draw rule.
 pub const DRAW: Score = 0;
 
@@ -60,10 +68,36 @@ pub const fn mate_in(ply: usize) -> Score {
     MATE - ply_score(ply)
 }
 
+/// # Panics
+///
+/// If `ply` exceeds `MAX_PLY`.
+#[inline]
+#[must_use]
+pub const fn tb_win_in(ply: usize) -> Score {
+    TB_WIN - ply_score(ply)
+}
+
+/// # Panics
+///
+/// If `ply` exceeds `MAX_PLY`.
+#[inline]
+#[must_use]
+pub const fn tb_loss_in(ply: usize) -> Score {
+    -TB_WIN + ply_score(ply)
+}
+
 #[inline]
 #[must_use]
 pub const fn is_mate(score: Score) -> bool {
     score >= MATE_IN_MAX_PLY || score <= -MATE_IN_MAX_PLY
+}
+
+/// A mate or a tablebase result: off the evaluation's scale, so no margin or learner may read it as
+/// one.
+#[inline]
+#[must_use]
+pub const fn is_decisive(score: Score) -> bool {
+    score >= TB_WIN_IN_MAX_PLY || score <= -TB_WIN_IN_MAX_PLY
 }
 
 /// Mate in moves, positive when the side to move mates: `mate 1` is mate next move, `mate -1` being
@@ -89,8 +123,8 @@ pub fn uci(score: Score) -> String {
 // The transposition table's scale
 // ---------------------------------------------------------------------------
 
-/// Elsewhere mate counts from the root, so one forced mate has a different number at every ply;
-/// the table stores it relative to the node.
+/// Elsewhere a mate or a tablebase result counts from the root, so one result has a different
+/// number at every ply; the table stores it relative to the node.
 ///
 /// # Panics
 ///
@@ -99,14 +133,14 @@ pub fn uci(score: Score) -> String {
 #[must_use]
 #[expect(clippy::cast_possible_truncation, reason = "asserted in range below")]
 pub const fn to_tt(score: Score, ply: usize) -> i16 {
-    let stored = if score >= MATE_IN_MAX_PLY {
+    let stored = if score >= TB_WIN_IN_MAX_PLY {
         score + ply_score(ply)
-    } else if score <= -MATE_IN_MAX_PLY {
+    } else if score <= -TB_WIN_IN_MAX_PLY {
         score - ply_score(ply)
     } else {
         score
     };
-    // Adding `ply` back to a mate cannot leave the range, and an evaluation is bounded by
+    // Adding `ply` back to a decided score cannot leave the range, and an evaluation is bounded by
     // `MAX_EVAL`, so neither reaches `i16`'s ends.
     debug_assert!(stored >= i16::MIN as Score && stored <= i16::MAX as Score);
     stored as i16
@@ -121,9 +155,9 @@ pub const fn to_tt(score: Score, ply: usize) -> i16 {
 #[must_use]
 pub const fn from_tt(stored: i16, ply: usize) -> Score {
     let score = stored as Score;
-    if score >= MATE_IN_MAX_PLY {
+    if score >= TB_WIN_IN_MAX_PLY {
         score - ply_score(ply)
-    } else if score <= -MATE_IN_MAX_PLY {
+    } else if score <= -TB_WIN_IN_MAX_PLY {
         score + ply_score(ply)
     } else {
         score

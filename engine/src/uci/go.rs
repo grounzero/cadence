@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use cadence_core::position::Board;
 use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
 
 use super::say::say;
@@ -10,6 +11,7 @@ use super::{Running, Session};
 use crate::level;
 use crate::position::Position;
 use crate::search::{Limits, Search};
+use crate::syzygy::Tables;
 use crate::tt::Table;
 use crate::tune::Tunables;
 
@@ -38,8 +40,9 @@ impl Session {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let ponder_hit = Arc::new(AtomicBool::new(false));
-        let board = self.board.duplicate();
+        let mut board = self.board.duplicate();
         let root_filter = search_moves(&tokens, &generate_legal(&board));
+        let tables = self.tables.clone();
         let chess960 = self.chess960;
         let level = self.level();
         let multipv = level.map_or(self.multipv, |policy| policy.candidates);
@@ -59,6 +62,8 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
+                    let (root_filter, decided) =
+                        tablebase_root(tables.as_deref(), &mut board, root_filter);
                     let mut pos = Position::new(board);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
                     let (best, pv) = if threads == 1 {
@@ -70,6 +75,9 @@ impl Session {
                         search.set_multipv(multipv);
                         search.set_tunables(tunables);
                         search.set_root_filter(&root_filter);
+                        if let Some(tables) = &tables {
+                            search.set_tables(tables, decided);
+                        }
                         let mut best = search.run(&mut pos, &mut out);
                         if let Some(policy) = level {
                             best = search.sample(policy, &pos);
@@ -88,6 +96,8 @@ impl Session {
                             level,
                             tunables,
                             root_filter: &root_filter,
+                            tables: tables.as_ref(),
+                            decided,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -152,6 +162,9 @@ struct ParallelGo<'a> {
     level: Option<level::Policy>,
     tunables: Tunables,
     root_filter: &'a [Move],
+    tables: Option<&'a Arc<Tables>>,
+    /// The root's ranking settled the result, so no thread probes below it.
+    decided: bool,
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
@@ -169,6 +182,8 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         level,
         tunables,
         root_filter,
+        tables,
+        decided,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -183,6 +198,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         let helper_tt = Arc::clone(tt);
         let helper_nodes = Arc::clone(&nodes);
         let helper_filter = root_filter.to_vec();
+        let helper_tables = tables.cloned();
         let result = std::thread::Builder::new()
             .name(format!("search-helper-{worker_index}"))
             .stack_size(SEARCH_STACK_BYTES)
@@ -196,6 +212,9 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 search.set_tunables(tunables);
                 search.set_parallel(worker_index, &helper_nodes);
                 search.set_root_filter(&helper_filter);
+                if let Some(tables) = &helper_tables {
+                    search.set_tables(tables, decided);
+                }
                 search.run_in_current_generation(&mut helper_board, &mut sink)
             });
         match result {
@@ -215,6 +234,9 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
     search.set_root_filter(root_filter);
+    if let Some(tables) = tables {
+        search.set_tables(tables, decided);
+    }
     let mut best = search.run_in_current_generation(board, &mut out);
     if let Some(policy) = level {
         best = search.sample(policy, board);
@@ -227,6 +249,23 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         let _ = helper.join();
     }
     (best, pv)
+}
+
+/// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says
+/// whether it settled the result. Untouched where no table covers the root.
+fn tablebase_root(
+    tables: Option<&Tables>,
+    board: &mut Board,
+    filter: Vec<Move>,
+) -> (Vec<Move>, bool) {
+    let Some(tables) = tables else {
+        return (filter, false);
+    };
+    tables.reset_hits();
+    match tables.rank_root(board, &filter) {
+        Some(ranked) => (ranked.moves, ranked.decided),
+        None => (filter, false),
+    }
 }
 
 /// The words that end a `searchmoves` list, which UCI lets any of them follow.

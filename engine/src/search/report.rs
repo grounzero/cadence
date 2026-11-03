@@ -50,8 +50,12 @@ impl Search<'_> {
         } else {
             String::new()
         };
+        // Only with tables loaded, so every line a run without them prints is the line it was.
+        let tbhits = self
+            .tables
+            .map_or(String::new(), |tables| format!(" tbhits {}", tables.hits()));
         let mut line = format!(
-            "info depth {} seldepth {}{numbered} score {} nodes {} nps {nps} hashfull {} time {ms} pv",
+            "info depth {} seldepth {}{numbered} score {} nodes {} nps {nps} hashfull {}{tbhits} time {ms} pv",
             self.completed_depth,
             self.seldepth,
             score::uci(reported.score),

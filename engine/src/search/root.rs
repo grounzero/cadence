@@ -171,7 +171,7 @@ impl Search<'_> {
         previous: Option<Score>,
     ) -> (Move, Score) {
         let centre = previous
-            .filter(|&p| self.multipv == 1 && depth >= ASPIRATION_DEPTH && !score::is_mate(p));
+            .filter(|&p| self.multipv == 1 && depth >= ASPIRATION_DEPTH && !score::is_decisive(p));
         let Some(centre) = centre else {
             return self.search_root(board, legal, moves, depth, out, -INFINITE, INFINITE);
         };
@@ -183,21 +183,21 @@ impl Search<'_> {
             if self.aborted {
                 return (best, score);
             }
-            // A mate score or one past the evaluation's range opens that side fully.
+            // A decided score or one past the evaluation's range opens that side fully.
             let wider = delta.saturating_mul(2);
             if score <= alpha && alpha > -INFINITE {
                 // The far bound moves halfway toward the failed one, which narrows the re-search
                 // without assuming the fail low will hold.
                 beta = alpha + (beta - alpha) / 2;
                 let far = score.saturating_sub(wider);
-                alpha = if score::is_mate(score) || far <= -score::MAX_EVAL {
+                alpha = if score::is_decisive(score) || far <= -score::MAX_EVAL {
                     -INFINITE
                 } else {
                     far
                 };
             } else if score >= beta && beta < INFINITE {
                 let far = score.saturating_add(wider);
-                beta = if score::is_mate(score) || far >= score::MAX_EVAL {
+                beta = if score::is_decisive(score) || far >= score::MAX_EVAL {
                     INFINITE
                 } else {
                     far

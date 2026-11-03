@@ -390,7 +390,7 @@ impl Search<'_> {
         Some(eval::evaluate_cached(board, &mut self.pawns) + correction)
     }
 
-    /// Disqualified: no static reading, a mate score, a noisy or absent best move, or a bound
+    /// Disqualified: no static reading, a decided score, a noisy or absent best move, or a bound
     /// pointing against the difference.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn remember_correction(
@@ -406,7 +406,7 @@ impl Search<'_> {
         let Some(eval) = self.evals[ply] else {
             return;
         };
-        if score::is_mate(best) || best_move == Move::NULL || best_move.is_noisy() {
+        if score::is_decisive(best) || best_move == Move::NULL || best_move.is_noisy() {
             return;
         }
         let usable = match bound {
