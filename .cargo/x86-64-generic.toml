@@ -7,3 +7,7 @@
 # to config.toml and not removed here fails that leg rather than leaking into the generic binary.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=-avx2,-avx,-sse4.2,-sse4.1,-ssse3,-sse3,-bmi1,-lzcnt"]
+
+# The same tier for Windows, its static C runtime kept from config.toml.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=-avx2,-avx,-sse4.2,-sse4.1,-ssse3,-sse3,-bmi1,-lzcnt"]
