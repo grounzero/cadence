@@ -23,6 +23,7 @@ use crate::picker::{self, Picker, Tables};
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
+use crate::syzygy::Wdl;
 use crate::tt::Bound;
 
 impl Search<'_> {
@@ -103,12 +104,10 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
-        if let Some(score) = cutoff {
-            return score;
-        }
-        // Before any child is searched, since a child that fails low reads it.
-        self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
+        let (tt_move, tb) = match self.lookup(board, key, depth, ply, alpha, beta) {
+            Ok(found) => found,
+            Err(score) => return score,
+        };
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
@@ -160,6 +159,7 @@ impl Search<'_> {
         self.lmp_nodes.add_if(give_up.is_some());
 
         let original_alpha = alpha;
+        alpha = alpha.max(tb.0);
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         // Written at one site above `make_move`, so every rule giving a move up is excluded unasked.
@@ -221,7 +221,7 @@ impl Search<'_> {
         }
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
-        let bound = bound_for(best, original_alpha, beta);
+        let (best, bound) = within(best, original_alpha, beta, tb);
         self.store(key, ply, depth, best, best_move, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
@@ -356,6 +356,75 @@ impl Search<'_> {
         self.tt.store(key, mv, score, stored_depth, bound, pv);
     }
 
+    /// The transposition table, then the tablebases: `Err` is the node's value, and otherwise the
+    /// table's move and the floor and ceiling the node keeps.
+    fn lookup(
+        &mut self,
+        board: &Board,
+        key: u64,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Result<(Move, (Score, Score)), Score> {
+        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
+        if let Some(score) = cutoff {
+            return Err(score);
+        }
+        // Before any child is searched, since a child that fails low reads it, and before the
+        // tablebases, whose stored entry reads it.
+        self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
+        // After the table, so a hit saves the probe, and before the static readings, which an
+        // ending the tables decide makes moot.
+        let tb = self.tablebase(board, key, depth, ply, alpha, beta)?;
+        Ok((tt_move, tb))
+    }
+
+    /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
+    /// every other node and wherever no table answers.
+    fn tablebase(
+        &mut self,
+        board: &Board,
+        key: u64,
+        depth: u32,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+    ) -> Result<(Score, Score), Score> {
+        let open = (-INFINITE, INFINITE);
+        let Some(tables) = self.probing else {
+            return Ok(open);
+        };
+        // Only after a capture or a pawn move, where the answer is exact as to the fifty-move rule:
+        // a later quiet move's position is reached through the entry this one stores.
+        if board.halfmove_clock() != 0 || !tables.covers(board) {
+            return Ok(open);
+        }
+        let Some(wdl) = tables.probe_wdl(board) else {
+            return Ok(open);
+        };
+        let (score, bound) = match wdl {
+            Wdl::Win => (score::tb_win_in(ply), Bound::Lower),
+            Wdl::Loss => (score::tb_loss_in(ply), Bound::Upper),
+            Wdl::Draw => (DRAW, Bound::Exact),
+        };
+        let cuts = match bound {
+            Bound::Exact => true,
+            Bound::Lower => score >= beta,
+            Bound::Upper => score <= alpha,
+        };
+        if cuts {
+            self.store(key, ply, depth, score, Move::NULL, bound);
+            return Err(score);
+        }
+        // A mate inside the table's territory is still searched for, and found, under the bound.
+        Ok(match bound {
+            _ if beta == alpha + 1 => open,
+            Bound::Lower => (score, INFINITE),
+            _ => (-INFINITE, score),
+        })
+    }
+
     /// The child searched with the node's own window, as the first move is and a later one that
     /// beat alpha is again.
     #[allow(clippy::too_many_arguments)]
@@ -421,7 +490,7 @@ impl Search<'_> {
     ) -> Option<Score> {
         let admitted = self.evals[ply].is_some_and(|eval| eval >= beta)
             && beta == alpha + 1
-            && !score::is_mate(beta)
+            && !score::is_decisive(beta)
             && board.plies_from_null() != 0
             && board.halfmove_clock() < 100;
         if !admitted {
@@ -448,13 +517,17 @@ impl Search<'_> {
         }
         if score >= beta {
             self.null_cutoffs.add_one();
-            return Some(if score::is_mate(score) { beta } else { score });
+            return Some(if score::is_decisive(score) {
+                beta
+            } else {
+                score
+            });
         }
         None
     }
 
     /// Each capture is screened by the quiescence search before the reduced search; a cutoff is
-    /// never on the mate scale.
+    /// never on the decided scale.
     fn probcut(
         &mut self,
         board: &mut Position,
@@ -499,7 +572,11 @@ impl Search<'_> {
             }
             if score >= raised {
                 self.probcut_cutoffs.add_one();
-                return Some(if score::is_mate(score) { raised } else { score });
+                return Some(if score::is_decisive(score) {
+                    raised
+                } else {
+                    score
+                });
             }
         }
         None
@@ -518,6 +595,18 @@ impl Searched {
 
     pub(super) fn contains(&self, index: usize) -> bool {
         self.0[index / 64] & (1 << (index % 64)) != 0
+    }
+}
+
+/// A table's floor or ceiling the moves did not pass is the node's value, held with the bound the
+/// probe gave it; fail-soft otherwise, so the bound follows the value.
+fn within(best: Score, original_alpha: Score, beta: Score, tb: (Score, Score)) -> (Score, Bound) {
+    if best < tb.0 {
+        (tb.0, Bound::Lower)
+    } else if best > tb.1 {
+        (tb.1, Bound::Upper)
+    } else {
+        (best, bound_for(best, original_alpha, beta))
     }
 }
 

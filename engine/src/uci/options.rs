@@ -7,6 +7,7 @@ use cadence_core::MAX_MOVES;
 use super::say::say;
 use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, Session};
 use crate::level;
+use crate::syzygy::{MAX_PROBE_LIMIT, Tables};
 use crate::tt::{self, Table};
 use crate::tune::{self, Param};
 
@@ -56,6 +57,10 @@ impl Session {
             // `ucinewgame`'s table half, under the name a GUI's button sends.
             self.stop_search();
             self.tt.clear();
+        } else if name.eq_ignore_ascii_case("SyzygyPath") {
+            self.set_syzygy_path(&value);
+        } else if name.eq_ignore_ascii_case("SyzygyProbeLimit") {
+            self.set_probe_limit(&value);
         } else if let Some(param) = tune::find(&name) {
             self.set_tunable(param, &value);
         }
@@ -147,6 +152,48 @@ impl Session {
             return;
         };
         self.elo = asked.clamp(level::MIN_ELO, level::MAX_ELO);
+    }
+
+    /// Empty, or `<empty>`, turns probing off. A search already running keeps the set it was
+    /// given.
+    fn set_syzygy_path(&mut self, value: &str) {
+        let value = value.trim();
+        self.syzygy_path = if value.eq_ignore_ascii_case("<empty>") {
+            String::new()
+        } else {
+            value.to_string()
+        };
+        self.load_tables();
+    }
+
+    /// Clamped, not refused, for [`Session::set_hash`]'s reason; zero turns probing off.
+    fn set_probe_limit(&mut self, value: &str) {
+        let Ok(asked) = value.trim().parse::<usize>() else {
+            say(format_args!(
+                "info string setoption SyzygyProbeLimit: `{value}` is not a number, ignoring it"
+            ));
+            return;
+        };
+        self.probe_limit = asked.min(MAX_PROBE_LIMIT);
+        self.load_tables();
+    }
+
+    /// No file is opened here: a table is read when a probe first needs it.
+    fn load_tables(&mut self) {
+        if self.syzygy_path.is_empty() {
+            self.tables = None;
+            return;
+        }
+        let (tables, problems) = Tables::load(&self.syzygy_path, self.probe_limit);
+        for problem in problems {
+            say(format_args!("info string SyzygyPath: {problem}"));
+        }
+        say(format_args!(
+            "info string SyzygyPath: {} table files, probing up to {} pieces",
+            tables.files(),
+            tables.cardinality()
+        ));
+        self.tables = (tables.cardinality() > 0).then(|| Arc::new(tables));
     }
 
     /// Clamped, not refused, for [`Session::set_hash`]'s reason.

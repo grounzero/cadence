@@ -247,6 +247,30 @@ jobs:
           grep -h '^test result:' test.log >> "$GITHUB_STEP_SUMMARY" || true
           exit "$status"
 
+      # The ignored Syzygy gates, on the tables tests/fixtures/syzygy.sha256 names, fetched from the
+      # lichess mirror and held to that list. A run that passes no test fails, so the gate cannot pass empty.
+      - name: Syzygy gates on the fixture tables
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/syzygy"
+          mkdir -p "$dir"
+          while read -r _ file; do
+            case "$file" in
+              *.rtbw) group=3-4-5-wdl ;;
+              *.rtbz) group=3-4-5-dtz ;;
+              *) echo "not a table: $file"; exit 1 ;;
+            esac
+            curl -fsS --retry 3 --retry-all-errors -o "$dir/$file" \
+              "https://tablebase.lichess.ovh/tables/standard/$group/$file"
+          done < tests/fixtures/syzygy.sha256
+          if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
+          (cd "$dir" && $hash -c "$GITHUB_WORKSPACE/tests/fixtures/syzygy.sha256")
+          CADENCE_SYZYGY_PATH="$dir" cargo test -p cadence-engine --test syzygy $CONFIG_ARG \
+            -- --ignored 2>&1 | tee syzygy.log
+          echo "### Syzygy gates" >> "$GITHUB_STEP_SUMMARY"
+          grep -h '^test result:' syzygy.log >> "$GITHUB_STEP_SUMMARY"
+          grep -q '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored' syzygy.log
+
       # The profile that ships: lto = "fat", codegen-units = 1,
       # panic = "abort", incremental = false. A release-only link failure is
       # not something to discover at deploy time.

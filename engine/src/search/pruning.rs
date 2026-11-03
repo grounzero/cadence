@@ -89,14 +89,14 @@ pub fn futility_margin(depth: u32) -> Score {
     FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
-/// Alpha on the mate scale refuses it; in check `eval` is `None`, so it cannot fire.
+/// Alpha on the decided scale refuses it; in check `eval` is `None`, so it cannot fire.
 #[must_use]
 pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
     let Some(eval) = eval else {
         return false;
     };
     depth <= FUTILITY_DEPTH
-        && !score::is_mate(alpha)
+        && !score::is_decisive(alpha)
         && eval.saturating_add(futility_margin(depth)) <= alpha
 }
 
@@ -127,7 +127,7 @@ pub fn reverse_futile(
     beta: Score,
 ) -> Option<Score> {
     let bound = eval?.saturating_sub(reverse_futility_margin(tunables, depth));
-    (!score::is_mate(beta) && bound >= beta).then_some(beta)
+    (!score::is_decisive(beta) && bound >= beta).then_some(beta)
 }
 
 /// Chosen by a shadow measurement, not tuned, with the reduction and margin: the candidate whose
@@ -148,8 +148,8 @@ pub fn probcut_bound(eval: Option<Score>, depth: u32, alpha: Score, beta: Score)
     let raised = beta.saturating_add(PROBCUT_MARGIN);
     (depth >= PROBCUT_DEPTH
         && beta == alpha + 1
-        && !score::is_mate(beta)
-        && !score::is_mate(raised))
+        && !score::is_decisive(beta)
+        && !score::is_decisive(raised))
     .then_some(raised)
 }
 

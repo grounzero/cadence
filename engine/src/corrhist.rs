@@ -5,7 +5,7 @@
 
 use cadence_core::Colour;
 
-use crate::score::Score;
+use crate::score::{self, Score};
 
 /// Enough that a game's pawn keys rarely collide, small enough to sit in cache beside the history.
 const TABLE_SLOTS: usize = 1 << 14;
@@ -18,8 +18,9 @@ pub const GRAIN: i32 = 256;
 const WEIGHT_UNIT: i32 = 256;
 pub const MAX_WEIGHT: i32 = 16;
 
-/// Keeps a corrected evaluation off the mate scale.
+/// Keeps a corrected evaluation off the decided scale, below the mates and the tablebase band.
 pub const MAX_CORRECTION: Score = 256;
+const _: () = assert!(score::MAX_EVAL + MAX_CORRECTION < score::TB_WIN_IN_MAX_PLY);
 
 /// A larger disagreement is a tactic, not an evaluation error, and would dominate the mean.
 pub const MAX_DELTA: Score = 1024;
