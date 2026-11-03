@@ -37,11 +37,11 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cadence-core"
-version = "0.5.22"
+version = "0.5.23"
 
 [[package]]
 name = "cadence-engine"
-version = "0.5.22"
+version = "0.5.23"
 dependencies = [
  "cadence-core",
  "cadence-engine",
@@ -52,14 +52,14 @@ dependencies = [
 
 [[package]]
 name = "cadence-nnue"
-version = "0.5.22"
+version = "0.5.23"
 dependencies = [
  "cadence-core",
 ]
 
 [[package]]
 name = "cadence-tools"
-version = "0.5.22"
+version = "0.5.23"
 dependencies = [
  "cadence-core",
  "cadence-nnue",
