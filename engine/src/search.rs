@@ -31,7 +31,8 @@ mod root;
 use counters::Counter;
 pub use depth::{
     REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
-    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduction,
+    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduced_depth,
+    reduction,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;

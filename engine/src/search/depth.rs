@@ -109,3 +109,10 @@ pub fn pv_reduction(r: u32, pv: bool) -> u32 {
 pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
     r + u32::from(cut && r > 0)
 }
+
+/// At least one ply. A reduction is made only from depth 3, where the child has two, so the floor
+/// never lifts a reduced search above the move's unreduced depth.
+#[must_use]
+pub fn reduced_depth(child: u32, r: u32) -> u32 {
+    child.saturating_sub(r).max(1)
+}
