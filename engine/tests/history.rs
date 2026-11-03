@@ -375,3 +375,36 @@ fn a_cutoff_debits_only_the_quiet_moves_its_node_searched() {
         s.history_debits()
     );
 }
+
+/// History lives for one search: a search after another starts from the table a fresh one would,
+/// so with the transposition table cleared the two search the same tree.
+#[test]
+fn a_second_search_starts_from_the_history_a_fresh_one_would() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let run = |s: &mut cadence_engine::search::Search<'_>, fen: &str| -> (u64, Move) {
+        tt.clear();
+        let mut b = support::position(fen);
+        let best = s.run(&mut b, &mut Vec::new());
+        (s.nodes(), best)
+    };
+    let mut alone = support::search(Limits::depth(ORDER_DEPTH), &stop, &tt);
+    let expected = run(&mut alone, MIDDLEGAME);
+
+    let kiwipete = support::standard_fen("kiwipete");
+    let mut reused = support::search(Limits::depth(ORDER_DEPTH), &stop, &tt);
+    run(&mut reused, &kiwipete);
+    let first = board(&kiwipete);
+    let us = first.side_to_move();
+    assert!(
+        generate_legal(&first)
+            .iter()
+            .any(|m| !m.is_noisy() && reused.history().get(us, m) != 0),
+        "the first search left no history, so the second could not show it cleared"
+    );
+    assert_eq!(
+        run(&mut reused, MIDDLEGAME),
+        expected,
+        "a second search did not search the tree a fresh one did"
+    );
+}

@@ -215,6 +215,8 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 if let Some(tables) = &helper_tables {
                     search.set_tables(tables, decided);
                 }
+                #[cfg(feature = "counters")]
+                report_given(worker_index, &search);
                 search.run_in_current_generation(&mut helper_board, &mut sink)
             });
         match result {
@@ -237,6 +239,8 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     if let Some(tables) = tables {
         search.set_tables(tables, decided);
     }
+    #[cfg(feature = "counters")]
+    report_given(0, &search);
     let mut best = search.run_in_current_generation(board, &mut out);
     if let Some(policy) = level {
         best = search.sample(policy, board);
@@ -249,6 +253,17 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         let _ = helper.join();
     }
     (best, pv)
+}
+
+/// Test builds only: what a thread's search holds as it starts, so a gate can hold every helper to
+/// the primary.
+#[cfg(feature = "counters")]
+fn report_given(worker_index: usize, search: &Search<'_>) {
+    say(format_args!(
+        "info string search thread {worker_index} given {:?} {:?}",
+        search.limits(),
+        search.tunables()
+    ));
 }
 
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says

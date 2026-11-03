@@ -359,6 +359,12 @@ impl Search<'_> {
         &self.limits
     }
 
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn tunables(&self) -> &crate::tune::Tunables {
+        &self.tunables
+    }
+
     #[must_use]
     pub fn stop_requested(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
