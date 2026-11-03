@@ -8,6 +8,7 @@
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=-avx2,-avx,-sse4.2,-sse4.1,-ssse3,-sse3,-bmi1,-lzcnt"]
 
-# The same tier for Windows, its static C runtime kept from config.toml.
+# The same tier for Windows, whose own baseline already holds SSE3, with config.toml's static C
+# runtime kept.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=-avx2,-avx,-sse4.2,-sse4.1,-ssse3,-sse3,-bmi1,-lzcnt"]
+rustflags = ["-C", "target-feature=-avx2,-avx,-sse4.2,-sse4.1,-ssse3,-bmi1,-lzcnt"]
