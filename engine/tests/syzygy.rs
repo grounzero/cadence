@@ -232,6 +232,39 @@ fn outside_the_tables_there_is_no_result_and_no_panic() {
     let _ = std::fs::remove_dir_all(only);
 }
 
+/// Two directories in one path read as one set, split at the platform's separator, `:` or `;` on
+/// Windows, and the other separator is part of a name.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn two_directories_split_at_the_platform_s_separator_read_as_one_set() {
+    let wdl = wdl_only("dirs-wdl");
+    let dtz = scratch(
+        "dirs-dtz",
+        &[
+            "KBvK.rtbz",
+            "KNvK.rtbz",
+            "KPvK.rtbz",
+            "KQvK.rtbz",
+            "KRvK.rtbz",
+            "KRvKB.rtbz",
+        ],
+    );
+    let (separator, other) = if cfg!(windows) {
+        (';', ':')
+    } else {
+        (':', ';')
+    };
+    let tables = loaded(&format!("{}{separator}{}", wdl.display(), dtz.display()));
+    assert_eq!(tables.files(), 12);
+    let mut won = board("8/8/8/3k4/8/8/8/R3K3 w - - 0 1");
+    assert!(tables.rank_root(&mut won, &[]).unwrap().decided);
+    let (tables, problems) = Tables::load(&format!("{}{other}{}", wdl.display(), dtz.display()), 7);
+    assert_eq!(tables.files(), 0);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    let _ = std::fs::remove_dir_all(wdl);
+    let _ = std::fs::remove_dir_all(dtz);
+}
+
 /// A table that fails to open is not opened again at the next probe, so it stays unread when it
 /// reappears until the path is set again.
 #[test]
@@ -347,14 +380,22 @@ fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
 
 /// Every score the iterations print from `fen` at `depth`, with the tables in `dir`, and the move.
 fn scores(dir: &Path, fen: &str, depth: u32) -> (Vec<String>, String) {
+    scores_after(dir, &[], fen, &format!("go depth {depth}"))
+}
+
+/// The same after the options given, for the `go` line given.
+fn scores_after(dir: &Path, options: &[&str], fen: &str, go: &str) -> (Vec<String>, String) {
     let mut e = Engine::spawn();
     e.send(&format!(
         "setoption name SyzygyPath value {}",
         dir.display()
     ));
+    for option in options {
+        e.send(option);
+    }
     e.sync();
     e.send(&format!("position fen {fen}"));
-    e.send(&format!("go depth {depth}"));
+    e.send(go);
     let lines = e.read_until("bestmove ");
     e.quit();
     let scores = lines
@@ -510,6 +551,104 @@ fn a_wdl_only_root_reports_the_table_only_where_the_counter_leaves_it_exact() {
         );
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Every thread is given the primary's root filter and its probing, whether the tables rank the
+/// root or the root is past the limit and only the search below it probes.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn every_search_thread_is_given_the_primary_s_filter_and_probing_with_tables() {
+    let only = fixture_set("threads");
+    let path = format!("setoption name SyzygyPath value {}", only.display());
+    for (limit, probes) in [(7, false), (3, true)] {
+        let limit = format!("setoption name SyzygyProbeLimit value {limit}");
+        let (_, lines) = Engine::go_within(
+            &[
+                &path,
+                &limit,
+                "setoption name Threads value 3",
+                "position fen 8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1",
+            ],
+            "go depth 4",
+            std::time::Duration::from_secs(20),
+        );
+        let given: Vec<&str> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("info string search thread "))
+            .filter_map(|l| l.split_once(" given ").map(|(_, g)| g))
+            .collect();
+        assert_eq!(given.len(), 3, "{lines:?}");
+        assert!(given.iter().all(|g| *g == given[0]), "{given:?}");
+        assert!(
+            given[0].ends_with(&format!(" probes {probes}")),
+            "{given:?}"
+        );
+        // A ranked root keeps its two captures; past the limit the root is unfiltered.
+        assert_eq!(given[0].contains(" filter [] "), probes, "{given:?}");
+    }
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// `searchmoves` narrows the tables' ranking too, so a won root searched only through moves that
+/// draw reports the draw and plays one of them.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn searchmoves_with_tables_ranks_and_reports_only_the_moves_named() {
+    let only = fixture_set("searchmoves");
+    let fen = "8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1";
+    let mut b = board(fen);
+    let legal = generate_legal(&b);
+    let named = [
+        parse_uci(&legal, "a1b1").unwrap(),
+        parse_uci(&legal, "a1a2").unwrap(),
+    ];
+    let tables = loaded(&only.display().to_string());
+    assert_eq!(tables.rank_root(&mut b, &[]).unwrap().best, Rank::Win);
+    assert_eq!(tables.rank_root(&mut b, &named).unwrap().best, Rank::Draw);
+    let (scores, best) = scores_after(&only, &[], fen, "go depth 6 searchmoves a1b1 a1a2");
+    assert_eq!(
+        scores.last().map(String::as_str),
+        Some("cp 0"),
+        "{scores:?}"
+    );
+    assert!(["a1b1", "a1a2"].contains(&best.as_str()), "{best}");
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// `go mate` stops on the mate the search finds at a ranked root and reports it as the mate, and a
+/// lost root the search finds mated reports the mate against it.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_ranked_root_reports_a_mate_for_either_side_under_go_mate_or_depth() {
+    let only = fixture_set("mates");
+    let (scores, best) = scores_after(&only, &[], "k7/8/1K6/8/8/8/7Q/8 w - - 0 1", "go mate 1");
+    assert_eq!(
+        scores.last().map(String::as_str),
+        Some("mate 1"),
+        "{scores:?}"
+    );
+    assert_eq!(best, "h2h8");
+    let (scores, _) = scores_after(&only, &[], "k7/8/2K5/8/8/8/7Q/8 b - - 0 1", "go depth 8");
+    let last = scores.last().cloned().unwrap_or_default();
+    assert!(last.starts_with("mate -"), "{scores:?}");
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// Past the probe limit the root is not ranked, and a win the search reads from a table below it is
+/// printed as the band's large centipawn score, short of a mate.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn an_unranked_root_prints_a_table_win_found_below_it_in_the_band() {
+    let only = fixture_set("unranked");
+    let (scores, _) = scores_after(
+        &only,
+        &["setoption name SyzygyProbeLimit value 3"],
+        "8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1",
+        "go depth 6",
+    );
+    let won = centipawns(scores.last().expect("a score"));
+    assert!((TB_WIN_IN_MAX_PLY..=TB_WIN).contains(&won), "{scores:?}");
+    let _ = std::fs::remove_dir_all(only);
 }
 
 /// A drawn rank reads 0 whatever the search found, and a won or lost one the table's score unless
