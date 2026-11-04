@@ -1,13 +1,15 @@
 # Release binaries from a version tag: six builds, their checksums and a provenance attestation for
-# each, drafted for publishing by hand. A manual run or a change to this file only builds and checks,
-# unless a manual run names an existing tag and asks for the draft, which re-runs a failed release.
+# each, drafted for publishing by hand, a release candidate as a pre-release. A manual run or a
+# change to this file only builds and checks, unless a manual run names an existing tag and asks for
+# the draft, which re-runs a failed release.
 
 name: release
 
 on:
   push:
-    # A `+n` tag names a base for a test and is not a release, so it never matches.
-    tags: ['[0-9]+.[0-9]+.[0-9]+']
+    # A release and a candidate for one, `x.y.z-rc.N`; a `+n` tag names a base for a test and is not
+    # a release, so it never matches.
+    tags: ['[0-9]+.[0-9]+.[0-9]+', '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+']
   pull_request:
     paths: ['.github/workflows/release.yml']
   workflow_dispatch:
@@ -45,6 +47,7 @@ jobs:
       ref: ${{ steps.read.outputs.ref }}
       commit: ${{ steps.read.outputs.commit }}
       publish: ${{ steps.read.outputs.publish }}
+      prerelease: ${{ steps.read.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,9 +71,11 @@ jobs:
             tag="$INPUT_TAG"
           fi
           publish=false
+          prerelease=false
           if [ -n "$tag" ]; then
-            echo "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' \
+            echo "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?' \
               || { echo "::error::$tag is not a version tag"; exit 1; }
+            case "$tag" in *-rc.*) prerelease=true ;; esac
             git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
             [ "$(git cat-file -t "refs/tags/$tag")" = tag ] \
               || { echo "::error::$tag is not an annotated tag"; exit 1; }
@@ -84,7 +89,7 @@ jobs:
             if [ "$GITHUB_EVENT_NAME" = push ] || [ "$INPUT_DRAFT" = true ]; then
               publish=true
             fi
-            echo "the tag $tag, built by the workflow at $GITHUB_REF; draft release: $publish"
+            echo "the tag $tag, built by the workflow at $GITHUB_REF; draft release: $publish; pre-release: $prerelease"
           else
             [ "$INPUT_DRAFT" != true ] || { echo "::error::a draft needs a tag"; exit 1; }
             expected="$version-dev-$(git rev-parse --short HEAD)"
@@ -96,6 +101,7 @@ jobs:
           echo "ref=${tag:+refs/tags/$tag}" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "the binaries must call themselves Cadence $expected"
 
   build:
@@ -315,6 +321,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
           COMMIT: ${{ needs.version.outputs.commit }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -eu
           found=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
@@ -323,8 +330,14 @@ jobs:
             echo "::error::$VERSION is published, and a re-run never changes a published release"
             exit 1
           fi
+          kind=(--draft --verify-tag)
+          [ "${PRERELEASE:-false}" != true ] || kind+=(--prerelease)
           {
             echo "Cadence $VERSION, built from $COMMIT at the tag $VERSION. Bench: $(tr -d '[:space:]' < bench.txt) nodes."
+            if [ "${PRERELEASE:-false}" = true ]; then
+              echo
+              echo "A release candidate, published as a pre-release."
+            fi
             echo
             echo "Six binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for older processors, Linux aarch64 and macOS arm64. SHA256SUMS lists their checksums, and each carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
@@ -341,5 +354,5 @@ jobs:
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
             echo "replaced the earlier draft $id"
           done
-          gh release create "$VERSION" --draft --verify-tag --title "Cadence $VERSION" \
+          gh release create "$VERSION" "${kind[@]}" --title "Cadence $VERSION" \
             --notes-file notes.md dist/cadence-* dist/SHA256SUMS LICENSE
