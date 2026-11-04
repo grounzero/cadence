@@ -284,7 +284,7 @@ fn tablebase_root(
     };
     tables.reset_hits();
     match tables.rank_root(board, &filter) {
-        Some(ranked) => (ranked.moves, ranked.decided, Some(ranked.best)),
+        Some(ranked) => (ranked.moves, ranked.decided, Some(ranked.verdict)),
         None => (filter, false, None),
     }
 }

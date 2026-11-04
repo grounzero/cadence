@@ -17,6 +17,7 @@ use cadence_engine::score::{
 };
 use cadence_engine::search::{Limits, futile_node, probcut_bound};
 use cadence_engine::syzygy::{Rank, Tables, Wdl};
+use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded};
 use support::{Engine, table};
 
 fn fixtures() -> String {
@@ -42,6 +43,21 @@ fn scratch(name: &str, files: &[&str]) -> PathBuf {
         std::fs::copy(PathBuf::from(fixtures()).join(file), dir.join(file)).unwrap();
     }
     dir
+}
+
+/// The fixture set's six WDL files and none of its distances.
+fn wdl_only(name: &str) -> PathBuf {
+    scratch(
+        name,
+        &[
+            "KBvK.rtbw",
+            "KNvK.rtbw",
+            "KPvK.rtbw",
+            "KQvK.rtbw",
+            "KRvK.rtbw",
+            "KRvKB.rtbw",
+        ],
+    )
 }
 
 /// Only the tables `tests/fixtures/syzygy.sha256` names, for a gate that counts what loads and so
@@ -252,8 +268,8 @@ fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
     let _ = std::fs::remove_dir_all(only);
 }
 
-/// The score the last finished iteration prints from `fen` at `depth`, with the tables in `dir`.
-fn reported_score(dir: &Path, fen: &str, depth: u32) -> String {
+/// Every score the iterations print from `fen` at `depth`, with the tables in `dir`, and the move.
+fn scores(dir: &Path, fen: &str, depth: u32) -> (Vec<String>, String) {
     let mut e = Engine::spawn();
     e.send(&format!(
         "setoption name SyzygyPath value {}",
@@ -264,14 +280,26 @@ fn reported_score(dir: &Path, fen: &str, depth: u32) -> String {
     e.send(&format!("go depth {depth}"));
     let lines = e.read_until("bestmove ");
     e.quit();
-    let last = lines
+    let scores = lines
         .iter()
-        .rev()
-        .find(|l| l.starts_with("info depth"))
-        .unwrap_or_else(|| panic!("{fen}: no info line in {lines:?}"));
-    let words: Vec<&str> = last.split_whitespace().collect();
-    let at = words.iter().position(|&w| w == "score").expect("a score");
-    format!("{} {}", words[at + 1], words[at + 2])
+        .filter(|l| l.starts_with("info depth"))
+        .map(|l| {
+            let words: Vec<&str> = l.split_whitespace().collect();
+            let at = words.iter().position(|&w| w == "score").expect("a score");
+            format!("{} {}", words[at + 1], words[at + 2])
+        })
+        .collect();
+    let best = lines.last().and_then(|l| l.split_whitespace().nth(1));
+    (scores, best.unwrap_or_default().to_string())
+}
+
+/// The score the last finished iteration prints from `fen` at `depth`, with the tables in `dir`.
+fn reported_score(dir: &Path, fen: &str, depth: u32) -> String {
+    let (scores, _) = scores(dir, fen, depth);
+    scores
+        .last()
+        .cloned()
+        .unwrap_or_else(|| panic!("{fen}: no info line"))
 }
 
 fn centipawns(score: &str) -> Score {
@@ -324,6 +352,89 @@ fn a_mate_the_search_finds_at_a_ranked_root_is_reported_as_the_mate() {
     let _ = std::fs::remove_dir_all(only);
 }
 
+/// At a counter of 99 no move here mates or zeroes, so every win runs past the hundredth half-move:
+/// the WDL files alone must rank and report the draw the counter makes, for either side.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_wdl_only_root_at_the_counter_s_end_ranks_and_reports_the_draw() {
+    let dir = wdl_only("counter-end");
+    let tables = loaded(&dir.display().to_string());
+    let fen = "8/8/8/3k4/8/8/7Q/K7 w - - 99 80";
+    let mut b = board(fen);
+    let ranked = tables.rank_root(&mut b, &[]).unwrap();
+    assert!(!ranked.decided);
+    assert_eq!(ranked.best, Rank::CursedWin);
+    let hanging = parse_uci(&generate_legal(&b), "h2d6").unwrap();
+    assert!(!ranked.moves.contains(&hanging));
+    for fen in [fen, "8/8/8/3k4/8/8/7q/K7 w - - 99 80"] {
+        let (scores, best) = scores(&dir, fen, 6);
+        assert!(
+            !scores.is_empty() && scores.iter().all(|s| s == "cp 0"),
+            "{fen}: {scores:?}"
+        );
+        assert_ne!(best, "h2d6", "{fen}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The fixtures' rook endings store rounded distances, so a move whose lands on the hundredth
+/// half-move ranks above every move certain to be drawn or lost beyond it, for either side.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_rounded_distance_on_the_hundredth_half_move_outranks_the_certain_outcomes_beyond_it() {
+    let only = fixture_set("rounded");
+    let tables = loaded(&only.display().to_string());
+    // Ra5 and Ke2 read 26 plies to zeroing and every other move 28.
+    let won = "8/8/8/3k4/8/8/8/R3K3 w - - 73 80";
+    let mut b = board(won);
+    let ranked = tables.rank_root(&mut b, &[]).unwrap();
+    assert_eq!(ranked.best, Rank::MaybeWin);
+    let legal = generate_legal(&b);
+    assert_eq!(ranked.moves.len(), 2, "{:?}", ranked.moves);
+    for m in ["a1a5", "e1e2"] {
+        assert!(ranked.moves.contains(&parse_uci(&legal, m).unwrap()), "{m}");
+    }
+    // Kb2 reads 17 plies to the rook side's zeroing and Ka2 11, so only Kb2 may hold.
+    let lost = "8/8/8/8/8/8/8/K1rk4 w - - 82 80";
+    let mut b = board(lost);
+    let ranked = tables.rank_root(&mut b, &[]).unwrap();
+    assert_eq!(ranked.best, Rank::MaybeLoss);
+    assert_eq!(
+        ranked.moves,
+        vec![parse_uci(&generate_legal(&b), "a1b2").unwrap()]
+    );
+    for fen in [won, lost] {
+        let score = reported_score(&only, fen, 6);
+        let banded = score.starts_with("cp ")
+            && (TB_WIN_IN_MAX_PLY..=TB_WIN).contains(&centipawns(&score).abs());
+        assert!(!banded, "{fen}: {score}");
+    }
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// Part-way through the counter the WDL files cannot say whether a win outlasts it, so the root
+/// reports the search's own score; at a zeroed counter, or through a zeroing move, the table's.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_wdl_only_root_reports_the_table_only_where_the_counter_leaves_it_exact() {
+    let dir = wdl_only("counter-part");
+    let won = centipawns(&reported_score(&dir, "8/8/8/3k4/8/8/8/R3K3 w - - 40 60", 6));
+    assert!(won > 0 && won < TB_WIN_IN_MAX_PLY, "won: {won}");
+    let lost = centipawns(&reported_score(&dir, "8/8/8/3k4/8/8/8/R3K3 b - - 40 60", 6));
+    assert!(lost < 0 && lost > -TB_WIN_IN_MAX_PLY, "lost: {lost}");
+    for fen in [
+        "8/8/8/3k4/8/8/8/R3K3 w - - 0 1",
+        "8/8/8/8/8/8/1b2R3/K5k1 w - - 40 60",
+    ] {
+        let score = centipawns(&reported_score(&dir, fen, 6));
+        assert!(
+            (TB_WIN_IN_MAX_PLY..=TB_WIN).contains(&score),
+            "{fen}: {score}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A drawn rank reads 0 whatever the search found, and a won or lost one the table's score unless
 /// the search found a mate for the side the table says wins.
 #[test]
@@ -338,6 +449,102 @@ fn a_ranked_root_reports_the_table_s_verdict_unless_the_search_mated() {
     assert_eq!(Rank::Loss.reported(-517), tb_loss_in(1));
     assert_eq!(Rank::Loss.reported(mated_in(2)), mated_in(2));
     assert_eq!(Rank::Loss.reported(mate_in(3)), tb_loss_in(1));
+}
+
+/// The side to move's outcome, read for the side that moved into it.
+fn for_mover(outcome: AmbiguousWdl) -> Rank {
+    match outcome {
+        AmbiguousWdl::Loss => Rank::Win,
+        AmbiguousWdl::MaybeLoss => Rank::MaybeWin,
+        AmbiguousWdl::BlessedLoss => Rank::CursedWin,
+        AmbiguousWdl::Draw => Rank::Draw,
+        AmbiguousWdl::CursedWin => Rank::BlessedLoss,
+        AmbiguousWdl::MaybeWin => Rank::MaybeLoss,
+        AmbiguousWdl::Win => Rank::Loss,
+    }
+}
+
+/// A rounded distance may be a ply longer than it reads, so one landing on the hundredth half-move
+/// ranks between the two outcomes it may be, on either side and at any counter.
+#[test]
+fn a_distance_at_the_hundredth_half_move_ranks_by_whether_it_was_rounded() {
+    use MaybeRounded::{Precise, Rounded};
+    let cases = [
+        (Precise(Dtz(-99)), 1, Rank::Win),
+        (Precise(Dtz(-100)), 1, Rank::CursedWin),
+        (Rounded(Dtz(-98)), 1, Rank::Win),
+        (Rounded(Dtz(-99)), 1, Rank::MaybeWin),
+        (Rounded(Dtz(-100)), 1, Rank::CursedWin),
+        (Rounded(Dtz(-100)), 0, Rank::MaybeWin),
+        (Precise(Dtz(99)), 1, Rank::Loss),
+        (Precise(Dtz(100)), 1, Rank::BlessedLoss),
+        (Rounded(Dtz(98)), 1, Rank::Loss),
+        (Rounded(Dtz(99)), 1, Rank::MaybeLoss),
+        (Rounded(Dtz(100)), 1, Rank::BlessedLoss),
+        (Rounded(Dtz(100)), 0, Rank::MaybeLoss),
+        (Precise(Dtz(0)), 37, Rank::Draw),
+    ];
+    for (found, counter, rank) in cases {
+        assert_eq!(
+            Rank::from_distance(found, counter),
+            rank,
+            "{found:?} at {counter}"
+        );
+    }
+}
+
+/// Wherever the counter has run, a distance ranks as the crate's own outcome for it reads.
+#[test]
+fn a_distance_ranks_as_the_crate_reads_it_once_the_counter_has_run() {
+    for counter in 1..=120 {
+        for plies in -130..=130 {
+            for found in [
+                MaybeRounded::Precise(Dtz(plies)),
+                MaybeRounded::Rounded(Dtz(plies)),
+            ] {
+                assert_eq!(
+                    Rank::from_distance(found, counter),
+                    for_mover(AmbiguousWdl::from_dtz_and_halfmoves(found, counter)),
+                    "{found:?} at {counter}"
+                );
+            }
+        }
+    }
+}
+
+/// A WDL table answers as though the move zeroed the counter, so a win or a loss it reads is settled
+/// only with the counter at zero or at a hundred half-moves.
+#[test]
+fn an_outcome_without_a_distance_is_settled_only_at_the_counter_s_ends() {
+    use shakmaty_syzygy::Wdl as W;
+    let cases = [
+        (W::Loss, 0, Rank::Win),
+        (W::Loss, 1, Rank::MaybeWin),
+        (W::Loss, 99, Rank::MaybeWin),
+        (W::Loss, 100, Rank::CursedWin),
+        (W::Win, 0, Rank::Loss),
+        (W::Win, 50, Rank::MaybeLoss),
+        (W::Win, 100, Rank::BlessedLoss),
+        (W::BlessedLoss, 40, Rank::CursedWin),
+        (W::CursedWin, 40, Rank::BlessedLoss),
+        (W::Draw, 100, Rank::Draw),
+    ];
+    for (wdl, counter, rank) in cases {
+        assert_eq!(
+            Rank::from_outcome(wdl, counter),
+            rank,
+            "{wdl:?} at {counter}"
+        );
+    }
+}
+
+/// The tables cannot settle an unsettled rank, so the root reports what the search found.
+#[test]
+fn an_unsettled_rank_reports_the_search_s_own_score() {
+    for searched in [517, -517, 0, mate_in(3), mated_in(2)] {
+        assert_eq!(Rank::MaybeWin.reported(searched), searched);
+        assert_eq!(Rank::MaybeLoss.reported(searched), searched);
+    }
 }
 
 #[test]

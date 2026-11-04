@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, PieceType, generate_legal};
 use shakmaty::{CastlingMode, Chess, FromSetup as _};
-use shakmaty_syzygy::{MaybeRounded, Metric, SyzygyError, Tablebase};
+use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Metric, SyzygyError, Tablebase};
 
 use crate::score::{DRAW, Score, is_mate, tb_loss_in, tb_win_in};
 
@@ -34,15 +34,20 @@ pub struct Tables {
     failures: AtomicU64,
 }
 
-/// A root move's outcome for the side that plays it, under the fifty-move counter it is played at.
+/// A root move's outcome for the side that plays it, under the fifty-move counter it is played at,
+/// ordered as the crate orders its outcomes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
     Loss,
+    /// A loss the counter may save, which the table cannot settle.
+    MaybeLoss,
     /// A loss the counter saves.
     BlessedLoss,
     Draw,
-    /// A win the counter may not allow.
+    /// A win the counter does not allow.
     CursedWin,
+    /// A win the counter may not allow, which the table cannot settle.
+    MaybeWin,
     Win,
 }
 
@@ -55,8 +60,48 @@ impl Rank {
             Rank::Win if is_mate(searched) && searched > 0 => searched,
             Rank::Win => tb_win_in(1),
             Rank::Loss if is_mate(searched) && searched < 0 => searched,
-            Rank::Loss => tb_loss_in(1),
-            Rank::CursedWin | Rank::Draw | Rank::BlessedLoss => DRAW,
+            Rank::Loss | Rank::MaybeLoss => tb_loss_in(1),
+            Rank::CursedWin | Rank::MaybeWin | Rank::Draw | Rank::BlessedLoss => DRAW,
+        }
+    }
+
+    /// The rank of a move into a position whose side to move is `found` plies from zeroing, the
+    /// move leaving the counter at `counter`.
+    #[must_use]
+    pub fn from_distance(found: MaybeRounded<Dtz>, counter: u32) -> Rank {
+        // A rounded distance may be one ply longer than it reads, so a win is kept only if that
+        // longer one fits too.
+        let (plies, rounded) = match found {
+            MaybeRounded::Rounded(d) => (i64::from(d.0), 1),
+            MaybeRounded::Precise(d) => (i64::from(d.0), 0),
+        };
+        let counter = i64::from(counter);
+        match plies {
+            0 => Rank::Draw,
+            p if p < 0 && counter - p + rounded <= 100 => Rank::Win,
+            p if p < 0 => Rank::CursedWin,
+            p if counter + p > 100 => Rank::BlessedLoss,
+            _ => Rank::Loss,
+        }
+    }
+
+    /// The same from what a WDL table holds, the outcome for the side to move as though the move
+    /// had zeroed the counter.
+    #[must_use]
+    pub fn from_outcome(wdl: shakmaty_syzygy::Wdl, _counter: u32) -> Rank {
+        Rank::for_mover(AmbiguousWdl::from(wdl))
+    }
+
+    /// The side to move's outcome, read for the side that moved into it.
+    fn for_mover(outcome: AmbiguousWdl) -> Rank {
+        match outcome {
+            AmbiguousWdl::Loss => Rank::Win,
+            AmbiguousWdl::MaybeLoss => Rank::MaybeWin,
+            AmbiguousWdl::BlessedLoss => Rank::CursedWin,
+            AmbiguousWdl::Draw => Rank::Draw,
+            AmbiguousWdl::CursedWin => Rank::BlessedLoss,
+            AmbiguousWdl::MaybeWin => Rank::MaybeLoss,
+            AmbiguousWdl::Win => Rank::Loss,
         }
     }
 }
@@ -65,6 +110,8 @@ impl Rank {
 pub struct Ranked {
     pub moves: Vec<Move>,
     pub best: Rank,
+    /// What the root reports.
+    pub verdict: Rank,
     /// Ranked by distance to zeroing, so the result is settled and a probe in the search would only
     /// flatten the kept moves' scores into one band.
     pub decided: bool,
@@ -181,6 +228,7 @@ impl Tables {
         Some(Ranked {
             moves,
             best,
+            verdict: best,
             decided,
         })
     }
@@ -209,30 +257,14 @@ impl Tables {
             return Ok(Rank::Draw);
         }
         let pos = to_chess(board).ok_or(Missing::Other)?;
-        if !dtz {
-            let wdl = self.counted(self.tablebase.probe_wdl_after_zeroing(&pos))?;
-            return Ok(match wdl {
-                shakmaty_syzygy::Wdl::Loss => Rank::Win,
-                shakmaty_syzygy::Wdl::BlessedLoss => Rank::CursedWin,
-                shakmaty_syzygy::Wdl::Draw => Rank::Draw,
-                shakmaty_syzygy::Wdl::CursedWin => Rank::BlessedLoss,
-                shakmaty_syzygy::Wdl::Win => Rank::Loss,
-            });
-        }
-        let found = self.counted(self.tablebase.probe_dtz(&pos))?;
-        // A rounded distance may be one ply longer than it reads, so a win is kept only if that
-        // longer one fits too.
-        let (plies, rounded) = match found {
-            MaybeRounded::Rounded(d) => (d.0, 1),
-            MaybeRounded::Precise(d) => (d.0, 0),
-        };
-        let counter = i32::from(board.halfmove_clock());
-        Ok(match plies {
-            0 => Rank::Draw,
-            p if p < 0 && counter - p + rounded <= 100 => Rank::Win,
-            p if p < 0 => Rank::CursedWin,
-            p if counter + p > 100 => Rank::BlessedLoss,
-            _ => Rank::Loss,
+        let counter = u32::from(board.halfmove_clock());
+        Ok(if dtz {
+            Rank::from_distance(self.counted(self.tablebase.probe_dtz(&pos))?, counter)
+        } else {
+            Rank::from_outcome(
+                self.counted(self.tablebase.probe_wdl_after_zeroing(&pos))?,
+                counter,
+            )
         })
     }
 
