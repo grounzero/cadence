@@ -61,6 +61,13 @@ quit
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
 
+Cadence keeps each tablebase file open once it has read it, until `SyzygyPath`
+is set again. So the system's limit on open files must be above the number of
+files. The 3-4-5 piece set is 290 files, and macOS starts programs with a
+limit of 256. Raise it with `ulimit -n` in the shell that starts the engine or
+the GUI. A file that cannot be read is named in an `info string`, and the
+search goes on without it.
+
 ## Strength
 
 There are two numbers here. They come from different places and cannot be
