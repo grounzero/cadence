@@ -3,11 +3,16 @@
 //! Syzygy tables, probed through `shakmaty-syzygy` on a copy of the board in that crate's types.
 //! Nothing is loaded until a path is set, so a search without one is the search it always was.
 
+use std::collections::BTreeSet;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, PieceType, generate_legal};
 use shakmaty::{CastlingMode, Chess, FromSetup as _};
+use shakmaty_syzygy::filesystem::{Filesystem, OsFilesystem, RandomAccessFile};
 use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Metric, SyzygyError, Tablebase};
 
 use crate::score::{DRAW, Score, is_mate, tb_loss_in, tb_win_in};
@@ -32,6 +37,38 @@ pub struct Tables {
     cardinality: usize,
     hits: AtomicU64,
     failures: AtomicU64,
+    /// The tables a probe has failed on, each named once.
+    named: Mutex<BTreeSet<String>>,
+}
+
+/// The crate keeps every table it opens for as long as the set lives, so a second open of a path
+/// follows a failure: refused here, so a failed table costs one system call and not one per probe.
+#[derive(Default)]
+struct OpenOnce {
+    os: OsFilesystem,
+    opened: Mutex<BTreeSet<PathBuf>>,
+}
+
+impl Filesystem for OpenOnce {
+    fn regular_file_size(&self, path: &Path) -> io::Result<u64> {
+        self.os.regular_file_size(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        self.os.read_dir(path)
+    }
+
+    fn open(&self, path: &Path) -> io::Result<Box<dyn RandomAccessFile>> {
+        let first = self
+            .opened
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(path.to_path_buf());
+        if !first {
+            return Err(io::Error::other("failed before, so not opened again"));
+        }
+        self.os.open(path)
+    }
 }
 
 /// A root move's outcome for the side that plays it, under the fifty-move counter it is played at,
@@ -148,11 +185,13 @@ pub struct Ranked {
 
 impl Tables {
     /// Every directory in `paths`, separated as UCI separates them: `;` on Windows and `:`
-    /// elsewhere. One that cannot be read is named in the second value and the rest are kept.
+    /// elsewhere. A directory or a file that cannot be read is named in the second value and the
+    /// rest are kept.
     #[must_use]
     pub fn load(paths: &str, limit: usize) -> (Tables, Vec<String>) {
         let separator = if cfg!(windows) { ';' } else { ':' };
-        let mut tablebase = Tablebase::new();
+        let filesystem = Arc::new(OpenOnce::default());
+        let mut tablebase = Tablebase::with_filesystem(filesystem.clone());
         let mut files = 0;
         let mut problems = Vec::new();
         for dir in paths
@@ -160,9 +199,21 @@ impl Tables {
             .map(str::trim)
             .filter(|d| !d.is_empty())
         {
-            match tablebase.add_directory(dir) {
-                Ok(n) => files += n,
-                Err(e) => problems.push(format!("{dir}: {e}")),
+            // File by file, since the crate's own scan of a directory stops at its first bad file.
+            let mut entries = match filesystem.read_dir(Path::new(dir)) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    problems.push(format!("{dir}: {e}"));
+                    continue;
+                }
+            };
+            entries.sort();
+            for entry in entries {
+                match tablebase.add_file(&entry) {
+                    Ok(()) => files += 1,
+                    Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
+                    Err(e) => problems.push(format!("{}: {e}", entry.display())),
+                }
             }
         }
         let cardinality = limit.min(tablebase.max_pieces());
@@ -172,6 +223,7 @@ impl Tables {
             cardinality,
             hits: AtomicU64::new(0),
             failures: AtomicU64::new(0),
+            named: Mutex::new(BTreeSet::new()),
         };
         (tables, problems)
     }
@@ -323,6 +375,7 @@ impl Tables {
             }
             Err(e) => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
+                self.name_once(&e);
                 Err(match e {
                     SyzygyError::MissingTable {
                         metric: Metric::Dtz,
@@ -331,6 +384,21 @@ impl Tables {
                     _ => Missing::Other,
                 })
             }
+        }
+    }
+
+    /// An `info string` the first time a probe fails on a table, from whichever thread it was.
+    fn name_once(&self, e: &SyzygyError) {
+        let table = match e {
+            SyzygyError::MissingTable { metric, material }
+            | SyzygyError::ProbeFailed {
+                metric, material, ..
+            } => format!("{metric} {material}"),
+            other => other.to_string(),
+        };
+        let mut named = self.named.lock().unwrap_or_else(PoisonError::into_inner);
+        if named.insert(table) {
+            println!("info string Syzygy: {e}");
         }
     }
 }
