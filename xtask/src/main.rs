@@ -1802,6 +1802,70 @@ mod tests {
         );
     }
 
+    /// A candidate's own heading, `## [0.3.0-rc.1]`, while it is the workspace version.
+    const CANDIDATE: &str = "\
+# Changelog
+
+## [Unreleased]
+
+## [0.3.0-rc.1] - 2026-03-01
+
+## [0.2.0] - 2026-02-01
+
+## [0.1.0] - 2026-01-01
+
+[Unreleased]: https://example.invalid/compare/0.3.0-rc.1...main
+[0.3.0-rc.1]: https://example.invalid/compare/0.2.0...0.3.0-rc.1
+[0.2.0]: https://example.invalid/compare/0.1.0...0.2.0
+[0.1.0]: https://example.invalid/tree/0.1.0
+";
+
+    #[test]
+    fn a_release_candidate_has_its_entry_while_it_is_the_workspace_version() {
+        assert_eq!(
+            changelog_problems(CANDIDATE, &tags(&["0.1.0", "0.2.0"]), "0.3.0-rc.1"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            changelog_problems(
+                CANDIDATE,
+                &tags(&["0.1.0", "0.2.0", "0.3.0-rc.1"]),
+                "0.3.0-rc.1"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The release after its candidates renames their one entry, so no candidate's tag needs one.
+    #[test]
+    fn the_release_after_its_candidates_needs_no_entry_for_them() {
+        let released = CANDIDATE.replace("0.3.0-rc.1", "0.3.0");
+        assert_eq!(
+            changelog_problems(
+                &released,
+                &tags(&["0.1.0", "0.2.0", "0.3.0-rc.1", "0.3.0-rc.2"]),
+                "0.3.0"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_candidate_sorts_below_its_release_and_above_the_one_before() {
+        assert!(parse_version("0.6.0-rc.1") < parse_version("0.6.0-rc.2"));
+        assert!(parse_version("0.6.0-rc.2") < parse_version("0.6.0"));
+        assert!(parse_version("0.5.23") < parse_version("0.6.0-rc.1"));
+        for bad in [
+            "0.6.0-rc.",
+            "0.6.0-rc.x",
+            "0.6.0-beta.1",
+            "0.6.0-rc.1-rc.2",
+            "0.6.0+1",
+        ] {
+            assert_eq!(parse_version(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn the_workspace_version_is_read_from_its_own_section_only() {
         let manifest =
