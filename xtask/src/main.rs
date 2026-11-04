@@ -745,22 +745,31 @@ struct Heading {
     date: Option<String>,
 }
 
-/// Digits only, so `+1` or an empty part is not a version.
-fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 3
-        || !parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    {
+/// Digits only, so `+1` or an empty part is not a version; a candidate is `-rc.` and a fourth run.
+fn parse_version(s: &str) -> Option<Version> {
+    let digits = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    let (release, candidate) = match s.split_once("-rc.") {
+        Some((release, n)) if digits(n) => (release, n.parse().ok()?),
+        Some(_) => return None,
+        None => (s, RELEASE),
+    };
+    let parts: Vec<&str> = release.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| digits(p)) {
         return None;
     }
     Some((
         parts[0].parse().ok()?,
         parts[1].parse().ok()?,
         parts[2].parse().ok()?,
+        candidate,
     ))
 }
+
+/// Major, minor, patch and the candidate's number.
+type Version = (u64, u64, u64, u64);
+
+/// The fourth part of a release's version, so a candidate, `x.y.z-rc.N`, sorts below it.
+const RELEASE: u64 = u64::MAX;
 
 fn is_iso_date(s: &str) -> bool {
     let b = s.as_bytes();
@@ -814,7 +823,7 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
         }
     }
 
-    let mut previous: Option<(&Heading, (u64, u64, u64))> = None;
+    let mut previous: Option<(&Heading, Version)> = None;
     for (index, h) in headings.iter().enumerate() {
         if !links.contains(&h.label) {
             out.push(format!(
@@ -833,7 +842,7 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
         }
         let Some(v) = parse_version(&h.label) else {
             out.push(format!(
-                "line {}: `{}` is not an x.y.z version",
+                "line {}: `{}` is not an x.y.z or x.y.z-rc.N version",
                 h.line, h.label
             ));
             continue;
@@ -868,7 +877,11 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
     }
 
     let has = |label: &str| headings.iter().any(|h| h.label == label);
-    for tag in tags.iter().filter(|t| parse_version(t).is_some()) {
+    // A candidate's entry is renamed by the release after it, so only a release's tag needs one.
+    for tag in tags
+        .iter()
+        .filter(|t| matches!(parse_version(t), Some((.., RELEASE))))
+    {
         if !has(tag) {
             out.push(format!("tag `{tag}` has no `## [{tag}]` entry"));
         }
@@ -1876,7 +1889,8 @@ mod tests {
 
     #[test]
     fn a_version_is_three_runs_of_digits() {
-        assert_eq!(parse_version("0.4.10"), Some((0, 4, 10)));
+        assert_eq!(parse_version("0.4.10"), Some((0, 4, 10, RELEASE)));
+        assert_eq!(parse_version("0.6.0-rc.2"), Some((0, 6, 0, 2)));
         for bad in ["0.4", "0.4.1.2", "0.+4.1", "v0.4.1", "0..1", "Unreleased"] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
