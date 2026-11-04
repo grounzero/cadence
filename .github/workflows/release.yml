@@ -267,10 +267,26 @@ jobs:
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
       id-token: write
       attestations: write
     steps:
+      # Nothing is attested or drafted from a commit CI has not passed; a run that failed here is
+      # re-run once CI has passed.
+      - name: The tagged commit passed CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          set -eu
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT&status=success&per_page=1" \
+            --jq '.total_count')
+          [ "$passed" -gt 0 ] \
+            || { echo "::error::CI has not passed at $COMMIT, so nothing is drafted from it"; exit 1; }
+          echo "CI passed at $COMMIT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.ref }}
