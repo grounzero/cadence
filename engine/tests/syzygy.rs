@@ -232,6 +232,83 @@ fn outside_the_tables_there_is_no_result_and_no_panic() {
     let _ = std::fs::remove_dir_all(only);
 }
 
+/// A table that fails to open is not opened again at the next probe, so it stays unread when it
+/// reappears until the path is set again.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_table_that_failed_to_open_is_not_opened_again() {
+    let dir = scratch("reopen", &["KQvK.rtbw", "KQvK.rtbz"]);
+    let tables = loaded(&dir.display().to_string());
+    let away = dir.join("KQvK.rtbw.away");
+    std::fs::rename(dir.join("KQvK.rtbw"), &away).unwrap();
+    let won = board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1");
+    assert_eq!(tables.probe_wdl(&won), None);
+    std::fs::rename(&away, dir.join("KQvK.rtbw")).unwrap();
+    assert_eq!(tables.probe_wdl(&won), None);
+    assert_eq!(tables.failures(), 2);
+    assert_eq!(
+        loaded(&dir.display().to_string()).probe_wdl(&won),
+        Some(Wdl::Win)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A truncated file is named, and the rest of its directory loads past it.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_bad_file_is_named_and_the_rest_of_its_directory_loads() {
+    let only = fixture_set("truncated");
+    let path = only.join("KQvK.rtbz");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..1000]).unwrap();
+    let (tables, problems) = Tables::load(&only.display().to_string(), 7);
+    assert_eq!(
+        problems,
+        vec![format!("{}: unexpected file size", path.display())]
+    );
+    assert_eq!(tables.files(), 11);
+    assert_eq!(
+        tables.probe_wdl(&board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1")),
+        Some(Wdl::Win)
+    );
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// A table gone after loading fails on whichever thread probes it first, inside the search, and is
+/// named once in an `info string` however many probes fail on it.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_table_gone_after_loading_is_named_once_whichever_thread_probes_it() {
+    let only = fixture_set("gone");
+    let mut e = Engine::spawn();
+    e.send(&format!(
+        "setoption name SyzygyPath value {}",
+        only.display()
+    ));
+    // The root's four pieces are past the limit, so only the search's probes reach the rook ending.
+    e.send("setoption name SyzygyProbeLimit value 3");
+    e.send("setoption name Threads value 2");
+    e.sync();
+    std::fs::remove_file(only.join("KRvK.rtbw")).unwrap();
+    let fen = "8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1";
+    e.send(&format!("position fen {fen}"));
+    e.send("go depth 6");
+    let lines = e.read_until("bestmove ");
+    e.quit();
+    let named: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("info string Syzygy: "))
+        .collect();
+    assert_eq!(named.len(), 1, "{lines:?}");
+    assert!(named[0].contains("KRvK"), "{named:?}");
+    let best = lines.last().and_then(|l| l.split_whitespace().nth(1));
+    assert!(
+        parse_uci(&generate_legal(&board(fen)), best.unwrap_or_default()).is_some(),
+        "{lines:?}"
+    );
+    let _ = std::fs::remove_dir_all(only);
+}
+
 /// A path loads the tables and prints how many; an empty one turns probing off, and every line a
 /// search prints without tables is the line it was.
 #[test]
