@@ -78,8 +78,8 @@ jobs:
               || { echo "::error::$tag does not name the commit checked out"; exit 1; }
             [ "$tag" = "$version" ] \
               || { echo "::error::$tag is not the workspace version, $version"; exit 1; }
-            grep -q "^## \[$version\]" CHANGELOG.md \
-              || { echo "::error::CHANGELOG.md has no entry for $version"; exit 1; }
+            awk -v h="## [$version]" '$0 == h || index($0, h " - ") == 1 {found = 1} END {exit !found}' \
+              CHANGELOG.md || { echo "::error::CHANGELOG.md has no entry for $version"; exit 1; }
             expected="$version"
             if [ "$GITHUB_EVENT_NAME" = push ] || [ "$INPUT_DRAFT" = true ]; then
               publish=true
@@ -316,7 +316,8 @@ jobs:
             echo
             echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`."
             echo
-            awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {on = 1; next} on && /^## \[/ {exit} on' CHANGELOG.md
+            awk -v h="## [$VERSION]" '$0 == h || index($0, h " - ") == 1 {on = 1; next} on && /^## \[/ {exit} on' \
+              CHANGELOG.md
           } > notes.md
           cat notes.md
           echo "$found" | while read -r id _; do
