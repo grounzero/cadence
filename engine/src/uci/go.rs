@@ -266,9 +266,11 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
 #[cfg(feature = "counters")]
 fn report_given(worker_index: usize, search: &Search<'_>) {
     say(format_args!(
-        "info string search thread {worker_index} given {:?} {:?}",
+        "info string search thread {worker_index} given {:?} {:?} filter {:?} probes {}",
         search.limits(),
-        search.tunables()
+        search.tunables(),
+        search.root_filter(),
+        search.probes()
     ));
 }
 

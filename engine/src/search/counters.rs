@@ -365,6 +365,19 @@ impl Search<'_> {
         &self.tunables
     }
 
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn root_filter(&self) -> &[Move] {
+        &self.root_filter
+    }
+
+    /// Whether a node below the root probes the tables.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn probes(&self) -> bool {
+        self.probing.is_some()
+    }
+
     #[must_use]
     pub fn stop_requested(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
