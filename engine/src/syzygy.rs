@@ -60,8 +60,10 @@ impl Rank {
             Rank::Win if is_mate(searched) && searched > 0 => searched,
             Rank::Win => tb_win_in(1),
             Rank::Loss if is_mate(searched) && searched < 0 => searched,
-            Rank::Loss | Rank::MaybeLoss => tb_loss_in(1),
-            Rank::CursedWin | Rank::MaybeWin | Rank::Draw | Rank::BlessedLoss => DRAW,
+            Rank::Loss => tb_loss_in(1),
+            // The counter decides these and the table cannot say how, so the search speaks.
+            Rank::MaybeWin | Rank::MaybeLoss => searched,
+            Rank::CursedWin | Rank::Draw | Rank::BlessedLoss => DRAW,
         }
     }
 
@@ -69,39 +71,65 @@ impl Rank {
     /// move leaving the counter at `counter`.
     #[must_use]
     pub fn from_distance(found: MaybeRounded<Dtz>, counter: u32) -> Rank {
-        // A rounded distance may be one ply longer than it reads, so a win is kept only if that
-        // longer one fits too.
-        let (plies, rounded) = match found {
-            MaybeRounded::Rounded(d) => (i64::from(d.0), 1),
-            MaybeRounded::Precise(d) => (i64::from(d.0), 0),
+        let (Dtz(plies), rounded) = match found {
+            MaybeRounded::Rounded(d) => (d, true),
+            MaybeRounded::Precise(d) => (d, false),
         };
-        let counter = i64::from(counter);
-        match plies {
-            0 => Rank::Draw,
-            p if p < 0 && counter - p + rounded <= 100 => Rank::Win,
-            p if p < 0 => Rank::CursedWin,
-            p if counter + p > 100 => Rank::BlessedLoss,
-            _ => Rank::Loss,
-        }
+        let to_move_wins = plies > 0;
+        let total = plies.unsigned_abs().saturating_add(counter);
+        // A rounded distance may be a ply longer than it reads, so one landing on the hundredth
+        // half-move is either outcome; the crate says none lands there after zeroing, and this does
+        // not rely on it.
+        Rank::own(match total {
+            _ if plies == 0 => AmbiguousWdl::Draw,
+            100 if rounded && to_move_wins => AmbiguousWdl::MaybeWin,
+            100 if rounded => AmbiguousWdl::MaybeLoss,
+            t if t <= 100 && to_move_wins => AmbiguousWdl::Win,
+            t if t <= 100 => AmbiguousWdl::Loss,
+            _ if to_move_wins => AmbiguousWdl::CursedWin,
+            _ => AmbiguousWdl::BlessedLoss,
+        })
+        .reversed()
     }
 
     /// The same from what a WDL table holds, the outcome for the side to move as though the move
-    /// had zeroed the counter.
+    /// had zeroed the counter, which a counter run part-way leaves unsettled.
     #[must_use]
-    pub fn from_outcome(wdl: shakmaty_syzygy::Wdl, _counter: u32) -> Rank {
-        Rank::for_mover(AmbiguousWdl::from(wdl))
+    pub fn from_outcome(wdl: shakmaty_syzygy::Wdl, counter: u32) -> Rank {
+        use shakmaty_syzygy::Wdl;
+        Rank::own(match wdl {
+            Wdl::Win if counter >= 100 => AmbiguousWdl::CursedWin,
+            Wdl::Win if counter > 0 => AmbiguousWdl::MaybeWin,
+            Wdl::Loss if counter >= 100 => AmbiguousWdl::BlessedLoss,
+            Wdl::Loss if counter > 0 => AmbiguousWdl::MaybeLoss,
+            settled => AmbiguousWdl::from(settled),
+        })
+        .reversed()
     }
 
-    /// The side to move's outcome, read for the side that moved into it.
-    fn for_mover(outcome: AmbiguousWdl) -> Rank {
+    /// The same outcome for the other side.
+    fn reversed(self) -> Rank {
+        match self {
+            Rank::Loss => Rank::Win,
+            Rank::MaybeLoss => Rank::MaybeWin,
+            Rank::BlessedLoss => Rank::CursedWin,
+            Rank::Draw => Rank::Draw,
+            Rank::CursedWin => Rank::BlessedLoss,
+            Rank::MaybeWin => Rank::MaybeLoss,
+            Rank::Win => Rank::Loss,
+        }
+    }
+
+    /// The side to move's own rank.
+    fn own(outcome: AmbiguousWdl) -> Rank {
         match outcome {
-            AmbiguousWdl::Loss => Rank::Win,
-            AmbiguousWdl::MaybeLoss => Rank::MaybeWin,
-            AmbiguousWdl::BlessedLoss => Rank::CursedWin,
+            AmbiguousWdl::Loss => Rank::Loss,
+            AmbiguousWdl::MaybeLoss => Rank::MaybeLoss,
+            AmbiguousWdl::BlessedLoss => Rank::BlessedLoss,
             AmbiguousWdl::Draw => Rank::Draw,
-            AmbiguousWdl::CursedWin => Rank::BlessedLoss,
-            AmbiguousWdl::MaybeWin => Rank::MaybeLoss,
-            AmbiguousWdl::Win => Rank::Loss,
+            AmbiguousWdl::CursedWin => Rank::CursedWin,
+            AmbiguousWdl::MaybeWin => Rank::MaybeWin,
+            AmbiguousWdl::Win => Rank::Win,
         }
     }
 }
@@ -110,7 +138,8 @@ impl Rank {
 pub struct Ranked {
     pub moves: Vec<Move>,
     pub best: Rank,
-    /// What the root reports.
+    /// What the root reports: `best`, or the root's own outcome where that is exact and the moves'
+    /// ranks are not.
     pub verdict: Rank,
     /// Ranked by distance to zeroing, so the result is settled and a probe in the search would only
     /// flatten the kept moves' scores into one band.
@@ -225,10 +254,18 @@ impl Tables {
             .filter(|&(_, &rank)| rank == best)
             .map(|(&m, _)| m)
             .collect();
+        // A root at a zeroed counter is read exactly by the WDL files, where its quiet moves are not.
+        let unsettled = matches!(best, Rank::MaybeWin | Rank::MaybeLoss);
+        let verdict = if unsettled && candidates.is_empty() && board.halfmove_clock() == 0 {
+            self.answered(Tablebase::probe_wdl_after_zeroing, board)
+                .map_or(best, |own| Rank::own(AmbiguousWdl::from(own)))
+        } else {
+            best
+        };
         Some(Ranked {
             moves,
             best,
-            verdict: best,
+            verdict,
             decided,
         })
     }
