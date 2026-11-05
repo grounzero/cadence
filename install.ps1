@@ -369,13 +369,17 @@ function Get-Source {
     if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
     New-Item -ItemType Directory -Force -Path $Work | Out-Null
     $script:Src = Join-Path $Work 'cadence'
-    $code = Invoke-Logged 'git' @('-c', 'advice.detachedHead=false', 'clone', '--quiet', '--depth', '1',
-        '--branch', $script:Version, $RepoUrl, $script:Src)
-    if ($code -ne 0) { Fail "could not fetch Cadence $script:Version" }
+    $code = Invoke-Logged 'git' @('-c', 'init.defaultBranch=main', 'init', '--quiet', $script:Src)
+    if ($code -ne 0) { Fail "could not create $($script:Src)" }
+    $code = Invoke-Logged 'git' @('-C', $script:Src, 'remote', 'add', 'origin', $RepoUrl)
+    if ($code -ne 0) { Fail "could not name the repository in $($script:Src)" }
     # The build names itself from the annotated tag, so the tag is fetched as itself.
     $code = Invoke-Logged 'git' @('-C', $script:Src, 'fetch', '--quiet', '--depth', '1', 'origin',
         "+refs/tags/$($script:Version):refs/tags/$($script:Version)")
-    if ($code -ne 0) { Fail "could not fetch the tag $script:Version" }
+    if ($code -ne 0) { Fail "could not fetch Cadence $script:Version" }
+    $code = Invoke-Logged 'git' @('-C', $script:Src, '-c', 'advice.detachedHead=false', 'checkout', '--quiet',
+        '--detach', "refs/tags/$($script:Version)")
+    if ($code -ne 0) { Fail "could not check out Cadence $script:Version" }
 }
 
 function Initialize-Toolchain {

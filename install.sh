@@ -483,11 +483,13 @@ fetch_source() {
     rm -rf "$WORK"
     mkdir -p "$WORK" || fail "cannot create $WORK"
     SRC="$WORK/cadence"
-    run git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$VERSION" "$REPO_URL" "$SRC" \
-        || fail "could not fetch Cadence $VERSION"
+    run git -c init.defaultBranch=main init --quiet "$SRC" || fail "could not create $SRC"
+    run git -C "$SRC" remote add origin "$REPO_URL" || fail "could not name the repository in $SRC"
     # The build names itself from the annotated tag, so the tag is fetched as itself.
     run git -C "$SRC" fetch --quiet --depth 1 origin "+refs/tags/$VERSION:refs/tags/$VERSION" \
-        || fail "could not fetch the tag $VERSION"
+        || fail "could not fetch Cadence $VERSION"
+    run git -C "$SRC" -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$VERSION" \
+        || fail "could not check out Cadence $VERSION"
 }
 
 prepare_toolchain() {
