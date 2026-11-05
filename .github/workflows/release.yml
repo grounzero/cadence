@@ -92,7 +92,13 @@ jobs:
             echo "the tag $tag, built by the workflow at $GITHUB_REF; draft release: $publish; pre-release: $prerelease"
           else
             [ "$INPUT_DRAFT" != true ] || { echo "::error::a draft needs a tag"; exit 1; }
-            expected="$version-dev-$(git rev-parse --short HEAD)"
+            # As engine/build.rs reads it: the release only at the annotated tag naming the version.
+            at=$(git describe --exact-match --dirty --match "$version" HEAD 2>/dev/null || true)
+            if [ "$at" = "$version" ]; then
+              expected="$version"
+            else
+              expected="$version-dev-$(git rev-parse HEAD | cut -c1-7)"
+            fi
             echo "a dry run on $GITHUB_REF: built and checked, published nowhere"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
