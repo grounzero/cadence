@@ -289,7 +289,7 @@ impl Board {
     #[must_use]
     pub fn fullmove_number(&self) -> u16 {
         let black_at_root = (self.stm as u8 == Colour::Black as u8) == self.ply.is_multiple_of(2);
-        let black_moves = (self.ply + u16::from(black_at_root)) / 2;
+        let black_moves = self.ply / 2 + u16::from(black_at_root && !self.ply.is_multiple_of(2));
         self.fullmove.saturating_add(black_moves)
     }
 
