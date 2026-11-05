@@ -33,7 +33,10 @@ fn node_counts(lines: &[String]) -> Vec<u64> {
 }
 
 fn assert_one_legal_answer(fen: &str, lines: &[String], label: &str) {
-    let answers: Vec<&String> = lines.iter().filter(|l| l.starts_with("bestmove ")).collect();
+    let answers: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("bestmove "))
+        .collect();
     assert_eq!(answers.len(), 1, "{label}: {lines:?}");
     let mv = answers[0].split_whitespace().nth(1).expect("a move");
     let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));

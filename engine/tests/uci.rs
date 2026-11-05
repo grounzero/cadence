@@ -814,7 +814,9 @@ fn multipv_above_one_reports_distinct_legal_moves_in_descending_order() {
         }
         for line in iteration {
             let mut b = Board::from_fen(START_FEN).expect("the start position");
-            let at = line.find(" pv ").unwrap_or_else(|| panic!("no pv on {line}"));
+            let at = line
+                .find(" pv ")
+                .unwrap_or_else(|| panic!("no pv on {line}"));
             for mv in line[at + 4..].split_whitespace() {
                 let m = parse_uci(&generate_legal(&b), mv)
                     .unwrap_or_else(|| panic!("`{mv}` is not legal where it is played: {line}"));
