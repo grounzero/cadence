@@ -493,6 +493,8 @@ jobs:
           if (-not (Select-String -Path $log -Pattern 'there is no release 0.0.0' -SimpleMatch -Quiet)) { throw 'the log does not say why' }
           if (Select-String -Path $log -Pattern $env:USERPROFILE -SimpleMatch -Quiet) { throw 'the log names the home folder' }
           Write-Host "the failure kept $log, with its reason and no home folder"
+          # The step's shell exits with the last native exit code, which was the forced failure's.
+          exit 0
 
       - name: Install with install.sh --yes
         if: matrix.script == 'install.sh'
