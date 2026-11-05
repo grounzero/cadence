@@ -376,12 +376,13 @@ impl Search<'_> {
         self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
         // After the table, so a hit saves the probe, and before the static readings, which an
         // ending the tables decide makes moot.
-        let tb = self.tablebase(board, key, depth, ply, alpha, beta)?;
+        let tb = self.tablebase(board, key, depth, ply, alpha, beta, tt_move)?;
         Ok((tt_move, tb))
     }
 
     /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
     /// every other node and wherever no table answers.
+    #[allow(clippy::too_many_arguments)]
     fn tablebase(
         &mut self,
         board: &Board,
@@ -390,6 +391,7 @@ impl Search<'_> {
         ply: usize,
         alpha: Score,
         beta: Score,
+        tt_move: Move,
     ) -> Result<(Score, Score), Score> {
         let open = (-INFINITE, INFINITE);
         let Some(tables) = self.probing else {
@@ -414,7 +416,8 @@ impl Search<'_> {
             Bound::Upper => score <= alpha,
         };
         if cuts {
-            self.store(key, ply, depth, score, Move::NULL, bound);
+            // The table's move stays, so a later visit that does not cut still tries it first.
+            self.store(key, ply, depth, score, tt_move, bound);
             return Err(score);
         }
         // A mate inside the table's territory is still searched for, and found, under the bound.
