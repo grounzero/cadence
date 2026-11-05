@@ -17,7 +17,7 @@ use crate::tune::{self, Tunables};
 
 mod go;
 mod options;
-mod say;
+pub(crate) mod say;
 
 pub(crate) use go::SEARCH_STACK_BYTES;
 
