@@ -282,8 +282,9 @@ impl Tables {
         Some(found.ignore_rounding().0)
     }
 
-    /// The moves of `candidates`, or every legal move where it is empty, that a table ranks best.
-    /// `None` where the root is outside the tables or a probe fails.
+    /// The moves of `candidates`, or every legal move where it is empty, that a table ranks best,
+    /// and of a win ranked by distance only the fastest to zeroing. `None` where the root is outside
+    /// the tables or a probe fails.
     #[must_use]
     pub fn rank_root(&self, board: &mut Board, candidates: &[Move]) -> Option<Ranked> {
         if !self.covers(board) {
@@ -300,11 +301,18 @@ impl Tables {
             Err(Missing::Dtz) => (self.ranks(board, &moves, false).ok()?, false),
             Err(Missing::Other) => return None,
         };
-        let best = ranks.iter().copied().max()?;
+        let best = ranks.iter().map(|&(rank, _)| rank).max()?;
+        // Every win kept brings zeroing nearer, so the search cannot spend the fifty-move counter
+        // choosing among them.
+        let fastest = ranks
+            .iter()
+            .filter(|&&(rank, _)| decided && rank == Rank::Win)
+            .map(|&(_, plies)| plies)
+            .min();
         let moves = moves
             .iter()
             .zip(&ranks)
-            .filter(|&(_, &rank)| rank == best)
+            .filter(|&(_, &(rank, plies))| rank == best && fastest.is_none_or(|f| plies == f))
             .map(|(&m, _)| m)
             .collect();
         // A root at a zeroed counter is read exactly by the WDL files, where its quiet moves are not.
@@ -323,7 +331,12 @@ impl Tables {
         })
     }
 
-    fn ranks(&self, board: &mut Board, moves: &[Move], dtz: bool) -> Result<Vec<Rank>, Missing> {
+    fn ranks(
+        &self,
+        board: &mut Board,
+        moves: &[Move],
+        dtz: bool,
+    ) -> Result<Vec<(Rank, u32)>, Missing> {
         let mut ranks = Vec::with_capacity(moves.len());
         for &m in moves {
             board.make_move(m);
@@ -335,26 +348,33 @@ impl Tables {
     }
 
     /// `board` is the position after the move, so its side to move is the one that did not play it.
-    fn rank_after(&self, board: &Board, dtz: bool) -> Result<Rank, Missing> {
+    /// With the rank, the move's own distance to zeroing in plies, which the WDL files leave at 0.
+    fn rank_after(&self, board: &Board, dtz: bool) -> Result<(Rank, u32), Missing> {
         if generate_legal(board).is_empty() {
             return Ok(if board.in_check() {
-                Rank::Win
+                (Rank::Win, 1)
             } else {
-                Rank::Draw
+                (Rank::Draw, 0)
             });
         }
         if board.is_repetition() {
-            return Ok(Rank::Draw);
+            return Ok((Rank::Draw, 0));
         }
         let pos = to_chess(board).ok_or(Missing::Other)?;
         let counter = u32::from(board.halfmove_clock());
         Ok(if dtz {
-            Rank::from_distance(self.counted(self.tablebase.probe_dtz(&pos))?, counter)
+            let found = self.counted(self.tablebase.probe_dtz(&pos))?;
+            // A capture or a pawn move zeroes the counter itself, so like a mate it is one ply from
+            // zeroing whatever follows it.
+            let plies = if counter == 0 {
+                1
+            } else {
+                1 + found.ignore_rounding().0.unsigned_abs()
+            };
+            (Rank::from_distance(found, counter), plies)
         } else {
-            Rank::from_outcome(
-                self.counted(self.tablebase.probe_wdl_after_zeroing(&pos))?,
-                counter,
-            )
+            let wdl = self.counted(self.tablebase.probe_wdl_after_zeroing(&pos))?;
+            (Rank::from_outcome(wdl, counter), 0)
         })
     }
 
