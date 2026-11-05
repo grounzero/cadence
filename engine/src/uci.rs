@@ -303,6 +303,62 @@ fn start_position() -> Board {
     Board::from_fen(START_FEN).expect("the start position parses")
 }
 
+/// Longer lines are discarded unread, so a sender cannot grow the engine's memory without bound.
+/// The newline is not counted.
+pub const MAX_LINE_BYTES: usize = 1 << 20;
+
+/// What [`read_line`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Line {
+    /// In the buffer, with its newline where it had one.
+    Read,
+    /// Past the cap, and read to its newline or the end of input without being kept.
+    TooLong,
+    End,
+}
+
+/// One line into `line`, of which no more than `cap` bytes are ever kept.
+///
+/// # Errors
+///
+/// A read that fails, other than one interrupted, which is retried.
+pub fn read_line(
+    input: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<Line> {
+    line.clear();
+    let (mut read, mut over) = (false, false);
+    loop {
+        let chunk = match input.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            return Ok(match (read, over) {
+                (false, _) => Line::End,
+                (true, false) => Line::Read,
+                (true, true) => Line::TooLong,
+            });
+        }
+        read = true;
+        let newline = chunk.iter().position(|&b| b == b'\n');
+        let used = newline.map_or(chunk.len(), |i| i + 1);
+        if !over && line.len() + newline.unwrap_or(chunk.len()) > cap {
+            over = true;
+            line.clear();
+        }
+        if !over {
+            line.extend_from_slice(&chunk[..used]);
+        }
+        input.consume(used);
+        if newline.is_some() {
+            return Ok(if over { Line::TooLong } else { Line::Read });
+        }
+    }
+}
+
 #[must_use]
 pub fn run() -> ExitCode {
     // With stdin at end of file, `cadence` prints the identity and exits: the cheapest smoke test
@@ -317,12 +373,15 @@ pub fn run() -> ExitCode {
     loop {
         // Bytes, not `lines()`: a line that is not UTF-8 would end the session silently, exit 0,
         // leaving a GUI a crash with nothing to attribute it to.
-        raw.clear();
-        match stdin.read_until(b'\n', &mut raw) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+        match read_line(&mut stdin, &mut raw, MAX_LINE_BYTES) {
+            Ok(Line::Read) => {}
+            Ok(Line::TooLong) => {
+                say(format_args!(
+                    "info string line discarded: longer than {MAX_LINE_BYTES} bytes"
+                ));
+                continue;
+            }
+            Ok(Line::End) | Err(_) => break,
         }
         let line = String::from_utf8_lossy(&raw);
         if !session.handle_line(&line) {
