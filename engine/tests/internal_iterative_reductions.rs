@@ -151,3 +151,18 @@ fn the_rule_is_not_inert_at_a_real_depth() {
         "the rule fired at {fired} nodes of a depth-8 search"
     );
 }
+
+/// The setter holds the amount below the threshold, so a node it shortens keeps a ply to search
+/// whatever a caller asks for.
+#[test]
+fn any_amount_leaves_a_shortened_node_a_ply() {
+    let stop = AtomicBool::new(false);
+    for plies in [THRESHOLD - 1, THRESHOLD, THRESHOLD + 1, u32::MAX] {
+        let tt = table();
+        let mut b = support::position(MIDDLEGAME);
+        let mut s = support::search(Limits::depth(6), &stop, &tt);
+        s.set_iir_reduction(plies);
+        s.run(&mut b, &mut std::io::sink());
+        assert_eq!(s.completed_depth(), 6, "{plies} plies");
+    }
+}

@@ -548,6 +548,44 @@ fn the_node_limit_stops_the_search() {
     assert!(generate_legal(&b).contains(r.best));
 }
 
+/// A count past any mate the search can score once overflowed: a debug build panicked and a release
+/// build stopped after one ply.
+#[test]
+fn a_mate_count_past_the_ply_bound_searches_on() {
+    for n in [1 << 30, u32::MAX] {
+        let limits = Limits {
+            depth: Some(4),
+            mate: Some(n),
+            ..Limits::default()
+        };
+        let r = search(&mut support::position(START_FEN), limits);
+        assert_eq!(r.depth, 4, "go mate {n}");
+    }
+}
+
+/// An abort as the second line starts leaves the first one finished, and its whole line is what the
+/// search answers with, the reply a ponder move is read from included.
+#[test]
+fn an_abort_in_the_first_iteration_keeps_the_finished_lines_reply() {
+    // The knight forks king and queen with check, and the check extends the reply into the line.
+    let fen = "2q3k1/8/8/3N4/8/8/8/4K3 w - - 0 1";
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut one = support::search(Limits::depth(1), &stop, &tt);
+    one.run(&mut support::position(fen), &mut std::io::sink());
+    assert!(one.pv().len() >= 2, "no reply in the line: {:?}", one.pv());
+    let tt = table();
+    let limits = Limits {
+        nodes: Some(one.nodes() + 1),
+        ..Limits::default()
+    };
+    let mut two = support::search(limits, &stop, &tt);
+    two.set_multipv(2);
+    two.run(&mut support::position(fen), &mut std::io::sink());
+    assert_eq!(two.completed_depth(), 0, "the first iteration finished");
+    assert_eq!(two.pv(), one.pv());
+}
+
 /// `ABORTED` is the draw score, so this reads a position where nothing within two plies of the root
 /// is worth a draw. A node that stored after the stop would leave that value on one of those keys.
 #[test]
