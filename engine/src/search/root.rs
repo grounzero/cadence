@@ -19,6 +19,13 @@ const ASPIRATION_DELTA: Score = 24;
 /// Below it the iterations are too cheap and their scores too unsettled for a window to pay.
 const ASPIRATION_DEPTH: u32 = 4;
 
+/// The plies a mate in `n` moves takes, held to the deepest the search can score so no count
+/// overflows.
+fn mate_plies(n: u32) -> Score {
+    let plies = n.saturating_mul(2).saturating_sub(1).min(MAX_DEPTH);
+    Score::try_from(plies).unwrap_or(Score::MAX)
+}
+
 impl Search<'_> {
     /// `Move::NULL` when there is none. Under `infinite` or an unhit ponder it returns only on
     /// `stop`.
@@ -73,15 +80,18 @@ impl Search<'_> {
                 // With no completed iteration, the best fully searched root move stands, or the
                 // first, so there is always a move.
                 if self.completed_depth == 0 {
-                    // A finished line outranks the one the abort cut short.
-                    let (best, score) = match self.lines.first() {
-                        Some(line) => (line.mv, line.score),
-                        None => partial,
-                    };
-                    self.best = best;
-                    self.score = if score == -INFINITE { ABORTED } else { score };
                     self.pv.clear();
-                    self.pv.push(best);
+                    // A finished line outranks the one the abort cut short, and keeps its reply.
+                    if let Some(line) = self.lines.first() {
+                        self.best = line.mv;
+                        self.score = line.score;
+                        self.pv.extend_from_slice(&line.pv);
+                    } else {
+                        let (best, score) = partial;
+                        self.best = best;
+                        self.score = if score == -INFINITE { ABORTED } else { score };
+                        self.pv.push(best);
+                    }
                 }
                 break;
             }
@@ -108,7 +118,7 @@ impl Search<'_> {
             std::mem::swap(&mut self.lines, &mut self.accepted);
             // `go mate`: a proved mate in that many moves or fewer answers the question asked.
             if let Some(n) = self.limits.mate
-                && score >= score::MATE - (2 * i32::try_from(n).unwrap_or(i32::MAX / 2) - 1)
+                && score >= score::MATE - mate_plies(n)
             {
                 break;
             }

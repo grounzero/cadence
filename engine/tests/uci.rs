@@ -814,7 +814,8 @@ fn multipv_one_emits_exactly_what_the_option_never_set_emits() {
     }
 }
 
-/// Numbered from one and restarting each iteration, which a GUI reads to keep the panel in place.
+/// Numbered from one and restarting each iteration, which a GUI reads to keep the panel in place;
+/// every line is legal to its end, and the move played is the first line's.
 #[test]
 fn multipv_above_one_reports_distinct_legal_moves_in_descending_order() {
     let wanted = 4;
@@ -865,7 +866,21 @@ fn multipv_above_one_reports_distinct_legal_moves_in_descending_order() {
                 "the lines are not in descending order: {scores:?}"
             );
         }
+        for line in iteration {
+            let mut b = Board::from_fen(START_FEN).expect("the start position");
+            let at = line
+                .find(" pv ")
+                .unwrap_or_else(|| panic!("no pv on {line}"));
+            for mv in line[at + 4..].split_whitespace() {
+                let m = parse_uci(&generate_legal(&b), mv)
+                    .unwrap_or_else(|| panic!("`{mv}` is not legal where it is played: {line}"));
+                b.play(m);
+            }
+        }
     }
+    let last = &lines[lines.len() - wanted];
+    let first = field::<String>(last, "pv").expect("a first move");
+    assert_eq!(bestmove(&out.join("\n")), first, "{out:?}");
 }
 
 /// A second root move is a second search, so the count has to rise, or the option is accepted and

@@ -349,6 +349,8 @@ impl Search<'_> {
 
     /// The one store, and where a node failing low takes its parent's flag.
     fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
+        // An aborted node's value is `ABORTED` and not a bound, and the draw score besides.
+        debug_assert!(!self.aborted, "a store after the stop");
         let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
         let score = score::to_tt(best, ply);
         // Nothing here beat alpha, so the move into it may have been the good one.
