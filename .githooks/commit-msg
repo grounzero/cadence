@@ -14,10 +14,14 @@
 #
 # Install with:  cargo xtask install-hooks
 #            or: git config core.hooksPath .githooks
+#
+# CI passes a second argument, the commit whose stored message this is, and
+# checks it against that commit's own bench.txt, merges included.
 
 set -eu
 
 MSG_FILE="$1"
+COMMIT="${2:-}"
 BENCH_FILE="bench.txt"
 
 fail() {
@@ -33,8 +37,8 @@ fail() {
 trap 'echo "  not examined: a merge message or a fixup (exempt here)" >&2' EXIT
 
 # A merge commit's message is generated, and a conflict resolution changes no
-# node count of its own.
-if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+# node count of its own; CI still reads the merge once it is made.
+if [ -z "$COMMIT" ] && [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
     exit 0
 fi
 
@@ -46,15 +50,14 @@ fi
 
 # --- inert until there is a bench to count --------------------------------
 
-if [ ! -f "$BENCH_FILE" ]; then
+if [ -z "$COMMIT" ] && [ ! -f "$BENCH_FILE" ]; then
     echo "commit-msg: no $BENCH_FILE here, so no message was checked" >&2
     exit 0
 fi
 
 # --- the bench declaration -----------------------------------------------
 
-# CI runs the same script over every commit a change adds, against that commit's own bench.txt.
-"$(dirname "$0")/check-bench-declaration" "$MSG_FILE"
+"$(dirname "$0")/check-bench-declaration" "$MSG_FILE" "$COMMIT"
 
 # --- no planning labels in the message ------------------------------------
 
@@ -73,8 +76,14 @@ fi
 # `phase`, which is also the tapered evaluation's own word, and there is no
 # file path here to exempt as check-boundary does. The escapes are in the
 # message below, and each of them is how the code itself writes it.
-LABEL='(^|[^A-Za-z0-9_])(phase|item|gate|task|batch|milestone|checkpoint|review)s?[ _:#-]*[0-9]'
-FOUND=$(git stripspace --strip-comments < "$MSG_FILE" | grep -inE "$LABEL" | head -n 1 || true)
+LABEL='(^|[^A-Za-z0-9_])(phase|item|gate|task|batch|milestone|checkpoint|review)(s|es)?[ _:#-]*[0-9]'
+if [ -n "$COMMIT" ]; then
+    TEXT=$(git stripspace < "$MSG_FILE")
+else
+    # From `commit -v`'s scissors line down is the diff, which git drops once this has run.
+    TEXT=$(sed '/^# -* >8 -*$/,$d' "$MSG_FILE" | git stripspace --strip-comments)
+fi
+FOUND=$(printf '%s\n' "$TEXT" | grep -inE "$LABEL" | head -n 1 || true)
 
 if [ -n "$FOUND" ]; then
     fail "the message carries a planning label: $FOUND" \
@@ -100,6 +109,10 @@ fi
 #
 # It is reached through `$0` rather than a path relative to the repository
 # root, so that it is found whatever `core.hooksPath` points at.
-"$(dirname "$0")/check-message-metadata" "$MSG_FILE"
+if [ -n "$COMMIT" ]; then
+    "$(dirname "$0")/check-message-metadata" --stored "$MSG_FILE"
+else
+    "$(dirname "$0")/check-message-metadata" "$MSG_FILE"
+fi
 
 exit 0
