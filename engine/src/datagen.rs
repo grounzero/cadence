@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Condvar, LockResult, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -88,18 +88,21 @@ fn generate_with(
     seed: u64,
     games: u64,
     threads: usize,
-    _ahead: u64,
+    ahead: u64,
     out: &mut dyn Write,
     progress: &mut dyn FnMut(u64),
     line_for: &(dyn Fn(u64, &Table) -> String + Sync),
 ) -> io::Result<()> {
     writeln!(out, "{}", provenance(seed, games))?;
     let next = AtomicU64::new(0);
+    let window = Window::new(ahead);
     let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
     thread::scope(|scope| {
+        let _closing = Closing(&window);
         for _ in 0..workers(threads, games) {
             let tx = tx.clone();
             let next = &next;
+            let window = &window;
             // The stack a `go` gives its search, since these games are the same search.
             let spawned = thread::Builder::new()
                 .stack_size(SEARCH_STACK_BYTES)
@@ -110,7 +113,7 @@ fn generate_with(
                     };
                     loop {
                         let number = next.fetch_add(1, Ordering::Relaxed);
-                        if number >= games {
+                        if number >= games || !window.wait_for(number) {
                             return;
                         }
                         let line = line_for(number, &tt);
@@ -139,9 +142,70 @@ fn generate_with(
                 wanted += 1;
                 progress(wanted);
             }
+            window.advance(wanted);
         }
         out.flush()
     })
+}
+
+/// How far the workers may run ahead of the next record to be written.
+struct Window {
+    ahead: u64,
+    state: Mutex<WindowState>,
+    moved: Condvar,
+}
+
+struct WindowState {
+    written: u64,
+    closed: bool,
+}
+
+impl Window {
+    /// At least one, or the next game to be written would wait on itself.
+    fn new(ahead: u64) -> Window {
+        Window {
+            ahead: ahead.max(1),
+            state: Mutex::new(WindowState {
+                written: 0,
+                closed: false,
+            }),
+            moved: Condvar::new(),
+        }
+    }
+
+    /// The next record to be written is always inside, so its game never waits and the window
+    /// moves. False once the writer has stopped, when no game is worth starting.
+    fn wait_for(&self, number: u64) -> bool {
+        let mut state = unpoisoned(self.state.lock());
+        while !state.closed && number >= state.written.saturating_add(self.ahead) {
+            state = unpoisoned(self.moved.wait(state));
+        }
+        !state.closed
+    }
+
+    fn advance(&self, written: u64) {
+        unpoisoned(self.state.lock()).written = written;
+        self.moved.notify_all();
+    }
+
+    fn close(&self) {
+        unpoisoned(self.state.lock()).closed = true;
+        self.moved.notify_all();
+    }
+}
+
+/// The lock guards two plain fields, which no panic can leave half-written.
+fn unpoisoned<T>(result: LockResult<T>) -> T {
+    result.unwrap_or_else(PoisonError::into_inner)
+}
+
+/// On every way out of the writer, so no worker waits on a window that will not move again.
+struct Closing<'a>(&'a Window);
+
+impl Drop for Closing<'_> {
+    fn drop(&mut self) {
+        self.0.close();
+    }
 }
 
 /// Each worker holds a stack and a table before it asks for a game, so none start for no games.
@@ -319,7 +383,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{MAX_THREADS, USAGE, generate_with, workers};
+    use super::{MAX_THREADS, USAGE, generate_with, provenance, workers};
     use crate::tt::Table;
 
     #[test]
@@ -369,5 +433,16 @@ mod tests {
         let lines: Vec<&str> = std::str::from_utf8(&out).expect("utf-8").lines().collect();
         let names: Vec<String> = (0..GAMES).map(|n| format!("game {n}")).collect();
         assert_eq!(lines[1..], names, "written in number order");
+    }
+
+    /// A writer that fails releases every worker the window holds, so the run ends.
+    #[test]
+    fn a_failed_write_ends_a_run_whose_workers_are_held() {
+        const GAMES: u64 = 64;
+        let mut room = vec![0_u8; provenance(1, GAMES).len() + "\ngame 0\n".len()];
+        let mut out: &mut [u8] = &mut room;
+        let line_for = |number: u64, _: &Table| format!("game {number}");
+        let run = generate_with(1, GAMES, 3, 2, &mut out, &mut |_| {}, &line_for);
+        assert!(run.is_err(), "the second record did not fit");
     }
 }
