@@ -135,6 +135,24 @@ fn the_root_keeps_its_best_rank_within_the_list_it_is_given() {
     assert_eq!(ranked.moves, vec![kb1]);
 }
 
+/// The board keeps an en passant square after every double push, takers or not, and the crate is
+/// handed it as it is, so a push with no capturer must still be ranked and not refused.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_double_push_with_no_capturer_is_ranked() {
+    let tables = loaded(&fixtures());
+    let mut b = board("k7/8/8/8/8/8/P7/K7 w - - 0 1");
+    let a2a4 = parse_uci(&generate_legal(&b), "a2a4").unwrap();
+    assert!(
+        tables.rank_root(&mut b, &[]).is_some(),
+        "the root is unranked"
+    );
+    let ranked = tables
+        .rank_root(&mut b, &[a2a4])
+        .expect("the push is ranked");
+    assert_eq!(ranked.moves, vec![a2a4]);
+}
+
 /// With the ranking settled no node probes, and with distances missing every node after a zeroing
 /// move does: either way the mate is found and reported as a mate, above the band.
 #[test]
