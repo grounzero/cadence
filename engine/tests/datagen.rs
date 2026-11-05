@@ -359,16 +359,12 @@ fn the_window_keeps_plies_eight_to_two_hundred_and_forty_inclusive() {
 /// another comment is still only a comment.
 #[test]
 fn extraction_refuses_a_provenance_line_cut_short() {
-    let records: String = String::from_utf8(run(7, 2, 1))
-        .expect("utf-8")
-        .lines()
-        .filter(|l| !l.starts_with('#'))
-        .map(|l| format!("{l}\n"))
-        .collect();
+    let text = String::from_utf8(run(7, 2, 1)).expect("utf-8");
+    let records: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
     let whole = datagen::provenance(7, 2);
     let games = whole.find(" games ").expect("a game count");
     let extract_with = |header: &str| {
-        let file = format!("{header}\n{records}");
+        let file = format!("{header}\n{}\n", records.join("\n"));
         let (mut train, mut holdout) = (Vec::new(), Vec::new());
         extract::extract(file.as_bytes(), &mut train, &mut holdout, 0)
     };
