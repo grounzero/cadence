@@ -7,7 +7,7 @@ use std::io::{BufRead, Write};
 
 use cadence_core::{FenStyle, PieceType};
 
-use super::game::{Ending, Outcome};
+use super::game::{Ending, Outcome, ending};
 use super::record::Record;
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
@@ -53,8 +53,9 @@ pub struct Stats {
 ///
 /// # Errors
 ///
-/// A record that does not parse, an output that cannot be written, a file holding another number
-/// of games than its provenance lines name, or a game out of turn in its run.
+/// A record that does not parse or whose moves do not end as it says, an output that cannot be
+/// written, a file holding another number of games than its provenance lines name, or a game out
+/// of turn in its run.
 pub fn extract(
     input: impl BufRead,
     train: &mut dyn Write,
@@ -85,6 +86,8 @@ pub fn extract(
             continue;
         }
         let record = Record::parse(&line).map_err(|e| format!("line {}: {e}", i + 1))?;
+        let replayed = replay(&record);
+        replayed.map_err(|e| format!("line {}: {e}", i + 1))?;
         if let Some(run) = &mut run {
             let admitted = run.admit(record.number);
             admitted.map_err(|e| format!("line {}: {e}", i + 1))?;
@@ -105,6 +108,24 @@ pub fn extract(
         ));
     }
     Ok(stats)
+}
+
+/// The result labels every position the game gives, so the moves must end there and nothing may
+/// follow the end.
+fn replay(record: &Record) -> Result<(), String> {
+    let mut board = record.start();
+    let plies = record.plies.iter();
+    for &m in plies.chain(record.moves.iter().map(|(m, _)| m)) {
+        if let Some((end, _)) = ending(&board) {
+            return Err(format!("a move after the game ended by {}", end.word()));
+        }
+        board.play(m);
+    }
+    match ending(&board) {
+        Some(found) if found == (record.ending, record.outcome) => Ok(()),
+        Some((end, won)) => Err(format!("the moves end {} {}", won.text(), end.word())),
+        None => Err("the moves do not end the game".to_string()),
+    }
 }
 
 /// What a provenance line names, and the game due next under it.
