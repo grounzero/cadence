@@ -643,7 +643,13 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
 /// The files git would show as the tree: tracked or untracked but never ignored, so a table
 /// fetched into the tree or a build's output is not read as source. Walked where git cannot answer.
 fn working_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let args = ["ls-files", "--cached", "--others", "--exclude-standard", "-z"];
+    let args = [
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ];
     let Ok(listed) = git(root, &args) else {
         let mut paths = Vec::new();
         collect_all(root, &mut paths).map_err(|e| e.to_string())?;
