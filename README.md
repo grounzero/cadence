@@ -36,6 +36,11 @@ The engine is now at `target/release/cadence`. In your GUI, add it as a UCI
 engine. For Chess960, turn on the GUI's Chess960 mode and it will tell the
 engine.
 
+Build from the repository's root. Cargo reads the per-target flags in
+`.cargo/config.toml` from the directory it runs in, so a build started
+elsewhere, with `cargo install --path` or `--manifest-path` from a parent
+directory, gets none of them.
+
 To talk to the engine directly, run it and type UCI commands:
 
 ```text
