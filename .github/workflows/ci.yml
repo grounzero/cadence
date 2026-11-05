@@ -15,10 +15,11 @@ on:
 permissions:
   contents: read
 
-# A superseded push has nothing to say.
+# A superseded push has nothing to say, except on main, where each commit's own run is what the
+# release gate reads.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -99,26 +100,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `features` is what each leg's flags must resolve to, read off every rustc command line.
         include:
           - os: ubuntu-latest
             name: x86_64-unknown-linux-gnu
             target: x86_64-unknown-linux-gnu
+            features: +avx2,+bmi1,+popcnt,+lzcnt
           - os: macos-latest
             name: aarch64-apple-darwin
             target: aarch64-apple-darwin
+            features: +neon
           # The bot's triple, built natively on its host and otherwise tested nowhere.
           - os: ubuntu-24.04-arm
             name: aarch64-unknown-linux-gnu
             target: aarch64-unknown-linux-gnu
+            features: +neon
           # The baseline plus POPCNT, and no AVX2, BMI1 or LZCNT: the released generic binary.
           - os: ubuntu-latest
             name: x86_64-unknown-linux-gnu, generic
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-generic.toml
+            features: +popcnt
           # The AVX2 build with a static C runtime, the one a rating list is asked to rate.
           - os: windows-latest
             name: x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+crt-static
+          # The released generic Windows binary, whose own baseline already holds SSE3.
+          - os: windows-latest
+            name: x86_64-pc-windows-msvc, generic
+            target: x86_64-pc-windows-msvc
+            config: .cargo/x86-64-generic.toml
+            features: +popcnt,+crt-static
     env:
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
     # Every step under bash, so $CONFIG_ARG and the scripts read the same on Windows as elsewhere.
@@ -188,9 +201,9 @@ jobs:
       # Every test target turns the engine's counters on, so the build without them is linted alone.
       - name: clippy
         run: |
-          cargo clippy --workspace --all-targets --all-features $CONFIG_ARG -- -D warnings
-          cargo clippy --workspace $CONFIG_ARG -- -D warnings
-          cargo clippy --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --workspace --all-targets --all-features $CONFIG_ARG -- -D warnings
+          cargo clippy --locked --workspace $CONFIG_ARG -- -D warnings
+          cargo clippy --locked --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
 
       - name: check-headers, check-boundary and check-changelog
         run: |
@@ -205,19 +218,22 @@ jobs:
       # clippy-red once already; a matcher whose tests nothing runs is the
       # shape of a rule nothing checks.
       - name: Test xtask's own matchers
-        run: cargo test --manifest-path xtask/Cargo.toml
+        run: cargo test --locked --manifest-path xtask/Cargo.toml
 
-      # The hook is local-only and inert until bench.txt exists, so nothing
-      # else here would notice a syntax error in it. It would be found on the
-      # day the first node count is declared, by someone who did not write it.
-      - name: Parse the commit-msg hook
+      # The hooks run only in a clone that installed them, so nothing else here would notice a syntax
+      # error in one or a lost execute bit, and git skips a hook it cannot execute without a word.
+      - name: Parse the hooks and check each is executable
         run: |
-          sh -n .githooks/commit-msg
-          sh -n .githooks/check-message-metadata
-          sh -n .githooks/check-bench-declaration
+          for hook in .githooks/*; do
+            sh -n "$hook"
+            mode=$(git ls-files -s "$hook" | cut -d' ' -f1)
+            [ "$mode" = 100755 ] \
+              || { echo "::error::$hook is $mode in the index, not executable"; exit 1; }
+          done
+          echo "$(ls .githooks | wc -l) hooks parsed, every one executable"
 
       - name: build
-        run: cargo build --workspace --all-targets $CONFIG_ARG
+        run: cargo build --locked --workspace --all-targets $CONFIG_ARG
 
       # The slider attack tables are const-evaluated, and
       # #[allow(long_running_const_eval)] on them is a statement of intent
@@ -228,14 +244,16 @@ jobs:
       - name: Time a clean build of the const-evaluated tables
         shell: bash
         run: |
+          # Perl's clock, since BSD date on macOS prints `%N` as a letter.
+          now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
           cargo clean -p cadence-core
-          start=$(date +%s.%N)
-          cargo build -p cadence-core --quiet $CONFIG_ARG
-          dev=$(awk -v a="$(date +%s.%N)" -v b="$start" 'BEGIN { print a - b }')
+          start=$(now)
+          cargo build --locked -p cadence-core --quiet $CONFIG_ARG
+          dev=$(awk -v a="$(now)" -v b="$start" 'BEGIN { print a - b }')
           cargo clean -p cadence-core --release
-          start=$(date +%s.%N)
-          cargo build -p cadence-core --release --quiet $CONFIG_ARG
-          rel=$(awk -v a="$(date +%s.%N)" -v b="$start" 'BEGIN { print a - b }')
+          start=$(now)
+          cargo build --locked -p cadence-core --release --quiet $CONFIG_ARG
+          rel=$(awk -v a="$(now)" -v b="$start" 'BEGIN { print a - b }')
           printf 'cadence-core clean build: dev %.2f s, release %.2f s\n' "$dev" "$rel"
           printf '### const-eval clean build (%s)\ndev %.2f s · release %.2f s\n' \
             "${{ matrix.name }}" "$dev" "$rel" >> "$GITHUB_STEP_SUMMARY"
@@ -245,15 +263,19 @@ jobs:
       # `continue-on-error` so the red was visible without being a gate; the
       # fast tier passes now, and a regression in it must fail the job.
       # The per-binary totals go to the step summary so the count is visible
-      # without opening the log.
+      # without opening the log, and a run under a floor fails, since a cfg
+      # mistake that compiles tests out passes everything it left.
       - name: test
         shell: bash
         run: |
-          cargo test --workspace --no-fail-fast $CONFIG_ARG 2>&1 | tee test.log
+          cargo test --locked --workspace --no-fail-fast $CONFIG_ARG 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
           echo "### tests" >> "$GITHUB_STEP_SUMMARY"
           grep -h '^test result:' test.log >> "$GITHUB_STEP_SUMMARY" || true
-          exit "$status"
+          passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
+          echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" -eq 0 ] || exit "$status"
+          [ "$passed" -ge 700 ] || { echo "::error::only $passed tests passed, under the floor of 700"; exit 1; }
 
       # The ignored Syzygy gates, on the tables tests/fixtures/syzygy.sha256 names, fetched from the
       # lichess mirror and held to that list. A run that passes no test fails, so the gate cannot pass empty.
@@ -278,7 +300,7 @@ jobs:
           done < tests/fixtures/syzygy.sha256
           if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
           (cd "$dir" && $hash -c "$list")
-          CADENCE_SYZYGY_PATH="$dir" cargo test -p cadence-engine --test syzygy $CONFIG_ARG \
+          CADENCE_SYZYGY_PATH="$dir" cargo test --locked -p cadence-engine --test syzygy $CONFIG_ARG \
             -- --ignored 2>&1 | tee syzygy.log
           echo "### Syzygy gates" >> "$GITHUB_STEP_SUMMARY"
           grep -h '^test result:' syzygy.log >> "$GITHUB_STEP_SUMMARY"
@@ -288,22 +310,22 @@ jobs:
       # panic = "abort", incremental = false. A release-only link failure is
       # not something to discover at deploy time.
       - name: build --release
-        run: cargo build --workspace --release $CONFIG_ARG
+        run: cargo build --locked --workspace --release $CONFIG_ARG
 
       # Read from the rustc command lines cargo ran, not from the files, so a flag cargo did not
-      # pass is caught. The core crate is rebuilt so its line is read too, and every line must
-      # resolve to the triple's baseline plus POPCNT.
-      - name: Assert the generic binary uses only the baseline features and POPCNT
-        if: matrix.config != ''
+      # pass is caught, which an environment `RUSTFLAGS` replacing the config's would be. The core
+      # crate is rebuilt so its line is read too, and every line must carry flags that resolve to
+      # the triple's baseline with the leg's features.
+      - name: Assert the features every crate was built with
         shell: bash
         run: |
           cargo clean --release -p cadence-core
-          cargo build --workspace --release -v --color never $CONFIG_ARG > release.log 2>&1 \
+          cargo build --locked --workspace --release -v --color never $CONFIG_ARG > release.log 2>&1 \
             || { cat release.log; exit 1; }
-          base=$(rustc --print cfg --target ${{ matrix.target }} -C target-feature=+popcnt \
+          base=$(rustc --print cfg --target ${{ matrix.target }} -C target-feature=${{ matrix.features }} \
             | grep target_feature | sort)
-          grep -E '^ +Running `.*rustc .*--crate-name ' release.log > invocations.txt || true
-          for crate in cadence_core cadence_nnue cadence_engine cadence; do
+          grep -E '^ +Running `.*rustc(\.exe)? .*--crate-name ' release.log > invocations.txt || true
+          for crate in cadence_core cadence_engine cadence; do
             if ! grep -q -- "--crate-name $crate " invocations.txt; then
               echo "::error::no rustc invocation for $crate in the release build log"
               exit 1
@@ -311,17 +333,18 @@ jobs:
           done
           n=0
           while read -r line; do
+            name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
             set --
-            for f in $(echo "$line" | grep -oE "target-feature=[^ '\`]+"); do set -- "$@" -C "$f"; done
+            for f in $(echo "$line" | grep -oE "target-feature=[^ '\`\"]+"); do set -- "$@" -C "$f"; done
+            [ "$#" -gt 0 ] || { echo "::error::$name was built with no target feature"; exit 1; }
             got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
             if [ "$got" != "$base" ]; then
-              name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
-              echo "::error::$name resolves to $(echo $got) and not the baseline plus POPCNT"
+              echo "::error::$name resolves to $(echo $got) and not the baseline with ${{ matrix.features }}"
               exit 1
             fi
             n=$((n + 1))
           done < invocations.txt
-          echo "$n rustc invocations, every one at the baseline plus POPCNT: $(echo $base)"
+          echo "$n rustc invocations, every one at the baseline with ${{ matrix.features }}: $(echo $base)"
 
       - name: Smoke-test the binary
         shell: bash
@@ -331,25 +354,28 @@ jobs:
           echo "$out" | grep -qx 'uciok'   || { echo "::error::no uciok";   exit 1; }
           echo "$out" | grep -qx 'readyok' || { echo "::error::no readyok"; exit 1; }
 
-      # The UCI behaviours a tester relies on, held to the binary that ships rather than the test
-      # build, which turns the counters on. A filter that matched nothing would pass, so the count is read.
-      - name: UCI tests against the release binary
-        if: startsWith(matrix.target, 'x86_64')
+      # The engine's tests again, every one that drives a subprocess now driving the binary that
+      # ships rather than the test build, which turns the counters on. The one test that reads a
+      # line only the counters print is skipped by name, and the counts are read against the list.
+      - name: Engine tests against the release binary
         shell: bash
         run: |
           bin="$PWD/target/release/cadence"
           if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -w "$bin.exe"); fi
-          CADENCE_BIN="$bin" cargo test -p cadence-engine --test uci --test time $CONFIG_ARG -- --exact \
-            go_with_a_clock_yields_a_legal_bestmove \
-            go_infinite_then_stop_yields_a_bestmove_and_isready_is_answered_meanwhile \
-            ucinewgame_is_accepted_and_the_next_go_works \
-            clear_hash_empties_the_table \
-            a_hash_size_set_over_uci_sizes_the_table_searched \
-            a_game_on_the_clock_never_runs_out_of_time 2>&1 | tee release-uci.log
-          passed=$(grep -h '^test result:' release-uci.log | awk '{n += $4} END {print n + 0}')
-          echo "### UCI tests on the release binary" >> "$GITHUB_STEP_SUMMARY"
-          grep -h '^test result:' release-uci.log >> "$GITHUB_STEP_SUMMARY"
-          [ "$passed" -eq 6 ] || { echo "::error::$passed of the 6 tests ran"; exit 1; }
+          skip=every_search_thread_is_given_the_primary_s_limits_and_tunables
+          listed=$(cargo test --locked -p cadence-engine --tests $CONFIG_ARG -- --list 2>/dev/null \
+            | grep -c ': test$')
+          CADENCE_BIN="$bin" cargo test --locked -p cadence-engine --tests $CONFIG_ARG \
+            -- --exact --skip "$skip" 2>&1 | tee release-uci.log
+          status=${PIPESTATUS[0]}
+          read -r passed ignored skipped < <(grep -h '^test result:' release-uci.log \
+            | awk '{p += $4; i += $8; s += $12} END {print p + 0, i + 0, s + 0}')
+          echo "### Engine tests on the release binary" >> "$GITHUB_STEP_SUMMARY"
+          echo "$passed passed, $ignored ignored, $skipped skipped, of $listed" >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" -eq 0 ] || exit "$status"
+          [ "$skipped" -eq 1 ] || { echo "::error::the skip matched $skipped tests and not one"; exit 1; }
+          [ $((passed + ignored + skipped)) -eq "$listed" ] \
+            || { echo "::error::$passed passed, $ignored ignored and $skipped skipped of $listed"; exit 1; }
 
       # The regression detector. The last line of `cadence bench` is
       # `<nodes> nodes <nps> nps`; the count must equal bench.txt, and a commit
@@ -375,7 +401,7 @@ jobs:
 
       # The Windows binary, kept with the run so it can be tried without a toolchain.
       - name: Upload the Windows binary
-        if: matrix.target == 'x86_64-pc-windows-msvc'
+        if: matrix.target == 'x86_64-pc-windows-msvc' && matrix.config == ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cadence-${{ matrix.target }}-${{ github.sha }}

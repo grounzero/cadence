@@ -65,4 +65,4 @@ rustflags = ["-C", "target-feature=+neon"]
 rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt,+crt-static"]
 
 [alias]
-xtask = "run --quiet --manifest-path xtask/Cargo.toml --"
+xtask = "run --locked --quiet --manifest-path xtask/Cargo.toml --"
