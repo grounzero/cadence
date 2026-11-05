@@ -46,20 +46,27 @@ jobs:
       # release build is exercised too, and the deep values would take hours
       # unoptimised.
       - name: Build the deep tier
-        run: cargo test -p cadence-core --release --test standard_perft --no-run
+        run: cargo test --locked -p cadence-core --release --test standard_perft --no-run
 
+      # The ignored tests are listed first and every one must pass, so a tier that no longer
+      # compiles any test fails rather than reporting nothing run as success.
       - name: Deep perft
         shell: bash
         run: |
+          listed=$(cargo test --locked -p cadence-core --release --test standard_perft \
+            -- --ignored --list 2>/dev/null | grep -c ': test$')
           start=$(date +%s)
-          cargo test -p cadence-core --release --test standard_perft -- --ignored --nocapture 2>&1 | tee deep.log
+          cargo test --locked -p cadence-core --release --test standard_perft -- --ignored --nocapture 2>&1 | tee deep.log
           status=${PIPESTATUS[0]}
           elapsed=$(( $(date +%s) - start ))
-          echo "deep tier wall-clock: ${elapsed}s"
+          passed=$(grep -h '^test result:' deep.log | awk '{n += $4} END {print n + 0}')
+          echo "deep tier wall-clock: ${elapsed}s, $passed of $listed passed"
           {
             echo "### deep perft"
-            echo "wall-clock: ${elapsed}s"
+            echo "wall-clock: ${elapsed}s, $passed of $listed passed"
             grep -h '^test ' deep.log || true
             grep -h '^test result:' deep.log || true
           } >> "$GITHUB_STEP_SUMMARY"
-          exit "$status"
+          [ "$status" -eq 0 ] || exit "$status"
+          [ "$listed" -gt 0 ] && [ "$passed" -eq "$listed" ] \
+            || { echo "::error::$passed of $listed ignored tests passed"; exit 1; }
