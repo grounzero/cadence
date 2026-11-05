@@ -177,14 +177,14 @@ fn the_evaluation_is_antisymmetric_under_a_colour_flip() {
     assert!(ending >= 200, "only {ending} positions at phase 0");
 }
 
-/// The last two carry forty queens, enough for the evaluation's clamp to bind.
-const ABSURD: [&str; 6] = [
-    "QQQQQQQQ/QQQQQQQQ/8/8/8/8/8/k6K w - - 0 1",
-    "qqqqqqqq/qqqqqqqq/8/8/8/8/8/K6k w - - 0 1",
-    "RRRRRRRR/RRRRRRRR/RRRRRRRR/8/8/8/8/k6K b - - 0 1",
-    "k6K/8/8/8/8/nnnnnnnn/bbbbbbbb/qqqqqqqq w - - 0 1",
-    "QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/QQQQQQQQ/8/8/k6K b - - 0 1",
-    "K6k/8/8/qqqqqqqq/qqqqqqqq/qqqqqqqq/qqqqqqqq/qqqqqqqq w - - 0 1",
+/// The most material promotion gives a side, against a bare king.
+const EXTREME: [&str; 6] = [
+    "QQQQQQQQ/Q7/8/8/8/8/8/k6K w - - 0 1",
+    "qqqqqqqq/q7/8/8/8/8/8/K6k w - - 0 1",
+    "RRRRRRRR/RR6/8/8/8/8/8/k6K b - - 0 1",
+    "k6K/8/8/8/8/8/qrrbbnn1/qqqqqqqq w - - 0 1",
+    "QQQQQQQQ/QRRBBNN1/8/8/8/8/8/k6K b - - 0 1",
+    "K6k/8/8/8/8/8/qrrbbnn1/qqqqqqqq w - - 0 1",
 ];
 
 #[test]
@@ -192,7 +192,7 @@ fn the_evaluation_stays_inside_the_evaluation_bound() {
     let mut positions = positions();
     // A mate score that is really an evaluation would be preferred to a real mate, or feared like
     // one.
-    for fen in ABSURD {
+    for fen in EXTREME {
         positions.push(board(fen));
     }
     for b in &positions {
@@ -313,7 +313,7 @@ fn the_phase_spans_the_scale() {
     assert!(phase(&without(base, "d8")) < PHASE_MAX);
     // Surplus material saturates rather than overflowing the scale.
     assert_eq!(
-        phase(&board("QQQQQQQQ/QQQQQQQQ/8/8/8/8/8/k6K w - - 0 1")),
+        phase(&board("QQQQQQQQ/Q7/8/8/8/8/8/k6K w - - 0 1")),
         PHASE_MAX
     );
 }
@@ -354,7 +354,7 @@ fn the_trace_dotted_with_the_weights_is_the_evaluation() {
     // A term added outside the walk the trace records, or a weight read from anywhere but the
     // table, breaks it.
     let mut positions = positions();
-    positions.extend(ABSURD.iter().map(|f| board(f)));
+    positions.extend(EXTREME.iter().map(|f| board(f)));
     let bound = i64::from(MAX_EVAL - 1);
     let (mut exact, mut clamped, mut rights_live, mut dfrc) = (0usize, 0usize, 0usize, 0usize);
     for b in &positions {
@@ -386,7 +386,6 @@ fn the_trace_dotted_with_the_weights_is_the_evaluation() {
         "only {rights_live} positions with castling rights live"
     );
     assert!(dfrc >= 500, "only {dfrc} DFRC positions");
-    assert!(clamped >= 2, "the clamp bound on only {clamped} positions");
 }
 
 // Pawn structure
@@ -643,9 +642,9 @@ fn four_or_more_share_the_last_entry_of_each_table() {
         king_terms("k7/8/8/8/8/6PP/5PPP/6K1 w - - 0 1").1,
         counted(5, 4, 0)
     );
-    // Twenty-four knights around a king, which only a FEN can hold, share the same entry.
+    // Ten knights around a king, the most promotion gives, share the same entry.
     assert_eq!(
-        king_terms("k7/2nnnnn1/1nn3nn/1n5n/1n2K2n/1n5n/1nn3nn/2nnnnn1 w - - 0 1").0,
+        king_terms("k7/8/2nnnnn1/8/4K3/8/2nnnnn1/8 w - - 0 1").0,
         counted(5, 0, 4)
     );
 }

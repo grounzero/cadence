@@ -506,6 +506,26 @@ const MENU: [PieceType; 7] = [
     PieceType::Queen,
 ];
 
+/// Whether one more `pt` for `c` leaves material that promotion from eight pawns can give, which
+/// `from_fen` requires.
+fn promotion_allows(cells: &[Option<Piece>; 64], c: Colour, pt: PieceType) -> bool {
+    let mut count = [0usize; 6];
+    for p in cells.iter().flatten().filter(|p| p.colour() == c) {
+        count[p.piece_type().index()] += 1;
+    }
+    count[pt.index()] += 1;
+    let promoted: usize = [
+        (PieceType::Queen, 1),
+        (PieceType::Rook, 2),
+        (PieceType::Bishop, 2),
+        (PieceType::Knight, 2),
+    ]
+    .into_iter()
+    .map(|(t, start)| count[t.index()].saturating_sub(start))
+    .sum();
+    count[PieceType::Pawn.index()] + promoted <= 8
+}
+
 /// Rejected with `None` when the side not to move is in check: the function is specified over
 /// reachable positions.
 fn random_placement(rng: &mut Rng) -> Option<Board> {
@@ -539,6 +559,9 @@ fn random_placement(rng: &mut Rng) -> Option<Board> {
         } else {
             Colour::Black
         };
+        if !promotion_allows(&cells, c, pt) {
+            continue;
+        }
         cells[s.index()] = Some(Piece::new(c, pt));
         placed += 1;
     }

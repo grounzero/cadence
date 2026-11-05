@@ -467,7 +467,8 @@ fn blend(board: &Board, sum: &Sum, phase: i32) -> Score {
     // Truncating division: symmetric under negation, so the mirror of a position evaluates to
     // the exact negative.
     let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
-    // `from_fen` accepts sixty queens, which must still not reach the mate scale.
+    // No material `from_fen` accepts comes near the bound; the clamp keeps any weights that would
+    // off the mate scale.
     let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
     match board.side_to_move() {
         Colour::White => white,
@@ -593,7 +594,11 @@ mod tests {
     use cadence_core::position::Board;
     use cadence_core::{Colour, PieceType};
 
-    use super::{PAWN_CACHE_ENTRIES, PawnCache, PawnEntry, evaluate, evaluate_cached};
+    use crate::score::MAX_EVAL;
+
+    use super::{
+        PAWN_CACHE_ENTRIES, PHASE_MAX, PawnCache, PawnEntry, Sum, blend, evaluate, evaluate_cached,
+    };
 
     /// Each plant matches one side's pawns at the position's own index, with sums no structure
     /// has, so a lookup that checked one set or the key alone would take them.
@@ -617,5 +622,29 @@ mod tests {
             assert_eq!(evaluate_cached(&board, &mut cache), evaluate(&board));
         }
         assert_eq!((cache.probes(), cache.hits()), (4, 2));
+    }
+
+    /// No position `from_fen` accepts reaches the bound, so the clamp is held to sums planted past
+    /// it, at every weighting of the two phases.
+    #[test]
+    fn a_sum_past_the_bound_is_clamped_inside_it() {
+        let white = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/8/8/8/8/8/8/4K3 b - - 0 1").unwrap();
+        for value in [40_000, 1_000_000] {
+            let up = Sum {
+                mg: value,
+                eg: value,
+            };
+            let down = Sum {
+                mg: -value,
+                eg: -value,
+            };
+            for phase in [0, PHASE_MAX / 2, PHASE_MAX] {
+                assert_eq!(blend(&white, &up, phase), MAX_EVAL - 1);
+                assert_eq!(blend(&white, &down, phase), -(MAX_EVAL - 1));
+                assert_eq!(blend(&black, &up, phase), -(MAX_EVAL - 1));
+                assert_eq!(blend(&black, &down, phase), MAX_EVAL - 1);
+            }
+        }
     }
 }

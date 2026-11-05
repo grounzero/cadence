@@ -191,10 +191,10 @@ fn pawns<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
             && attacks::pawn_attacks(c.us, from).contains(ep)
         {
             let captured = Square::new(ep.index() as u8 ^ 8);
-            // In check it helps only if the captured pawn is the checker, which the target mask cannot see.
-            let resolves_check = c.checkers.is_empty() || c.checkers == captured.bb();
-            if resolves_check {
-                // Only sliders can be uncovered.
+            // A checker that is not a slider survives the capture unless it is the pawn taken.
+            // A slider's check, like any the capture uncovers, is read from the occupancy after it.
+            let leaper = (c.checkers & !(their_rq | their_bq)).without(captured);
+            if leaper.is_empty() {
                 let occ2 = c.occ.without(from).without(captured).with(ep);
                 let exposed = (attacks::rook_attacks(c.ksq, occ2) & their_rq)
                     | (attacks::bishop_attacks(c.ksq, occ2) & their_bq);

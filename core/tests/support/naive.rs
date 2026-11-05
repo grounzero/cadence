@@ -313,6 +313,26 @@ pub fn random_touching_kings_fen(rng: &mut Rng) -> String {
     placement_fen(rng, true)
 }
 
+/// Whether one more `pt` for `c` leaves material that promotion from eight pawns can give, which
+/// `from_fen` requires.
+fn promotion_allows(cells: &[Option<Piece>; 64], c: Colour, pt: PieceType) -> bool {
+    let mut count = [0usize; 6];
+    for p in cells.iter().flatten().filter(|p| p.colour() == c) {
+        count[p.piece_type().index()] += 1;
+    }
+    count[pt.index()] += 1;
+    let promoted: usize = [
+        (PieceType::Queen, 1),
+        (PieceType::Rook, 2),
+        (PieceType::Bishop, 2),
+        (PieceType::Knight, 2),
+    ]
+    .into_iter()
+    .map(|(t, start)| count[t.index()].saturating_sub(start))
+    .sum();
+    count[PieceType::Pawn.index()] + promoted <= 8
+}
+
 fn placement_fen(rng: &mut Rng, kings_touch: bool) -> String {
     let mut board: [Option<Piece>; 64] = [None; 64];
     let wk = Square::new(u8::try_from(rng.below(64)).expect("fits"));
@@ -355,6 +375,9 @@ fn placement_fen(rng: &mut Rng, kings_touch: bool) -> String {
         } else {
             Colour::Black
         };
+        if !promotion_allows(&board, c, pt) {
+            continue;
+        }
         board[sq.index()] = Some(Piece::new(c, pt));
         placed += 1;
     }

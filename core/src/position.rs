@@ -72,6 +72,8 @@ pub struct Board {
     by_colour: [Bitboard; 2],
     mailbox: [Option<Piece>; 64],
     stm: Colour,
+    /// At ply 0: made moves count from it, so unmaking one restores the number exactly even where
+    /// the count has saturated.
     fullmove: u16,
     ply: u16,
     /// Fixed for the life of the position, so never in the undo record.
@@ -286,7 +288,9 @@ impl Board {
     #[inline]
     #[must_use]
     pub fn fullmove_number(&self) -> u16 {
-        self.fullmove
+        let black_at_root = (self.stm as u8 == Colour::Black as u8) == self.ply.is_multiple_of(2);
+        let black_moves = (self.ply + u16::from(black_at_root)) / 2;
+        self.fullmove.saturating_add(black_moves)
     }
 
     #[inline]
@@ -575,9 +579,6 @@ impl Board {
 
         self.stm = them;
         self.state_mut().key ^= zobrist::side();
-        if us as u8 == Colour::Black as u8 {
-            self.fullmove += 1;
-        }
 
         self.compute_check_info();
         dirty
@@ -623,9 +624,6 @@ impl Board {
         }
 
         self.stm = us;
-        if us as u8 == Colour::Black as u8 {
-            self.fullmove -= 1;
-        }
         self.ply -= 1;
     }
 
@@ -640,6 +638,7 @@ impl Board {
         self.make_move(m);
         // The new position's snapshot is in slot 1; it becomes the root.
         self.states[0] = self.states[self.ply as usize];
+        self.fullmove = self.fullmove_number();
         self.ply = 0;
         self.history.push(key);
     }
@@ -684,9 +683,6 @@ impl Board {
             pinners: [Bitboard::EMPTY; 2],
         };
         self.stm = us.flip();
-        if us as u8 == Colour::Black as u8 {
-            self.fullmove += 1;
-        }
         self.compute_check_info();
         DirtyPieces::EMPTY
     }
@@ -697,9 +693,6 @@ impl Board {
     pub fn unmake_null_move(&mut self) {
         debug_assert!(self.ply > 0, "unmake_null_move with nothing made");
         self.stm = self.stm.flip();
-        if self.stm as u8 == Colour::Black as u8 {
-            self.fullmove -= 1;
-        }
         self.ply -= 1;
     }
 

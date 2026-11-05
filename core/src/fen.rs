@@ -21,8 +21,8 @@ pub enum FenError {
     /// Not eight ranks of eight squares, or a pawn on the first or eighth rank.
     Placement,
     SideToMove,
-    /// The castling field named a rook that is not there, or a right that cannot exist given
-    /// the king's square.
+    /// A castling character that is not a letter naming a side or a file, or two rooks named for
+    /// one right.
     Castling,
     /// Not `-`, or not the empty square a pawn of the side not to move has just crossed with its
     /// double push. `make_move` removes that pawn without looking, so anything else corrupts the
@@ -31,6 +31,8 @@ pub enum FenError {
     Counter,
     /// Not exactly one king of each colour.
     Kings,
+    /// More pawns, or more pieces beyond the starting set, than promotion from eight pawns gives.
+    Material,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,10 +44,12 @@ pub enum FenStyle {
 }
 
 impl Board {
+    /// Every rule it applies, what it reads, drops and refuses, is a row of
+    /// `core/tests/fen_rules.rs`.
+    ///
     /// # Errors
     ///
-    /// The field that was rejected; a castling right without its rook is refused here rather than
-    /// panicking in move generation.
+    /// The field that was refused.
     pub fn from_fen(fen: &str) -> Result<Board, FenError> {
         let fields: [&str; 6] = {
             let mut it = fen.split_whitespace();
@@ -81,6 +85,7 @@ impl Board {
                 _ => return Err(FenError::Kings),
             }
         }
+        check_material(&mailbox)?;
         let (rights, layout) = parse_castling(fields[2], &mailbox, kings)?;
         let ep = match fields[3] {
             "-" => OptSquare::NONE,
@@ -102,8 +107,8 @@ impl Board {
                 OptSquare::some(sq)
             }
         };
-        let halfmove: u8 = fields[4].parse().map_err(|_| FenError::Counter)?;
-        let fullmove: u16 = fields[5].parse().map_err(|_| FenError::Counter)?;
+        let halfmove = u8::try_from(counter(fields[4])?).unwrap_or(u8::MAX);
+        let fullmove = u16::try_from(counter(fields[5])?).unwrap_or(u16::MAX);
 
         Ok(Board::from_setup(&Setup {
             mailbox,
@@ -205,6 +210,40 @@ impl Board {
     }
 }
 
+/// Every promoted piece is a pawn gone, so a side's pawns and its pieces beyond one queen, two
+/// rooks, two bishops and two knights number at most eight.
+fn check_material(mailbox: &[Option<Piece>; 64]) -> Result<(), FenError> {
+    for c in Colour::ALL {
+        let mut count = [0usize; 6];
+        for p in mailbox.iter().flatten().filter(|p| p.colour() == c) {
+            count[p.piece_type().index()] += 1;
+        }
+        let promoted: usize = [
+            (PieceType::Queen, 1),
+            (PieceType::Rook, 2),
+            (PieceType::Bishop, 2),
+            (PieceType::Knight, 2),
+        ]
+        .into_iter()
+        .map(|(pt, start)| count[pt.index()].saturating_sub(start))
+        .sum();
+        if count[PieceType::Pawn.index()] + promoted > 8 {
+            return Err(FenError::Material);
+        }
+    }
+    Ok(())
+}
+
+/// ASCII digits after an optional `+`, a count too long for any integer reading as the largest, so
+/// the caller clamps it to what the board holds.
+fn counter(field: &str) -> Result<u64, FenError> {
+    let digits = field.strip_prefix('+').unwrap_or(field);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(FenError::Counter);
+    }
+    Ok(digits.parse().unwrap_or(u64::MAX))
+}
+
 fn parse_placement(field: &str) -> Result<[Option<Piece>; 64], FenError> {
     let mut mailbox = [None; 64];
     let mut ranks = field.split('/');
@@ -239,7 +278,8 @@ fn parse_placement(field: &str) -> Result<[Option<Piece>; 64], FenError> {
     Ok(mailbox)
 }
 
-/// `K` and `k` mean the outermost rook on the king's side.
+/// `K` and `k` mean the outermost rook on the king's side. A letter naming no rook on its king's
+/// back rank, or a king off it, is dropped, as a stale field from a game that moved on.
 fn parse_castling(
     field: &str,
     mailbox: &[Option<Piece>; 64],
@@ -259,45 +299,38 @@ fn parse_castling(
         } else {
             return Err(FenError::Castling);
         };
+        let named = match ch.to_ascii_lowercase() {
+            'k' | 'q' => None,
+            other => Some(File::from_char(other).ok_or(FenError::Castling)?),
+        };
         let back = Rank::One.relative(c);
         let ksq = kings[c.index()].ok_or(FenError::Castling)?;
         if ksq.rank() != back {
-            return Err(FenError::Castling);
+            continue;
         }
         let rook = Piece::new(c, PieceType::Rook);
         let rook_on =
             |file: File| mailbox[Square::from_file_rank(file, back).index()] == Some(rook);
 
-        let (side, file) = match ch.to_ascii_lowercase() {
-            'k' => {
-                let file = File::ALL
-                    .iter()
-                    .rev()
-                    .copied()
-                    .find(|&f| f > ksq.file() && rook_on(f))
-                    .ok_or(FenError::Castling)?;
-                (CastleSide::King, file)
-            }
-            'q' => {
-                let file = File::ALL
-                    .iter()
-                    .copied()
-                    .find(|&f| f < ksq.file() && rook_on(f))
-                    .ok_or(FenError::Castling)?;
-                (CastleSide::Queen, file)
-            }
-            other => {
-                let file = File::from_char(other).ok_or(FenError::Castling)?;
-                if file == ksq.file() || !rook_on(file) {
-                    return Err(FenError::Castling);
-                }
-                let side = if file > ksq.file() {
-                    CastleSide::King
-                } else {
-                    CastleSide::Queen
-                };
-                (side, file)
-            }
+        let found = match ch.to_ascii_lowercase() {
+            'k' => File::ALL
+                .iter()
+                .rev()
+                .copied()
+                .find(|&f| f > ksq.file() && rook_on(f)),
+            'q' => File::ALL
+                .iter()
+                .copied()
+                .find(|&f| f < ksq.file() && rook_on(f)),
+            _ => named.filter(|&f| f != ksq.file() && rook_on(f)),
+        };
+        let Some(file) = found else {
+            continue;
+        };
+        let side = if file > ksq.file() {
+            CastleSide::King
+        } else {
+            CastleSide::Queen
         };
         let rf = Square::from_file_rank(file, back);
         let i = ci(c, side);
