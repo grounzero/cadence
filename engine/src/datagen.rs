@@ -33,6 +33,9 @@ pub const HASH_MB: usize = 16;
 
 pub const HOLDOUT_EVERY: u64 = 10;
 
+/// The most workers a run starts.
+pub const MAX_THREADS: usize = 256;
+
 /// Hashed twice, so runs with different seeds share a game only by a 64-bit coincidence.
 #[must_use]
 pub fn game_seed(seed: u64, number: u64) -> u64 {
@@ -76,7 +79,7 @@ pub fn generate(
     let next = AtomicU64::new(0);
     let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
     thread::scope(|scope| {
-        for _ in 0..threads.max(1) {
+        for _ in 0..workers(threads, games) {
             let tx = tx.clone();
             let next = &next;
             // The stack a `go` gives its search, since these games are the same search.
@@ -121,6 +124,10 @@ pub fn generate(
         }
         out.flush()
     })
+}
+
+fn workers(threads: usize, _games: u64) -> usize {
+    threads.max(1)
 }
 
 const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
@@ -278,5 +285,19 @@ impl Drop for Staged {
             drop(file);
             let _ = std::fs::remove_file(&self.temp);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_THREADS, workers};
+
+    #[test]
+    fn workers_number_at_most_the_games_and_the_maximum() {
+        assert_eq!(workers(100_000, 0), 0, "no games, no workers");
+        assert_eq!(workers(100_000, 1), 1);
+        assert_eq!(workers(100_000, 1_000_000), MAX_THREADS);
+        assert_eq!(workers(0, 10), 1);
+        assert_eq!(workers(4, 10), 4);
     }
 }
