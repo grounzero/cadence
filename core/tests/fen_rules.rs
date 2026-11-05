@@ -349,6 +349,16 @@ const RULES: &[(&str, &str, Outcome)] = &[
     ),
     // The counters.
     (
+        "a halfmove clock of 255 is read as given",
+        "4k3/8/8/8/8/8/8/4K3 w - - 255 1",
+        Reads("4k3/8/8/8/8/8/8/4K3 w - - 255 1"),
+    ),
+    (
+        "a halfmove clock of 256 reads as 255",
+        "4k3/8/8/8/8/8/8/4K3 w - - 256 1",
+        Reads("4k3/8/8/8/8/8/8/4K3 w - - 255 1"),
+    ),
+    (
         "a halfmove clock above 255 reads as 255",
         "4k3/8/8/8/8/8/8/4K3 w - - 300 1",
         Reads("4k3/8/8/8/8/8/8/4K3 w - - 255 1"),
