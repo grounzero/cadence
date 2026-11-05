@@ -33,10 +33,17 @@ else
     CLEAN=$(sed '/^# -* >8 -*$/,$d' "$MSG_FILE" | git stripspace --strip-comments)
 fi
 
+# A pull request's merge carries its title on line 3, where it is a subject too. Both passes
+# leave it out, as git reads a lone "Word: rest" paragraph as a trailer block.
+TITLE=0
+if printf '%s\n' "$CLEAN" | head -n 1 | grep -qE '^Merge pull request #[0-9]+ from '; then
+    TITLE=3
+fi
+
 # git's own parse, so this agrees with git, and it catches the lower-case keys
 # the pass below misses. No divider, so a `---` rule cannot end the parse early.
 KEYS=$(
-    printf '%s\n' "$CLEAN" |
+    printf '%s\n' "$CLEAN" | awk -v title="$TITLE" 'NR != title' |
     git interpret-trailers --parse --no-divider |
     sed -n 's/^\([A-Za-z][A-Za-z0-9-]*\)[ ]*:.*/\1/p' |
     tr '[:upper:]' '[:lower:]'
@@ -59,11 +66,6 @@ done
 
 # Every line but the subject, because git reads only the last paragraph; a
 # capitalised key is what separates a trailer from prose that wrapped at a colon.
-# A pull request's merge carries its title on line 3, where it is a subject too.
-TITLE=0
-if printf '%s\n' "$CLEAN" | head -n 1 | grep -qE '^Merge pull request #[0-9]+ from '; then
-    TITLE=3
-fi
 BODY=$(printf '%s\n' "$CLEAN" | awk -v title="$TITLE" 'NR > 1 && NR != title')
 ANYWHERE=$(
     printf '%s\n' "$BODY" |
