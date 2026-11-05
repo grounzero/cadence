@@ -163,6 +163,10 @@ fn any_amount_leaves_a_shortened_node_a_ply() {
         let mut s = support::search(Limits::depth(THRESHOLD), &stop, &tt);
         s.set_iir_reduction(plies);
         let _ = s.node_window(&mut b, THRESHOLD, 0, NULL_WINDOW.0, NULL_WINDOW.1);
-        assert_eq!(s.iir_nodes(), 1, "{plies} plies: the root was not shortened");
+        assert_eq!(
+            s.iir_nodes(),
+            1,
+            "{plies} plies: the root was not shortened"
+        );
     }
 }
