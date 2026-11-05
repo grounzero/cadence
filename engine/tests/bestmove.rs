@@ -178,3 +178,39 @@ fn limits_parse_every_go_token() {
     assert_eq!(l.depth, None);
     assert_eq!(l.movetime, Some(10));
 }
+
+/// A value past `i64::MAX` fits the field and names a limit, so it reads as `i64::MAX` and never as
+/// none: a sole limit read as none would leave the search with no limit at all.
+#[test]
+fn a_limit_past_i64_max_reads_as_i64_max() {
+    let max = i64::MAX.unsigned_abs();
+    for value in [
+        i64::MAX.to_string(),
+        (i128::from(i64::MAX) + 1).to_string(),
+        u64::MAX.to_string(),
+    ] {
+        let line = format!(
+            "wtime {value} btime {value} winc {value} binc {value} movestogo {value} \
+             depth {value} nodes {value} mate {value} movetime {value}"
+        );
+        let l = Limits::parse(line.split_whitespace());
+        assert_eq!(l.time, [Some(max); 2], "{value}");
+        assert_eq!(l.inc, [Some(max); 2], "{value}");
+        assert_eq!(l.nodes, Some(max), "{value}");
+        assert_eq!(l.movetime, Some(max), "{value}");
+        for small in [l.depth, l.movestogo, l.mate] {
+            assert_eq!(small, Some(u32::MAX), "{value}");
+        }
+    }
+}
+
+/// A value below `i64::MIN` reads as 0, as every negative value does, and never as none.
+#[test]
+fn a_limit_below_i64_min_reads_as_zero() {
+    let value = (i128::from(i64::MIN) - 1).to_string();
+    let line = format!("wtime {value} movetime {value} depth {value}");
+    let l = Limits::parse(line.split_whitespace());
+    assert_eq!(l.time[0], Some(0));
+    assert_eq!(l.movetime, Some(0));
+    assert_eq!(l.depth, Some(0));
+}
