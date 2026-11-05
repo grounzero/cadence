@@ -17,6 +17,7 @@ use cadence_engine::score::{
 };
 use cadence_engine::search::{Limits, futile_node, probcut_bound};
 use cadence_engine::syzygy::{Rank, Tables, Wdl};
+use cadence_engine::tt::Bound;
 use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded};
 use support::{Engine, table};
 
@@ -194,6 +195,31 @@ fn the_search_probes_after_a_capture_and_scores_the_band() {
     let score = search.score();
     assert!(score > 0 && is_decisive(score), "{score}");
     let _ = std::fs::remove_dir_all(wdl_only);
+}
+
+/// A table's cutoff keeps the move the transposition table held for the node, so a later visit
+/// still tries it first: a drawn ending cuts exactly, and a won one cuts above beta.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_table_cutoff_keeps_the_move_the_transposition_table_held() {
+    let only = fixture_set("tt-move");
+    let tables = loaded(&only.display().to_string());
+    for (fen, mv) in [
+        ("8/8/8/4k3/8/8/2B5/4K3 w - - 0 1", "c2h7"),
+        ("8/8/8/3k4/8/8/8/R3K3 w - - 0 1", "a1a4"),
+    ] {
+        let b = board(fen);
+        let m = parse_uci(&generate_legal(&b), mv).unwrap();
+        let tt = table();
+        tt.store(b.key(), m, 0, 0, Bound::Upper, false);
+        let stop = AtomicBool::new(false);
+        let mut search = support::search(Limits::depth(5), &stop, &tt);
+        search.set_tables(&tables, false);
+        let _ = search.node_window(&mut support::position(fen), 5, 1, 99, 100);
+        let hit = tt.probe(b.key()).expect("the node stored its entry");
+        assert_eq!((hit.mv, hit.depth), (m, 5), "{fen}");
+    }
+    let _ = std::fs::remove_dir_all(only);
 }
 
 /// A castling right, too many pieces, a missing table and a spoilt one are each no result, and
