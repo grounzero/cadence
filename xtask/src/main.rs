@@ -2139,9 +2139,12 @@ mod tests {
     }
 
     /// Runs a hook on a message from the repository's root, as git does, and says if it passed.
+    /// Each call writes its own file, since the tests that call it run at once in one process.
     #[cfg(unix)]
     fn hook_passes(hook: &str, message: &str) -> bool {
-        let file = std::env::temp_dir().join(format!("xtask-{hook}-{}", std::process::id()));
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = std::env::temp_dir().join(format!("xtask-{hook}-{}-{call}", std::process::id()));
         std::fs::write(&file, message).unwrap();
         let out = Command::new("sh")
             .arg(repo_root().join(".githooks").join(hook))
