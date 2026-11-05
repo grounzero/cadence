@@ -11,6 +11,7 @@ pub mod record;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -181,7 +182,10 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     }
     let games = games.ok_or("--games is required")?;
-    let mut staged = path.as_deref().map(Staged::create).transpose()?;
+    let mut staged = match path.as_deref().map(Path::new) {
+        Some(out) => Some(Staged::create(out, stage_name(out)?)?),
+        None => None,
+    };
     let mut stdout = BufWriter::new(io::stdout().lock());
     let out: &mut dyn Write = match &mut staged {
         Some(file) => file,
@@ -216,9 +220,18 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
     }
     let train = train.ok_or("--train is required")?;
     let holdout = holdout.ok_or("--holdout is required")?;
+    let (train_path, holdout_path) = (Path::new(&train), Path::new(&holdout));
+    let (train_temp, holdout_temp) = (stage_name(train_path)?, stage_name(holdout_path)?);
+    distinct(&[
+        Path::new(input),
+        train_path,
+        holdout_path,
+        train_temp.as_path(),
+        holdout_temp.as_path(),
+    ])?;
     let input = BufReader::new(File::open(input).map_err(|e| format!("{input}: {e}"))?);
-    let mut train = Staged::create(&train)?;
-    let mut holdout = Staged::create(&holdout)?;
+    let mut train = Staged::create(train_path, train_temp)?;
+    let mut holdout = Staged::create(holdout_path, holdout_temp)?;
     let stats = extract::extract(input, &mut train, &mut holdout, every)?;
     train.finish()?;
     holdout.finish()?;
@@ -227,20 +240,83 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Refused before anything is created: an output or a stage that is the input, or another output
+/// or stage, would be written or published over it.
+fn distinct(paths: &[&Path]) -> Result<(), String> {
+    let resolved = paths
+        .iter()
+        .map(|&p| resolve(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (i, a) in resolved.iter().enumerate() {
+        if let Some(j) = resolved[i + 1..].iter().position(|b| same_file(a, b)) {
+            return Err(format!(
+                "{} and {} name one file",
+                paths[i].display(),
+                paths[i + 1 + j].display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Where `path` is or would be: itself resolved where it exists, else its directory resolved and
+/// its name added, so two spellings of one file resolve alike.
+fn resolve(path: &Path) -> Result<PathBuf, String> {
+    let failed = |e: io::Error| format!("{}: {e}", path.display());
+    if path.exists() {
+        return std::fs::canonicalize(path).map_err(failed);
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{}: not a file name", path.display()))?;
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    Ok(std::fs::canonicalize(dir).map_err(failed)?.join(name))
+}
+
+/// Spellings differing only in case are one file where the file system ignores case, as macOS and
+/// Windows do by default.
+fn same_file(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+    } else {
+        a == b
+    }
+}
+
+/// Beside `path`, named by this process and a count, so no two stages share a name and an earlier
+/// run's leftover is refused by the creation rather than written over.
+fn stage_name(path: &Path) -> Result<PathBuf, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{}: not a file name", path.display()))?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut temp = name.to_os_string();
+    temp.push(format!(".{}.{n}.partial", std::process::id()));
+    Ok(path.with_file_name(temp))
+}
+
 /// A file written under a temporary name beside its own and renamed to it only once complete, so
 /// a stage that fails leaves nothing a later one could read as whole.
 struct Staged {
-    path: String,
-    temp: String,
+    path: PathBuf,
+    temp: PathBuf,
     file: Option<BufWriter<File>>,
 }
 
 impl Staged {
-    fn create(path: &str) -> Result<Staged, String> {
-        let temp = format!("{path}.partial");
-        let file = File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
+    /// Created new, so a stage can never be a file already there.
+    fn create(path: &Path, temp: PathBuf) -> Result<Staged, String> {
+        let file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|e| format!("{}: {e}", temp.display()))?;
         Ok(Staged {
-            path: path.to_string(),
+            path: path.to_path_buf(),
             temp,
             file: Some(BufWriter::new(file)),
         })
@@ -249,9 +325,10 @@ impl Staged {
     fn finish(mut self) -> Result<(), String> {
         if let Some(file) = self.file.take() {
             file.into_inner()
-                .map_err(|e| format!("{}: {}", self.temp, e.error()))?;
+                .map_err(|e| format!("{}: {}", self.temp.display(), e.error()))?;
         }
-        std::fs::rename(&self.temp, &self.path).map_err(|e| format!("{}: {e}", self.path))
+        std::fs::rename(&self.temp, &self.path)
+            .map_err(|e| format!("{}: {e}", self.path.display()))
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
