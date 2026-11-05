@@ -186,6 +186,7 @@ fn a_malformed_record_is_refused() {
         "0 | 960 518 |  |  | 1-0 mate | 0",
         "0 | 518 518 | e2e5 |  | 1-0 mate | 0",
         "0 | 518 518 |  | e2e4 |  | 0",
+        "0 | 518 518 | a\u{e9}1 |  | 1-0 mate | 0",
         bad_move.as_str(),
     ] {
         assert!(Record::parse(line).is_err(), "{line}");
