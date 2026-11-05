@@ -53,8 +53,8 @@ pub struct Stats {
 ///
 /// # Errors
 ///
-/// A record that does not parse, an output that cannot be written, or a file holding another
-/// number of games than its provenance lines name.
+/// A record that does not parse, an output that cannot be written, a file holding another number
+/// of games than its provenance lines name, or a game out of turn in its run.
 pub fn extract(
     input: impl BufRead,
     train: &mut dyn Write,
@@ -68,12 +68,14 @@ pub fn extract(
         ..Stats::default()
     };
     let mut named = None;
+    let mut run = None;
     for (i, line) in input.lines().enumerate() {
         let line = line.map_err(|e| format!("line {}: {e}", i + 1))?;
         if line.starts_with('#') {
             // Summed, so runs joined end to end are checked as one.
             if let Some(n) = games_named(&line).map_err(|e| format!("line {}: {e}", i + 1))? {
                 named = Some(named.unwrap_or(0) + n);
+                run = Some(Run { games: n, due: 0 });
             }
             writeln!(train, "{line}").map_err(|e| e.to_string())?;
             writeln!(holdout, "{line}").map_err(|e| e.to_string())?;
@@ -83,6 +85,10 @@ pub fn extract(
             continue;
         }
         let record = Record::parse(&line).map_err(|e| format!("line {}: {e}", i + 1))?;
+        if let Some(run) = &mut run {
+            let admitted = run.admit(record.number);
+            admitted.map_err(|e| format!("line {}: {e}", i + 1))?;
+        }
         let held = every > 0 && record.number % every == 0;
         if held {
             stats.holdout += positions(&record, &mut stats, holdout).map_err(|e| e.to_string())?;
@@ -99,6 +105,28 @@ pub fn extract(
         ));
     }
     Ok(stats)
+}
+
+/// What a provenance line names, and the game due next under it.
+struct Run {
+    games: u64,
+    due: u64,
+}
+
+impl Run {
+    /// From 0 in order, and no more than the line names: records before any provenance line are
+    /// held to nothing.
+    fn admit(&mut self, number: u64) -> Result<(), String> {
+        let (games, due) = (self.games, self.due);
+        if due >= games {
+            return Err(format!("game {number} past the {games} its run names"));
+        }
+        if number != due {
+            return Err(format!("game {number} where game {due} is due"));
+        }
+        self.due += 1;
+        Ok(())
+    }
 }
 
 /// The words a provenance line opens with, as `provenance` writes them.
