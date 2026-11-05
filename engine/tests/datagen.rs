@@ -140,7 +140,8 @@ fn a_huge_thread_count_starts_no_more_workers_than_games() {
     assert_eq!(run(7, 1, 100_000), run(7, 1, 1));
 
     let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
-        .args(["datagen", "play", "--games", "0", "--threads", "100000"])
+        .args(["datagen", "play", "--games", "0", "--seed", "7"])
+        .args(["--threads", "100000"])
         .output()
         .expect("runs");
     assert!(out.status.success(), "{out:?}");
