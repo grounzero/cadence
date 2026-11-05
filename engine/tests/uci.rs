@@ -176,6 +176,22 @@ fn a_line_longer_than_a_mebibyte_is_discarded_with_an_info_string() {
     );
 }
 
+/// The discarded bytes are never held: the buffer stays the size of the cap however long the line,
+/// and the next line reads as usual.
+#[test]
+fn a_discarded_line_is_never_held() {
+    use cadence_engine::uci::{Line, read_line};
+    let data = [vec![b'x'; 1 << 20], b"\nisready\n".to_vec()].concat();
+    let mut input = std::io::BufReader::with_capacity(4, &data[..]);
+    let mut line = Vec::new();
+    let mut next = |line: &mut Vec<u8>| read_line(&mut input, line, 8).expect("reads");
+    assert_eq!(next(&mut line), Line::TooLong);
+    assert!(line.capacity() <= 64, "held {} bytes", line.capacity());
+    assert_eq!(next(&mut line), Line::Read);
+    assert_eq!(line, b"isready\n");
+    assert_eq!(next(&mut line), Line::End);
+}
+
 // ---------------------------------------------------------------------------
 // go / stop / bestmove
 // ---------------------------------------------------------------------------
