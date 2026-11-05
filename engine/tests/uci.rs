@@ -1076,10 +1076,33 @@ fn go_searchmoves_names_an_illegal_move_and_leaves_it_out() {
     assert_eq!(bestmove(&out), "h2h3", "{out:?}");
 }
 
+/// Ruled to stand: a list naming no legal move is warned of and every legal move is searched, so
+/// the answer is a plain `go`'s, and a bare `searchmoves` warns of nothing.
 #[test]
 fn go_searchmoves_with_no_legal_move_searches_them_all() {
-    let out = talk("position startpos\ngo depth 2 searchmoves e2e5\nquit\n");
-    assert_bestmove_legal(&out, START_FEN, false);
+    let answer = |go: &str| {
+        let out = Engine::go(&["position startpos"], go).join("\n");
+        (bestmove(&out), out)
+    };
+    let (plain, _) = answer("go depth 4");
+    for go in [
+        "go depth 4 searchmoves e2e5",
+        "go searchmoves e2e5 a1a8 depth 4",
+    ] {
+        let (best, out) = answer(go);
+        assert_eq!(best, plain, "{go}: {out:?}");
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("info string") && l.contains("e2e5")),
+            "{go}: {out:?}"
+        );
+    }
+    let (best, out) = answer("go searchmoves depth 4");
+    assert_eq!(best, plain, "{out:?}");
+    assert!(
+        !out.lines().any(|l| l.starts_with("info string")),
+        "{out:?}"
+    );
 }
 
 /// With no other limit the search would run to its depth cap, so returning at all is the stop.
