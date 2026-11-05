@@ -1564,6 +1564,7 @@ mod tests {
             "// batch #7",
             "// tasks 9",
             "// Review 2026-08-25 finding 2.3",
+            "// batches 3",
         ] {
             assert!(planning_label(line, NOT_ALLOWED).is_some(), "{line} passed");
         }
@@ -1580,6 +1581,8 @@ mod tests {
             ("/// ADR0010 is the ruling", "ADR0010"),
             ("// the ADRs agree on this", "ADRs"),
             ("the reasoning is the one ADR-0002 asks for", "ADR-0002"),
+            ("// as adr-0008 orders it", "adr-0008"),
+            ("// Adr 3", "Adr 3"),
         ] {
             assert_eq!(record_citation(line), Some(cite), "{line}");
         }
@@ -1894,5 +1897,107 @@ mod tests {
         for bad in ["0.4", "0.4.1.2", "0.+4.1", "v0.4.1", "0..1", "Unreleased"] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_date_has_a_month_and_a_day_that_exist() {
+        for good in ["2026-11-05", "2026-01-31", "2026-12-01"] {
+            assert!(is_iso_date(good), "{good}");
+        }
+        for bad in [
+            "2026-13-45",
+            "2026-00-10",
+            "2026-11-00",
+            "2026-11-32",
+            "2026-1-05",
+            "2026/11/05",
+            "26-11-05x",
+        ] {
+            assert!(!is_iso_date(bad), "{bad}");
+        }
+    }
+
+    /// A scratch repository, since both read git: a file git ignores is not read, and a staged read
+    /// takes what the commit adds.
+    #[test]
+    fn the_tree_read_skips_what_git_ignores_and_the_staged_read_takes_the_commit() {
+        let root = std::env::temp_dir().join(format!("xtask-inputs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("fetched")).unwrap();
+        let run = |args: &[&str]| git(&root, args).unwrap();
+        run(&["init", "-q"]);
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "fetched/\n").unwrap();
+        std::fs::write(root.join("fetched/table.bin"), [0xff_u8, 0xfe]).unwrap();
+        std::fs::write(root.join("src/kept.rs"), "kept").unwrap();
+        std::fs::write(root.join("src/also.rs"), "also").unwrap();
+        run(&["add", "src/kept.rs", "src/also.rs"]);
+        let read: Vec<String> = boundary_inputs(&root, Source::WorkingTree)
+            .unwrap()
+            .into_iter()
+            .map(|(rel, _)| rel)
+            .collect();
+        assert_eq!(read, ["src/also.rs", "src/kept.rs"]);
+        let mut staged = staged_changes(&root).unwrap();
+        staged.sort();
+        assert_eq!(staged, ["src/also.rs", "src/kept.rs"], "the first commit");
+        run(&[
+            "-c",
+            "user.name=xtask",
+            "-c",
+            "user.email=xtask@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=.git/hooks",
+            "commit",
+            "-q",
+            "-m",
+            "kept",
+        ]);
+        std::fs::write(root.join("src/new.rs"), "new").unwrap();
+        run(&["add", "src/new.rs"]);
+        assert_eq!(staged_changes(&root).unwrap(), ["src/new.rs"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runs a hook on a message from the repository's root, as git does, and says if it passed.
+    #[cfg(unix)]
+    fn hook_passes(hook: &str, message: &str) -> bool {
+        let file = std::env::temp_dir().join(format!("xtask-{hook}-{}", std::process::id()));
+        std::fs::write(&file, message).unwrap();
+        let out = Command::new("sh")
+            .arg(repo_root().join(".githooks").join(hook))
+            .arg(&file)
+            .current_dir(repo_root())
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&file);
+        out.status.success()
+    }
+
+    /// `git commit -v` hands the hook the staged diff below a scissors line, which git drops only
+    /// once the hook has run, so nothing below it is the message.
+    #[cfg(unix)]
+    #[test]
+    fn the_hooks_read_nothing_below_the_scissors_line() {
+        let message = "Change the search\n\nA line or two.\n\
+            # ------------------------ >8 ------------------------\n\
+            # Do not modify or remove the line above.\n\
+            diff --git a/x b/x\n+let nodes = 0;\n+// see https://example.invalid\n";
+        for hook in ["check-message-metadata", "check-bench-declaration"] {
+            assert!(hook_passes(hook, message), "{hook} read the diff");
+        }
+    }
+
+    /// GitHub's merge puts the title on line 3, where it reads as a subject and not a trailer.
+    #[cfg(unix)]
+    #[test]
+    fn a_pull_request_title_shaped_word_colon_is_not_a_trailer() {
+        let merge = "Merge pull request #12 from someone/branch\n\nSearch: null-move pruning\n";
+        assert!(hook_passes("check-message-metadata", merge));
+        let body = "Change the search\n\nSearch: null-move pruning\n";
+        assert!(!hook_passes("check-message-metadata", body));
     }
 }
