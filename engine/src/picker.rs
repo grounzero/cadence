@@ -333,10 +333,11 @@ impl Picker {
             return None;
         }
         let m = moves[self.next];
-        self.lost = matches!(
-            slots[self.next].band,
-            Band::LosingPromotion | Band::LosingCapture
-        );
+        self.lost = self.next >= self.start
+            && matches!(
+                slots[self.next].band,
+                Band::LosingPromotion | Band::LosingCapture
+            );
         let place = (m, self.next, self.quiets);
         self.next += 1;
         self.quiets += usize::from(!m.is_noisy());
@@ -463,4 +464,40 @@ fn insertion_sort(
 fn bring(moves: &mut [Move], slots: &mut [Slot], to: usize, from: usize) {
     moves[to..=from].rotate_right(1);
     slots[to..=from].rotate_right(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use cadence_core::position::Board;
+    use cadence_core::{MAX_MOVES, Move, START_FEN, generate_legal, parse_uci};
+
+    use super::{Band, Picker, Slot, Tables};
+    use crate::search::order_first;
+
+    /// The search reuses a ply's slots from node to node, so the table's move at the head must not
+    /// read the band another node left at its index.
+    #[test]
+    fn the_head_move_is_not_lost_whatever_band_its_slot_was_left_holding() {
+        let board = Board::from_fen(START_FEN).unwrap();
+        let mut list = generate_legal(&board);
+        let head = parse_uci(&list, "e2e4").unwrap();
+        let start = usize::from(order_first(&mut list, head));
+        let left = Slot {
+            key: 0,
+            generated: 0,
+            band: Band::LosingCapture,
+        };
+        let mut slots = [left; MAX_MOVES];
+        let mut picker = Picker::new(
+            &board,
+            &mut list,
+            start,
+            [Move::NULL; 2],
+            &Tables::none(),
+            &mut slots,
+        );
+        let (m, index, _) = picker.next(&board, &mut list, &mut slots).unwrap();
+        assert_eq!((m, index, start), (head, 0, 1));
+        assert!(!picker.lost());
+    }
 }
