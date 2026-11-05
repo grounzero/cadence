@@ -1,5 +1,6 @@
-# Release binaries from a version tag: six builds, their checksums and a provenance attestation for
-# each, drafted for publishing by hand, a release candidate as a pre-release. A manual run or a
+# Release binaries from a version tag: seven builds, their checksums and a provenance attestation for
+# each, with the two install scripts' checksums, drafted for publishing by hand, a release candidate
+# as a pre-release. A manual run or a
 # change to this file only builds and checks, unless a manual run names an existing tag and asks for
 # the draft, which re-runs a failed release.
 
@@ -149,6 +150,11 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             features: +neon
+          # The AVX2 build for Intel Macs; install.sh builds the generic one for a Mac without AVX2.
+          - name: macos-x86-64
+            os: macos-26-intel
+            target: x86_64-apple-darwin
+            features: +avx2,+bmi1,+popcnt,+lzcnt
     env:
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
       EXPECTED: ${{ needs.version.outputs.expected }}
@@ -264,9 +270,9 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The six together, summed, on every run, so a dry run checks what a release would assemble.
+  # The seven together, summed, on every run, so a dry run checks what a release would assemble.
   assemble:
-    name: the six together
+    name: the seven together
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -275,15 +281,15 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Six binaries and their checksums
+      - name: Seven binaries and their checksums
         shell: bash
         run: |
           cd dist
           ls -l
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n binaries and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n digests and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           sha256sum cadence-* | tee SHA256SUMS
           cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
@@ -339,16 +345,18 @@ jobs:
           merge-multiple: true
 
       # Counted and held to the digests the build jobs took, so what is attested is what they checked.
+      # The install scripts come from the tagged commit and are summed beside the binaries.
       - name: Checksums
         shell: bash
         run: |
           cd dist
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n binaries and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n digests and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
-          sha256sum cadence-* > SHA256SUMS
+          cp ../install.sh ../install.ps1 .
+          sha256sum cadence-* install.sh install.ps1 > SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -381,9 +389,15 @@ jobs:
               echo "A release candidate, published as a pre-release."
             fi
             echo
-            echo "Six binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64 and macOS arm64. SHA256SUMS lists their checksums, and each carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo "Seven binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, and each carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
-            echo "The macOS binary is not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
+            echo "The macOS binaries are not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
+            echo
+            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) build this release from source, check it and install it; on an Intel Mac without AVX2, install.sh makes the generic build. Their SHA-256s, as in SHA256SUMS:"
+            echo
+            echo '```'
+            grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS
+            echo '```'
             echo
             echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`."
             echo
@@ -397,4 +411,4 @@ jobs:
             echo "replaced the earlier draft $id"
           done
           gh release create "$VERSION" "${kind[@]}" --title "Cadence $VERSION" \
-            --notes-file notes.txt dist/cadence-* dist/SHA256SUMS LICENSE
+            --notes-file notes.txt dist/cadence-* dist/install.sh dist/install.ps1 dist/SHA256SUMS LICENSE

@@ -107,6 +107,11 @@ jobs:
             name: aarch64-apple-darwin
             target: aarch64-apple-darwin
             features: +neon
+          # Intel macOS, on GitHub's x86-64 image: the AVX2 build the macos-x86-64 release ships.
+          - os: macos-26-intel
+            name: x86_64-apple-darwin
+            target: x86_64-apple-darwin
+            features: +avx2,+bmi1,+popcnt,+lzcnt
           # The bot's triple, built natively on its host and otherwise tested nowhere.
           - os: ubuntu-24.04-arm
             name: aarch64-unknown-linux-gnu
@@ -404,3 +409,120 @@ jobs:
           name: cadence-${{ matrix.target }}-${{ github.sha }}
           path: target/release/cadence.exe
           if-no-files-found: error
+
+  # install.sh on every system it names and install.ps1 on Windows, each run with --yes to build the
+  # latest release, and the binary each installed held to that release's bench and id name.
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install.sh, Linux x86-64
+            os: ubuntu-latest
+            script: install.sh
+          - name: install.sh, Linux aarch64
+            os: ubuntu-24.04-arm
+            script: install.sh
+          - name: install.sh, macOS arm64
+            os: macos-latest
+            script: install.sh
+          - name: install.sh, macOS x86-64
+            os: macos-26-intel
+            script: install.sh
+          - name: install.sh, Windows Git Bash
+            os: windows-latest
+            script: install.sh
+          - name: install.ps1, Windows PowerShell
+            os: windows-latest
+            script: install.ps1
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint install.sh
+        if: matrix.script == 'install.sh' && runner.os == 'Linux'
+        run: |
+          bash -n install.sh
+          shellcheck --version
+          shellcheck -S warning install.sh
+
+      - name: Parse install.ps1
+        if: matrix.script == 'install.ps1'
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_ }; throw 'install.ps1 does not parse' }
+          Write-Host 'install.ps1 parses'
+
+      # A release that does not exist fails at once, and the failure must leave its log behind with
+      # the reason in it and no home folder named.
+      - name: A failure keeps its log, install.sh
+        if: matrix.script == 'install.sh'
+        run: |
+          if bash install.sh --yes --version 0.0.0 > forced.txt 2>&1; then
+            cat forced.txt
+            echo "::error::install.sh installed a release that does not exist"
+            exit 1
+          fi
+          cat forced.txt
+          grep -q 'Attach this file to a GitHub issue' forced.txt \
+            || { echo "::error::no note to attach the log"; exit 1; }
+          log=$(sed -n 's/^The log is at \(.*\)\.$/\1/p' forced.txt | tail -n 1)
+          [ -f "$log" ] || { echo "::error::no log at $log"; exit 1; }
+          grep -q 'there is no release 0.0.0' "$log" || { echo "::error::the log does not say why"; exit 1; }
+          if grep -qF "$HOME" "$log"; then echo "::error::the log names the home folder"; exit 1; fi
+          echo "the failure kept $log, with its reason and no home folder"
+
+      - name: A failure keeps its log, install.ps1
+        if: matrix.script == 'install.ps1'
+        shell: powershell
+        run: |
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version 0.0.0 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -eq 0) { throw 'install.ps1 installed a release that does not exist' }
+          if ($out -notmatch 'Attach this file to a GitHub issue') { throw 'no note to attach the log' }
+          $log = [regex]::Match($out, 'The log is at (.+)\.\r?\n').Groups[1].Value
+          if (-not $log -or -not (Test-Path $log)) { throw "no log at $log" }
+          if (-not (Select-String -Path $log -Pattern 'there is no release 0.0.0' -SimpleMatch -Quiet)) { throw 'the log does not say why' }
+          if (Select-String -Path $log -Pattern $env:USERPROFILE -SimpleMatch -Quiet) { throw 'the log names the home folder' }
+          Write-Host "the failure kept $log, with its reason and no home folder"
+
+      - name: Install with install.sh --yes
+        if: matrix.script == 'install.sh'
+        run: bash install.sh --yes --keep-log
+
+      - name: Install with install.ps1 --yes
+        if: matrix.script == 'install.ps1'
+        shell: powershell
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --keep-log
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+
+      # Read here and not from the script, so a script that checked the wrong thing would fail.
+      - name: The installed binary's bench and id name
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            bin="$(cygpath -u "$LOCALAPPDATA")/Cadence/cadence.exe"
+          else
+            bin="$HOME/.local/bin/cadence"
+          fi
+          [ -x "$bin" ] || { echo "::error::nothing installed at $bin"; exit 1; }
+          version=$(git ls-remote --tags --refs https://github.com/grounzero/cadence.git \
+            | sed -n 's#.*refs/tags/##p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+          git fetch --quiet --depth 1 origin "+refs/tags/$version:refs/tags/$version"
+          want=$(git show "$version:bench.txt" | tr -d '[:space:]')
+          got=$("$bin" bench | tr -d '\r' | tail -n 1 | awk '{print $1}')
+          id=$(printf 'uci\nquit\n' | "$bin" | tr -d '\r' | sed -n 's/^id name //p')
+          echo "installed $bin: bench $got against $want, id name $id"
+          [ "$got" = "$want" ] || { echo "::error::the installed bench is $got and $version's bench.txt says $want"; exit 1; }
+          [ "$id" = "Cadence $version" ] || { echo "::error::the installed binary calls itself $id and not Cadence $version"; exit 1; }
+          printf '### %s\nCadence %s installed, bench %s\n' "${{ matrix.name }}" "$version" "$got" >> "$GITHUB_STEP_SUMMARY"
+

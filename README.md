@@ -52,6 +52,36 @@ go depth 8
 quit
 ```
 
+### With an install script
+
+`install.sh` builds Cadence from source and installs it on Linux, macOS, and
+Windows under Git Bash or WSL. `install.ps1` does the same on Windows with
+PowerShell alone. Each asks before every step. It checks for Git, a C linker
+and Rust installed through rustup, and offers to install whichever is missing.
+It then builds the latest release, checks that the build's bench count matches
+`bench.txt` and that it names the release's version, and installs it. The
+default folder is `~/.local/bin`, or `%LOCALAPPDATA%\Cadence` on Windows. It
+can also download the 3-4-5 piece Syzygy tablebases, held to their published
+checksums.
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/grounzero/cadence/main/install.sh
+bash install.sh
+```
+
+On Windows without a Unix shell, in PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Both take `--version X.Y.Z`, `--prefix DIR`, `--update`, `--uninstall`, `--yes`
+to take every default without asking, `--keep-log`, and on x86-64 `--build
+avx2` or `--build generic`. The release workflow publishes both scripts with
+each release and lists their SHA-256s beside the binaries'. A run that fails
+keeps its log and says where it is: attach that file to a GitHub issue.
+
 ### Options
 
 | Option | Default | What it does |
