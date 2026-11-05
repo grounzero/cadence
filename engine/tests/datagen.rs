@@ -271,7 +271,7 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
 fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     let file = run(5, 3, 1);
     let text = std::str::from_utf8(&file).expect("utf-8");
-    let cut: String = text.lines().take(3).map(|l| format!("{l}\n")).collect();
+    let cut = text.lines().take(3).collect::<Vec<_>>().join("\n");
     let (mut train, mut holdout) = (Vec::new(), Vec::new());
     let refused = extract::extract(cut.as_bytes(), &mut train, &mut holdout, 0);
     assert!(
