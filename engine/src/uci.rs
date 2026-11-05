@@ -19,6 +19,8 @@ mod go;
 mod options;
 mod say;
 
+pub(crate) use go::SEARCH_STACK_BYTES;
+
 use say::say;
 
 /// The version half is `version::VERSION`, not the package version, so a build off a release tag

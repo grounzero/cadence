@@ -20,6 +20,7 @@ use std::time::Instant;
 use cadence_core::rng::{Rng, splitmix64};
 
 use crate::tt::Table;
+use crate::uci::SEARCH_STACK_BYTES;
 use crate::version::VERSION;
 use record::Record;
 
@@ -63,7 +64,7 @@ pub fn provenance(seed: u64, games: u64) -> String {
 ///
 /// # Errors
 ///
-/// If `out` cannot be written or a table cannot be allocated.
+/// If `out` cannot be written, a worker cannot be started or its table cannot be allocated.
 pub fn generate(
     seed: u64,
     games: u64,
@@ -78,22 +79,30 @@ pub fn generate(
         for _ in 0..threads.max(1) {
             let tx = tx.clone();
             let next = &next;
-            scope.spawn(move || {
-                let Some(tt) = Table::new(HASH_MB) else {
-                    let _ = tx.send(None);
-                    return;
-                };
-                loop {
-                    let number = next.fetch_add(1, Ordering::Relaxed);
-                    if number >= games {
+            // The stack a `go` gives its search, since these games are the same search.
+            let spawned = thread::Builder::new()
+                .stack_size(SEARCH_STACK_BYTES)
+                .spawn_scoped(scope, move || {
+                    let Some(tt) = Table::new(HASH_MB) else {
+                        let _ = tx.send(None);
                         return;
+                    };
+                    loop {
+                        let number = next.fetch_add(1, Ordering::Relaxed);
+                        if number >= games {
+                            return;
+                        }
+                        let line = play(seed, number, &tt).line();
+                        if tx.send(Some((number, line))).is_err() {
+                            return;
+                        }
                     }
-                    let line = play(seed, number, &tt).line();
-                    if tx.send(Some((number, line))).is_err() {
-                        return;
-                    }
-                }
-            });
+                });
+            if let Err(e) = spawned {
+                // The workers already started take no new game, so the scope ends soon.
+                next.store(games, Ordering::Relaxed);
+                return Err(e);
+            }
         }
         drop(tx);
         // Records arrive in whatever order the workers finish, and leave in number order.
@@ -172,11 +181,11 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     }
     let games = games.ok_or("--games is required")?;
-    let mut out: Box<dyn Write> = match path {
-        Some(p) => Box::new(BufWriter::new(
-            File::create(&p).map_err(|e| format!("{p}: {e}"))?,
-        )),
-        None => Box::new(BufWriter::new(io::stdout().lock())),
+    let mut staged = path.as_deref().map(Staged::create).transpose()?;
+    let mut stdout = BufWriter::new(io::stdout().lock());
+    let out: &mut dyn Write = match &mut staged {
+        Some(file) => file,
+        None => &mut stdout,
     };
     let start = Instant::now();
     let mut progress = |written: u64| {
@@ -187,7 +196,8 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
             eprintln!("games {written}/{games} seconds {secs:.1} games-per-second {rate:.2}");
         }
     };
-    generate(seed, games, threads, &mut out, &mut progress).map_err(|e| e.to_string())
+    generate(seed, games, threads, out, &mut progress).map_err(|e| e.to_string())?;
+    staged.map_or(Ok(()), Staged::finish)
 }
 
 fn extract_from_args(args: &[String]) -> Result<(), String> {
@@ -204,19 +214,69 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown flag {other}")),
         }
     }
-    let create = |p: Option<String>, name: &str| -> Result<BufWriter<File>, String> {
-        let p = p.ok_or_else(|| format!("{name} is required"))?;
-        Ok(BufWriter::new(
-            File::create(&p).map_err(|e| format!("{p}: {e}"))?,
-        ))
-    };
-    let mut train = create(train, "--train")?;
-    let mut holdout = create(holdout, "--holdout")?;
+    let train = train.ok_or("--train is required")?;
+    let holdout = holdout.ok_or("--holdout is required")?;
     let input = BufReader::new(File::open(input).map_err(|e| format!("{input}: {e}"))?);
+    let mut train = Staged::create(&train)?;
+    let mut holdout = Staged::create(&holdout)?;
     let stats = extract::extract(input, &mut train, &mut holdout, every)?;
-    train.flush().map_err(|e| e.to_string())?;
-    holdout.flush().map_err(|e| e.to_string())?;
+    train.finish()?;
+    holdout.finish()?;
     stats
         .report(&mut io::stdout().lock())
         .map_err(|e| e.to_string())
+}
+
+/// A file written under a temporary name beside its own and renamed to it only once complete, so
+/// a stage that fails leaves nothing a later one could read as whole.
+struct Staged {
+    path: String,
+    temp: String,
+    file: Option<BufWriter<File>>,
+}
+
+impl Staged {
+    fn create(path: &str) -> Result<Staged, String> {
+        let temp = format!("{path}.partial");
+        let file = File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
+        Ok(Staged {
+            path: path.to_string(),
+            temp,
+            file: Some(BufWriter::new(file)),
+        })
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        if let Some(file) = self.file.take() {
+            file.into_inner()
+                .map_err(|e| format!("{}: {}", self.temp, e.error()))?;
+        }
+        std::fs::rename(&self.temp, &self.path).map_err(|e| format!("{}: {e}", self.path))
+    }
+
+    fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("written after it was finished"))
+    }
+}
+
+impl Write for Staged {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.open()?.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.open()?.flush()
+    }
+}
+
+impl Drop for Staged {
+    /// The file is closed before it is removed, which some platforms require.
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take() {
+            drop(file);
+            let _ = std::fs::remove_file(&self.temp);
+        }
+    }
 }

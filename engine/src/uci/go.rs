@@ -16,8 +16,8 @@ use crate::tt::Table;
 use crate::tune::Tunables;
 
 /// One frame per ply to `MAX_PLY`, each holding a `MoveList`; 16 MiB is far above that in any
-/// profile.
-const SEARCH_STACK_BYTES: usize = 16 << 20;
+/// profile, for every thread that searches, datagen's workers included.
+pub(crate) const SEARCH_STACK_BYTES: usize = 16 << 20;
 
 impl Session {
     /// A search still running is stopped first.

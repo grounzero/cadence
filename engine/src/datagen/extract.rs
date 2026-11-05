@@ -53,7 +53,8 @@ pub struct Stats {
 ///
 /// # Errors
 ///
-/// A record that does not parse, or an output that cannot be written.
+/// A record that does not parse, an output that cannot be written, or a file holding another
+/// number of games than its provenance lines name.
 pub fn extract(
     input: impl BufRead,
     train: &mut dyn Write,
@@ -66,9 +67,14 @@ pub fn extract(
         ply: vec![0; PLY_BANDS],
         ..Stats::default()
     };
+    let mut named = None;
     for (i, line) in input.lines().enumerate() {
         let line = line.map_err(|e| format!("line {}: {e}", i + 1))?;
         if line.starts_with('#') {
+            // Summed, so runs joined end to end are checked as one.
+            if let Some(n) = games_named(&line) {
+                named = Some(named.unwrap_or(0) + n);
+            }
             writeln!(train, "{line}").map_err(|e| e.to_string())?;
             writeln!(holdout, "{line}").map_err(|e| e.to_string())?;
             continue;
@@ -84,7 +90,23 @@ pub fn extract(
             stats.train += positions(&record, &mut stats, train).map_err(|e| e.to_string())?;
         }
     }
+    if let Some(n) = named
+        && n != stats.games
+    {
+        return Err(format!(
+            "the provenance names {n} games and the file holds {}",
+            stats.games
+        ));
+    }
     Ok(stats)
+}
+
+/// The count a run's provenance line names, which a file cut short no longer matches.
+fn games_named(line: &str) -> Option<u64> {
+    let rest = line.strip_prefix("# cadence datagen ")?;
+    let mut words = rest.split_whitespace();
+    words.find(|&w| w == "games")?;
+    words.next()?.parse().ok()
 }
 
 fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io::Result<u64> {
