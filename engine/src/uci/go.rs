@@ -26,6 +26,13 @@ impl Session {
         // The GUI's clock for this move started when it sent the line.
         let received = Instant::now();
         self.stop_search();
+        if let Some(why) = &self.refused {
+            say(format_args!(
+                "info string go: the last position command failed ({why}); searching nothing"
+            ));
+            say(format_args!("bestmove 0000"));
+            return;
+        }
         let tokens: Vec<&str> = tokens.collect();
         let mut limits = Limits::parse(tokens.iter().copied());
         limits.move_overhead = Some(self.move_overhead);
