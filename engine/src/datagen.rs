@@ -201,7 +201,7 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     };
     generate(seed, games, threads, out, &mut progress).map_err(|e| e.to_string())?;
-    staged.map_or(Ok(()), Staged::finish)
+    staged.map_or(Ok(()), |stage| publish(vec![stage]))
 }
 
 fn extract_from_args(args: &[String]) -> Result<(), String> {
@@ -233,8 +233,7 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
     let mut train = Staged::create(train_path, train_temp)?;
     let mut holdout = Staged::create(holdout_path, holdout_temp)?;
     let stats = extract::extract(input, &mut train, &mut holdout, every)?;
-    train.finish()?;
-    holdout.finish()?;
+    publish(vec![train, holdout])?;
     stats
         .report(&mut io::stdout().lock())
         .map_err(|e| e.to_string())
@@ -305,6 +304,8 @@ struct Staged {
     path: PathBuf,
     temp: PathBuf,
     file: Option<BufWriter<File>>,
+    /// Until it is, dropping the stage removes its file, written out or not.
+    published: bool,
 }
 
 impl Staged {
@@ -319,16 +320,24 @@ impl Staged {
             path: path.to_path_buf(),
             temp,
             file: Some(BufWriter::new(file)),
+            published: false,
         })
     }
 
-    fn finish(mut self) -> Result<(), String> {
+    /// Written out and closed, which some platforms require of a file before it is renamed.
+    fn close(&mut self) -> Result<(), String> {
         if let Some(file) = self.file.take() {
             file.into_inner()
                 .map_err(|e| format!("{}: {}", self.temp.display(), e.error()))?;
         }
+        Ok(())
+    }
+
+    fn rename(mut self) -> Result<(), String> {
         std::fs::rename(&self.temp, &self.path)
-            .map_err(|e| format!("{}: {e}", self.path.display()))
+            .map_err(|e| format!("{}: {e}", self.path.display()))?;
+        self.published = true;
+        Ok(())
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
@@ -351,9 +360,24 @@ impl Write for Staged {
 impl Drop for Staged {
     /// The file is closed before it is removed, which some platforms require.
     fn drop(&mut self) {
-        if let Some(file) = self.file.take() {
-            drop(file);
+        drop(self.file.take());
+        if !self.published {
             let _ = std::fs::remove_file(&self.temp);
         }
     }
+}
+
+/// Every stage is written out and every destination checked before any is renamed, so one that
+/// cannot be published leaves the others' destinations as they were.
+fn publish(mut stages: Vec<Staged>) -> Result<(), String> {
+    for stage in &mut stages {
+        stage.close()?;
+    }
+    if let Some(stage) = stages.iter().find(|stage| stage.path.is_dir()) {
+        return Err(format!("{}: a directory, not a file", stage.path.display()));
+    }
+    for stage in stages {
+        stage.rename()?;
+    }
+    Ok(())
 }
