@@ -126,12 +126,16 @@ pub fn generate(
     })
 }
 
-fn workers(threads: usize, _games: u64) -> usize {
-    threads.max(1)
+/// Each worker holds a stack and a table before it asks for a game, so none start for no games.
+fn workers(threads: usize, games: u64) -> usize {
+    threads
+        .clamp(1, MAX_THREADS)
+        .min(usize::try_from(games).unwrap_or(usize::MAX))
 }
 
 const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
-     cadence datagen extract <games> --train PATH --holdout PATH [--every N]";
+     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
+     --threads is cut to the number of games and to 256";
 
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
@@ -188,6 +192,9 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     }
     let games = games.ok_or("--games is required")?;
+    if threads > MAX_THREADS {
+        eprintln!("cadence datagen: --threads {threads} is cut to {MAX_THREADS}");
+    }
     let mut staged = path.as_deref().map(Staged::create).transpose()?;
     let mut stdout = BufWriter::new(io::stdout().lock());
     let out: &mut dyn Write = match &mut staged {
@@ -290,7 +297,7 @@ impl Drop for Staged {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_THREADS, workers};
+    use super::{MAX_THREADS, USAGE, workers};
 
     #[test]
     fn workers_number_at_most_the_games_and_the_maximum() {
@@ -299,5 +306,6 @@ mod tests {
         assert_eq!(workers(100_000, 1_000_000), MAX_THREADS);
         assert_eq!(workers(0, 10), 1);
         assert_eq!(workers(4, 10), 4);
+        assert!(USAGE.ends_with(&format!("and to {MAX_THREADS}")), "{USAGE}");
     }
 }
