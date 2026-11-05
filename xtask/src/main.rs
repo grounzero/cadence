@@ -2022,7 +2022,7 @@ mod tests {
             ["docs/testing/perft.md"]
         );
         assert_eq!(docs_tokens("cadence/docs/x and docs/"), ["docs/x", "docs"]);
-        assert!(docs_tokens("xyzdocs/a my-docs/b").is_empty());
+        assert_eq!(docs_tokens("xyzdocs/a my-docs/b"), [] as [&str; 0]);
     }
 
     #[test]
