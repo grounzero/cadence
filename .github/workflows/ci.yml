@@ -507,6 +507,15 @@ jobs:
           & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --keep-log
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
 
+      - name: The logs, when an install failed
+        if: failure()
+        shell: bash
+        run: |
+          for log in "$HOME"/.cache/cadence/install-*.log "$(cygpath -u "${LOCALAPPDATA:-/nowhere}" 2>/dev/null)"/Cadence/install-*.log; do
+            [ -f "$log" ] && { echo "== $log"; cat "$log"; }
+          done
+          true
+
       # Read here and not from the script, so a script that checked the wrong thing would fail.
       - name: The installed binary's bench and id name
         run: |

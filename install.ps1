@@ -182,9 +182,24 @@ function Set-StateValue([string]$Key, [string]$Value) {
 }
 
 function Get-IdName([string]$Binary) {
-    $out = "uci`nquit`n" | & $Binary 2>$null
-    foreach ($line in $out) {
-        if ("$line" -match '^id name (.*)$') { return $Matches[1].Trim() }
+    # A process of its own, written to as bytes: what Windows PowerShell pipes into a native program
+    # reached the engine as no command it answered.
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $Binary
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes("uci`nquit`n")
+    $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+    $process.StandardInput.BaseStream.Close()
+    $out = $process.StandardOutput.ReadToEnd()
+    $process.WaitForExit()
+    $lines = @($out -split "`r?`n" | Where-Object { $_ })
+    Write-Log ('uci answered: ' + ($lines -join ' | '))
+    foreach ($line in $lines) {
+        if ($line -match '^id name (.*)$') { return $Matches[1].Trim() }
     }
     return ''
 }
