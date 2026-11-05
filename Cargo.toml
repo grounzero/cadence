@@ -19,12 +19,10 @@ rust-version = "1.99"
 license      = "GPL-3.0-or-later"
 repository   = "https://github.com/grounzero/cadence"
 
-# `unsafe_code = "forbid"` is deliberately NOT here. A Cargo-level `forbid`
-# arrives as `--forbid unsafe_code` on the rustc command line and cannot be
-# relaxed by anything downstream, so a workspace-wide forbid would make
-# `cadence-nnue`'s SIMD intrinsics unimplementable. The
-# attribute is therefore set per crate, in the crate root, where it is visible
-# to a reader of the file it governs.
+# `unsafe_code = "forbid"` is deliberately NOT here: a Cargo-level `forbid`
+# arrives as `--forbid unsafe_code` on the rustc command line, where nothing
+# downstream can relax it for a crate that is ever granted an exception. Each
+# crate sets it in its own root instead, visible to a reader of that file.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

@@ -45,7 +45,6 @@ version = "0.5.23"
 dependencies = [
  "cadence-core",
  "cadence-engine",
- "cadence-nnue",
  "shakmaty",
  "shakmaty-syzygy",
 ]
@@ -53,17 +52,10 @@ dependencies = [
 [[package]]
 name = "cadence-nnue"
 version = "0.5.23"
-dependencies = [
- "cadence-core",
-]
 
 [[package]]
 name = "cadence-tools"
 version = "0.5.23"
-dependencies = [
- "cadence-core",
- "cadence-nnue",
-]
 
 [[package]]
 name = "libc"

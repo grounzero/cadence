@@ -11,9 +11,5 @@ repository.workspace   = true
 name = "cadence-tools"
 path = "src/main.rs"
 
-[dependencies]
-cadence-core = { path = "../core" }
-cadence-nnue = { path = "../nnue" }
-
 [lints]
 workspace = true
