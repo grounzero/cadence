@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::iter::Peekable;
+use std::num::IntErrorKind;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -86,8 +87,14 @@ impl Limits {
 }
 
 /// Consumed only if it parses; otherwise left for the main loop, since it may be the next keyword.
+/// A number past either end of `i64` is a limit and not an absence, so it reads as that end.
 fn large<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u64> {
-    let n: i64 = it.peek()?.parse().ok()?;
+    let n = match it.peek()?.parse::<i64>() {
+        Ok(n) => n,
+        Err(e) if *e.kind() == IntErrorKind::PosOverflow => i64::MAX,
+        Err(e) if *e.kind() == IntErrorKind::NegOverflow => i64::MIN,
+        Err(_) => return None,
+    };
     it.next();
     Some(u64::try_from(n.max(0)).expect("non-negative"))
 }
