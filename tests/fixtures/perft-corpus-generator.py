@@ -74,7 +74,8 @@ def main():
     compared = skipped = bad = 0
     text = open(a.fixture).read()
     for (name, depth), listed in divides(text).items():
-        legal = sorted(m.uci() for m in chess.Board(STANDARD[name]).legal_moves)
+        board = chess.Board(STANDARD[name])
+        legal = sorted(board.uci(m, chess960=True) for m in board.legal_moves)
         compared += 1
         if sorted(listed) != legal:
             bad += 1
