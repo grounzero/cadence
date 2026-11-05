@@ -260,8 +260,13 @@ fn a_clock_below_the_overhead_yields_a_move_at_once() {
     assert!(elapsed <= Duration::from_secs(1), "took {elapsed:?}");
 }
 
+/// Past half of what is left, the most the engine ever gives a move, timed around the pipe and the
+/// scheduler: a release build's clock check comes every millisecond or so, and this is for a loaded
+/// runner.
+const MAX_OVERRUN_MS: u64 = 150;
+
 /// Plies played, the clocks left and the worst overrun past the engine's hard cap; or the first move
-/// timed past the clock, as its ply, the time spent and the clock.
+/// timed past the clock or past the cap by more than [`MAX_OVERRUN_MS`].
 fn play_on_the_clock() -> Result<(u32, [u64; 2], u64), String> {
     let mut e = Engine::spawn();
     let mut board = Board::from_fen(START_FEN).unwrap();
@@ -299,10 +304,15 @@ fn play_on_the_clock() -> Result<(u32, [u64; 2], u64), String> {
                 time[us]
             ));
         }
-        // The engine's own hard cap is half of what is left after the
-        // overhead; record the worst overrun past that, for the log.
+        // The engine's own hard cap is half of what is left after the overhead.
         let cap = time[us].saturating_sub(MOVE_OVERHEAD_MS) / 2;
         max_overrun_ms = max_overrun_ms.max(spent.saturating_sub(cap));
+        if spent > cap + MAX_OVERRUN_MS {
+            e.quit();
+            return Err(format!(
+                "ply {plies}: {spent} ms spent against a cap of {cap} ms"
+            ));
+        }
         time[us] = time[us] - spent + inc;
         board.play(m);
         moves.push(mv);
@@ -313,7 +323,7 @@ fn play_on_the_clock() -> Result<(u32, [u64; 2], u64), String> {
 }
 
 /// 1000 ms + 20 ms, timed around each `go` with the pipe and the scheduler included. A game that
-/// runs out is printed and played once more, and only a second game running out fails.
+/// runs out or overruns is printed and played once more, and only a second such game fails.
 #[test]
 fn a_game_on_the_clock_never_runs_out_of_time() {
     let (plies, time, max_overrun_ms) = play_on_the_clock().unwrap_or_else(|first| {
@@ -1126,4 +1136,27 @@ fn the_run_survives_a_ponderhit() {
         s.iteration_roots()
     );
     assert_the_run_is_the_trailing_one(&s);
+}
+
+/// The budget is spent from when `go` was read, so a search whose clock started a second before
+/// it, with 200 ms to spend, answers at its first clock check.
+#[test]
+fn the_budget_is_spent_from_the_clock_origin() {
+    let stop = AtomicBool::new(false);
+    let tt = Table::new(1).expect("a one mebibyte table");
+    let mut s = Search::new(&stop, &tt);
+    s.set_limits(limits("movetime 200"));
+    let origin = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("a clock running a second");
+    s.set_clock_origin(origin);
+    let start = Instant::now();
+    let mut b = Position::new(Board::from_fen(START_FEN).unwrap());
+    let best = s.run(&mut b, &mut std::io::sink());
+    assert!(generate_legal(&b).contains(best));
+    assert!(
+        start.elapsed() < Duration::from_millis(100),
+        "took {:?} with its clock spent",
+        start.elapsed()
+    );
 }

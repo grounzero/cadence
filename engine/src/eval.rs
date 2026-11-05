@@ -577,18 +577,6 @@ impl Default for PawnCache {
     }
 }
 
-/// From the owner's point of view. For inspection and tests; the evaluation reads [`WEIGHTS`]
-/// directly.
-#[must_use]
-pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
-    let s = match colour {
-        Colour::White => sq.index(),
-        Colour::Black => sq.flip_vertical().index(),
-    };
-    let w = WEIGHTS[PST + 64 * pt.index() + s];
-    (w.mg, w.eg)
-}
-
 #[cfg(test)]
 mod tests {
     use cadence_core::position::Board;

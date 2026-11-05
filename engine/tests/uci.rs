@@ -368,6 +368,43 @@ fn ucinewgame_is_accepted_and_the_next_go_works() {
     assert_bestmove_legal(&out, START_FEN, false);
 }
 
+/// The running search holds its own table, its own tables and a copy of the board, so a change sent
+/// while it runs waits for the next search: the answer is legal where the search started, and the
+/// next answer is legal where the change left the session.
+#[test]
+fn what_is_set_during_a_search_waits_for_the_next_one() {
+    const SEARCHED: &str = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+    const MOVED: &str = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
+    let tables = std::env::temp_dir().display().to_string();
+    for (change, next) in [
+        ("setoption name Hash value 2".to_string(), SEARCHED),
+        (
+            format!("setoption name SyzygyPath value {tables}"),
+            SEARCHED,
+        ),
+        (format!("position fen {MOVED}"), MOVED),
+    ] {
+        let sent = change.clone();
+        let (during, after) = Engine::within(std::time::Duration::from_secs(60), move || {
+            let mut e = Engine::spawn();
+            e.send(&format!("position fen {SEARCHED}"));
+            e.sync();
+            e.send("go infinite");
+            e.send(&sent);
+            let mut during = e.sync();
+            e.send("stop");
+            during.extend(e.read_until("bestmove "));
+            e.send("go depth 2");
+            let after = e.read_until("bestmove ");
+            e.quit();
+            (during.join("\n"), after.join("\n"))
+        });
+        assert_eq!(bestmoves(&during).len(), 1, "{change}: {during:?}");
+        assert_bestmove_legal(&during, SEARCHED, false);
+        assert_bestmove_legal(&after, next, false);
+    }
+}
+
 #[test]
 fn bestmove_on_a_position_with_no_legal_move_is_the_null_move() {
     for fen in [

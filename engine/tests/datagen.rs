@@ -267,6 +267,56 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
     assert!(String::from_utf8(report).expect("utf-8").contains("yield"));
 }
 
+/// A record file cut short still names the whole run in its provenance, so the count shows it.
+#[test]
+fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
+    let file = run(5, 3, 1);
+    let text = std::str::from_utf8(&file).expect("utf-8");
+    let cut = text.lines().take(3).collect::<Vec<_>>().join("\n");
+    let (mut train, mut holdout) = (Vec::new(), Vec::new());
+    let refused = extract::extract(cut.as_bytes(), &mut train, &mut holdout, 0);
+    assert!(
+        refused.is_err(),
+        "two of three games were extracted as whole"
+    );
+    let joined = [&file[..], &file[..]].concat();
+    let (mut train, mut holdout) = (Vec::new(), Vec::new());
+    let stats = extract::extract(&joined[..], &mut train, &mut holdout, 0).expect("two runs");
+    assert_eq!(stats.games, 6);
+}
+
+/// A stage that fails leaves no output for the next one to read as whole.
+#[test]
+fn a_failed_extraction_leaves_no_output_behind() {
+    let dir = std::env::temp_dir().join(format!("cadence-datagen-cut-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let games = dir.join("games.txt");
+    let mut text = String::from_utf8(run(6, 2, 1)).expect("utf-8");
+    text.push_str("0 | 518 518 | e2e5 |  | 1-0 mate | 0\n");
+    std::fs::write(&games, text).expect("writes");
+    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+        .args([
+            "datagen",
+            "extract",
+            games.to_str().expect("path"),
+            "--train",
+        ])
+        .arg(dir.join("train.txt"))
+        .arg("--holdout")
+        .arg(dir.join("holdout.txt"))
+        .output()
+        .expect("runs");
+    let mut left: Vec<_> = std::fs::read_dir(&dir)
+        .expect("lists")
+        .map(|e| e.expect("an entry").file_name())
+        .collect();
+    left.sort();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!out.status.success(), "a malformed record was extracted");
+    assert_eq!(left, ["games.txt"], "left behind");
+}
+
 #[test]
 fn the_tuner_uses_a_named_holdout_whole() {
     let dir = std::env::temp_dir().join(format!("cadence-datagen-{}", std::process::id()));

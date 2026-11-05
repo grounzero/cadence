@@ -16,6 +16,7 @@ use shakmaty_syzygy::filesystem::{Filesystem, OsFilesystem, RandomAccessFile};
 use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Metric, SyzygyError, Tablebase};
 
 use crate::score::{DRAW, Score, is_mate, tb_loss_in, tb_win_in};
+use crate::uci::say::say;
 
 /// The largest tables published, so the highest `SyzygyProbeLimit` that means anything.
 pub const MAX_PROBE_LIMIT: usize = 7;
@@ -387,7 +388,8 @@ impl Tables {
         }
     }
 
-    /// An `info string` the first time a probe fails on a table, from whichever thread it was.
+    /// An `info string` the first time a probe fails on a table, from whichever thread it was,
+    /// through the writer every UCI line takes.
     fn name_once(&self, e: &SyzygyError) {
         let table = match e {
             SyzygyError::MissingTable { metric, material }
@@ -398,7 +400,7 @@ impl Tables {
         };
         let mut named = self.named.lock().unwrap_or_else(PoisonError::into_inner);
         if named.insert(table) {
-            println!("info string Syzygy: {e}");
+            say(format_args!("info string Syzygy: {e}"));
         }
     }
 }

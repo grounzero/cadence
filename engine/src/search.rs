@@ -120,6 +120,9 @@ pub struct Search<'a> {
     /// at 8 to 12 percent of time to depth at 4 to 16 threads.
     worker_index: usize,
     start: Instant,
+    /// When the `go` was read, so the work before the search starts is spent from the clock too;
+    /// taken by the next run.
+    clock_origin: Option<Instant>,
     /// `None`: the clock is never read.
     budget: Option<Budget>,
     /// What the search is doing now; `limits.ponder` records what the `go` asked.
@@ -248,6 +251,7 @@ impl<'a> Search<'a> {
             shared_nodes: None,
             worker_index: 0,
             start: Instant::now(),
+            clock_origin: None,
             budget: None,
             pondering: false,
             budget_on_hit: None,
@@ -321,6 +325,11 @@ impl<'a> Search<'a> {
         self.limits = limits;
     }
 
+    /// The clock the next run spends from, where it started before the run did.
+    pub fn set_clock_origin(&mut self, origin: Instant) {
+        self.clock_origin = Some(origin);
+    }
+
     /// Without one, a `go ponder` still waits for `stop`.
     pub fn set_ponder_hit(&mut self, flag: &'a AtomicBool) {
         self.ponder_hit = Some(flag);
@@ -376,7 +385,7 @@ impl<'a> Search<'a> {
 
     /// The clock origin is set here and moved only by a `ponderhit`.
     fn begin(&mut self, board: &Board) {
-        self.start = Instant::now();
+        self.start = self.clock_origin.take().unwrap_or_else(Instant::now);
         self.nodes = 0;
         self.aborted = false;
         self.completed_depth = 0;
