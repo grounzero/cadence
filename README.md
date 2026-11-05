@@ -73,6 +73,13 @@ limit of 256. Raise it with `ulimit -n` in the shell that starts the engine or
 the GUI. A file that cannot be read is named in an `info string`, and the
 search goes on without it.
 
+### Unusual commands
+
+`go searchmoves` limits the search to the moves listed. A listed move that is
+not legal in the position is named in an `info string` and left out. If no
+listed move is legal, the engine searches every legal move, as a plain `go`
+would.
+
 ## Strength
 
 There are two numbers here. They come from different places and cannot be
