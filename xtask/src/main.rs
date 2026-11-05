@@ -33,6 +33,7 @@ const HEADERS_NOT_EXAMINED: &[&str] = &[
 /// outside this tree still reads it.
 const BOUNDARY_NOT_EXAMINED: &[&str] = &[
     "xtask/src/main.rs, which spells the rules out",
+    "files git ignores, which a whole-tree read leaves out as not source",
     "commit messages (.githooks/check-message-metadata reads them)",
     "exact names from outside this tree (a list of them here would inventory what is withheld)",
 ];
@@ -126,6 +127,14 @@ fn check_headers() -> ExitCode {
         return ExitCode::FAILURE;
     }
     files.sort();
+    // As check-boundary refuses a whole-tree read of nothing: a pass over no file passes anything.
+    if files.is_empty() {
+        eprintln!(
+            "check-headers: DID NOT RUN: found no .rs file under {}",
+            root.display()
+        );
+        return ExitCode::FAILURE;
+    }
 
     let mut bad = Vec::new();
     for path in &files {
@@ -174,8 +183,8 @@ fn header_defect(text: &str) -> Option<String> {
 // nothing private is named here:
 //
 //   * a `docs/...` path must exist;
-//   * the only capitals `NAME.md` are [`ROOT_DOCUMENTS`];
-//   * no `/Users/` path;
+//   * the only capitals `NAME.md` are [`ROOT_DOCUMENTS`], and any other `.md` path must exist;
+//   * no home directory's absolute path, [`HOME_PATHS`];
 //   * ASCII outside [`ALLOWED_NON_ASCII`] and [`ALLOWED_IN_PLACE`];
 //   * no planning noun with a number;
 //   * no `ADR` citation;
@@ -259,6 +268,17 @@ const CITATION_RULE_FILES: &[&str] = &[".githooks/check-message-metadata"];
 /// Adding one publishes a document, so it lands with the file.
 const ROOT_DOCUMENTS: &[&str] = &["README.md", "CHANGELOG.md"];
 
+/// Where a machine's home directories live, compared without case, so none is published.
+const HOME_PATHS: &[&str] = &["/Users/", "/home/", "C:\\Users\\"];
+
+fn home_path(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    HOME_PATHS
+        .iter()
+        .copied()
+        .find(|p| lower.contains(&p.to_ascii_lowercase()))
+}
+
 const fn is_path_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')
 }
@@ -292,6 +312,24 @@ fn caps_md_tokens(line: &str) -> Vec<&str> {
             name_start == 0 || !line[..name_start].ends_with(|c: char| is_path_char(c) && c != '/');
         if name.len() >= 2 && bounded {
             out.push(&line[name_start..at + 3]);
+        }
+    }
+    out
+}
+
+/// Every `.md` name with the path written before it, so one that names no file here is caught
+/// whatever its case.
+fn md_paths(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for (at, _) in line.match_indices(".md") {
+        if line[at + 3..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        let start = line[..at]
+            .rfind(|c: char| !is_path_char(c))
+            .map_or(0, |i| i + c_len(&line[..at], i));
+        if start < at {
+            out.push(&line[start..at + 3]);
         }
     }
     out
@@ -424,7 +462,11 @@ fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
                 continue;
             }
             let after_word = at + word.len();
-            let plural = usize::from(lower[after_word..].starts_with('s'));
+            let plural = if lower[after_word..].starts_with("es") {
+                2
+            } else {
+                usize::from(lower[after_word..].starts_with('s'))
+            };
             let rest = &lower[after_word + plural..];
             let digits = rest.trim_start_matches(is_label_gap);
             if digits.starts_with(|c: char| c.is_ascii_digit()) {
@@ -439,14 +481,15 @@ fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
     None
 }
 
-/// Case-sensitive, because the letters occur inside lower-case words.
+/// `ADR` bare, or with its number in any case, since a lower-case `adr` alone is a name in code.
 fn record_citation(line: &str) -> Option<&str> {
-    for (at, _) in line.match_indices("ADR") {
+    let lower = line.to_ascii_lowercase();
+    for (at, _) in lower.match_indices("adr") {
         if line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
             continue;
         }
         let after_word = at + 3;
-        let plural = usize::from(line[after_word..].starts_with('s'));
+        let plural = usize::from(lower[after_word..].starts_with('s'));
         let rest = &line[after_word + plural..];
         if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
             continue;
@@ -460,6 +503,9 @@ fn record_citation(line: &str) -> Option<&str> {
         } else {
             0
         };
+        if number == 0 && &line[at..after_word] != "ADR" {
+            continue;
+        }
         return Some(&line[at..after_word + plural + number]);
     }
     None
@@ -564,8 +610,7 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
     let mut out = Vec::new();
     match source {
         Source::WorkingTree => {
-            let mut paths = Vec::new();
-            collect_all(root, &mut paths).map_err(|e| e.to_string())?;
+            let mut paths = working_paths(root)?;
             paths.sort();
             for path in paths {
                 let rel = path.strip_prefix(root).unwrap_or(&path);
@@ -595,6 +640,26 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
     Ok(out)
 }
 
+/// The files git would show as the tree: tracked or untracked but never ignored, so a table
+/// fetched into the tree or a build's output is not read as source. Walked where git cannot answer.
+fn working_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let args = ["ls-files", "--cached", "--others", "--exclude-standard", "-z"];
+    let Ok(listed) = git(root, &args) else {
+        let mut paths = Vec::new();
+        collect_all(root, &mut paths).map_err(|e| e.to_string())?;
+        return Ok(paths);
+    };
+    Ok(nul_separated(&listed)
+        .into_iter()
+        .filter(|rel| {
+            !rel.split('/')
+                .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store")
+        })
+        .map(|rel| root.join(rel))
+        .filter(|path| path.is_file())
+        .collect())
+}
+
 /// Separate from [`check_boundary`] because clippy refuses one function that long.
 fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, String)> {
     let in_place = in_place_allowances(rel);
@@ -614,8 +679,15 @@ fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, 
                 ));
             }
         }
-        if line.contains("/Users/") {
-            out.push((at, "contains an absolute `/Users/` path".to_string()));
+        for token in md_paths(line) {
+            let named = token.trim_start_matches("./");
+            let caps = !caps_md_tokens(token).is_empty();
+            if !caps && !ROOT_DOCUMENTS.contains(&named) && !resolves(named) {
+                out.push((at, format!("`{token}` is not a file in this repository")));
+            }
+        }
+        if let Some(home) = home_path(line) {
+            out.push((at, format!("contains an absolute `{home}` path")));
         }
         for c in stray_non_ascii(line, &in_place) {
             let reason = if let Some(entry) = in_place_entry(c) {
@@ -771,16 +843,19 @@ type Version = (u64, u64, u64, u64);
 /// The fourth part of a release's version, so a candidate, `x.y.z-rc.N`, sorts below it.
 const RELEASE: u64 = u64::MAX;
 
+/// A month and a day that can exist, not only the shape.
 fn is_iso_date(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() == 10
+    let shaped = b.len() == 10
         && b.iter().enumerate().all(|(i, c)| {
             if i == 4 || i == 7 {
                 *c == b'-'
             } else {
                 c.is_ascii_digit()
             }
-        })
+        });
+    let number = |range: std::ops::Range<usize>| s[range].parse::<u32>().unwrap_or(0);
+    shaped && (1..=12).contains(&number(5..7)) && (1..=31).contains(&number(8..10))
 }
 
 fn workspace_version(manifest: &str) -> Option<String> {
@@ -1001,7 +1076,9 @@ struct NpsArgs {
 
 fn parse_nps_args(args: &[String]) -> Result<NpsArgs, String> {
     let mut out = NpsArgs {
-        binary: repo_root().join("target/release/cadence"),
+        binary: repo_root()
+            .join("target/release")
+            .join(format!("cadence{}", std::env::consts::EXE_SUFFIX)),
         concurrency: DEFAULT_CONCURRENCY,
         pairs: DEFAULT_PAIRS,
         reference: None,
@@ -1047,7 +1124,7 @@ fn run_round(binary: &Path, copies: usize) -> Result<Round, String> {
             Command::new(binary)
                 .arg("bench")
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("could not run {}: {e}", binary.display()))
         })
@@ -1059,6 +1136,14 @@ fn run_round(binary: &Path, copies: usize) -> Result<Round, String> {
         let out = child
             .wait_with_output()
             .map_err(|e| format!("bench did not finish: {e}"))?;
+        // A run that failed after printing its last line is still a failed run.
+        if !out.status.success() {
+            return Err(format!(
+                "bench exited with {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
         let text = String::from_utf8_lossy(&out.stdout);
         let last = text
             .lines()
@@ -1298,15 +1383,26 @@ fn install_hooks() -> ExitCode {
     match status {
         Ok(s) if s.success() => {
             println!("install-hooks: core.hooksPath = .githooks");
+            let mut all = true;
             for hook in HOOKS {
                 let p = hooks.join(hook);
-                println!(
-                    "  {} {}",
-                    if p.is_file() { "ok  " } else { "MISSING" },
-                    hook
-                );
+                // git skips a hook it cannot execute, with a hint a GUI client hides.
+                let state = if !p.is_file() {
+                    "MISSING"
+                } else if !executable(&p) {
+                    "NOT EXECUTABLE"
+                } else {
+                    "ok"
+                };
+                all &= state == "ok";
+                println!("  {state:<14} {hook}");
             }
-            ExitCode::SUCCESS
+            if all {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("install-hooks: a hook above will not run; restore it with its mode");
+                ExitCode::FAILURE
+            }
         }
         Ok(s) => {
             eprintln!("install-hooks: git config exited with {s}");
@@ -1316,6 +1412,20 @@ fn install_hooks() -> ExitCode {
             eprintln!("install-hooks: could not run git: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Where the platform has an execute bit; elsewhere a file is all git asks.
+fn executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
     }
 }
 
@@ -1896,6 +2006,66 @@ mod tests {
         assert_eq!(parse_version("0.6.0-rc.2"), Some((0, 6, 0, 2)));
         for bad in ["0.4", "0.4.1.2", "0.+4.1", "v0.4.1", "0..1", "Unreleased"] {
             assert_eq!(parse_version(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_docs_path_is_read_to_its_end_and_only_when_rooted_here() {
+        assert_eq!(
+            docs_tokens("see docs/testing/perft.md."),
+            ["docs/testing/perft.md"]
+        );
+        assert_eq!(docs_tokens("cadence/docs/x and docs/"), ["docs/x", "docs"]);
+        assert!(docs_tokens("xyzdocs/a my-docs/b").is_empty());
+    }
+
+    #[test]
+    fn a_markdown_name_in_any_case_must_be_a_file_here() {
+        assert_eq!(
+            md_paths("see docs/testing/perft.md, notes.md and a.mdx."),
+            ["docs/testing/perft.md", "notes.md"]
+        );
+        let resolves = |t: &str| t == "docs/testing/perft.md";
+        for (line, refused) in [
+            ("docs/testing/perft.md", false),
+            ("README.md", false),
+            ("./CHANGELOG.md", false),
+            ("Plan.md", true),
+            ("notes.md", true),
+            ("docs/Findings.md", true),
+        ] {
+            let found = scan("x.rs", line, &resolves)
+                .iter()
+                .any(|(_, r)| r.contains("is not a file"));
+            assert_eq!(found, refused, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_home_directory_is_refused_on_every_platform() {
+        for line in [
+            "/Users/someone/x",
+            "/home/someone/x",
+            "C:\\Users\\someone",
+            "c:\\users\\someone",
+        ] {
+            assert!(home_path(line).is_some(), "{line}");
+        }
+        for line in ["/usr/local/bin", "the users' home", "~/git/cadence"] {
+            assert_eq!(home_path(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn the_header_is_the_exact_first_line() {
+        assert_eq!(header_defect(&format!("{HEADER}\nfn main() {{}}\n")), None);
+        for text in [
+            String::new(),
+            format!("\n{HEADER}\n"),
+            format!(" {HEADER}\n"),
+            "// SPDX-License-Identifier: GPL-3.0-only\n".to_string(),
+        ] {
+            assert!(header_defect(&text).is_some(), "{text:?}");
         }
     }
 

@@ -347,12 +347,12 @@ jobs:
             echo
             awk -v h="## [$VERSION]" '$0 == h || index($0, h " - ") == 1 {on = 1; next} on && /^## \[/ {exit} on' \
               CHANGELOG.md
-          } > notes.md
-          cat notes.md
+          } > notes.txt
+          cat notes.txt
           echo "$found" | while read -r id _; do
             [ -n "$id" ] || continue
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
             echo "replaced the earlier draft $id"
           done
           gh release create "$VERSION" "${kind[@]}" --title "Cadence $VERSION" \
-            --notes-file notes.md dist/cadence-* dist/SHA256SUMS LICENSE
+            --notes-file notes.txt dist/cadence-* dist/SHA256SUMS LICENSE
