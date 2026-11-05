@@ -152,17 +152,17 @@ fn the_rule_is_not_inert_at_a_real_depth() {
     );
 }
 
-/// The setter holds the amount below the threshold, so a node it shortens keeps a ply to search
+/// The setter holds the amount below the threshold, so the root it shortens keeps a ply to search
 /// whatever a caller asks for.
 #[test]
 fn any_amount_leaves_a_shortened_node_a_ply() {
-    let stop = AtomicBool::new(false);
     for plies in [THRESHOLD - 1, THRESHOLD, THRESHOLD + 1, u32::MAX] {
+        let stop = AtomicBool::new(false);
         let tt = table();
-        let mut b = support::position(MIDDLEGAME);
-        let mut s = support::search(Limits::depth(6), &stop, &tt);
+        let mut b = support::position(NO_CHECKS);
+        let mut s = support::search(Limits::depth(THRESHOLD), &stop, &tt);
         s.set_iir_reduction(plies);
-        s.run(&mut b, &mut std::io::sink());
-        assert_eq!(s.completed_depth(), 6, "{plies} plies");
+        let _ = s.node_window(&mut b, THRESHOLD, 0, NULL_WINDOW.0, NULL_WINDOW.1);
+        assert_eq!(s.iir_nodes(), 1, "{plies} plies: the root was not shortened");
     }
 }
