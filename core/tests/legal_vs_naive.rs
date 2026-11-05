@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The two share only the gated attack tables and `attackers_to`; the naive one plays each move to
-//! test king safety, so a disagreement names the move and lies in the fast generator's legality
-//! reasoning. Duplicates are caught separately: a doubled move has the right set and the wrong
-//! count.
+//! The two share only the board they read: the naive one applies each move to a copy of the
+//! placement and tests king safety with its own ray walks, so a disagreement names the move.
+//! Duplicates are caught separately: a doubled move has the right set and the wrong count.
 
 mod support;
 

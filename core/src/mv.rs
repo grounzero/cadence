@@ -272,10 +272,10 @@ fn castle_king_destination(m: Move) -> Square {
 }
 
 /// Matched against the legal list, which settles promotion, en passant, castling and illegality at
-/// once.
+/// once. Input outside ASCII is refused first, so the byte slicing below never splits a character.
 #[must_use]
 pub fn parse_uci(legal: &MoveList, s: &str) -> Option<Move> {
-    if s.len() != 4 && s.len() != 5 {
+    if !s.is_ascii() || (s.len() != 4 && s.len() != 5) {
         return None;
     }
     // The exact king-takes-rook spelling of any legal move wins.
@@ -314,10 +314,13 @@ impl MoveList {
         }
     }
 
+    /// A full list drops the move rather than writing past its end.
     #[inline]
     pub fn push(&mut self, m: Move) {
-        self.moves[self.len as usize] = m;
-        self.len += 1;
+        if let Some(slot) = self.moves.get_mut(self.len as usize) {
+            *slot = m;
+            self.len += 1;
+        }
     }
 
     #[must_use]

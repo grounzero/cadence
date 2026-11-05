@@ -178,3 +178,44 @@ fn start_fen_is_the_corpus_start_position() {
     assert_eq!(board.to_fen(FenStyle::XFen), START_FEN);
     assert_eq!(generate_legal(&board).len(), 20);
 }
+
+fn by_uci(board: &Board, uci: &str) -> Move {
+    generate_legal(board)
+        .iter()
+        .find(|m| m.to_uci_chess960() == uci)
+        .unwrap_or_else(|| panic!("{uci} is not legal in {}", board.to_fen(FenStyle::XFen)))
+}
+
+/// The move number stops at the most it holds, and every move unmade from there restores the number
+/// it was made at, null moves and game moves included.
+#[test]
+fn the_move_number_saturates_and_unmakes_exactly() {
+    let mut board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 65534").expect("fen parses");
+    let mut made = Vec::new();
+    for (uci, after) in [
+        ("e1d1", 65534),
+        ("e8d8", 65535),
+        ("d1e1", 65535),
+        ("d8e8", 65535),
+    ] {
+        let m = by_uci(&board, uci);
+        made.push((m, board.fullmove_number()));
+        board.make_move(m);
+        assert_eq!(board.fullmove_number(), after, "after {uci}");
+    }
+    while let Some((m, before)) = made.pop() {
+        board.unmake_move(m);
+        assert_eq!(board.fullmove_number(), before);
+    }
+
+    let mut board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 b - - 0 65535").expect("fen parses");
+    board.make_null_move();
+    assert_eq!(board.fullmove_number(), 65535);
+    board.unmake_null_move();
+    assert_eq!(board.fullmove_number(), 65535);
+    board.play(by_uci(&board, "e8d8"));
+    assert_eq!(
+        board.to_fen(FenStyle::XFen),
+        "3k4/8/8/8/8/8/8/4K3 w - - 1 65535"
+    );
+}

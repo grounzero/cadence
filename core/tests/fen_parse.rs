@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A round trip passes a parser that consistently mis-assigns the castling rook files, so this
-//! reads the placement field itself and checks the parsed layout against it. A right for a missing
-//! rook must be `FenError::Castling` at parse time, not a panic in move generation.
+//! reads the placement field itself and checks the parsed layout against it. What the parser reads,
+//! drops and refuses is pinned in `fen_rules.rs`.
 
 mod support;
 
 use cadence_core::castling::{CastleSide, ci};
-use cadence_core::fen::{FenError, FenStyle};
+use cadence_core::fen::FenStyle;
 use cadence_core::position::Board;
 use cadence_core::types::{Colour, File, OptSquare, Piece, PieceType, Rank, Square};
 use support::generative as generate;
@@ -180,7 +180,7 @@ fn corpus_notation_rows_parse_to_the_same_position() {
 }
 
 // ---------------------------------------------------------------------------
-// The rights ⇒ rook_from invariant, and rejection
+// The rights ⇒ rook_from invariant
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -231,117 +231,9 @@ fn a_held_right_always_has_a_rook_square() {
     }
 }
 
-#[test]
-fn a_right_whose_rook_or_king_is_missing_is_a_castling_error() {
-    let bad = [
-        // Right named, no rook anywhere on the rank.
-        "4k3/8/8/8/8/8/8/4K3 w K - 0 1",
-        "4k3/8/8/8/8/8/8/4K3 w Q - 0 1",
-        "4k3/8/8/8/8/8/8/4K3 w k - 0 1",
-        "4k3/8/8/8/8/8/8/4K3 b q - 0 1",
-        // File letter naming an empty square.
-        "4k3/8/8/8/8/8/8/R3K3 w H - 0 1",
-        // File letter naming a rook of the wrong colour.
-        "4k3/8/8/8/8/8/8/r3K3 w A - 0 1",
-        // The king's own file.
-        "4k3/8/8/8/8/8/8/R3K3 w E - 0 1",
-        // K with a rook only on the queen's side.
-        "4k3/8/8/8/8/8/8/R3K3 w K - 0 1",
-        // A right for a king that is not on its back rank.
-        "4k3/8/8/8/8/8/4K3/R7 w Q - 0 1",
-        "8/4k3/8/8/8/8/8/R3K2R b k - 0 1",
-        // A rook on the rank but not on the back rank of that colour.
-        "4k3/8/8/8/8/8/R7/4K3 w Q - 0 1",
-        // Lowercase file letter for White.
-        "4k3/8/8/8/8/8/8/R3K3 w a - 0 1",
-        // Not a castling character at all.
-        "4k3/8/8/8/8/8/8/R3K3 w X - 0 1",
-        "4k3/8/8/8/8/8/8/R3K3 w KQ- - 0 1",
-    ];
-    for fen in bad {
-        assert_eq!(
-            Board::from_fen(fen).err(),
-            Some(FenError::Castling),
-            "{fen}"
-        );
-    }
-    // And the same rooks with the right letters parse.
-    assert!(Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1").is_ok());
-    assert!(Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w A - 0 1").is_ok());
-    assert!(Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1").is_ok());
-}
-
 // ---------------------------------------------------------------------------
 // The other fields
 // ---------------------------------------------------------------------------
-
-#[test]
-fn malformed_fields_are_named_by_the_error() {
-    let cases: [(&str, FenError); 12] = [
-        ("", FenError::Fields),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
-            FenError::Fields,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w",
-            FenError::Fields,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 extra",
-            FenError::Fields,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP w KQkq - 0 1",
-            FenError::Placement,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNRR w KQkq - 0 1",
-            FenError::Placement,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNX w KQkq - 0 1",
-            FenError::Placement,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1",
-            FenError::SideToMove,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e4 0 1",
-            FenError::EnPassant,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq zz 0 1",
-            FenError::EnPassant,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x 1",
-            FenError::Counter,
-        ),
-        (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0x",
-            FenError::Counter,
-        ),
-    ];
-    for (fen, want) in cases {
-        assert_eq!(Board::from_fen(fen).err(), Some(want), "{fen}");
-    }
-    // Kings: none, two, or none of one colour.
-    for fen in [
-        "8/8/8/8/8/8/8/8 w - - 0 1",
-        "4k3/8/8/8/8/8/8/8 w - - 0 1",
-        "4k3/8/8/8/8/8/8/4K1K1 w - - 0 1",
-        "4k2k/8/8/8/8/8/8/4K3 w - - 0 1",
-    ] {
-        assert_eq!(Board::from_fen(fen).err(), Some(FenError::Kings), "{fen}");
-    }
-    // A halfmove clock that does not fit its byte.
-    assert_eq!(
-        Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 300 1").err(),
-        Some(FenError::Counter)
-    );
-}
 
 #[test]
 fn the_other_fields_parse_and_emit_faithfully() {
@@ -396,64 +288,4 @@ fn the_other_fields_parse_and_emit_faithfully() {
     }
     let sq = Square::from_file_rank(File::E, Rank::Three);
     assert_eq!(sq, Square::E3);
-}
-
-/// Each shape left a different inconsistency in a release build, where `make_move` takes the pawn
-/// without looking: a pawn added on unmake, a typeless occupied square, or two pieces on one.
-#[test]
-fn an_ep_square_no_double_push_could_leave_is_refused() {
-    for (fen, shape) in [
-        (
-            "4k3/8/8/3P4/8/8/8/4K3 w - e6 0 1",
-            "no pawn on the victim square",
-        ),
-        (
-            "4k3/8/8/8/4P3/8/3P4/4K3 w - e3 0 1",
-            "White to move with a rank 3 square: the victim square holds our own pawn",
-        ),
-        (
-            "4k3/8/8/4p3/8/8/8/4K3 b - e6 0 1",
-            "Black to move with a rank 6 square",
-        ),
-        (
-            "4k3/8/4n3/3Pp3/8/8/8/4K3 w - e6 0 1",
-            "the ep square itself occupied",
-        ),
-        (
-            "4k3/8/8/3PP3/8/8/8/4K3 w - e6 0 1",
-            "our own pawn on the victim square",
-        ),
-        (
-            "4k3/4p3/8/3Pp3/8/8/8/4K3 w - e6 0 1",
-            "the double push's origin square occupied",
-        ),
-        (
-            "4k3/8/8/8/3pP3/8/4P3/4K3 b - e3 0 1",
-            "the origin square occupied, Black to move",
-        ),
-    ] {
-        assert_eq!(
-            Board::from_fen(fen).err(),
-            Some(FenError::EnPassant),
-            "{shape}: {fen}"
-        );
-    }
-}
-
-/// The evaluation reads a passed pawn's weight by its rank, and a back-rank pawn reads a
-/// neighbour's.
-#[test]
-fn a_pawn_on_a_back_rank_is_refused() {
-    for fen in [
-        "P3k3/8/8/8/8/8/8/4K3 w - - 0 1",
-        "4k3/8/8/8/8/8/8/P3K3 w - - 0 1",
-        "p3k3/8/8/8/8/8/8/4K3 w - - 0 1",
-        "4k3/8/8/8/8/8/8/p3K3 w - - 0 1",
-    ] {
-        assert_eq!(
-            Board::from_fen(fen).err(),
-            Some(FenError::Placement),
-            "{fen}"
-        );
-    }
 }

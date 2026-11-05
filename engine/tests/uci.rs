@@ -139,6 +139,23 @@ fn latin1_in_a_setoption_value_is_tolerated() {
     );
 }
 
+/// A move token outside ASCII is an illegal move wherever one is read, here a stray byte decoded as
+/// U+FFFD before a letter, an accented square, and a `searchmoves` filter.
+#[test]
+fn a_move_outside_ascii_is_refused_and_the_session_survives() {
+    for input in [
+        &b"position startpos moves \xffa\nisready\nquit\n"[..],
+        "position startpos moves a\u{e9}1\nisready\nquit\n".as_bytes(),
+        "position startpos\ngo depth 1 searchmoves a\u{e9}1\nisready\nquit\n".as_bytes(),
+    ] {
+        let out = talk_bytes(input);
+        assert!(
+            out.lines().any(|l| l == "readyok"),
+            "the session died on {input:?}: {out:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // go / stop / bestmove
 // ---------------------------------------------------------------------------

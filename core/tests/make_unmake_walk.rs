@@ -292,7 +292,7 @@ fn make_unmake_and_the_key_hold_at_every_node_of_the_walks() {
             Board::from_fen(fen).unwrap_or_else(|e| panic!("walk {walk}: {e:?}\n  {fen}"));
         assert_eq!(board.ply(), 0);
         for ply in 0..PLIES_PER_WALK {
-            let legal = naive::legal(&mut board);
+            let legal = naive::legal(&board);
             assert_node(&format!("walk {walk} ply {ply}"), &mut board, &legal);
             nodes += 1;
             if legal.is_empty() {

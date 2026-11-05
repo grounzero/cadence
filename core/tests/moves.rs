@@ -541,6 +541,25 @@ fn ordinary_moves_spell_the_same_in_both_modes_and_parsing_rejects_illegal_input
     assert_eq!(parse_uci(&MoveList::new(), "e2e4"), None);
 }
 
+/// Refused before anything is sliced, so a character spanning byte 2 of a four-byte input cannot
+/// panic. Each is four or five bytes, the lengths that reach the slicing.
+#[test]
+fn parsing_refuses_input_outside_ascii() {
+    let mut legal = MoveList::new();
+    legal.push(Move::new_quiet(Square::G1, Square::F3));
+    legal.push(Move::new_castle(Square::E1, Square::H1));
+    for s in [
+        "a\u{e9}1",
+        "1\u{e9}a",
+        "\u{fffd}a",
+        "\u{e9}1g1",
+        "g1f\u{e9}",
+        "\u{e9}\u{e9}",
+    ] {
+        assert_eq!(parse_uci(&legal, s), None, "{s:?}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MoveList
 // ---------------------------------------------------------------------------
@@ -573,4 +592,17 @@ fn move_list_holds_its_full_capacity_without_wrapping() {
     let copy = list.clone();
     assert_eq!(copy.as_slice(), list.as_slice());
     assert_eq!(MoveList::default().len(), 0);
+}
+
+/// One past capacity is refused rather than written past the end.
+#[test]
+fn a_full_move_list_refuses_another_move() {
+    let mut list = MoveList::new();
+    for i in 0..MAX_MOVES {
+        list.push(Move::from_bits(u16::try_from(i).expect("fits") + 1));
+    }
+    let full = list.as_slice().to_vec();
+    list.push(Move::from_bits(u16::MAX));
+    assert_eq!(list.len(), MAX_MOVES);
+    assert_eq!(list.as_slice(), full.as_slice());
 }

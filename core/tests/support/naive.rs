@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Oracles are written from the definitions in `(file, rank)` stepping and read nothing from
-//! `attacks` or `magic`, so they share no implementation with the engine. The move source is the
-//! obvious generator over the crate's gated attack tables, an independent second opinion on
-//! `generate_legal`.
+//! `attacks`, `magic` or the board's own move making, so they share no implementation with the
+//! engine. The move source is the obvious generator over them, deciding legality on a copy of the
+//! placement, an independent second opinion on `generate_legal`.
 
 use cadence_core::Move;
-use cadence_core::attacks;
 use cadence_core::bitboard::Bitboard;
 use cadence_core::castling::{CastleSide, ci};
 use cadence_core::position::Board;
-use cadence_core::types::{Colour, Piece, PieceType, PromoPiece, Rank, Square};
+use cadence_core::types::{Colour, File, Piece, PieceType, PromoPiece, Rank, Square};
 
 use super::generative::Rng;
 
@@ -155,25 +154,18 @@ pub fn can_castle(board: &Board, c: Colour, s: CastleSide) -> bool {
         return false;
     }
     let layout = board.layout();
-    let i = ci(c, s);
-    let (Some(kf), Some(rf), Some(kt), Some(rt)) = (
+    let (Some(kf), Some(rf)) = (
         layout.king_from[c.index()].get(),
-        layout.rook_from[i].get(),
-        layout.king_to[i].get(),
-        layout.rook_to[i].get(),
+        layout.rook_from[ci(c, s)].get(),
     ) else {
         return false;
     };
     let rank = kf.rank();
+    let (kt, rt) = destinations(s, rank);
     let seg = |a: Square, b: Square| -> Vec<Square> {
         let (lo, hi) = if a.file() <= b.file() { (a, b) } else { (b, a) };
         (lo.file().index()..=hi.file().index())
-            .map(|f| {
-                Square::from_file_rank(
-                    cadence_core::types::File::new(u8::try_from(f).expect("fits")),
-                    rank,
-                )
-            })
+            .map(|f| Square::from_file_rank(File::new(u8::try_from(f).expect("fits")), rank))
             .collect()
     };
     let occ = board.occupied();
@@ -187,6 +179,19 @@ pub fn can_castle(board: &Board, c: Colour, s: CastleSide) -> bool {
     seg(kf, kt)
         .into_iter()
         .all(|sq| (attackers_to(board, sq, lifted) & them).is_empty())
+}
+
+/// The king's and the rook's squares after castling, from the rules: the king on the g- or c-file
+/// and the rook beside it, whatever the start array.
+fn destinations(s: CastleSide, rank: Rank) -> (Square, Square) {
+    let (king, rook) = match s {
+        CastleSide::King => (File::G, File::F),
+        CastleSide::Queen => (File::C, File::D),
+    };
+    (
+        Square::from_file_rank(king, rank),
+        Square::from_file_rank(rook, rank),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -213,20 +218,16 @@ pub fn pseudo_legal(board: &Board) -> Vec<Move> {
             }
         }
     };
-    for from in board.pieces(us, PieceType::Knight) {
-        push_to(from, attacks::knight_attacks(from), &mut out);
-    }
-    for from in board.pieces(us, PieceType::Bishop) {
-        push_to(from, attacks::bishop_attacks(from, occ), &mut out);
-    }
-    for from in board.pieces(us, PieceType::Rook) {
-        push_to(from, attacks::rook_attacks(from, occ), &mut out);
-    }
-    for from in board.pieces(us, PieceType::Queen) {
-        push_to(from, attacks::queen_attacks(from, occ), &mut out);
-    }
-    for from in board.pieces(us, PieceType::King) {
-        push_to(from, attacks::king_attacks(from), &mut out);
+    for pt in [
+        PieceType::Knight,
+        PieceType::Bishop,
+        PieceType::Rook,
+        PieceType::Queen,
+        PieceType::King,
+    ] {
+        for from in board.pieces(us, pt) {
+            push_to(from, attacks_from(Piece::new(us, pt), from, occ), &mut out);
+        }
     }
 
     let promo_rank = Rank::Eight.relative(us);
@@ -247,7 +248,8 @@ pub fn pseudo_legal(board: &Board) -> Vec<Move> {
                 }
             }
         }
-        for to in attacks::pawn_attacks(us, from) & enemy & !enemy_king {
+        let takes = attacks_from(Piece::new(us, PieceType::Pawn), from, occ);
+        for to in takes & enemy & !enemy_king {
             if to.rank() == promo_rank {
                 for p in PromoPiece::ALL {
                     out.push(Move::new_promotion_capture(from, to, p));
@@ -257,14 +259,14 @@ pub fn pseudo_legal(board: &Board) -> Vec<Move> {
             }
         }
         if let Some(ep) = board.ep_square()
-            && attacks::pawn_attacks(us, from).contains(ep)
+            && takes.contains(ep)
         {
             out.push(Move::new_en_passant(from, ep));
         }
     }
 
     for s in CastleSide::ALL {
-        if board.can_castle(us, s) {
+        if can_castle(board, us, s) {
             let kf = board.layout().king_from[us.index()]
                 .get()
                 .expect("king_from");
@@ -277,22 +279,62 @@ pub fn pseudo_legal(board: &Board) -> Vec<Move> {
     out
 }
 
-/// Decided by making each move and asking the crate's `attackers_to`.
+/// Decided on a copy of the placement with the move applied from the rules, its king's safety read
+/// from the oracle attacks.
 #[must_use]
-pub fn legal(board: &mut Board) -> Vec<Move> {
-    let us = board.side_to_move();
-    let them = us.flip();
+pub fn legal(board: &Board) -> Vec<Move> {
     pseudo_legal(board)
         .into_iter()
-        .filter(|m| {
-            board.make_move(*m);
-            let ksq = board.king_square(us);
-            let safe =
-                (board.attackers_to(ksq, board.occupied()) & board.by_colour(them)).is_empty();
-            board.unmake_move(*m);
-            safe
-        })
+        .filter(|&m| king_safe_after(board, m))
         .collect()
+}
+
+/// Whether the mover's king is unattacked once `m` is applied to a copy of the placement: castling
+/// puts the king and the rook on their destinations, en passant lifts the pawn beside the capturing
+/// one, and a promotion places the new piece.
+fn king_safe_after(board: &Board, m: Move) -> bool {
+    let us = board.side_to_move();
+    let mut cells: [Option<Piece>; 64] = [None; 64];
+    for (sq, p) in pieces(board) {
+        cells[sq.index()] = Some(p);
+    }
+    let (from, to) = (m.from_sq(), m.to_sq());
+    let moving = cells[from.index()]
+        .take()
+        .expect("a piece on the from square");
+    if m.is_castle() {
+        cells[to.index()] = None;
+        let (kt, rt) = destinations(m.castle_side(), from.rank());
+        cells[kt.index()] = Some(Piece::new(us, PieceType::King));
+        cells[rt.index()] = Some(Piece::new(us, PieceType::Rook));
+    } else {
+        if m.is_en_passant() {
+            cells[Square::from_file_rank(to.file(), from.rank()).index()] = None;
+        }
+        cells[to.index()] = Some(match m.promotion_piece() {
+            Some(p) => Piece::new(us, p.piece_type()),
+            None => moving,
+        });
+    }
+    let king = Piece::new(us, PieceType::King);
+    let ksq = Square::all()
+        .find(|sq| cells[sq.index()] == Some(king))
+        .expect("a king");
+    let mut occ = Bitboard::EMPTY;
+    for sq in Square::all() {
+        if cells[sq.index()].is_some() {
+            occ.set(sq);
+        }
+    }
+    for sq in Square::all() {
+        if let Some(p) = cells[sq.index()]
+            && p.colour() != us
+            && attacks_from(p, sq, occ).contains(ksq)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +353,26 @@ pub fn random_placement_fen(rng: &mut Rng) -> String {
 #[must_use]
 pub fn random_touching_kings_fen(rng: &mut Rng) -> String {
     placement_fen(rng, true)
+}
+
+/// Whether one more `pt` for `c` leaves material that promotion from eight pawns can give, which
+/// `from_fen` requires.
+fn promotion_allows(cells: &[Option<Piece>; 64], c: Colour, pt: PieceType) -> bool {
+    let mut count = [0usize; 6];
+    for p in cells.iter().flatten().filter(|p| p.colour() == c) {
+        count[p.piece_type().index()] += 1;
+    }
+    count[pt.index()] += 1;
+    let promoted: usize = [
+        (PieceType::Queen, 1),
+        (PieceType::Rook, 2),
+        (PieceType::Bishop, 2),
+        (PieceType::Knight, 2),
+    ]
+    .into_iter()
+    .map(|(t, start)| count[t.index()].saturating_sub(start))
+    .sum();
+    count[PieceType::Pawn.index()] + promoted <= 8
 }
 
 fn placement_fen(rng: &mut Rng, kings_touch: bool) -> String {
@@ -355,6 +417,9 @@ fn placement_fen(rng: &mut Rng, kings_touch: bool) -> String {
         } else {
             Colour::Black
         };
+        if !promotion_allows(&board, c, pt) {
+            continue;
+        }
         board[sq.index()] = Some(Piece::new(c, pt));
         placed += 1;
     }
