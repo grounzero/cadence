@@ -218,7 +218,7 @@ impl Session {
             "isready" => say(format_args!("readyok")),
             "setoption" => self.set_option(tokens),
             "position" => self.set_position(tokens),
-            "go" => self.go(tokens),
+            "go" => self.go_unless_refused(tokens),
             // A running search is stopped either way. `ucinewgame` also empties the table: a
             // surviving entry is a score for a position reached by a different route.
             "stop" => self.stop_search(),
