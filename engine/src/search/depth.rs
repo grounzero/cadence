@@ -18,7 +18,7 @@ pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
 }
 
 /// The shallowest node searched shallower for the move its table did not name.
-const IIR_DEPTH: u32 = 4;
+pub(crate) const IIR_DEPTH: u32 = 4;
 
 /// What every search shortens that node by, unless a gate sets it otherwise.
 pub(crate) const IIR_REDUCTION: u32 = 2;

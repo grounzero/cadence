@@ -339,9 +339,10 @@ impl<'a> Search<'a> {
         self.multipv = n.max(1);
     }
 
-    /// For the gates alone: no UCI option and no `bench` path reaches it.
+    /// For the gates alone: no UCI option and no `bench` path reaches it. Held below the
+    /// shallowest depth the rule reduces, so a shortened node always keeps a ply.
     pub fn set_iir_reduction(&mut self, plies: u32) {
-        self.iir_plies = plies;
+        self.iir_plies = plies.min(depth::IIR_DEPTH - 1);
     }
 
     /// For the gates alone, in a debug build: every call into the main search from here on is
@@ -381,6 +382,7 @@ impl<'a> Search<'a> {
         self.aborted = false;
         self.completed_depth = 0;
         self.best = Move::NULL;
+        self.score = ABORTED;
         self.pv.clear();
         self.seldepth = 0;
         self.killers = [[Move::NULL; 2]; MAX_PLY];
