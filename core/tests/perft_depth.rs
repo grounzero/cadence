@@ -19,7 +19,7 @@ fn deepest() -> u32 {
 #[test]
 fn a_depth_the_board_holds_is_counted() {
     assert_eq!(perft(&mut mated(), deepest()), 0);
-    assert!(perft_divide(&mut mated(), deepest()).is_empty());
+    assert_eq!(perft_divide(&mut mated(), deepest()), Vec::new());
 }
 
 #[test]
