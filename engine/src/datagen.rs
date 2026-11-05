@@ -36,6 +36,10 @@ pub const HOLDOUT_EVERY: u64 = 10;
 /// The most workers a run starts.
 pub const MAX_THREADS: usize = 256;
 
+/// The most games past the next one to be written that a worker may start, which bounds the records
+/// held for reordering; four times `MAX_THREADS`, so a run nothing delays never waits on it.
+pub const AHEAD: u64 = 1_024;
+
 /// Hashed twice, so runs with different seeds share a game only by a 64-bit coincidence.
 #[must_use]
 pub fn game_seed(seed: u64, number: u64) -> u64 {
@@ -75,6 +79,20 @@ pub fn generate(
     out: &mut dyn Write,
     progress: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
+    let line_for = |number: u64, tt: &Table| play(seed, number, tt).line();
+    generate_with(seed, games, threads, AHEAD, out, progress, &line_for)
+}
+
+/// `line_for` makes a game's record line, so a test can hold a game back.
+fn generate_with(
+    seed: u64,
+    games: u64,
+    threads: usize,
+    _ahead: u64,
+    out: &mut dyn Write,
+    progress: &mut dyn FnMut(u64),
+    line_for: &(dyn Fn(u64, &Table) -> String + Sync),
+) -> io::Result<()> {
     writeln!(out, "{}", provenance(seed, games))?;
     let next = AtomicU64::new(0);
     let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
@@ -95,7 +113,7 @@ pub fn generate(
                         if number >= games {
                             return;
                         }
-                        let line = play(seed, number, &tt).line();
+                        let line = line_for(number, &tt);
                         if tx.send(Some((number, line))).is_err() {
                             return;
                         }
@@ -297,7 +315,12 @@ impl Drop for Staged {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_THREADS, USAGE, workers};
+    use std::sync::Mutex;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::{MAX_THREADS, USAGE, generate_with, workers};
+    use crate::tt::Table;
 
     #[test]
     fn workers_number_at_most_the_games_and_the_maximum() {
@@ -307,5 +330,44 @@ mod tests {
         assert_eq!(workers(0, 10), 1);
         assert_eq!(workers(4, 10), 4);
         assert!(USAGE.ends_with(&format!("and to {MAX_THREADS}")), "{USAGE}");
+    }
+
+    /// Game 0 is held until the others have started every game the window allows, and a while
+    /// longer, so a worker that ran past the window shows in what had started.
+    #[test]
+    fn holding_game_zero_back_keeps_every_worker_inside_the_window() {
+        const AHEAD_HERE: u64 = 8;
+        const GAMES: u64 = 64;
+        let started = Mutex::new(Vec::new());
+        let held = Mutex::new(Vec::new());
+        let line_for = |number: u64, _: &Table| {
+            started.lock().expect("a lock").push(number);
+            if number == 0 {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while (started.lock().expect("a lock").len() as u64) < AHEAD_HERE
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                thread::sleep(Duration::from_millis(200));
+                let snapshot = started.lock().expect("a lock").clone();
+                *held.lock().expect("a lock") = snapshot;
+            }
+            format!("game {number}")
+        };
+        let mut out = Vec::new();
+        let run = generate_with(1, GAMES, 3, AHEAD_HERE, &mut out, &mut |_| {}, &line_for);
+        run.expect("a run into memory");
+
+        let mut held = held.into_inner().expect("a lock");
+        held.sort_unstable();
+        assert_eq!(
+            held,
+            (0..AHEAD_HERE).collect::<Vec<_>>(),
+            "started while held"
+        );
+        let lines: Vec<&str> = std::str::from_utf8(&out).expect("utf-8").lines().collect();
+        let names: Vec<String> = (0..GAMES).map(|n| format!("game {n}")).collect();
+        assert_eq!(lines[1..], names, "written in number order");
     }
 }
