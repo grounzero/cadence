@@ -10,14 +10,5 @@ repository.workspace   = true
 [lib]
 name = "cadence_nnue"
 
-[features]
-default = ["simd"]
-# Stub. Gates nothing; present so the feature name the SIMD paths will be
-# switched by is reserved, and so the default is already the one they want.
-simd    = []
-
-[dependencies]
-cadence-core = { path = "../core" }
-
 [lints]
 workspace = true
