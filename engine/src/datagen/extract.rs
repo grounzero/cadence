@@ -117,13 +117,14 @@ fn games_named(line: &str) -> Result<Option<u64>, String> {
         return Err(refused());
     }
     let fields: Vec<&str> = words.collect();
-    if !fields.len().is_multiple_of(2) {
+    let (pairs, rest) = fields.as_chunks::<2>();
+    if !rest.is_empty() {
         return Err(refused());
     }
     let mut games = None;
-    for field in fields.chunks_exact(2) {
-        let value: u64 = field[1].parse().map_err(|_| refused())?;
-        if field[0] == "games" {
+    for [name, value] in pairs {
+        let value: u64 = value.parse().map_err(|_| refused())?;
+        if *name == "games" {
             games = Some(value);
         }
     }
