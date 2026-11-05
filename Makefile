@@ -39,7 +39,7 @@ endif
 .PHONY: all clean
 
 all:
-	cargo build --release -p cadence-engine
+	cargo build --locked --release -p cadence-engine
 	cp target/release/cadence$(EXT) $(EXE)$(EXT)
 
 clean:
