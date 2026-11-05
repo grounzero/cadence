@@ -132,7 +132,7 @@ fn invalid_utf8_does_not_end_the_session() {
 /// The option is not understood and is ignored; the session survives.
 #[test]
 fn latin1_in_a_setoption_value_is_tolerated() {
-    let out = talk_bytes(b"setoption name EvalFile value /home/Jos\xe9/net.bin\nisready\nquit\n");
+    let out = talk_bytes(b"setoption name EvalFile value /opt/Jos\xe9/net.bin\nisready\nquit\n");
     assert!(
         out.lines().any(|l| l == "readyok"),
         "the session died on a Latin-1 path: {out:?}"

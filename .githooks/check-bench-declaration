@@ -23,7 +23,13 @@ if [ -n "$COMMIT" ]; then
         exit 0
     fi
     STAGED=$(git show "$COMMIT:$BENCH_FILE" | tr -d '[:space:]')
-    CHANGED=$(git diff --name-only "$COMMIT^" "$COMMIT" -- "$BENCH_FILE" 2>/dev/null || echo "$BENCH_FILE")
+    # A merge declares a count only where it brings one no parent has; a root commit brings its own.
+    CHANGED=$BENCH_FILE
+    for parent in $(git rev-list --parents -n 1 "$COMMIT" | cut -s -d' ' -f2-); do
+        if [ "$(git show "$parent:$BENCH_FILE" 2>/dev/null | tr -d '[:space:]')" = "$STAGED" ]; then
+            CHANGED=""
+        fi
+    done
 else
     if [ ! -f "$BENCH_FILE" ]; then
         echo "check-bench-declaration: no $BENCH_FILE here, so no message was checked" >&2
@@ -33,9 +39,15 @@ else
     CHANGED=$(git diff --cached --name-only -- "$BENCH_FILE")
 fi
 
-# The editor's `#` lines are stripped first, as git strips them before the message is stored.
-CLEAN=$(git stripspace --strip-comments < "$MSG_FILE")
-TRAILERS=$(printf '%s\n' "$CLEAN" | git interpret-trailers --parse)
+# Being written, everything from `commit -v`'s scissors line down is the diff and the `#` lines go,
+# as git drops both once the hook has run; a stored message is read as stored.
+if [ -n "$COMMIT" ]; then
+    CLEAN=$(git stripspace < "$MSG_FILE")
+else
+    CLEAN=$(sed '/^# -* >8 -*$/,$d' "$MSG_FILE" | git stripspace --strip-comments)
+fi
+# No divider, so a `---` rule in the body does not hide the trailers below it.
+TRAILERS=$(printf '%s\n' "$CLEAN" | git interpret-trailers --parse --no-divider)
 BENCH_LINES=$(printf '%s\n' "$TRAILERS" | grep -c '^Bench:' || true)
 BENCH_VALUE=$(printf '%s\n' "$TRAILERS" | sed -n 's/^Bench:[[:space:]]*//p' | head -n 1)
 

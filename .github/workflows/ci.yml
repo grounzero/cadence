@@ -42,7 +42,7 @@ jobs:
           # The default is one commit, and this reads a range of them.
           fetch-depth: 0
 
-      - name: Trailer keys, references and bench declarations in the messages this change adds
+      - name: Every message this change adds, merges included, read as the commit-msg hook reads it
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -62,16 +62,13 @@ jobs:
             exit 0
           fi
           echo "reading $RANGE"
-          # Merge messages are generated, and the hook exempts them for the
-          # same reason.
+          # A range git cannot read, after a force push, would otherwise be an empty loop and a pass.
+          shas=$(git rev-list "$RANGE") || { echo "::error::git cannot read $RANGE"; exit 1; }
+          [ -n "$shas" ] || { echo "::error::$RANGE holds no commit"; exit 1; }
           rc=0
-          for sha in $(git rev-list --no-merges "$RANGE"); do
+          for sha in $shas; do
             git log -1 --format=%B "$sha" > "$RUNNER_TEMP/commit-message"
-            if ! .githooks/check-message-metadata "$RUNNER_TEMP/commit-message"; then
-              git log -1 --format='            in %h %s' "$sha" >&2
-              rc=1
-            fi
-            if ! .githooks/check-bench-declaration "$RUNNER_TEMP/commit-message" "$sha"; then
+            if ! .githooks/commit-msg "$RUNNER_TEMP/commit-message" "$sha"; then
               git log -1 --format='            in %h %s' "$sha" >&2
               rc=1
             fi
