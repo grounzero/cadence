@@ -1127,3 +1127,26 @@ fn the_run_survives_a_ponderhit() {
     );
     assert_the_run_is_the_trailing_one(&s);
 }
+
+/// The budget is spent from when `go` was read, so a search whose clock started a second before
+/// it, with 200 ms to spend, answers at its first clock check.
+#[test]
+fn the_budget_is_spent_from_the_clock_origin() {
+    let stop = AtomicBool::new(false);
+    let tt = Table::new(1).expect("a one mebibyte table");
+    let mut s = Search::new(&stop, &tt);
+    s.set_limits(limits("movetime 200"));
+    let origin = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("a clock running a second");
+    s.set_clock_origin(origin);
+    let start = Instant::now();
+    let mut b = Position::new(Board::from_fen(START_FEN).unwrap());
+    let best = s.run(&mut b, &mut std::io::sink());
+    assert!(generate_legal(&b).contains(best));
+    assert!(
+        start.elapsed() < Duration::from_millis(100),
+        "took {:?} with its clock spent",
+        start.elapsed()
+    );
+}

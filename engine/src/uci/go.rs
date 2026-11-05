@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use cadence_core::position::Board;
 use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
@@ -22,6 +23,8 @@ pub(crate) const SEARCH_STACK_BYTES: usize = 16 << 20;
 impl Session {
     /// A search still running is stopped first.
     pub(super) fn go<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
+        // The GUI's clock for this move started when it sent the line.
+        let received = Instant::now();
         self.stop_search();
         let tokens: Vec<&str> = tokens.collect();
         let mut limits = Limits::parse(tokens.iter().copied());
@@ -42,6 +45,8 @@ impl Session {
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
         let root_filter = search_moves(&tokens, &generate_legal(&board));
+        // Owed whatever happens next, so spelled before anything can fail to start.
+        let fallback = first_answer(&board, &root_filter, self.chess960);
         let tables = self.tables.clone();
         let chess960 = self.chess960;
         let level = self.level();
@@ -70,6 +75,7 @@ impl Session {
                         let mut out = std::io::stdout();
                         let mut search = Search::new(&stop, &tt);
                         search.set_limits(limits);
+                        search.set_clock_origin(received);
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
@@ -88,6 +94,7 @@ impl Session {
                         parallel_search(ParallelGo {
                             board: &mut pos,
                             limits,
+                            received,
                             stop: &stop,
                             ponder_hit: &ponder_hit,
                             tt: &tt,
@@ -122,9 +129,7 @@ impl Session {
                     thread,
                 });
             }
-            Err(e) => say(format_args!(
-                "info string go: could not start the search thread: {e}"
-            )),
+            Err(e) => not_started(&e, &fallback),
         }
     }
 
@@ -146,11 +151,30 @@ impl Session {
     }
 }
 
+/// The first `searchmoves` move, else the first legal move, else none, spelled as `bestmove`
+/// spells it.
+fn first_answer(board: &Board, filter: &[Move], chess960: bool) -> String {
+    let legal = generate_legal(board);
+    match filter.first().or(legal.as_slice().first()) {
+        Some(&m) => to_uci(m, &legal, chess960),
+        None => "0000".to_string(),
+    }
+}
+
+/// A GUI waits for `bestmove` after `go`, so a search that cannot start still answers.
+fn not_started(e: &std::io::Error, fallback: &str) {
+    say(format_args!(
+        "info string go: could not start the search thread: {e}"
+    ));
+    say(format_args!("bestmove {fallback}"));
+}
+
 /// Only the primary reports and chooses; helpers start from rotated root orders and reach each
 /// other only through the lockless table.
 struct ParallelGo<'a> {
     board: &'a mut Position,
     limits: Limits,
+    received: Instant,
     stop: &'a Arc<AtomicBool>,
     /// Given to every worker: a helper without it ponders all search long, and a primary without it
     /// never answers a `ponderhit`.
@@ -177,6 +201,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let ParallelGo {
         board,
         limits,
+        received,
         stop,
         ponder_hit,
         tt,
@@ -211,6 +236,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 let mut sink = std::io::sink();
                 let mut search = Search::new(&helper_stop, &helper_tt);
                 search.set_limits(limits);
+                search.set_clock_origin(received);
                 search.set_ponder_hit(&helper_ponder_hit);
                 search.set_chess960(chess960);
                 search.set_multipv(multipv);
@@ -235,6 +261,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let mut out = std::io::stdout();
     let mut search = Search::new(stop, tt);
     search.set_limits(limits);
+    search.set_clock_origin(received);
     search.set_ponder_hit(ponder_hit);
     search.set_chess960(chess960);
     search.set_multipv(multipv);
