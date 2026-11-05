@@ -112,6 +112,7 @@ impl Search<'_> {
         }
         if let Some(n) = self.limits.nodes
             && self.reported_nodes() >= n
+            && !self.owes_first_line()
         {
             self.aborted = true;
             return true;
@@ -128,6 +129,12 @@ impl Search<'_> {
             }
         }
         false
+    }
+
+    /// Helpers can spend a group's node count before its primary has a line, so the primary answers
+    /// from its first completed iteration whatever the count says.
+    fn owes_first_line(&self) -> bool {
+        self.shared_nodes.is_some() && self.worker_index == 0 && self.completed_depth == 0
     }
 
     /// The ladder is cleared: an entry measured from the ponder's origin gives a branching factor
@@ -149,5 +156,65 @@ impl Search<'_> {
             self.absorb_ponder_hit();
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use super::{CLOCK_INTERVAL, Limits, Search};
+    use crate::time::Budget;
+    use crate::tt::Table;
+
+    fn member<'a>(
+        stop: &'a AtomicBool,
+        tt: &'a Table,
+        slots: &'a [AtomicU64],
+        worker_index: usize,
+    ) -> Search<'a> {
+        let mut search = Search::new(stop, tt);
+        search.set_limits(Limits {
+            nodes: Some(100),
+            ..Limits::default()
+        });
+        search.set_parallel(worker_index, slots);
+        search
+    }
+
+    /// A third worker has spent the limit; only the primary still owes a line, and the hard
+    /// deadline and the stop flag end it all the same.
+    #[test]
+    fn a_spent_node_limit_holds_back_only_a_primary_without_a_line() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let slots: Vec<AtomicU64> = (0..3).map(|_| AtomicU64::new(0)).collect();
+        slots[2].store(1_000, Ordering::Relaxed);
+
+        let mut alone = Search::new(&stop, &tt);
+        alone.set_limits(Limits {
+            nodes: Some(100),
+            ..Limits::default()
+        });
+        alone.nodes = 100;
+        assert!(alone.out_of_time(), "one thread stops at the limit");
+
+        let mut helper = member(&stop, &tt, &slots, 1);
+        assert!(helper.out_of_time(), "a helper stops");
+
+        let mut primary = member(&stop, &tt, &slots, 0);
+        primary.nodes = 1;
+        assert!(!primary.out_of_time(), "the primary owes its first line");
+        primary.completed_depth = 1;
+        assert!(primary.out_of_time(), "and stops once it has one");
+
+        let mut clocked = member(&stop, &tt, &slots, 0);
+        clocked.budget = Some(Budget { soft: 0, hard: 0 });
+        clocked.nodes = CLOCK_INTERVAL;
+        assert!(clocked.out_of_time(), "a hard deadline still ends it");
+
+        stop.store(true, Ordering::Relaxed);
+        let mut stopped = member(&stop, &tt, &slots, 0);
+        assert!(stopped.out_of_time(), "so does stop");
     }
 }
