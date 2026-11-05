@@ -156,6 +156,42 @@ fn a_move_outside_ascii_is_refused_and_the_session_survives() {
     }
 }
 
+/// Longer lines are discarded unread, so a sender cannot grow the engine's memory without bound.
+/// One at the cap is read, one past it is reported, and the end of input ends an unterminated one.
+#[test]
+fn a_line_longer_than_a_mebibyte_is_discarded_with_an_info_string() {
+    const CAP: usize = 1 << 20;
+    let padded = |len: usize| format!("isready{}\n", " ".repeat(len - "isready".len()));
+    let mut input = [padded(CAP), padded(CAP + 1), "isready\n".to_string()]
+        .concat()
+        .into_bytes();
+    input.extend(std::iter::repeat_n(b'x', CAP + 1));
+    let out = talk_bytes(&input);
+    let discarded = format!("info string line discarded: longer than {CAP} bytes");
+    let lines: Vec<&str> = out.lines().skip(1).collect();
+    assert_eq!(
+        lines,
+        ["readyok", discarded.as_str(), "readyok", discarded.as_str()],
+        "after the identity line"
+    );
+}
+
+/// The discarded bytes are never held: the buffer stays the size of the cap however long the line,
+/// and the next line reads as usual.
+#[test]
+fn a_discarded_line_is_never_held() {
+    use cadence_engine::uci::{Line, read_line};
+    let data = [vec![b'x'; 1 << 20], b"\nisready\n".to_vec()].concat();
+    let mut input = std::io::BufReader::with_capacity(4, &data[..]);
+    let mut line = Vec::new();
+    let mut next = |line: &mut Vec<u8>| read_line(&mut input, line, 8).expect("reads");
+    assert_eq!(next(&mut line), Line::TooLong);
+    assert!(line.capacity() <= 64, "held {} bytes", line.capacity());
+    assert_eq!(next(&mut line), Line::Read);
+    assert_eq!(line, b"isready\n");
+    assert_eq!(next(&mut line), Line::End);
+}
+
 // ---------------------------------------------------------------------------
 // go / stop / bestmove
 // ---------------------------------------------------------------------------
