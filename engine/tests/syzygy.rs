@@ -695,6 +695,40 @@ fn an_unranked_root_prints_a_table_win_found_below_it_in_the_band() {
     let _ = std::fs::remove_dir_all(only);
 }
 
+/// A root whose budget is spent before its first probe is not ranked: the search answers alone,
+/// with a legal move and its own score rather than the table's.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_root_with_no_time_left_is_not_probed() {
+    let only = fixture_set("no-time");
+    let fen = "8/8/8/3k4/8/8/8/R3K3 w - - 0 1";
+    let (scores, best) = scores_after(&only, &[], fen, "go movetime 0");
+    let last = centipawns(scores.last().expect("a score"));
+    assert!(last.abs() < TB_WIN_IN_MAX_PLY, "{scores:?}");
+    assert!(
+        parse_uci(&generate_legal(&board(fen)), &best).is_some(),
+        "{best}"
+    );
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// The ranking asks before each probe and stops at the first no, so a stop or a spent budget waits
+/// for one probe at most rather than for every move the root has.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn the_root_ranking_stops_between_probes_when_told() {
+    let tables = loaded(&fixtures());
+    let mut b = board("8/8/8/3k4/8/8/8/R3K3 w - - 0 1");
+    let asked = std::cell::Cell::new(0);
+    let go_on = || {
+        asked.set(asked.get() + 1);
+        asked.get() <= 3
+    };
+    assert!(tables.rank_root_while(&mut b, &[], &go_on).is_none());
+    assert_eq!(asked.get(), 4);
+    assert!(tables.rank_root_while(&mut b, &[], &|| true).is_some());
+}
+
 /// A drawn rank reads 0 whatever the search found, and a won or lost one the table's score unless
 /// the search found a mate for the side the table says wins.
 #[test]
