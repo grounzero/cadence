@@ -182,8 +182,8 @@ function Set-StateValue([string]$Key, [string]$Value) {
 }
 
 function Get-IdName([string]$Binary) {
-    # A process of its own, written to as bytes: what Windows PowerShell pipes into a native program
-    # reached the engine as no command it answered.
+    # The engine answered only its banner when Windows PowerShell piped this in, as if the first
+    # command carried a byte order mark, so an empty line goes first to take one.
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Binary
     $info.UseShellExecute = $false
@@ -191,7 +191,8 @@ function Get-IdName([string]$Binary) {
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $process = [System.Diagnostics.Process]::Start($info)
-    $bytes = [System.Text.Encoding]::ASCII.GetBytes("uci`nquit`n")
+    try { Write-Log ('console input encoding: ' + [Console]::InputEncoding.WebName) } catch { }
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes("`nuci`nquit`n")
     $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
     $process.StandardInput.BaseStream.Close()
     $out = $process.StandardOutput.ReadToEnd()
