@@ -183,7 +183,7 @@ fn both_halves_hold_along_walks() {
             assert_attackers(&label, &board, &mut rng);
             assert_pins(&label, &board);
             nodes += 1;
-            let legal = naive::legal(&mut board);
+            let legal = naive::legal(&board);
             if legal.is_empty() {
                 break;
             }

@@ -146,6 +146,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None => DEFAULT_SEED,
         Some(s) => parse_seed(s)?,
     };
+    print!("{}", generate(seed));
+    Ok(())
+}
+
+/// The numbers for `seed`, as the Rust source `core`'s magic module holds.
+fn generate(seed: u64) -> String {
     let mut rng = Rng(seed);
 
     let rooks: Vec<Found> = (0..64).map(|sq| search(sq, &ROOK_DIRS, &mut rng)).collect();
@@ -169,8 +175,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     );
     emit(&mut out, "ROOK_MAGIC_NUMBERS", &rooks);
     emit(&mut out, "BISHOP_MAGIC_NUMBERS", &bishops);
-    print!("{out}");
-    Ok(())
+    out
 }
 
 fn parse_seed(s: &str) -> Result<u64, String> {
@@ -180,4 +185,59 @@ fn parse_seed(s: &str) -> Result<u64, String> {
     };
     u64::from_str_radix(&digits.replace('_', ""), radix)
         .map_err(|e| format!("`{s}` is not a seed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BISHOP_DIRS, DEFAULT_SEED, ROOK_DIRS, attacks, generate, mask, parse_seed};
+
+    /// The `0x` numbers of the array `name` in Rust source.
+    fn numbers(source: &str, name: &str) -> Vec<u64> {
+        let head = format!("const {name}: [u64; 64] = [");
+        let start = source.find(&head).unwrap_or_else(|| panic!("no {name}")) + head.len();
+        let end = start + source[start..].find("];").expect("the array closes");
+        source[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| u64::from_str_radix(t.trim_start_matches("0x"), 16).expect(t))
+            .collect()
+    }
+
+    /// `core` compiles the numbers this search finds for the seed its source names, so the tool
+    /// still reproduces the tables the engine ships.
+    #[test]
+    fn the_default_seed_regenerates_the_numbers_core_compiles() {
+        let core = include_str!("../../core/src/magic.rs");
+        assert!(
+            core.contains(&format!("magics 0x{DEFAULT_SEED:016X}")),
+            "core names another seed"
+        );
+        let generated = generate(DEFAULT_SEED);
+        for name in ["ROOK_MAGIC_NUMBERS", "BISHOP_MAGIC_NUMBERS"] {
+            let want = numbers(core, name);
+            assert_eq!(want.len(), 64, "{name} in core");
+            assert_eq!(numbers(&generated, name), want, "{name}");
+        }
+    }
+
+    /// Masks drop the edge squares, so a rook in a corner sees twelve and a bishop in the centre
+    /// nine, and a slide stops on its first blocker.
+    #[test]
+    fn masks_and_slides_follow_the_rules() {
+        assert_eq!(mask(0, &ROOK_DIRS).count_ones(), 12);
+        assert_eq!(mask(27, &BISHOP_DIRS).count_ones(), 9);
+        let blocker = 1u64 << 24;
+        assert_eq!(attacks(0, blocker, &ROOK_DIRS) & (1u64 << 32), 0);
+        assert_ne!(attacks(0, blocker, &ROOK_DIRS) & blocker, 0);
+    }
+
+    #[test]
+    fn seeds_parse_in_hex_or_decimal_with_underscores() {
+        assert_eq!(parse_seed("0x00CA_DE7C_E5EE_D001"), Ok(DEFAULT_SEED));
+        assert_eq!(parse_seed("0X10"), Ok(16));
+        assert_eq!(parse_seed("1_000"), Ok(1000));
+        assert!(parse_seed("0xZZ").is_err());
+        assert!(parse_seed("").is_err());
+    }
 }

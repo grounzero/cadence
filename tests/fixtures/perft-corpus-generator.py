@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Recompute the perft corpus's count columns with python-chess, its oracle, and compare each with the
-fixture. A count above --max-nodes is reported as skipped rather than compared, since the deepest take
-minutes each even split across processes.
+fixture, both spellings of a notation row and the move list of each divide. A count above --max-nodes is
+reported as skipped rather than compared, since the deepest take minutes each even split across
+processes.
 
     python3 tests/fixtures/perft-corpus-generator.py tests/fixtures/perft-corpus.txt [--max-nodes N]
 """
@@ -20,10 +21,10 @@ STANDARD = {
     "pos5": "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
     "pos6": "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
 }
-# Section: the FEN's column, the depth-1 count's column and how many depths follow it.
-DEPTHS = {"dfrc-arrays": (2, 3, 5), "immediate-castles": (3, 5, 4), "castling-legality": (2, 3, 3),
-          "edge-cases": (0, 1, 4), "castling-rights-capture": (0, 4, 4), "fen-notation": (0, 2, 4),
-          "move-capacity": (0, 1, 4)}
+# Section: the FEN's columns, the depth-1 count's column and how many depths follow it.
+DEPTHS = {"dfrc-arrays": ((2,), 3, 5), "immediate-castles": ((3,), 5, 4), "castling-legality": ((2,), 3, 3),
+          "edge-cases": ((0,), 1, 4), "castling-rights-capture": ((0,), 4, 4), "fen-notation": ((0, 1), 2, 4),
+          "move-capacity": ((0,), 1, 4)}
 
 
 def perft(board, depth):
@@ -42,11 +43,12 @@ def cases(text):
     for name, body in re.findall(r"```tsv ([a-z0-9-]+)\n(.*?)```", text, re.S):
         for row in (line.split("\t") for line in body.strip().split("\n")):
             if name in DEPTHS:
-                fen_col, first, depths = DEPTHS[name]
-                for d in range(1, depths + 1):
-                    cell = row[first + d - 1].strip() if first + d - 1 < len(row) else ""
-                    if cell:
-                        yield f"{name} {row[fen_col]}", row[fen_col], True, [], d, int(cell)
+                fen_cols, first, depths = DEPTHS[name]
+                for fen_col in fen_cols:
+                    for d in range(1, depths + 1):
+                        cell = row[first + d - 1].strip() if first + d - 1 < len(row) else ""
+                        if cell:
+                            yield f"{name} {row[fen_col]}", row[fen_col], True, [], d, int(cell)
             elif name == "standard-perft":
                 yield f"{name} {row[0]}", STANDARD[row[0]], False, [], int(row[1]), int(row[2])
             elif name == "perft-divide" and int(row[1]) > 1:
@@ -55,13 +57,29 @@ def cases(text):
                 yield f"{name} {row[0]} {row[2]}", STANDARD[row[0]], False, [row[2]], 0, int(row[3])
 
 
+def divides(text):
+    """Each divide's position and depth, with the moves its rows list."""
+    out = {}
+    for body in re.findall(r"```tsv perft-divide\n(.*?)```", text, re.S):
+        for row in (line.split("\t") for line in body.strip().split("\n")):
+            out.setdefault((row[0], int(row[1])), []).append(row[2])
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("fixture")
     ap.add_argument("--max-nodes", type=int, default=20_000_000)
     a = ap.parse_args()
     compared = skipped = bad = 0
-    for label, fen, chess960, moves, depth, expected in cases(open(a.fixture).read()):
+    text = open(a.fixture).read()
+    for (name, depth), listed in divides(text).items():
+        legal = sorted(m.uci() for m in chess.Board(STANDARD[name]).legal_moves)
+        compared += 1
+        if sorted(listed) != legal:
+            bad += 1
+            print(f"MISMATCH perft-divide {name} depth {depth}: the rows list {sorted(listed)}, python-chess {legal}")
+    for label, fen, chess960, moves, depth, expected in cases(text):
         if expected > a.max_nodes:
             skipped += 1
             continue

@@ -36,7 +36,7 @@ const CASES: [(&str, &str, bool); 5] = [
 #[test]
 fn a_capture_in_check_is_generated_exactly_when_it_leaves_the_king_safe() {
     for (fen, checker, legal) in CASES {
-        let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+        let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
         assert!(board.in_check(), "{fen}: not in check");
         let capture = |moves: &[Move]| {
             moves
@@ -44,7 +44,7 @@ fn a_capture_in_check_is_generated_exactly_when_it_leaves_the_king_safe() {
                 .any(|m| m.is_en_passant() && m.to_uci_chess960() == "e4d3")
         };
         let fast = capture(generate_legal(&board).as_slice());
-        let slow = capture(naive::legal(&mut board).as_slice());
+        let slow = capture(naive::legal(&board).as_slice());
         assert_eq!(
             slow,
             legal,
