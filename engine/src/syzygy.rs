@@ -286,6 +286,18 @@ impl Tables {
     /// `None` where the root is outside the tables or a probe fails.
     #[must_use]
     pub fn rank_root(&self, board: &mut Board, candidates: &[Move]) -> Option<Ranked> {
+        self.rank_root_while(board, candidates, &|| true)
+    }
+
+    /// The same, asking `go_on` before each probe and giving up, `None`, once it says no. A probe
+    /// already blocked in a read finishes that read first.
+    #[must_use]
+    pub fn rank_root_while(
+        &self,
+        board: &mut Board,
+        candidates: &[Move],
+        go_on: &dyn Fn() -> bool,
+    ) -> Option<Ranked> {
         if !self.covers(board) {
             return None;
         }
@@ -293,12 +305,12 @@ impl Tables {
             .iter()
             .filter(|m| candidates.is_empty() || candidates.contains(m))
             .collect();
-        let (ranks, decided) = match self.ranks(board, &moves, true) {
+        let (ranks, decided) = match self.ranks(board, &moves, true, go_on) {
             Ok(ranks) => (ranks, true),
             // Without a distance the ranking cannot settle the fifty-move rule, so the search keeps
             // probing.
-            Err(Missing::Dtz) => (self.ranks(board, &moves, false).ok()?, false),
-            Err(Missing::Other) => return None,
+            Err(Missing::Dtz) => (self.ranks(board, &moves, false, go_on).ok()?, false),
+            Err(Missing::Other | Missing::Stopped) => return None,
         };
         let best = ranks.iter().copied().max()?;
         let moves = moves
@@ -308,7 +320,7 @@ impl Tables {
             .map(|(&m, _)| m)
             .collect();
         // A root at a zeroed counter is read exactly by the WDL files, where its quiet moves are not.
-        let unsettled = matches!(best, Rank::MaybeWin | Rank::MaybeLoss);
+        let unsettled = matches!(best, Rank::MaybeWin | Rank::MaybeLoss) && go_on();
         let verdict = if unsettled && candidates.is_empty() && board.halfmove_clock() == 0 {
             self.answered(Tablebase::probe_wdl_after_zeroing, board)
                 .map_or(best, |own| Rank::own(AmbiguousWdl::from(own)))
@@ -323,9 +335,18 @@ impl Tables {
         })
     }
 
-    fn ranks(&self, board: &mut Board, moves: &[Move], dtz: bool) -> Result<Vec<Rank>, Missing> {
+    fn ranks(
+        &self,
+        board: &mut Board,
+        moves: &[Move],
+        dtz: bool,
+        go_on: &dyn Fn() -> bool,
+    ) -> Result<Vec<Rank>, Missing> {
         let mut ranks = Vec::with_capacity(moves.len());
         for &m in moves {
+            if !go_on() {
+                return Err(Missing::Stopped);
+            }
             board.make_move(m);
             let rank = self.rank_after(board, dtz);
             board.unmake_move(m);
@@ -409,6 +430,8 @@ impl Tables {
 enum Missing {
     Dtz,
     Other,
+    /// The caller said not to go on.
+    Stopped,
 }
 
 /// No castling rights: the caller has refused any position that keeps one. The crate validates
