@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
@@ -13,6 +13,7 @@ use crate::level;
 use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::syzygy::{Rank, Tables};
+use crate::time;
 use crate::tt::Table;
 use crate::tune::Tunables;
 
@@ -67,8 +68,11 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
+                    let hard = time::budget(&limits, board.side_to_move())
+                        .map(|b| Duration::from_millis(b.hard));
+                    let go_on = || probing_allowed(&stop, received, hard);
                     let (root_filter, decided, rank) =
-                        tablebase_root(tables.as_deref(), &mut board, root_filter);
+                        tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
                     let mut pos = Position::new(board);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
                     let (best, pv) = if threads == 1 {
@@ -301,18 +305,26 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
     ));
 }
 
+/// Asked before each of the root's probes, so a stop or a spent budget waits for one probe at most.
+/// A read the operating system has blocked finishes before the next question is asked.
+fn probing_allowed(stop: &AtomicBool, received: Instant, hard: Option<Duration>) -> bool {
+    !stop.load(Ordering::Relaxed) && hard.is_none_or(|hard| received.elapsed() < hard)
+}
+
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says
-/// whether it settled the result and what it reads. Untouched where no table covers the root.
+/// whether it settled the result and what it reads. Untouched where no table covers the root, or
+/// where `go_on` stops it before it ends.
 fn tablebase_root(
     tables: Option<&Tables>,
     board: &mut Board,
     filter: Vec<Move>,
+    go_on: &dyn Fn() -> bool,
 ) -> (Vec<Move>, bool, Option<Rank>) {
     let Some(tables) = tables else {
         return (filter, false, None);
     };
     tables.reset_hits();
-    match tables.rank_root(board, &filter) {
+    match tables.rank_root_while(board, &filter, go_on) {
         Some(ranked) => (ranked.moves, ranked.decided, Some(ranked.verdict)),
         None => (filter, false, None),
     }
