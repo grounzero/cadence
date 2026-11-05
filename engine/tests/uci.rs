@@ -156,6 +156,26 @@ fn a_move_outside_ascii_is_refused_and_the_session_survives() {
     }
 }
 
+/// Longer lines are discarded unread, so a sender cannot grow the engine's memory without bound.
+/// One at the cap is read, one past it is reported, and the end of input ends an unterminated one.
+#[test]
+fn a_line_longer_than_a_mebibyte_is_discarded_with_an_info_string() {
+    const CAP: usize = 1 << 20;
+    let padded = |len: usize| format!("{:<len$}\n", "isready");
+    let mut input = [padded(CAP), padded(CAP + 1), "isready\n".to_string()]
+        .concat()
+        .into_bytes();
+    input.extend(std::iter::repeat_n(b'x', CAP + 1));
+    let out = talk_bytes(&input);
+    let discarded = format!("info string line discarded: longer than {CAP} bytes");
+    let lines: Vec<&str> = out.lines().skip(1).collect();
+    assert_eq!(
+        lines,
+        ["readyok", discarded.as_str(), "readyok", discarded.as_str()],
+        "after the identity line"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // go / stop / bestmove
 // ---------------------------------------------------------------------------
