@@ -356,9 +356,14 @@ fn played_on_the_clock(start: &str) -> Game {
     game
 }
 
-/// Long enough to have spent the clock: forty plies.
+/// Long enough to have spent the clock, forty plies, or ended first by the board, which is a game
+/// played; a time loss or an overrun has already failed it.
 fn assert_played_out(game: &Game) {
-    assert!(game.plies >= 40, "only {} plies", game.plies);
+    assert!(
+        game.plies >= 40 || game.ended_by_board,
+        "only {} plies, and the board did not end the game",
+        game.plies
+    );
 }
 
 #[test]
