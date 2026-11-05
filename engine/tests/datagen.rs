@@ -285,6 +285,27 @@ fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     assert_eq!(stats.games, 6);
 }
 
+/// The count passes a copy of one game standing in for another, and a short run beside a long one.
+#[test]
+fn extraction_refuses_games_out_of_turn_in_their_run() {
+    let (a, b) = (run(5, 3, 1), run(5, 4, 1));
+    let three: Vec<&str> = std::str::from_utf8(&a).expect("utf-8").lines().collect();
+    let four: Vec<&str> = std::str::from_utf8(&b).expect("utf-8").lines().collect();
+    let duplicated = [three[0], three[1], three[1], three[3]].join("\n");
+    // A game is seeded by its number, so the four-game run's first three are the three-game run's.
+    let unbalanced = [
+        three[0], three[1], three[2], three[0], four[1], four[2], four[3], four[4],
+    ];
+    for (forged, what) in [
+        (duplicated, "game 0 twice and game 1 not at all"),
+        (unbalanced.join("\n"), "a run of two beside a run of four"),
+    ] {
+        let (mut train, mut holdout) = (Vec::new(), Vec::new());
+        let refused = extract::extract(forged.as_bytes(), &mut train, &mut holdout, 0);
+        assert!(refused.is_err(), "{what} was extracted");
+    }
+}
+
 /// A stage that fails leaves no output for the next one to read as whole.
 #[test]
 fn a_failed_extraction_leaves_no_output_behind() {
