@@ -274,7 +274,10 @@ fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     let cut: String = text.lines().take(3).map(|l| format!("{l}\n")).collect();
     let (mut train, mut holdout) = (Vec::new(), Vec::new());
     let refused = extract::extract(cut.as_bytes(), &mut train, &mut holdout, 0);
-    assert!(refused.is_err(), "two of three games were extracted as whole");
+    assert!(
+        refused.is_err(),
+        "two of three games were extracted as whole"
+    );
     let joined = [&file[..], &file[..]].concat();
     let (mut train, mut holdout) = (Vec::new(), Vec::new());
     let stats = extract::extract(&joined[..], &mut train, &mut holdout, 0).expect("two runs");
@@ -292,7 +295,12 @@ fn a_failed_extraction_leaves_no_output_behind() {
     text.push_str("0 | 518 518 | e2e5 |  | 1-0 mate | 0\n");
     std::fs::write(&games, text).expect("writes");
     let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
-        .args(["datagen", "extract", games.to_str().expect("path"), "--train"])
+        .args([
+            "datagen",
+            "extract",
+            games.to_str().expect("path"),
+            "--train",
+        ])
         .arg(dir.join("train.txt"))
         .arg("--holdout")
         .arg(dir.join("holdout.txt"))
