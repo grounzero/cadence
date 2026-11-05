@@ -321,7 +321,10 @@ fn extraction_refuses_a_false_result_and_moves_after_the_end() {
     for (line, what) in [
         (record("e2e4:12", "1-0 mate"), "a mate after one move"),
         (record(mate, "1-0 mate"), "Black's mate as White's"),
-        (record(&format!("{mate} e1f2:0"), "0-1 mate"), "a move after mate"),
+        (
+            record(&format!("{mate} e1f2:0"), "0-1 mate"),
+            "a move after mate",
+        ),
         (
             record(&format!("{repeated} g1f3:0"), "1/2-1/2 repetition"),
             "a move after the third occurrence",
