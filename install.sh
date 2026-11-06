@@ -14,6 +14,9 @@ API_URL="https://api.github.com/repos/grounzero/cadence/releases"
 ASSETS_URL="${CADENCE_RELEASES_URL:-https://github.com/grounzero/cadence/releases/download}"
 TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
 MARK="# Added by the Cadence installer"
+# The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
+# changes it here too.
+INSTALLER_VERSION="0.5.23"
 
 YES=0
 KEEP_LOG=0
@@ -46,6 +49,9 @@ release's, or builds it from source where no binary fits. Every step asks first.
   --help           show this and stop
 EOF
 }
+
+# First on every run and first in the log, so any output says which installer wrote it.
+echo "Cadence installer $INSTALLER_VERSION"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -264,6 +270,7 @@ said() {
 }
 
 system_report() {
+    log "Cadence installer $INSTALLER_VERSION"
     log "installer: $MODE${VERSION:+ $VERSION}"
     log "system: $(uname -srm)"
     case "$OS" in

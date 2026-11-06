@@ -519,6 +519,20 @@ jobs:
           if ($errors) { $errors | ForEach-Object { Write-Host $_ }; throw 'install.ps1 does not parse' }
           Write-Host 'install.ps1 parses'
 
+      # A version cut changes the workspace version, and both installers must name the same one.
+      - name: The installers name the workspace version
+        if: matrix.script == 'install.sh' && runner.os == 'Linux'
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
+          sh_version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
+          ps_version=$(sed -n "s/^.InstallerVersion = '\(.*\)'\$/\1/p" install.ps1)
+          echo "the workspace is $version; install.sh names $sh_version and install.ps1 names $ps_version"
+          [ -n "$version" ] && [ "$sh_version" = "$version" ] && [ "$ps_version" = "$version" ] \
+            || { echo "::error::both installers must name the workspace version, $version"; exit 1; }
+          bash install.sh --help > help.txt
+          [ "$(head -n 1 help.txt)" = "Cadence installer $version" ] \
+            || { echo "::error::install.sh --help does not open with Cadence installer $version"; exit 1; }
+
       # A release that does not exist fails at once, and the failure must leave its log behind with
       # the reason in it and no home folder named.
       - name: A failure keeps its log, install.sh
@@ -535,6 +549,10 @@ jobs:
           log=$(sed -n 's/^The log is at \(.*\)\.$/\1/p' forced.txt | tail -n 1)
           [ -f "$log" ] || { echo "::error::no log at $log"; exit 1; }
           grep -q 'there is no release 0.0.0' "$log" || { echo "::error::the log does not say why"; exit 1; }
+          version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
+          [ "$(head -n 1 forced.txt)" = "Cadence installer $version" ] \
+            || { echo "::error::the run does not open with Cadence installer $version"; exit 1; }
+          grep -qF "Cadence installer $version" "$log" || { echo "::error::the log does not name the installer"; exit 1; }
           if grep -qF "$HOME" "$log"; then echo "::error::the log names the home folder"; exit 1; fi
           echo "the failure kept $log, with its reason and no home folder"
 
@@ -550,6 +568,10 @@ jobs:
           $log = [regex]::Match($out, 'The log is at (.+)\.\r?\n').Groups[1].Value
           if (-not $log -or -not (Test-Path $log)) { throw "no log at $log" }
           if (-not (Select-String -Path $log -Pattern 'there is no release 0.0.0' -SimpleMatch -Quiet)) { throw 'the log does not say why' }
+          $version = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
+          if (-not $version) { throw 'install.ps1 names no $InstallerVersion' }
+          if (-not $out.StartsWith("Cadence installer $version")) { throw "the run does not open with Cadence installer $version" }
+          if (-not (Select-String -Path $log -Pattern "Cadence installer $version" -SimpleMatch -Quiet)) { throw 'the log does not name the installer' }
           if (Select-String -Path $log -Pattern $env:USERPROFILE -SimpleMatch -Quiet) { throw 'the log names the home folder' }
           Write-Host "the failure kept $log, with its reason and no home folder"
           # The step's shell exits with the last native exit code, which was the forced failure's.

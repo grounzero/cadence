@@ -17,6 +17,9 @@ $ApiUrl = 'https://api.github.com/repos/grounzero/cadence/releases'
 # Each release's files, by version; a test points it at a folder it serves itself.
 $AssetsUrl = if ($env:CADENCE_RELEASES_URL) { $env:CADENCE_RELEASES_URL } else { 'https://github.com/grounzero/cadence/releases/download' }
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
+# The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
+# changes it here too.
+$InstallerVersion = '0.5.23'
 
 $script:Yes = $false
 $script:KeepLog = $false
@@ -49,6 +52,9 @@ release's, or builds it from source where no binary fits. Every step asks first.
   --help           show this and stop
 '@
 }
+
+# First on every run and first in the log, so any output says which installer wrote it.
+Write-Host "Cadence installer $InstallerVersion"
 
 $i = 0
 while ($i -lt $args.Count) {
@@ -217,6 +223,7 @@ function Get-IdName([string]$Binary) {
 }
 
 function Write-SystemReport {
+    Write-Log "Cadence installer $InstallerVersion"
     Write-Log ("installer: $script:Mode " + $script:Version)
     Write-Log ('system: ' + [Environment]::OSVersion.VersionString + ", $machine")
     try { Write-Log ('os: ' + (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption) } catch { }
