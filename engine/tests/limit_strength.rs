@@ -352,6 +352,36 @@ fn a_level_reports_its_full_candidate_set_under_a_node_limit() {
     }
 }
 
+/// A level searches its candidates where the GUI asked for one line, so it prints one an iteration
+/// and the candidates as text, and the last main line it prints is the move it plays.
+#[test]
+fn a_level_prints_the_lines_asked_for_and_the_move_it_plays() {
+    let on = level_on(MIN_ELO);
+    for fen in FENS {
+        let out = search(fen, &as_refs(&on));
+        let lines: Vec<&String> = out
+            .iter()
+            .filter(|l| l.starts_with("info depth") && l.contains(" pv "))
+            .collect();
+        assert!(
+            lines.iter().all(|l| !l.contains(" multipv ")),
+            "{fen}: {out:?}"
+        );
+        let Some(last) = lines.last() else {
+            panic!("{fen}: no line in {out:?}");
+        };
+        let main = last
+            .split(" pv ")
+            .nth(1)
+            .and_then(|pv| pv.split_whitespace().next());
+        assert_eq!(main, Some(played(&out).as_str()), "{fen}: {out:?}");
+        assert!(
+            out.iter().any(|l| l.starts_with("info string candidate")),
+            "{fen}: {out:?}"
+        );
+    }
+}
+
 /// Deliberately not monotone in the halving constant: the ladder's monotone quantity is expected
 /// centipawn loss.
 #[test]
