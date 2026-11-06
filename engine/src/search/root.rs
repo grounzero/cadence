@@ -46,6 +46,11 @@ impl Search<'_> {
         let legal = generate_legal(board);
         if legal.is_empty() {
             self.score = if board.in_check() { mated_in(0) } else { DRAW };
+            // Said here, as `mate 0` where the formatter would write `mate -0`, so a GUI that reads
+            // the score from the last `info` line has one.
+            let said = if board.in_check() { "mate 0" } else { "cp 0" };
+            let _ = writeln!(out, "info depth 0 score {said}");
+            let _ = out.flush();
             self.wait_if_open_ended();
             self.publish_nodes();
             return Move::NULL;

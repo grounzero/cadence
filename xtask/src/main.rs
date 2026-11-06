@@ -2139,9 +2139,15 @@ mod tests {
     }
 
     /// Runs a hook on a message from the repository's root, as git does, and says if it passed.
-    /// Each call writes its own file, since the tests that call it run at once in one process.
     #[cfg(unix)]
     fn hook_passes(hook: &str, message: &str) -> bool {
+        hook_passes_at(hook, message, &repo_root(), None)
+    }
+
+    /// The same from `dir`, naming the commit as CI does for a stored message. Each call writes its
+    /// own file, since the tests that call it run at once in one process.
+    #[cfg(unix)]
+    fn hook_passes_at(hook: &str, message: &str, dir: &Path, commit: Option<&str>) -> bool {
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let file = std::env::temp_dir().join(format!("xtask-{hook}-{}-{call}", std::process::id()));
@@ -2149,7 +2155,8 @@ mod tests {
         let out = Command::new("sh")
             .arg(repo_root().join(".githooks").join(hook))
             .arg(&file)
-            .current_dir(repo_root())
+            .args(commit)
+            .current_dir(dir)
             .output()
             .unwrap();
         let _ = std::fs::remove_file(&file);
@@ -2194,6 +2201,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(said.contains("cargo xtask"), "a silent fallback: {said:?}");
+    }
+
+    /// A fixup is exempt only where it is written, before the rebase that folds it, so a merge
+    /// without autosquash cannot land one that CI did not read.
+    #[cfg(unix)]
+    #[test]
+    fn a_fixup_is_read_in_full_once_a_commit_is_named() {
+        let root = std::env::temp_dir().join(format!("xtask-fixup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| git(&root, args).unwrap();
+        run(&["init", "-q"]);
+        run(&[
+            "-c",
+            "user.name=xtask",
+            "-c",
+            "user.email=xtask@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=.git/hooks",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "empty",
+        ]);
+        let head = String::from_utf8(run(&["rev-parse", "HEAD"])).unwrap();
+        let head = Some(head.trim());
+        let clean = "fixup! Change the search\n\nA line or two.\n";
+        let linked = "fixup! Change the search\n\nSee https://example.invalid for why.\n";
+        assert!(hook_passes("commit-msg", linked), "refused locally");
+        assert!(hook_passes_at("commit-msg", clean, &root, head));
+        assert!(
+            !hook_passes_at("commit-msg", linked, &root, head),
+            "passed unread with its commit named"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// GitHub's merge puts the title on line 3, where it reads as a subject and not a trailer.

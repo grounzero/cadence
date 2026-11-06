@@ -95,27 +95,34 @@ pub fn run(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let report = bench();
-    let out = std::io::stdout();
-    let mut out = out.lock();
+    match write_report(&bench()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cadence bench: writing the output: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn write_report(report: &Report) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
     for (i, line) in report.lines.iter().enumerate() {
-        let _ = writeln!(
+        writeln!(
             out,
             "{:>2} {:>10} nodes  {:<6} {}",
             i + 1,
             line.nodes,
             line.best.to_uci_chess960(),
             line.fen
-        );
+        )?;
     }
     let nps = report.nodes * 1000 / report.millis.max(1);
-    let _ = writeln!(
+    writeln!(
         out,
         "depth {DEPTH}, hash {HASH_MB} MB, {} positions, {} ms",
         report.lines.len(),
         report.millis
-    );
-    let _ = writeln!(out, "{} nodes {nps} nps", report.nodes);
-    let _ = out.flush();
-    ExitCode::SUCCESS
+    )?;
+    writeln!(out, "{} nodes {nps} nps", report.nodes)?;
+    out.flush()
 }
