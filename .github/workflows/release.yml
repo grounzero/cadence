@@ -411,7 +411,7 @@ jobs:
             echo
             echo "The macOS binaries are not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
             echo
-            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) build this release from source, check it and install it; on an Intel Mac without AVX2, install.sh makes the generic build. Their SHA-256s, as in SHA256SUMS:"
+            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. Where no binary fits or the check fails, as on an Intel Mac without AVX2, they build the release from source and hold the build to the same bench. They take the latest published release, which is never a release candidate, unless \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
             echo
             echo '```'
             grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS
