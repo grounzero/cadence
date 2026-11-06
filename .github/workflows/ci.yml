@@ -306,7 +306,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=700
+          floor=770
           [ "$passed" -ge "$floor" ] || { echo "::error::only $passed tests passed, under the floor of $floor"; exit 1; }
           # A floor far under the count would pass a run that lost a whole test file, so it is kept near.
           [ $((passed - 40)) -lt "$floor" ] \
