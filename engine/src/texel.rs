@@ -663,6 +663,10 @@ fn integer(w: f64) -> Option<i32> {
         .then_some(w as i32)
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands the error over by value"
+)]
 fn unwritten(e: std::io::Error) -> String {
     format!("writing the output: {e}")
 }
