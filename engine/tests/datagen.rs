@@ -132,6 +132,25 @@ fn a_run_is_the_same_file_at_any_thread_count() {
     assert_eq!(first, Some(datagen::provenance(5, 6).as_str()));
 }
 
+/// Each worker holds a stack and a table, so a huge count starts none for no games and one for one.
+#[test]
+fn a_huge_thread_count_starts_no_more_workers_than_games() {
+    let empty = format!("{}\n", datagen::provenance(7, 0));
+    assert_eq!(run(7, 0, 100_000), empty.as_bytes());
+    assert_eq!(run(7, 1, 100_000), run(7, 1, 1));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+        .args(["datagen", "play", "--games", "0", "--seed", "7"])
+        .args(["--threads", "100000"])
+        .output()
+        .expect("runs");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out.stdout, empty.as_bytes());
+    let note = format!("is cut to {}", datagen::MAX_THREADS);
+    let err = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(err.contains(&note), "{err}");
+}
+
 // Openings
 // ---------------------------------------------------------------------------
 

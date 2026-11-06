@@ -34,6 +34,9 @@ pub const HASH_MB: usize = 16;
 
 pub const HOLDOUT_EVERY: u64 = 10;
 
+/// The most workers a run starts.
+pub const MAX_THREADS: usize = 256;
+
 /// Hashed twice, so runs with different seeds share a game only by a 64-bit coincidence.
 #[must_use]
 pub fn game_seed(seed: u64, number: u64) -> u64 {
@@ -77,7 +80,7 @@ pub fn generate(
     let next = AtomicU64::new(0);
     let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
     thread::scope(|scope| {
-        for _ in 0..threads.max(1) {
+        for _ in 0..workers(threads, games) {
             let tx = tx.clone();
             let next = &next;
             // The stack a `go` gives its search, since these games are the same search.
@@ -124,8 +127,16 @@ pub fn generate(
     })
 }
 
+/// Each worker holds a stack and a table before it asks for a game, so none start for no games.
+fn workers(threads: usize, games: u64) -> usize {
+    threads
+        .clamp(1, MAX_THREADS)
+        .min(usize::try_from(games).unwrap_or(usize::MAX))
+}
+
 const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
-     cadence datagen extract <games> --train PATH --holdout PATH [--every N]";
+     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
+     --threads is cut to the number of games and to 256";
 
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
@@ -182,6 +193,9 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     }
     let games = games.ok_or("--games is required")?;
+    if threads > MAX_THREADS {
+        eprintln!("cadence datagen: --threads {threads} is cut to {MAX_THREADS}");
+    }
     let mut staged = match path.as_deref().map(Path::new) {
         Some(out) => Some(Staged::create(out, stage_name(out)?)?),
         None => None,
@@ -380,4 +394,19 @@ fn publish(mut stages: Vec<Staged>) -> Result<(), String> {
         stage.rename()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_THREADS, USAGE, workers};
+
+    #[test]
+    fn workers_number_at_most_the_games_and_the_maximum() {
+        assert_eq!(workers(100_000, 0), 0, "no games, no workers");
+        assert_eq!(workers(100_000, 1), 1);
+        assert_eq!(workers(100_000, 1_000_000), MAX_THREADS);
+        assert_eq!(workers(0, 10), 1);
+        assert_eq!(workers(4, 10), 4);
+        assert!(USAGE.ends_with(&format!("and to {MAX_THREADS}")), "{USAGE}");
+    }
 }
