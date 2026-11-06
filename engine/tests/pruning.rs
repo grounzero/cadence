@@ -90,3 +90,28 @@ fn a_pawn_endgame_refuses_the_null_move() {
         );
     }
 }
+
+/// Each pawn is held only by its king, and no king move keeps its guard, so whichever side is to
+/// move gives its pawn up. A score that favours the side to move has misread the zugzwang.
+#[test]
+fn a_mutual_zugzwang_scores_against_the_side_to_move() {
+    for side in ["w", "b"] {
+        let fen = format!("8/8/8/3Kp3/4Pk2/8/8/8 {side} - - 0 1");
+        let stop = AtomicBool::new(false);
+        let tt = table();
+        let mut b = support::position(&fen);
+        let mut s = support::search(Limits::depth(GATE_DEPTH), &stop, &tt);
+        let best = s.run(&mut b, &mut Vec::new());
+        assert!(!best.is_null(), "{fen}: no move");
+        assert_eq!(
+            s.completed_depth(),
+            GATE_DEPTH,
+            "{fen}: the search did not complete depth {GATE_DEPTH}"
+        );
+        assert!(
+            s.score() < 0,
+            "{fen}: the side to move scores {}, though either side loses its pawn",
+            s.score()
+        );
+    }
+}
