@@ -110,6 +110,12 @@ not legal in the position is named in an `info string` and left out. If no
 listed move is legal, the engine searches every legal move, as a plain `go`
 would.
 
+A `position` command can fail: its FEN may be one the engine cannot accept,
+its `moves` list may hold an illegal move, or it may name neither `startpos`
+nor `fen`. The engine says why in an `info string` and remembers the failure.
+Every `go` after it answers `bestmove 0000` and searches nothing, until a
+valid `position` command clears it.
+
 ## Strength
 
 There are two numbers here. They come from different places and cannot be

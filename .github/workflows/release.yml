@@ -94,7 +94,12 @@ jobs:
           else
             [ "$INPUT_DRAFT" != true ] || { echo "::error::a draft needs a tag"; exit 1; }
             # As engine/build.rs reads it: the release only at the annotated tag naming the version.
-            at=$(git describe --exact-match --dirty --match "$version" HEAD 2>/dev/null || true)
+            # Git's two answers that no tag matches are read as none, and any other failure fails here.
+            if ! at=$(git describe --exact-match --dirty --match "$version" 2> "$RUNNER_TEMP/describe"); then
+              grep -qE '^fatal: (no tag exactly matches|No names found)' "$RUNNER_TEMP/describe" \
+                || { cat "$RUNNER_TEMP/describe"; echo "::error::git describe failed"; exit 1; }
+              at=""
+            fi
             if [ "$at" = "$version" ]; then
               expected="$version"
             else

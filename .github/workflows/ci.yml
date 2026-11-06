@@ -91,6 +91,40 @@ jobs:
           cat "$RUNNER_TEMP/merge-message"
           .githooks/commit-msg "$RUNNER_TEMP/merge-message"
 
+  # What a build at a release tag calls itself, which no other job sees because none builds at one.
+  version:
+    name: the version a tagged build gives itself
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # A clone without the repository's tags, so the one tag it holds is the workspace version's.
+      - name: A scratch clone tagged at the workspace version, built clean and then with a file edited
+        run: |
+          set -eu
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
+          [ -n "$version" ] || { echo "::error::no workspace version in Cargo.toml"; exit 1; }
+          scratch="$RUNNER_TEMP/tagged"
+          git clone --quiet --no-tags "file://$PWD" "$scratch"
+          cd "$scratch"
+          git -c user.name=ci -c user.email=ci@localhost tag -a "$version" -m "$version"
+          named() {
+            cargo build --locked --quiet --bin cadence
+            printf 'uci\nquit\n' | target/debug/cadence | sed -n 's/^id name //p'
+          }
+          got=$(named)
+          echo "at the tag $version: $got"
+          [ "$got" = "Cadence $version" ] \
+            || { echo "::error::a clean build at the tag $version calls itself $got"; exit 1; }
+          echo >> README.md
+          want="Cadence $version-dev-$(git rev-parse HEAD | cut -c1-7)"
+          got=$(named)
+          echo "with README.md edited: $got"
+          [ "$got" = "$want" ] \
+            || { echo "::error::an edited build at the tag calls itself $got and not $want"; exit 1; }
+
   check:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

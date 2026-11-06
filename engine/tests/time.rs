@@ -265,23 +265,34 @@ fn a_clock_below_the_overhead_yields_a_move_at_once() {
 /// runner.
 const MAX_OVERRUN_MS: u64 = 150;
 
-/// Plies played, the clocks left and the worst overrun past the engine's hard cap; or the first move
-/// timed past the clock or past the cap by more than [`MAX_OVERRUN_MS`].
-fn play_on_the_clock() -> Result<(u32, [u64; 2], u64), String> {
+/// A game on the clock: the plies played, the clocks left, the worst overrun past the engine's hard
+/// cap, and whether the board ended it with a mate, a stalemate or the fifty-move rule.
+struct Game {
+    plies: u32,
+    clocks: [u64; 2],
+    worst_overrun_ms: u64,
+    ended_by_board: bool,
+}
+
+/// The game from `start`; or the first move timed past the clock or past the cap by more than
+/// [`MAX_OVERRUN_MS`].
+fn play_on_the_clock(start: &str) -> Result<Game, String> {
     let mut e = Engine::spawn();
-    let mut board = Board::from_fen(START_FEN).unwrap();
+    let mut board = Board::from_fen(start).unwrap();
     let mut moves: Vec<String> = Vec::new();
     let mut time = [1000u64, 1000u64];
     let inc = 20u64;
     let mut plies = 0;
     let mut max_overrun_ms = 0u64;
+    let mut ended_by_board = false;
     while plies < 120 {
         let legal = generate_legal(&board);
         if legal.is_empty() || board.halfmove_clock() >= 100 {
+            ended_by_board = true;
             break;
         }
         let us = board.side_to_move().index();
-        e.send(&format!("position startpos moves {}", moves.join(" ")));
+        e.send(&format!("position fen {start} moves {}", moves.join(" ")));
         e.sync();
         let start = Instant::now();
         e.send(&format!(
@@ -319,19 +330,51 @@ fn play_on_the_clock() -> Result<(u32, [u64; 2], u64), String> {
         plies += 1;
     }
     e.quit();
-    Ok((plies, time, max_overrun_ms))
+    Ok(Game {
+        plies,
+        clocks: time,
+        worst_overrun_ms: max_overrun_ms,
+        ended_by_board,
+    })
 }
 
 /// 1000 ms + 20 ms, timed around each `go` with the pipe and the scheduler included. A game that
 /// runs out or overruns is printed and played once more, and only a second such game fails.
+fn played_on_the_clock(start: &str) -> Game {
+    let game = play_on_the_clock(start).unwrap_or_else(|first| {
+        println!("{first}; playing the game again");
+        play_on_the_clock(start).unwrap_or_else(|second| panic!("{first}, and again {second}"))
+    });
+    let Game {
+        plies,
+        clocks,
+        worst_overrun_ms,
+        ended_by_board,
+    } = &game;
+    println!("{plies} plies, clocks {clocks:?}, worst overrun {worst_overrun_ms} ms past the cap");
+    println!("ended by the board: {ended_by_board}");
+    game
+}
+
+/// Long enough to have spent the clock, forty plies, or ended first by the board, which is a game
+/// played; a time loss or an overrun has already failed it.
+fn assert_played_out(game: &Game) {
+    assert!(
+        game.plies >= 40 || game.ended_by_board,
+        "only {} plies, and the board did not end the game",
+        game.plies
+    );
+}
+
 #[test]
 fn a_game_on_the_clock_never_runs_out_of_time() {
-    let (plies, time, max_overrun_ms) = play_on_the_clock().unwrap_or_else(|first| {
-        println!("{first}; playing the game again");
-        play_on_the_clock().unwrap_or_else(|second| panic!("{first}, and again {second}"))
-    });
-    println!("{plies} plies, clocks {time:?}, worst overrun past the hard cap {max_overrun_ms} ms");
-    assert!(plies >= 40, "only {plies} plies");
+    assert_played_out(&played_on_the_clock(START_FEN));
+}
+
+/// Mate in two, which the board ends after a few plies with no time lost, so the game passes.
+#[test]
+fn a_game_the_board_ends_early_passes_on_the_clock() {
+    assert_played_out(&played_on_the_clock("7k/8/5K2/8/8/8/8/Q7 w - - 0 1"));
 }
 
 /// The same, end to end: a `go` carrying only the opponent's clock comes

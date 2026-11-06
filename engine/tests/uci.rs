@@ -109,7 +109,7 @@ fn end_of_input_exits_cleanly() {
 
 #[test]
 fn unknown_subcommand_is_a_usage_error() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .arg("frobnicate")
         .output()
         .expect("run cadence");
@@ -154,6 +154,42 @@ fn a_move_outside_ascii_is_refused_and_the_session_survives() {
             "the session died on {input:?}: {out:?}"
         );
     }
+}
+
+/// Longer lines are discarded unread, so a sender cannot grow the engine's memory without bound.
+/// One at the cap is read, one past it is reported, and the end of input ends an unterminated one.
+#[test]
+fn a_line_longer_than_a_mebibyte_is_discarded_with_an_info_string() {
+    const CAP: usize = 1 << 20;
+    let padded = |len: usize| format!("isready{}\n", " ".repeat(len - "isready".len()));
+    let mut input = [padded(CAP), padded(CAP + 1), "isready\n".to_string()]
+        .concat()
+        .into_bytes();
+    input.extend(std::iter::repeat_n(b'x', CAP + 1));
+    let out = talk_bytes(&input);
+    let discarded = format!("info string line discarded: longer than {CAP} bytes");
+    let lines: Vec<&str> = out.lines().skip(1).collect();
+    assert_eq!(
+        lines,
+        ["readyok", discarded.as_str(), "readyok", discarded.as_str()],
+        "after the identity line"
+    );
+}
+
+/// The discarded bytes are never held: the buffer stays the size of the cap however long the line,
+/// and the next line reads as usual.
+#[test]
+fn a_discarded_line_is_never_held() {
+    use cadence_engine::uci::{Line, read_line};
+    let data = [vec![b'x'; 1 << 20], b"\nisready\n".to_vec()].concat();
+    let mut input = std::io::BufReader::with_capacity(4, &data[..]);
+    let mut line = Vec::new();
+    let mut next = |line: &mut Vec<u8>| read_line(&mut input, line, 8).expect("reads");
+    assert_eq!(next(&mut line), Line::TooLong);
+    assert!(line.capacity() <= 64, "held {} bytes", line.capacity());
+    assert_eq!(next(&mut line), Line::Read);
+    assert_eq!(line, b"isready\n");
+    assert_eq!(next(&mut line), Line::End);
 }
 
 // ---------------------------------------------------------------------------
@@ -466,29 +502,39 @@ fn castling_bestmove_is_spelled_per_the_option() {
     );
 }
 
-/// Over the pipe: after an illegal move in the list, `go` searches the
-/// position where the replay stopped, and its bestmove is legal there.
+/// Ruled: a `position` command that fails is remembered, and every `go` until a valid one answers
+/// `bestmove 0000`, saying why in an info string and searching nothing.
 #[test]
-fn go_after_an_illegal_move_searches_where_the_replay_stopped() {
-    let out = talk("position startpos moves e2e4 e7e5 e2e4\ngo depth 1\nquit\n");
-    assert_bestmove_legal(
-        &out,
-        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
-        false,
-    );
-    assert!(
-        out.lines().any(|l| l.starts_with("info string position:")),
-        "the rejected move is reported: {out:?}"
-    );
-    // And after a malformed FEN, the previous position is what is searched.
-    let out = talk(
-        "position startpos moves e2e4 e7e5\nposition fen garbage moves g1f3\ngo depth 1\nquit\n",
-    );
-    assert_bestmove_legal(
-        &out,
-        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
-        false,
-    );
+fn go_after_a_failed_position_searches_nothing_until_a_valid_one() {
+    const FAILED: &str = "info string go: the last position command failed";
+    for failed in [
+        "position startpos moves e2e4 e7e5 e2e4",
+        "position startpos moves e2e5",
+        "position fen garbage moves g1f3",
+        "position fen 8/8/8/8/8/8/8/8 w - - 0 1",
+        "position somethingelse",
+    ] {
+        let mut e = Engine::spawn();
+        e.send("position startpos moves e2e4 e7e5");
+        e.send(failed);
+        for _ in 0..2 {
+            e.send("go depth 1");
+            let lines = e.read_until("bestmove ");
+            let said = lines.iter().any(|l| l.starts_with(FAILED));
+            assert!(said, "{failed}: {lines:?}");
+            assert_eq!(lines.last().map(String::as_str), Some("bestmove 0000"));
+        }
+        e.send("position startpos moves e2e4");
+        e.send("go depth 1");
+        let out = e.read_until("bestmove ").join("\n");
+        assert_bestmove_legal(
+            &out,
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            false,
+        );
+        assert!(!out.contains(FAILED), "{failed}: {out:?}");
+        e.quit();
+    }
 }
 
 /// The side not to move in check once made generation offer the king capture and abort the process
