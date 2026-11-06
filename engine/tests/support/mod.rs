@@ -195,12 +195,19 @@ pub fn binary() -> std::path::PathBuf {
     resolve(std::env::var_os("CADENCE_BIN"))
 }
 
-/// `binary` given what `CADENCE_BIN` holds.
+/// `binary` given what `CADENCE_BIN` holds. A name that is no file panics, so a wrong path fails
+/// every test rather than passing any.
 pub fn resolve(named: Option<std::ffi::OsString>) -> std::path::PathBuf {
-    named.map_or_else(
-        || env!("CARGO_BIN_EXE_cadence").into(),
-        std::path::PathBuf::from,
-    )
+    let Some(named) = named else {
+        return env!("CARGO_BIN_EXE_cadence").into();
+    };
+    let path = std::path::PathBuf::from(named);
+    assert!(
+        path.is_file(),
+        "CADENCE_BIN names no file: {}",
+        path.display()
+    );
+    path
 }
 
 /// All at once. The child is killed and the test fails after `SUBPROCESS_TIMEOUT`, because a hung
