@@ -34,7 +34,7 @@ fail() {
 # --- cases where the message is not the author's to write -----------------
 
 # A merge made on GitHub carries the pull request's title and no hook runs there, so CI reads the title.
-trap 'echo "  not examined: a merge message or a fixup (exempt here)" >&2' EXIT
+trap 'echo "  not examined: a merge message or a fixup, where no commit is named (exempt here)" >&2' EXIT
 
 # A merge commit's message is generated, and a conflict resolution changes no
 # node count of its own; CI still reads the merge once it is made.
@@ -42,9 +42,9 @@ if [ -z "$COMMIT" ] && [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
     exit 0
 fi
 
-# fixup!/squash!/amend! messages are consumed by the rebase that absorbs them;
-# the trailer belongs on the commit they fold into.
-if head -n 1 "$MSG_FILE" | grep -qE '^(fixup|squash|amend)! '; then
+# fixup!/squash!/amend! messages are consumed by the rebase that absorbs them,
+# so only where they are written: a stored one may have landed unfolded.
+if [ -z "$COMMIT" ] && head -n 1 "$MSG_FILE" | grep -qE '^(fixup|squash|amend)! '; then
     exit 0
 fi
 
