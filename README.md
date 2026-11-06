@@ -61,6 +61,40 @@ go depth 8
 quit
 ```
 
+### With an install script
+
+`install.sh` installs Cadence on Linux, macOS, and Windows under Git Bash or
+WSL. `install.ps1` does the same on Windows with PowerShell alone. Each asks
+before every step. It reads the system, and on x86-64 which of the two builds
+the processor runs, then takes the latest release's binary for it. The binary
+is used only once its SHA-256 matches the release's `SHA256SUMS`, its bench
+count matches the release's `bench.txt` and it names the release's version.
+Where no binary fits or one fails that check, the script says why and offers
+to build the release from source: it checks for Git, a C linker and Rust
+installed through rustup, offers to install whichever is missing, and holds
+the build to the same bench and version. The default folder is
+`~/.local/bin`, or `%LOCALAPPDATA%\Cadence` on Windows. It can also download
+the 3-4-5 piece Syzygy tablebases, held to their published checksums.
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/grounzero/cadence/main/install.sh
+bash install.sh
+```
+
+On Windows without a Unix shell, in PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Both take `--version X.Y.Z`, `--prefix DIR`, `--source` to build from source
+even where a binary fits, `--update`, `--uninstall`, `--yes` to take every
+default without asking, `--keep-log`, and on x86-64 `--build avx2` or `--build
+generic`. The release workflow publishes both scripts and `bench.txt` with
+each release and lists their SHA-256s beside the binaries'. A run that fails
+keeps its log and says where it is: attach that file to a GitHub issue.
+
 ### Options
 
 | Option | Default | What it does |
