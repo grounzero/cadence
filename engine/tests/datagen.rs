@@ -373,3 +373,127 @@ fn the_window_keeps_plies_eight_to_two_hundred_and_forty_inclusive() {
     assert_eq!(positions(&train).len(), kept);
     assert_eq!(stats.outside, (300 - kept) as u64);
 }
+
+/// A provenance line must parse to its end, or a header cut short would skip the count it carries;
+/// another comment is still only a comment.
+#[test]
+fn extraction_refuses_a_provenance_line_cut_short() {
+    let text = String::from_utf8(run(7, 2, 1)).expect("utf-8");
+    let records: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+    let whole = datagen::provenance(7, 2);
+    let games = whole.find(" games ").expect("a game count");
+    let extract_with = |header: &str| {
+        let file = format!("{header}\n{}\n", records.join("\n"));
+        let (mut train, mut holdout) = (Vec::new(), Vec::new());
+        extract::extract(file.as_bytes(), &mut train, &mut holdout, 0)
+    };
+    extract_with(&whole).expect("a whole header");
+    extract_with(&format!("# a note\n{whole}")).expect("another comment beside it");
+    for cut in [
+        whole[..games].to_string(),
+        whole[..games + " games".len()].to_string(),
+        whole.replacen(" games 2 ", " games two ", 1),
+        "# cadence datagen".to_string(),
+    ] {
+        assert!(extract_with(&cut).is_err(), "{cut}");
+    }
+}
+
+// Extraction's paths
+// ---------------------------------------------------------------------------
+
+/// A fresh directory holding `games.txt`, a short run, and the run's bytes.
+fn scratch(name: &str) -> (std::path::PathBuf, Vec<u8>) {
+    let dir = std::env::temp_dir().join(format!("cadence-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let games = run(9, 3, 1);
+    std::fs::write(dir.join("games.txt"), &games).expect("writes");
+    (dir, games)
+}
+
+/// Run in `dir`, so each path is the spelling given: whether it succeeded, and every entry left in
+/// `dir` with its bytes, a directory's name ending in a slash.
+fn extract_in(dir: &std::path::Path, args: &str) -> (bool, Vec<(String, Vec<u8>)>) {
+    let status = Command::new(env!("CARGO_BIN_EXE_cadence"))
+        .current_dir(dir)
+        .args(["datagen", "extract"])
+        .args(args.split_whitespace())
+        .output()
+        .expect("runs")
+        .status;
+    let mut left: Vec<_> = std::fs::read_dir(dir)
+        .expect("lists")
+        .map(|e| {
+            let entry = e.expect("an entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() {
+                (format!("{name}/"), Vec::new())
+            } else {
+                (name, std::fs::read(entry.path()).expect("reads"))
+            }
+        })
+        .collect();
+    left.sort();
+    let _ = std::fs::remove_dir_all(dir);
+    (status.success(), left)
+}
+
+fn names(left: &[(String, Vec<u8>)]) -> Vec<&str> {
+    left.iter().map(|(entry, _)| entry.as_str()).collect()
+}
+
+/// The stage beside an output was once the output's name and `.partial`, here the input's own
+/// name, so the input was emptied before it was read.
+#[test]
+fn extraction_never_writes_over_its_input() {
+    let (dir, games) = scratch("extract-stage");
+    std::fs::rename(dir.join("games.txt"), dir.join("games.partial")).expect("renames");
+    let (ok, left) = extract_in(&dir, "games.partial --train games --holdout held");
+    assert!(ok, "{:?}", names(&left));
+    assert_eq!(names(&left), ["games", "games.partial", "held"]);
+    assert!(left[1].1 == games, "the input changed");
+}
+
+/// The same file under two spellings, or the input named as an output, is refused before anything
+/// is created, and every file is left as it was.
+#[test]
+fn extraction_refuses_paths_that_name_one_file() {
+    for (name, args) in [
+        ("outputs", "games.txt --train out --holdout ./out"),
+        ("input", "games.txt --train games.txt --holdout held"),
+    ] {
+        let (dir, games) = scratch(&format!("extract-{name}"));
+        std::fs::write(dir.join("out"), b"before\n").expect("writes");
+        let (ok, left) = extract_in(&dir, args);
+        assert!(!ok, "{name}: extracted, leaving {:?}", names(&left));
+        assert_eq!(names(&left), ["games.txt", "out"], "{name}");
+        assert!(left[0].1 == games, "{name}: the input changed");
+        assert!(left[1].1 == b"before\n", "{name}: an output changed");
+    }
+}
+
+/// A file system that ignores case reads two names differing only in case as one file.
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn extraction_refuses_outputs_differing_only_in_case() {
+    let (dir, games) = scratch("extract-case");
+    let (ok, left) = extract_in(&dir, "games.txt --train out --holdout OUT");
+    assert!(!ok, "extracted, leaving {:?}", names(&left));
+    assert_eq!(names(&left), ["games.txt"]);
+    assert!(left[0].1 == games, "the input changed");
+}
+
+/// A destination that is a directory is found before either output is published, and no stage is
+/// left behind, on every platform's rename.
+#[test]
+fn extraction_publishes_neither_output_when_one_cannot_be() {
+    let (dir, games) = scratch("extract-dir");
+    std::fs::write(dir.join("train.txt"), b"before\n").expect("writes");
+    std::fs::create_dir(dir.join("held")).expect("a directory");
+    let (ok, left) = extract_in(&dir, "games.txt --train train.txt --holdout held");
+    assert!(!ok, "extracted, leaving {:?}", names(&left));
+    assert_eq!(names(&left), ["games.txt", "held/", "train.txt"]);
+    assert!(left[0].1 == games, "the input changed");
+    assert!(left[2].1 == b"before\n", "the train output was published");
+}

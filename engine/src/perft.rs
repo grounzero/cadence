@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use cadence_core::position::Board;
-use cadence_core::{generate_legal, perft};
+use cadence_core::{MAX_PLY, generate_legal, perft};
 
 pub const USAGE: &str = "usage: cadence perft [--divide] [--threads N] <fen | startpos> <depth>";
 
@@ -46,6 +46,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let depth: u32 = depth
         .parse()
         .map_err(|_| format!("`{depth}` is not a depth"))?;
+    if !usize::try_from(depth).is_ok_and(|d| d <= MAX_PLY) {
+        return Err(format!("depth {depth} is deeper than {MAX_PLY} plies"));
+    }
     if fen.is_empty() {
         return Err("missing <fen>".to_string());
     }

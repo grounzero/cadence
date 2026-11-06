@@ -142,6 +142,8 @@ fn usage_errors_exit_2() {
         vec!["startpos", "x"],
         vec!["--threads", "0", "startpos", "1"],
         vec!["not", "a", "fen", "1"],
+        // Mated, so a search that is not refused ends at once.
+        vec!["7k/6Q1/6K1/8/8/8/8/8", "b", "-", "-", "0", "1", "257"],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
             .arg("perft")
