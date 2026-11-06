@@ -72,7 +72,7 @@ pub fn extract(
         let line = line.map_err(|e| format!("line {}: {e}", i + 1))?;
         if line.starts_with('#') {
             // Summed, so runs joined end to end are checked as one.
-            if let Some(n) = games_named(&line) {
+            if let Some(n) = games_named(&line).map_err(|e| format!("line {}: {e}", i + 1))? {
                 named = Some(named.unwrap_or(0) + n);
             }
             writeln!(train, "{line}").map_err(|e| e.to_string())?;
@@ -101,12 +101,34 @@ pub fn extract(
     Ok(stats)
 }
 
-/// The count a run's provenance line names, which a file cut short no longer matches.
-fn games_named(line: &str) -> Option<u64> {
-    let rest = line.strip_prefix("# cadence datagen ")?;
-    let mut words = rest.split_whitespace();
-    words.find(|&w| w == "games")?;
-    words.next()?.parse().ok()
+/// The words a provenance line opens with, as `provenance` writes them.
+const PROVENANCE: [&str; 3] = ["#", "cadence", "datagen"];
+
+/// The count a run's provenance line names, which a file cut short no longer matches, or `None` for
+/// any other comment. A line opening as provenance must parse to its end, or a header cut short
+/// would skip the count it carries.
+fn games_named(line: &str) -> Result<Option<u64>, String> {
+    let mut words = line.split_whitespace();
+    if !PROVENANCE.iter().all(|&w| words.next() == Some(w)) {
+        return Ok(None);
+    }
+    let refused = || format!("a provenance line that does not parse: {line}");
+    if words.next().is_none() || words.next() != Some("self-play") {
+        return Err(refused());
+    }
+    let fields: Vec<&str> = words.collect();
+    let (pairs, rest) = fields.as_chunks::<2>();
+    if !rest.is_empty() {
+        return Err(refused());
+    }
+    let mut games = None;
+    for [name, value] in pairs {
+        let value: u64 = value.parse().map_err(|_| refused())?;
+        if *name == "games" {
+            games = Some(value);
+        }
+    }
+    games.map(Some).ok_or_else(refused)
 }
 
 fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io::Result<u64> {
