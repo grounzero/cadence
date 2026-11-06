@@ -11,14 +11,17 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Nightly, for the Intel macOS leg no pull request runs; every other job comes too.
+  schedule:
+    - cron: '41 2 * * *'
 
 permissions:
   contents: read
 
 # A superseded push has nothing to say, except on main, where each commit's own run is what the
-# release gate reads.
+# release gate reads. The nightly run has a group of its own, so it never replaces one waiting there.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -141,11 +144,6 @@ jobs:
             name: aarch64-apple-darwin
             target: aarch64-apple-darwin
             features: +neon
-          # Intel macOS, on GitHub's x86-64 image: the AVX2 build the macos-x86-64 release ships.
-          - os: macos-26-intel
-            name: x86_64-apple-darwin
-            target: x86_64-apple-darwin
-            features: +avx2,+bmi1,+popcnt,+lzcnt
           # The bot's triple, built natively on its host and otherwise tested nowhere.
           - os: ubuntu-24.04-arm
             name: aarch64-unknown-linux-gnu
@@ -168,14 +166,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             config: .cargo/x86-64-generic.toml
             features: +popcnt,+crt-static
-    env:
+    env: &check-env
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
     # Every step under bash, so $CONFIG_ARG and the scripts read the same on Windows as elsewhere.
-    defaults:
+    defaults: &check-defaults
       run:
         shell: bash
 
-    steps:
+    steps: &check-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # check-changelog reads the tags, and the default one-commit
@@ -443,6 +441,25 @@ jobs:
           name: cadence-${{ matrix.target }}-${{ github.sha }}
           path: target/release/cadence.exe
           if-no-files-found: error
+
+  # Intel macOS, on GitHub's x86-64 image: the AVX2 build the macos-x86-64 release ships, through the
+  # check job's own steps. It takes nearly twice the other legs, so it runs on main, nightly and by
+  # hand, and no pull request waits on it.
+  intel:
+    name: ${{ matrix.name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26-intel
+            name: x86_64-apple-darwin
+            target: x86_64-apple-darwin
+            features: +avx2,+bmi1,+popcnt,+lzcnt
+    env: *check-env
+    defaults: *check-defaults
+    steps: *check-steps
 
   # install.sh on every system it names and install.ps1 on Windows, each run with --yes to build the
   # latest release, and the binary each installed held to that release's bench and id name.
