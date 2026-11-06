@@ -2170,6 +2170,32 @@ mod tests {
         }
     }
 
+    /// A commit that falls back to building the checker says so, so cargo never runs unseen; a
+    /// stand-in `cargo` on the path answers for it here.
+    #[cfg(unix)]
+    #[test]
+    fn the_pre_commit_hook_says_when_it_builds_the_checker() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("xtask-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        git(&root, &["init", "-q"]).unwrap();
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let out = Command::new("sh")
+            .arg(repo_root().join(".githooks").join("pre-commit"))
+            .current_dir(&root)
+            .env("PATH", format!("{}:{inherited}", bin.display()))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("cargo xtask"), "a silent fallback: {said:?}");
+    }
+
     /// GitHub's merge puts the title on line 3, where it reads as a subject and not a trailer.
     #[cfg(unix)]
     #[test]
