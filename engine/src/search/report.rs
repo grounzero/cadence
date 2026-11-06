@@ -42,10 +42,46 @@ impl Search<'_> {
 
     /// `multipv` is left out at one line, which is what every rating list reads.
     pub(super) fn report(&self, board: &mut Position, number: usize, out: &mut dyn Write) {
-        let reported = &self.lines[number - 1];
+        self.write_line(board, &self.lines[number - 1], number, out);
+    }
+
+    /// After `sample`, the set it drew from as `info string` lines, and the played move's own line
+    /// where it is not the first, so the last main line a GUI reads is the move played.
+    pub fn report_level(&self, board: &mut Position, out: &mut dyn Write) {
+        let legal = generate_legal(board);
+        for (i, line) in self.accepted.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "info string candidate {} {} score {}",
+                i + 1,
+                to_uci(line.mv, &legal, self.chess960),
+                score::uci(self.shown_score(line.score))
+            );
+        }
+        let first = self.accepted.first().map(|line| line.mv);
+        if first != Some(self.best)
+            && let Some(played) = self.accepted.iter().find(|line| line.mv == self.best)
+        {
+            self.write_line(board, played, 1, out);
+        }
+        let _ = out.flush();
+    }
+
+    /// What the tables make of a line's score where they ranked the root.
+    fn shown_score(&self, score: Score) -> Score {
+        self.root_rank.map_or(score, |rank| rank.reported(score))
+    }
+
+    fn write_line(
+        &self,
+        board: &mut Position,
+        reported: &RootLine,
+        number: usize,
+        out: &mut dyn Write,
+    ) {
         let ms = self.elapsed_ms();
         let nps = self.reported_nodes() * 1000 / ms.max(1);
-        let numbered = if self.multipv > 1 {
+        let numbered = if self.shown > 1 {
             format!(" multipv {number}")
         } else {
             String::new()
@@ -58,10 +94,7 @@ impl Search<'_> {
             "info depth {} seldepth {}{numbered} score {} nodes {} nps {nps} hashfull {}{tbhits} time {ms} pv",
             self.completed_depth,
             self.seldepth,
-            score::uci(
-                self.root_rank
-                    .map_or(reported.score, |rank| rank.reported(reported.score))
-            ),
+            score::uci(self.shown_score(reported.score)),
             self.reported_nodes(),
             self.tt.hashfull()
         );

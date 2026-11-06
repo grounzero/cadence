@@ -66,6 +66,7 @@ impl Session {
         let chess960 = self.chess960;
         let level = self.level();
         let multipv = level.map_or(self.multipv, |policy| policy.candidates);
+        let shown = self.multipv;
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
@@ -97,6 +98,7 @@ impl Session {
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
                         search.set_multipv(multipv);
+                        search.set_shown(shown);
                         search.set_tunables(tunables);
                         search.set_root_filter(&root_filter);
                         if let Some(tables) = &tables {
@@ -106,6 +108,7 @@ impl Session {
                         let mut best = search.run(&mut pos, &mut out);
                         if let Some(policy) = level {
                             best = search.sample(policy, &pos);
+                            search.report_level(&mut pos, &mut out);
                         }
                         (best, search.pv().to_vec())
                     } else {
@@ -119,6 +122,7 @@ impl Session {
                             chess960,
                             threads,
                             multipv,
+                            shown,
                             level,
                             tunables,
                             root_filter: &root_filter,
@@ -201,6 +205,7 @@ struct ParallelGo<'a> {
     chess960: bool,
     threads: usize,
     multipv: usize,
+    shown: usize,
     /// Helpers never carry it: they report nothing, so a level on one buys a worse tree and no
     /// different move.
     level: Option<level::Policy>,
@@ -226,6 +231,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         chess960,
         threads,
         multipv,
+        shown,
         level,
         tunables,
         root_filter,
@@ -283,6 +289,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     search.set_ponder_hit(ponder_hit);
     search.set_chess960(chess960);
     search.set_multipv(multipv);
+    search.set_shown(shown);
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
     search.set_root_filter(root_filter);
@@ -295,6 +302,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let mut best = search.run_in_current_generation(board, &mut out);
     if let Some(policy) = level {
         best = search.sample(policy, board);
+        search.report_level(board, &mut out);
     }
     let pv = search.pv().to_vec();
 

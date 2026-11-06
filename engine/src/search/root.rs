@@ -107,7 +107,7 @@ impl Search<'_> {
             self.roots.push((best, score));
             self.pv.clear();
             self.pv.extend_from_slice(&self.lines[0].pv);
-            for number in 1..=self.lines.len() {
+            for number in 1..=self.lines.len().min(self.shown) {
                 self.report(board, number, out);
             }
             // Best move first next time, which is what makes an aborted iteration's fallback good.
