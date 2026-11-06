@@ -98,6 +98,38 @@ fn a_node_limit_holds_across_threads() {
     }
 }
 
+/// Helpers can spend the group's count before the primary has a line, so a limit of one node shows
+/// whether the answer still rests on a searched one.
+#[test]
+fn a_node_limit_with_helpers_answers_from_a_searched_line() {
+    for fen in POSITIONS {
+        let lines = Engine::within(Duration::from_secs(60), move || {
+            let mut e = Engine::spawn();
+            e.send("setoption name Threads value 3");
+            e.send(&format!("position fen {fen}"));
+            e.sync();
+            e.send("go nodes 1");
+            let lines = e.read_until("bestmove ");
+            e.quit();
+            lines
+        });
+        assert_one_legal_answer(fen, &lines, "go nodes 1");
+        let line = lines
+            .iter()
+            .rfind(|l| l.starts_with("info ") && l.contains(" pv "))
+            .unwrap_or_else(|| panic!("{fen}: no searched line: {lines:?}"));
+        let first = line
+            .split(" pv ")
+            .nth(1)
+            .and_then(|pv| pv.split_whitespace().next());
+        let answer = lines
+            .iter()
+            .find_map(|l| l.strip_prefix("bestmove "))
+            .and_then(|rest| rest.split_whitespace().next());
+        assert_eq!(first, answer, "{fen}: {lines:?}");
+    }
+}
+
 /// After the hit the search spends the clock `go ponder` carried, at most half of what is left, so
 /// the answer comes inside it; the margin is for a loaded runner.
 #[test]
