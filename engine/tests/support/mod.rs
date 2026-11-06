@@ -192,7 +192,12 @@ pub const SUBPROCESS_TIMEOUT: Duration = Duration::from_mins(1);
 /// The binary cargo built for these tests, or the one `CADENCE_BIN` names, so CI can hold the
 /// release build to the same tests.
 pub fn binary() -> std::path::PathBuf {
-    std::env::var_os("CADENCE_BIN").map_or_else(
+    resolve(std::env::var_os("CADENCE_BIN"))
+}
+
+/// `binary` given what `CADENCE_BIN` holds.
+pub fn resolve(named: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    named.map_or_else(
         || env!("CARGO_BIN_EXE_cadence").into(),
         std::path::PathBuf::from,
     )
