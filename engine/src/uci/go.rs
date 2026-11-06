@@ -22,6 +22,20 @@ use crate::tune::Tunables;
 pub(crate) const SEARCH_STACK_BYTES: usize = 16 << 20;
 
 impl Session {
+    /// After a failed `position` a search still running is stopped and nothing is searched: the
+    /// answer is `bestmove 0000`, saying why.
+    pub(super) fn go_unless_refused<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
+        let Some(why) = self.refused.clone() else {
+            self.go(tokens);
+            return;
+        };
+        self.stop_search();
+        say(format_args!(
+            "info string go: the last position command failed ({why}); searching nothing"
+        ));
+        say(format_args!("bestmove 0000"));
+    }
+
     /// A search still running is stopped first.
     pub(super) fn go<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
         // The GUI's clock for this move started when it sent the line.
