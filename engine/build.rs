@@ -48,15 +48,9 @@ impl Facts {
         };
         let version = env!("CARGO_PKG_VERSION");
         // Annotated tags only, and only the one naming this version, so neither a lightweight tag
-        // nor another tag on the commit can make a release; a modified tree reads `-dirty`.
-        let args = [
-            "describe",
-            "--exact-match",
-            "--dirty",
-            "--match",
-            version,
-            "HEAD",
-        ];
+        // nor another tag on the commit can make a release; a modified tree reads `-dirty`. No
+        // commit is named, because git refuses one beside `--dirty` and reads HEAD itself.
+        let args = ["describe", "--exact-match", "--dirty", "--match", version];
         let tag = git(root, &args).unwrap_or_default();
         if !tag.is_empty() {
             watch_tree(root);
