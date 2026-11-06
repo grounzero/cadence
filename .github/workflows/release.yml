@@ -368,7 +368,7 @@ jobs:
             echo
             echo "The macOS binary is not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
             echo
-            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`."
+            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`. On an x86-64 processor without AVX2, build with \`cargo build --release --config .cargo/x86-64-generic.toml\`."
             echo
             awk -v h="## [$VERSION]" '$0 == h || index($0, h " - ") == 1 {on = 1; next} on && /^## \[/ {exit} on' \
               CHANGELOG.md
