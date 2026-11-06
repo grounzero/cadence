@@ -459,7 +459,11 @@ fn a_burst_of_go_and_stop_answers_every_go_once() {
         let mut asked = Vec::new();
         for i in 0..24 {
             let fen = &fens[i % fens.len()];
-            let go = if i % 3 == 0 { "go depth 3" } else { "go infinite" };
+            let go = if i % 3 == 0 {
+                "go depth 3"
+            } else {
+                "go infinite"
+            };
             input.push_str(&format!("position fen {fen}\n{go}\nstop\n"));
             asked.push(fen.as_str());
         }
