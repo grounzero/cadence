@@ -200,29 +200,7 @@ jobs:
           cargo clean --release -p cadence-core
           cargo build --locked --release -p cadence-engine --bin cadence -v --color never $CONFIG_ARG \
             > release.log 2>&1 || { cat release.log; exit 1; }
-          base=$(rustc --print cfg --target ${{ matrix.target }} -C target-feature=${{ matrix.features }} \
-            | grep target_feature | sort)
-          grep -E '^ +Running `.*rustc(\.exe)? .*--crate-name ' release.log > invocations.txt || true
-          for crate in cadence_core cadence_engine cadence; do
-            if ! grep -q -- "--crate-name $crate " invocations.txt; then
-              echo "::error::no rustc invocation for $crate in the release build log"
-              exit 1
-            fi
-          done
-          n=0
-          while read -r line; do
-            name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
-            set --
-            for f in $(echo "$line" | grep -oE "target-feature=[^ '\`\"]+"); do set -- "$@" -C "$f"; done
-            [ "$#" -gt 0 ] || { echo "::error::$name was built with no target feature"; exit 1; }
-            got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
-            if [ "$got" != "$base" ]; then
-              echo "::error::$name resolves to $(echo $got) and not the baseline with ${{ matrix.features }}"
-              exit 1
-            fi
-            n=$((n + 1))
-          done < invocations.txt
-          echo "$n rustc invocations, every one at the baseline with ${{ matrix.features }}: $(echo $base)"
+          bash .github/check-features.sh ${{ matrix.target }} ${{ matrix.features }} release.log
 
       # A build that would call itself anything but the expected version fails here rather than
       # ships.
