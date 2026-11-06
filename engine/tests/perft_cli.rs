@@ -10,7 +10,7 @@ use std::process::Command;
 use support::{standard_fen, tsv};
 
 fn perft(args: &[&str]) -> Vec<String> {
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .arg("perft")
         .args(args)
         .output()
@@ -145,7 +145,7 @@ fn usage_errors_exit_2() {
         // Mated, so a search that is not refused ends at once.
         vec!["7k/6Q1/6K1/8/8/8/8/8", "b", "-", "-", "0", "1", "257"],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+        let out = Command::new(support::binary())
             .arg("perft")
             .args(&args)
             .output()

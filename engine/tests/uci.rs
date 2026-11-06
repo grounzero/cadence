@@ -109,7 +109,7 @@ fn end_of_input_exits_cleanly() {
 
 #[test]
 fn unknown_subcommand_is_a_usage_error() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .arg("frobnicate")
         .output()
         .expect("run cadence");

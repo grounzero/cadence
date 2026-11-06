@@ -904,7 +904,7 @@ fn the_bench_clears_the_table_between_positions() {
 #[test]
 fn the_bench_records_the_table_size_it_ran_at() {
     const { assert!(bench::HASH_MB >= 1) };
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = std::process::Command::new(support::binary())
         .arg("bench")
         .output()
         .expect("run cadence bench");

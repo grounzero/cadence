@@ -4,6 +4,8 @@
 //! same at any thread count, a record replays to the ending it names, and extraction splits by game
 //! and keeps no position in check.
 
+mod support;
+
 use std::process::Command;
 
 use cadence_core::position::Board;
@@ -139,7 +141,7 @@ fn a_huge_thread_count_starts_no_more_workers_than_games() {
     assert_eq!(run(7, 0, 100_000), empty.as_bytes());
     assert_eq!(run(7, 1, 100_000), run(7, 1, 1));
 
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .args(["datagen", "play", "--games", "0", "--seed", "7"])
         .args(["--threads", "100000"])
         .output()
@@ -365,7 +367,7 @@ fn a_failed_extraction_leaves_no_output_behind() {
     let mut text = String::from_utf8(run(6, 2, 1)).expect("utf-8");
     text.push_str("0 | 518 518 | e2e5 |  | 1-0 mate | 0\n");
     std::fs::write(&games, text).expect("writes");
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .args([
             "datagen",
             "extract",
@@ -395,7 +397,7 @@ fn the_tuner_uses_a_named_holdout_whole() {
     let (t, h) = (dir.join("train.txt"), dir.join("holdout.txt"));
     std::fs::write(&t, train).expect("writes");
     std::fs::write(&h, held).expect("writes");
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .args(["texel", t.to_str().expect("path"), "--holdout-file"])
         .arg(&h)
         .args(["--iterations", "1", "--report", "1"])
@@ -517,7 +519,7 @@ fn scratch(name: &str) -> (std::path::PathBuf, Vec<u8>) {
 /// Run in `dir`, so each path is the spelling given: whether it succeeded, and every entry left in
 /// `dir` with its bytes, a directory's name ending in a slash.
 fn extract_in(dir: &std::path::Path, args: &str) -> (bool, Vec<(String, Vec<u8>)>) {
-    let status = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let status = Command::new(support::binary())
         .current_dir(dir)
         .args(["datagen", "extract"])
         .args(args.split_whitespace())
