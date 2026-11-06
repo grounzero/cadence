@@ -61,12 +61,14 @@ fn wdl_only(name: &str) -> PathBuf {
     )
 }
 
-/// Only the tables `tests/fixtures/syzygy.sha256` names, for a gate that counts what loads and so
-/// must not see a fuller set installed beside them.
+/// Only the three- and four-piece tables `tests/fixtures/syzygy.sha256` names, for a gate that
+/// counts what loads and so must not see a fuller set installed beside them.
 fn fixture_set(name: &str) -> PathBuf {
     let files: Vec<&str> = include_str!("../../tests/fixtures/syzygy.sha256")
         .lines()
         .filter_map(|l| l.split_whitespace().nth(1))
+        // A name's letters before the dot are its pieces and a `v`.
+        .filter(|f| f.find('.').is_some_and(|dot| dot <= 5))
         .collect();
     scratch(name, &files)
 }
@@ -343,7 +345,7 @@ fn a_bad_file_is_named_and_the_rest_of_its_directory_loads() {
         problems,
         vec![format!("{}: unexpected file size", path.display())]
     );
-    assert_eq!(tables.files(), 11);
+    assert_eq!(tables.files(), 19);
     assert_eq!(
         tables.probe_wdl(&board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1")),
         Some(Wdl::Win)
@@ -400,14 +402,14 @@ fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
     let said = e.sync();
     assert!(
         said.iter()
-            .any(|l| l == "info string SyzygyPath: 12 table files, probing up to 4 pieces"),
+            .any(|l| l == "info string SyzygyPath: 20 table files, probing up to 4 pieces"),
         "{said:?}"
     );
     e.send("setoption name SyzygyProbeLimit value 3");
     let said = e.sync();
     assert!(
         said.iter()
-            .any(|l| l == "info string SyzygyPath: 12 table files, probing up to 3 pieces"),
+            .any(|l| l == "info string SyzygyPath: 20 table files, probing up to 3 pieces"),
         "{said:?}"
     );
     e.send("position fen 8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1");
