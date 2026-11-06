@@ -140,11 +140,22 @@ impl Search<'_> {
         self.best
     }
 
-    /// Called after `run`, so a level costs the search nothing.
-    pub fn sample(&mut self, policy: level::Policy, board: &Position) -> Move {
-        if self.accepted.len() < 2 {
-            return self.best;
+    /// Called after `run`, so a level costs the search nothing. The set it drew from is reported
+    /// with the move it plays.
+    pub fn sample(
+        &mut self,
+        policy: level::Policy,
+        board: &mut Position,
+        out: &mut dyn Write,
+    ) -> Move {
+        if self.accepted.len() >= 2 {
+            self.choose(policy, board);
         }
+        self.report_level(board, out);
+        self.best
+    }
+
+    fn choose(&mut self, policy: level::Policy, board: &Position) {
         let best = self.accepted[0].score;
         // Sorted, so the first line outside the margin ends the set.
         let admitted = self
@@ -166,7 +177,6 @@ impl Search<'_> {
         self.score = line.score;
         self.pv.clear();
         self.pv.extend_from_slice(&line.pv);
-        self.best
     }
 
     /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded

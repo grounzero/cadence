@@ -47,7 +47,7 @@ impl Search<'_> {
 
     /// After `sample`, the set it drew from as `info string` lines, and the played move's own line
     /// where it is not the first, so the last main line a GUI reads is the move played.
-    pub fn report_level(&self, board: &mut Position, out: &mut dyn Write) {
+    pub(super) fn report_level(&self, board: &mut Position, out: &mut dyn Write) {
         let legal = generate_legal(board);
         for (i, line) in self.accepted.iter().enumerate() {
             let _ = writeln!(
