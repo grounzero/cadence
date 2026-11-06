@@ -82,9 +82,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 Both take `--version X.Y.Z`, `--prefix DIR`, `--source` to build from source
 even where a binary fits, `--update`, `--uninstall`, `--yes` to take every
 default without asking, `--keep-log`, and on x86-64 `--build avx2` or `--build
-generic`. The release workflow publishes both scripts with each release and
-lists their SHA-256s beside the binaries'. A run that fails keeps its log and
-says where it is: attach that file to a GitHub issue.
+generic`. The release workflow publishes both scripts and `bench.txt` with
+each release and lists their SHA-256s beside the binaries'. A run that fails
+keeps its log and says where it is: attach that file to a GitHub issue.
 
 ### Options
 
