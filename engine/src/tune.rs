@@ -198,7 +198,11 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     let block: Vec<String> = PARAMS.iter().map(Param::spsa_line).collect();
     let mut out = std::io::stdout().lock();
-    let _ = write!(out, "{}", block.join("\n"));
-    let _ = out.flush();
-    ExitCode::SUCCESS
+    match write!(out, "{}", block.join("\n")).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cadence spsa: writing the output: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }

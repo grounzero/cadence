@@ -5,6 +5,8 @@
 //! is printed in the output header, so it reproduces the same numbers.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
+use std::process::ExitCode;
 
 const ROOK_DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const BISHOP_DIRS: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -141,13 +143,19 @@ fn emit(out: &mut String, name: &str, found: &[Found]) {
     let _ = writeln!(out, "];");
 }
 
-pub fn run(args: &[String]) -> Result<(), String> {
+/// An error is a usage error; an output that cannot be written is said here and exits 1.
+pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let seed = match args.first() {
         None => DEFAULT_SEED,
         Some(s) => parse_seed(s)?,
     };
-    print!("{}", generate(seed));
-    Ok(())
+    let text = generate(seed);
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        eprintln!("cadence-tools magics: writing the output: {e}");
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The numbers for `seed`, as the Rust source `core`'s magic module holds.
