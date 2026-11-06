@@ -321,6 +321,10 @@ pub struct Settings {
 }
 
 /// Full-batch Adam; a frozen weight is returned exactly as given.
+///
+/// # Errors
+///
+/// A progress line cannot be written to `out`.
 pub fn tune(
     samples: &[Sample],
     weights: &[Real],
@@ -328,12 +332,16 @@ pub fn tune(
     k: impl Into<Scale>,
     settings: &Settings,
     out: &mut dyn Write,
-) -> Vec<Real> {
+) -> std::io::Result<Vec<Real>> {
     let halves: Vec<[bool; 2]> = tuned.iter().map(|&t| [t, t]).collect();
     tune_halves(samples, weights, &halves, k, settings, out)
 }
 
 /// Each half frozen or free separately.
+///
+/// # Errors
+///
+/// A progress line cannot be written to `out`.
 pub fn tune_halves(
     samples: &[Sample],
     weights: &[Real],
@@ -341,7 +349,7 @@ pub fn tune_halves(
     k: impl Into<Scale>,
     settings: &Settings,
     out: &mut dyn Write,
-) -> Vec<Real> {
+) -> std::io::Result<Vec<Real>> {
     const BETA1: f64 = 0.9;
     const BETA2: f64 = 0.999;
     const EPSILON: f64 = 1e-8;
@@ -354,7 +362,7 @@ pub fn tune_halves(
     for iteration in 1..=settings.iterations {
         let (current, grad) = gradient(samples, &w, k, settings.threads);
         if settings.report > 0 && (iteration == 1 || iteration % settings.report == 0) {
-            let _ = writeln!(out, "iteration {iteration} train {current:.8}");
+            writeln!(out, "iteration {iteration} train {current:.8}")?;
         }
         b1 *= BETA1;
         b2 *= BETA2;
@@ -370,7 +378,7 @@ pub fn tune_halves(
         }
         pin_levels(&mut w, weights, tuned);
     }
-    w
+    Ok(w)
 }
 
 /// Holds the mean of the king table, each mobility table and both king-safety tables, per half,
@@ -456,18 +464,26 @@ pub fn read(path: &str) -> Result<Vec<Sample>, String> {
     Ok(samples)
 }
 
-/// The table is printed as `name mg eg`, every weight, rounded.
+/// The table is printed as `name mg eg`, every weight, rounded. A bad argument exits 2 with the
+/// usage, and a run that fails exits 1.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
-    match tune_from_args(args) {
-        Ok(()) => ExitCode::SUCCESS,
+    let args = match parse_args(args) {
+        Ok(args) => args,
         Err(e) => {
             eprintln!("cadence texel: {e}");
             eprintln!(
                 "usage: cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N] [--rate R] \
                  [--threads N] [--report N] [--k K | --phase-k] [--min-weight W] [--min-weight-for PREFIX W]... [--ridge L] [--tune PREFIX]..."
             );
-            ExitCode::from(2)
+            return ExitCode::from(2);
+        }
+    };
+    match tune_from_args(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cadence texel: {e}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -580,16 +596,27 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 .ok_or_else(|| format!("{name} takes a value"))
                 .cloned()
         };
-        let number = |name: &str, v: String| v.parse::<f64>().map_err(|_| format!("bad {name}"));
+        // Finite and not below zero, and a rate or a scale above it, since nothing else fits.
+        let number = |name: &str, v: String| {
+            v.parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite() && *x >= 0.0)
+                .ok_or_else(|| format!("bad {name}"))
+        };
+        let positive = |name: &str, v: String| {
+            Some(number(name, v)?)
+                .filter(|x| *x > 0.0)
+                .ok_or_else(|| format!("bad {name}"))
+        };
         let count = |name: &str, v: String| v.parse::<usize>().map_err(|_| format!("bad {name}"));
         match arg.as_str() {
             "--holdout" => holdout = count(arg, value(arg)?)?,
             "--holdout-file" => holdout_file = Some(value(arg)?),
             "--iterations" => settings.iterations = count(arg, value(arg)?)?,
-            "--rate" => settings.rate = number(arg, value(arg)?)?,
+            "--rate" => settings.rate = positive(arg, value(arg)?)?,
             "--threads" => settings.threads = count(arg, value(arg)?)?.max(1),
             "--report" => settings.report = count(arg, value(arg)?)?,
-            "--k" => k = Some(number(arg, value(arg)?)?),
+            "--k" => k = Some(positive(arg, value(arg)?)?),
             "--min-weight" => min_weight = number(arg, value(arg)?)?,
             "--min-weight-for" => {
                 let prefix = value(arg)?;
@@ -602,8 +629,14 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             extra => return Err(format!("unexpected argument {extra}")),
         }
     }
+    let data = data.ok_or_else(|| "no data set named".to_string())?;
+    if let Some(held) = &holdout_file
+        && same_file(&data, held)
+    {
+        return Err("the holdout file is the data file".to_string());
+    }
     Ok(Args {
-        data: data.ok_or_else(|| "no data set named".to_string())?,
+        data,
         holdout,
         holdout_file,
         k,
@@ -615,7 +648,26 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     })
 }
 
-fn tune_from_args(args: &[String]) -> Result<(), String> {
+/// Both name one file, the second spelling included.
+fn same_file(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// The integer a rounded weight is, where an `i32` holds it.
+fn integer(w: f64) -> Option<i32> {
+    (f64::from(i32::MIN)..=f64::from(i32::MAX))
+        .contains(&w)
+        .then_some(w as i32)
+}
+
+fn unwritten(e: std::io::Error) -> String {
+    format!("writing the output: {e}")
+}
+
+fn tune_from_args(args: Args) -> Result<(), String> {
     let Args {
         data,
         holdout,
@@ -626,7 +678,7 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
         floors,
         prefixes,
         settings,
-    } = parse_args(args)?;
+    } = args;
     let (train, held) = split(read(&data)?, holdout, holdout_file.as_deref())?;
     if train.is_empty() {
         return Err("no training positions".to_string());
@@ -639,61 +691,68 @@ fn tune_from_args(args: &[String]) -> Result<(), String> {
     let t = settings.threads;
     let k = choose_k(k, phase_k, &train, &start, t)?;
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(
+    writeln!(
         out,
         "positions train {} holdout {}",
         train.len(),
         held.len()
-    );
+    )
+    .map_err(unwritten)?;
     if settings.ridge > 0.0 {
-        let _ = writeln!(
+        writeln!(
             out,
             "ridge {} toward the hand-written table",
             settings.ridge
-        );
+        )
+        .map_err(unwritten)?;
     }
-    let _ = writeln!(
+    writeln!(
         out,
         "tuned {} of {WEIGHT_COUNT} weights",
         tuned.iter().filter(|t| **t).count()
-    );
-    let _ = if phase_k {
-        writeln!(out, "k mg {:.6} eg {:.6}", k.mg, k.eg)
+    )
+    .map_err(unwritten)?;
+    if phase_k {
+        writeln!(out, "k mg {:.6} eg {:.6}", k.mg, k.eg).map_err(unwritten)?;
     } else {
-        writeln!(out, "k {:.6}", k.mg)
-    };
-    let _ = writeln!(
+        writeln!(out, "k {:.6}", k.mg).map_err(unwritten)?;
+    }
+    writeln!(
         out,
         "before train {:.8} holdout {:.8}",
         loss(&train, &start, k, t),
         loss(&held, &start, k, t)
-    );
+    )
+    .map_err(unwritten)?;
     for (prefix, floor) in &floors {
-        let _ = writeln!(out, "floor {prefix} {floor}");
+        writeln!(out, "floor {prefix} {floor}").map_err(unwritten)?;
     }
     let (halves, sparse) = freeze_sparse(&tuned, &weight_mass(&train, t), min_weight, &floors);
     for line in &sparse {
-        let _ = writeln!(out, "{line}");
+        writeln!(out, "{line}").map_err(unwritten)?;
     }
-    let end = tune_halves(&train, &start, &halves, k, &settings, &mut out);
+    let end = tune_halves(&train, &start, &halves, k, &settings, &mut out).map_err(unwritten)?;
     // The table the engine would read is the rounded one, so its loss is the one that counts.
     let rounded: Vec<Real> = end.iter().map(|w| [w[0].round(), w[1].round()]).collect();
+    let mut table = Vec::with_capacity(rounded.len());
+    for (i, w) in rounded.iter().enumerate() {
+        let name = eval::weight_name(i);
+        let (Some(mg), Some(eg)) = (integer(w[0]), integer(w[1])) else {
+            return Err(format!("{name} came out at {w:?}, past an i32"));
+        };
+        table.push((name, mg, eg));
+    }
     for (label, w) in [("after", &end), ("rounded", &rounded)] {
-        let _ = writeln!(
+        writeln!(
             out,
             "{label} train {:.8} holdout {:.8}",
             loss(&train, w, k, t),
             loss(&held, w, k, t)
-        );
+        )
+        .map_err(unwritten)?;
     }
-    for (i, w) in rounded.iter().enumerate() {
-        let _ = writeln!(
-            out,
-            "{} {} {}",
-            eval::weight_name(i),
-            w[0] as i32,
-            w[1] as i32
-        );
+    for (name, mg, eg) in table {
+        writeln!(out, "{name} {mg} {eg}").map_err(unwritten)?;
     }
-    Ok(())
+    out.flush().map_err(unwritten)
 }

@@ -251,7 +251,8 @@ fn a_frozen_half_is_left_alone_while_its_other_half_moves() {
         1.0,
         &settings,
         &mut std::io::sink(),
-    );
+    )
+    .expect("a sink takes every line");
     assert_eq!(end[MATERIAL + 1][1], start[MATERIAL + 1][1]);
     assert!(
         end[MATERIAL + 1][0] > start[MATERIAL + 1][0] + 20.0,
@@ -278,14 +279,16 @@ fn knight_under_ridge(ridge: f64) -> Real {
         prior: None,
     };
     let tuned = mask(&["material.knight".to_string()]);
-    tune(
+    let end = tune(
         &samples,
         &start,
         &tuned,
         1.0,
         &settings,
         &mut std::io::sink(),
-    )[MATERIAL + 1]
+    )
+    .expect("a sink takes every line");
+    end[MATERIAL + 1]
 }
 
 #[test]
@@ -340,7 +343,8 @@ fn the_king_tables_level_is_invisible_to_the_loss_and_is_held() {
         1.0,
         &settings,
         &mut std::io::sink(),
-    );
+    )
+    .expect("a sink takes every line");
     let king = PST + 5 * 64..PST + 6 * 64;
     for j in 0..2 {
         let mean = |w: &[Real]| king.clone().map(|i| w[i][j]).sum::<f64>() / 64.0;
@@ -398,7 +402,8 @@ fn the_ridge_pulls_toward_the_prior_and_not_the_start() {
         1.0,
         &settings,
         &mut std::io::sink(),
-    );
+    )
+    .expect("a sink takes every line");
     // The labels hold the knight where it starts and a strong ridge holds it at the prior.
     assert!(end[MATERIAL + 1][0] > 480.0, "{:?}", end[MATERIAL + 1]);
 }
@@ -426,7 +431,8 @@ fn a_planted_weight_is_found_and_every_frozen_one_is_left_alone() {
         1.0,
         &settings,
         &mut std::io::sink(),
-    );
+    )
+    .expect("a sink takes every line");
     let knight = end[MATERIAL + 1];
     assert!(
         (knight[0] - 400.0).abs() < 2.0 && (knight[1] - 380.0).abs() < 2.0,
@@ -484,7 +490,8 @@ fn a_mobility_tables_level_is_invisible_to_the_loss_and_is_held() {
         1.0,
         &settings,
         &mut std::io::sink(),
-    );
+    )
+    .expect("a sink takes every line");
     for j in 0..2 {
         let mean = |w: &[Real]| knight.clone().map(|i| w[i][j]).sum::<f64>();
         assert!((mean(&end) - mean(&start)).abs() < 1e-9, "half {j}");
@@ -545,7 +552,8 @@ fn the_king_safety_tables_levels_are_invisible_to_the_loss_and_are_held() {
         1.0,
         &settings,
         &mut std::io::sink(),
-    );
+    )
+    .expect("a sink takes every line");
     for table in tables {
         for j in 0..2 {
             let sum = |w: &[Real]| table.clone().map(|i| w[i][j]).sum::<f64>();
