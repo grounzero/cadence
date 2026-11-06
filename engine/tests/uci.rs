@@ -469,6 +469,29 @@ fn a_root_with_no_legal_move_reports_its_score() {
     }
 }
 
+/// The path is the value as the GUI sent it, so one holding a run of spaces names its own
+/// directory and not another.
+#[test]
+fn a_syzygy_path_keeps_its_own_spacing() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("syzygy  two spaces");
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let path = dir.to_str().expect("a path");
+    let input = format!("setoption name SyzygyPath value {path}\nisready\nquit\n");
+    let out = talk(&input);
+    let said: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("info string SyzygyPath"))
+        .collect();
+    assert!(
+        said.iter().all(|l| !l.contains("two spaces")),
+        "{path:?}: {said:?}"
+    );
+    assert!(
+        said.iter().any(|l| l.contains(" 0 table files")),
+        "{path:?}: {said:?}"
+    );
+}
+
 /// A castle is what exercises the branch, so at least one castling bestmove is required. It sits at
 /// its threshold, four of four, and the search is deterministic, so a failure on every machine is a
 /// king-table change and one on some runners a race.

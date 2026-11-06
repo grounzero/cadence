@@ -216,7 +216,7 @@ impl Session {
                 say(format_args!("uciok"));
             }
             "isready" => say(format_args!("readyok")),
-            "setoption" => self.set_option(tokens),
+            "setoption" => self.set_option(line),
             "position" => self.set_position(tokens),
             "go" => self.go_unless_refused(tokens),
             // A running search is stopped either way. `ucinewgame` also empties the table: a
