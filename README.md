@@ -36,6 +36,15 @@ The engine is now at `target/release/cadence`. In your GUI, add it as a UCI
 engine. For Chess960, turn on the GUI's Chess960 mode and it will tell the
 engine.
 
+On x86-64 Linux and Windows this builds for processors with AVX2, using the
+flags in `.cargo/config.toml`. On a processor without AVX2 that engine stops
+at once with an illegal instruction. For one of those, build the generic
+version instead, which needs only POPCNT:
+
+```sh
+cargo build --release --config .cargo/x86-64-generic.toml
+```
+
 Build from the repository's root. Cargo reads the per-target flags in
 `.cargo/config.toml` from the directory it runs in, so a build started
 elsewhere, with `cargo install --path` or `--manifest-path` from a parent
@@ -60,11 +69,16 @@ quit
 | `Threads` | 1 | Search threads. Only one thread gives the same result every time. |
 | `MultiPV` | 1 | How many best lines to show. More lines cost search time. |
 | `Ponder` | off | Think on the opponent's time. Rating lists turn this off. |
+| `Move Overhead` | 20 | Milliseconds kept back from every move for the GUI and the connection (0 to 5000). |
+| `Clear Hash` | button | Empties the search table. |
 | `UCI_LimitStrength` | off | Play weaker, at the level set by `UCI_Elo`. |
 | `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). |
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
+| `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
+| `reverse_futility_margin` | 150 | A search constant offered to tuners (50 to 300). Leave it alone for play. |
+| `lmp_multiplier` | 0.500 | A search constant offered to tuners (0 to 2). Leave it alone for play. |
 
 Cadence keeps each tablebase file open once it has read it, until `SyzygyPath`
 is set again. So the system's limit on open files must be above the number of
@@ -216,6 +230,30 @@ from and how DFRC castling is written. The tests read the
 [machine-readable copy](tests/fixtures/perft-corpus.txt), so everything
 needed to reproduce a failure is public.
 
+### Tools
+
+Besides UCI, the binary has these subcommands. Each says what it expects
+when it is given arguments it cannot use.
+
+- `cadence bench`: the fixed benchmark above.
+- `cadence perft [--divide] [--threads N] <fen | startpos> <depth>`: counts
+  the legal moves to a depth.
+- `cadence spsa`: prints the input an SPSA tuner reads, one line for each
+  search constant a tune may move. They are the tuning options in the table
+  above.
+- `cadence datagen play --games N [--seed S] [--threads N] [--out PATH]`:
+  plays games against itself and writes one record a game. The same seed and
+  number of games give the same file at any thread count.
+- `cadence datagen extract <games> --train PATH --holdout PATH [--every N]`:
+  cuts those games into positions, sending every Nth game to the holdout set.
+- `cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N]
+  [--rate R] ...`: fits the evaluation's weights to a file of positions, each
+  a FEN, a `|` and the result, and prints the table.
+
+`cadence-tools magics [seed]`, a second binary built from `tools/`, searches
+for the sliding-attack magic numbers and prints them as Rust. Nothing it does
+ships.
+
 ### Git hooks
 
 ```sh
@@ -224,12 +262,14 @@ cargo xtask install-hooks
 
 Run this once in each clone, because Git does not copy hooks. The
 `pre-commit` hook runs the boundary and punctuation checks on what you are
-committing. The `commit-msg` hook checks the `Bench:` line against
-`bench.txt`.
+committing. The `commit-msg` hook checks the message: the `Bench:` line
+against `bench.txt`, no other trailer, no link, no numbered plan step, and a
+subject of one line.
 
-The hooks only make problems show up sooner. CI runs every check apart from
-the commit message, so a clone without hooks is not less correct. It just
-finds out later.
+The hooks only make problems show up sooner. CI runs every check, the commit
+messages included: it reads each message a change adds, and a pull request's
+title as the merge message it becomes. So a clone without hooks is not less
+correct. It just finds out later.
 
 ### Running an OpenBench worker
 
