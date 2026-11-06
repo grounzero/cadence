@@ -5,6 +5,9 @@
 
 mod support;
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN, generate_legal};
 use cadence_engine::eval::{
@@ -571,4 +574,87 @@ fn a_family_floor_overrides_the_run_floor_for_the_weights_it_names() {
     // Without the family floor the counts move like the squares.
     let (halves, _) = freeze_sparse(&tuned, &mass, 1_000.0, &[]);
     assert_eq!(halves[MOBILITY + 1], [true, true]);
+}
+
+/// Three positions, each with a result, enough for one iteration of every command-line test.
+const DATA: &str = "\
+rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 | 1/2-1/2
+4k3/8/8/8/8/8/8/4K2R w - - 0 1 | 1-0
+r3k3/8/8/8/8/8/8/4K3 w - - 0 1 | 0-1
+";
+
+/// `DATA` in a file of the test's own, so tests running together write no file twice.
+fn data_file(name: &str) -> PathBuf {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("texel-{name}.txt"));
+    std::fs::write(&path, DATA).expect("writes the data");
+    path
+}
+
+/// `cadence texel` on `DATA` for one iteration with no progress lines.
+fn texel_command(name: &str) -> Command {
+    let data = data_file(name);
+    let mut command = Command::new(support::binary());
+    command
+        .arg("texel")
+        .arg(data)
+        .args(["--iterations", "1", "--report", "0"]);
+    command
+}
+
+/// A number that is not one or lies outside its range, and a holdout that is the data file itself,
+/// are each refused as a usage error before anything is fitted.
+#[test]
+fn the_tuner_refuses_arguments_outside_their_range() {
+    let own = data_file("own-holdout");
+    let own = own.to_str().expect("a path");
+    for (name, args) in [
+        ("rate-nan", ["--rate", "nan"]),
+        ("rate-inf", ["--rate", "inf"]),
+        ("rate-zero", ["--rate", "0"]),
+        ("k-negative", ["--k", "-1"]),
+        ("ridge-negative", ["--ridge", "-100"]),
+        ("floor-nan", ["--min-weight", "NaN"]),
+        ("own-holdout", ["--holdout-file", own]),
+    ] {
+        let out = texel_command(name)
+            .args(args)
+            .output()
+            .expect("runs cadence texel");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// A fit whose table no integer can hold fails, rather than printing every weight saturated.
+#[test]
+fn the_tuner_fails_on_a_weight_no_integer_holds() {
+    let out = texel_command("rate-huge")
+        .args(["--rate", "1e300"])
+        .output()
+        .expect("runs cadence texel");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(
+        !stdout.contains("2147483647"),
+        "a saturated weight was printed: {stdout}"
+    );
+}
+
+/// A table that cannot be written fails the run.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_tuner_fails_when_its_output_cannot_be_written() {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("opens /dev/full");
+    let status = texel_command("dev-full")
+        .stdout(full)
+        .status()
+        .expect("runs cadence texel");
+    assert_eq!(status.code(), Some(1));
 }
