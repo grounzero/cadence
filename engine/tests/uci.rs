@@ -109,7 +109,7 @@ fn end_of_input_exits_cleanly() {
 
 #[test]
 fn unknown_subcommand_is_a_usage_error() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .arg("frobnicate")
         .output()
         .expect("run cadence");
@@ -449,6 +449,23 @@ fn bestmove_on_a_position_with_no_legal_move_is_the_null_move() {
     ] {
         let out = talk(&format!("position fen {fen}\ngo depth 1\nquit\n"));
         assert_eq!(bestmove(&out), "0000", "{fen}: {out:?}");
+    }
+}
+
+/// A root with no move to search still says how it stands before `bestmove 0000`, so a GUI that
+/// reads the score from the last `info` line reads this one.
+#[test]
+fn a_root_with_no_legal_move_reports_its_score() {
+    for (fen, score) in [
+        ("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", "mate 0"),
+        ("7k/8/6Q1/8/8/8/8/7K b - - 0 1", "cp 0"),
+    ] {
+        let out = talk(&format!("position fen {fen}\ngo depth 1\nquit\n"));
+        let line = format!("info depth 0 score {score}");
+        assert!(
+            out.lines().any(|l| l == line),
+            "{fen}: no `{line}` in {out:?}"
+        );
     }
 }
 

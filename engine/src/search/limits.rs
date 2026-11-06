@@ -34,7 +34,8 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// A known token without a number is skipped, like an unknown one.
+    /// A known token without a number is skipped, like an unknown one, except a clock's, which
+    /// reads as zero.
     #[must_use]
     pub fn parse<'a>(tokens: impl Iterator<Item = &'a str>) -> Limits {
         let mut limits = Limits::default();
@@ -45,12 +46,12 @@ impl Limits {
                 "ponder" => limits.ponder = true,
                 "depth" => limits.depth = small(&mut it),
                 "nodes" => limits.nodes = large(&mut it),
-                "movetime" => limits.movetime = large(&mut it),
-                "wtime" => limits.time[Colour::White.index()] = large(&mut it),
-                "btime" => limits.time[Colour::Black.index()] = large(&mut it),
-                "winc" => limits.inc[Colour::White.index()] = large(&mut it),
-                "binc" => limits.inc[Colour::Black.index()] = large(&mut it),
-                "movestogo" => limits.movestogo = small(&mut it),
+                "movetime" => limits.movetime = Some(clock(&mut it)),
+                "wtime" => limits.time[Colour::White.index()] = Some(clock(&mut it)),
+                "btime" => limits.time[Colour::Black.index()] = Some(clock(&mut it)),
+                "winc" => limits.inc[Colour::White.index()] = Some(clock(&mut it)),
+                "binc" => limits.inc[Colour::Black.index()] = Some(clock(&mut it)),
+                "movestogo" => limits.movestogo = Some(moves_to_go(&mut it)),
                 "mate" => limits.mate = small(&mut it),
                 _ => {}
             }
@@ -101,6 +102,38 @@ fn large<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u64> {
 
 fn small<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<u32> {
     large(it).map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// The keywords of `go`, so a clock missing its value never takes the next keyword as one.
+const KEYWORDS: [&str; 12] = [
+    "searchmoves",
+    "ponder",
+    "wtime",
+    "btime",
+    "winc",
+    "binc",
+    "movestogo",
+    "depth",
+    "nodes",
+    "mate",
+    "movetime",
+    "infinite",
+];
+
+/// A clock's value, zero where it does not parse: a clock read as absent leaves the search with no
+/// limit on a real clock. A keyword in the value's place is left for the main loop.
+fn clock<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> u64 {
+    if let Some(n) = large(it) {
+        return n;
+    }
+    if it.peek().is_some_and(|t| !KEYWORDS.contains(t)) {
+        it.next();
+    }
+    0
+}
+
+fn moves_to_go<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> u32 {
+    u32::try_from(clock(it)).unwrap_or(u32::MAX)
 }
 
 impl Search<'_> {

@@ -72,6 +72,51 @@ fn a_clock_for_the_other_side_only_is_a_budget_of_zero() {
     );
 }
 
+/// A clock value that is no integer reads as zero and never as no clock: `go wtime 1000.0` once
+/// searched until `stop`. A keyword where the value belongs is still read as itself.
+#[test]
+fn a_clock_value_that_is_no_integer_reads_as_zero() {
+    let l = limits("wtime 1000.0 btime 1000.0 winc 0.0 binc 0.0");
+    assert_eq!((l.time, l.inc), ([Some(0); 2], [Some(0); 2]));
+    let l = limits("wtime btime 5000 movestogo x movetime");
+    assert_eq!(l.time, [Some(0), Some(5000)]);
+    assert_eq!((l.movestogo, l.movetime), (Some(0), Some(0)));
+}
+
+/// Token lists drawn from the keywords and from good and bad values: every one holding a clock
+/// keyword budgets both sides within that side's clock less the overhead, and none panics.
+#[test]
+fn any_go_holding_a_clock_keyword_is_budgeted() {
+    const CLOCKS: &str = "wtime btime winc binc movestogo movetime";
+    const OTHERS: &str = "depth nodes mate infinite searchmoves e2e4";
+    const VALUES: &str = "0 1 1000 -5 +7 1000.0 1e3 abc 99999999999999999999";
+    let clocks: Vec<&str> = CLOCKS.split(' ').collect();
+    let words: Vec<&str> = [CLOCKS, OTHERS, VALUES]
+        .into_iter()
+        .flat_map(|s| s.split(' '))
+        .collect();
+    let mut rng = support::Rng::new(3);
+    for _ in 0..20_000 {
+        let len = 1 + rng.below(8);
+        let tokens: Vec<&str> = (0..len).map(|_| words[rng.below(words.len())]).collect();
+        if !tokens.iter().any(|t| clocks.contains(t)) {
+            continue;
+        }
+        let line = tokens.join(" ");
+        let l = limits(&line);
+        for us in [Colour::White, Colour::Black] {
+            let Some(b) = budget(&l, us) else {
+                panic!("go {line}: no budget for {us:?}");
+            };
+            let time = l.movetime.or(l.clock(us).map(|(t, _)| t)).unwrap_or(0);
+            assert!(
+                b.hard <= time.saturating_sub(MOVE_OVERHEAD_MS),
+                "go {line}: {b:?} for {us:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn movetime_is_the_budget_less_the_overhead() {
     let b = budget(&limits("movetime 500"), Colour::White).expect("budget");
