@@ -5,6 +5,7 @@
 
 mod support;
 
+use std::fmt::Write as _;
 use std::process::Command;
 
 use cadence_core::position::Board;
@@ -464,7 +465,7 @@ fn a_burst_of_go_and_stop_answers_every_go_once() {
             } else {
                 "go infinite"
             };
-            input.push_str(&format!("position fen {fen}\n{go}\nstop\n"));
+            writeln!(input, "position fen {fen}\n{go}\nstop").expect("a String takes any write");
             asked.push(fen.as_str());
         }
         input.push_str("isready\nquit\n");
