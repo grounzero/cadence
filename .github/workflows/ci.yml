@@ -735,3 +735,76 @@ jobs:
           done
           true
 
+  # install.sh --source at the newest +n base, which must install under the base's -dev- name. Then
+  # the same base built under the release's name, which the script must refuse.
+  install-source:
+    name: install.sh --source, Linux x86-64
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Read from the public repository as the script reads its tags, and fetched here so the checks
+      # below hold the build to the base's own commit and bench.txt.
+      - name: The newest +n base
+        run: |
+          base=$(git ls-remote --tags --refs https://github.com/grounzero/cadence.git \
+            | sed -n 's#.*refs/tags/##p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+$' | sort -V | tail -n 1)
+          [ -n "$base" ] || { echo "::error::the repository has no +n tag"; exit 1; }
+          git fetch --quiet --depth 1 origin "+refs/tags/$base:refs/tags/$base"
+          commit=$(git rev-parse "$base^{commit}" | cut -c1-7)
+          echo "the newest +n base is $base, at $commit"
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "DEV_NAME=Cadence ${base%%+*}-dev-$commit" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=Cadence ${base%%+*}" >> "$GITHUB_ENV"
+
+      - name: install.sh --source installs the +n base under its -dev- name
+        run: |
+          bash install.sh --yes --source --version "$BASE" --prefix "$RUNNER_TEMP/plus" 2>&1 | tee plus.txt
+          grep -qF '== Building from source, as --source asks' plus.txt \
+            || { echo "::error::install.sh did not build from source"; exit 1; }
+          grep -qF "the engine calls itself $DEV_NAME." plus.txt \
+            || { echo "::error::install.sh did not take $DEV_NAME"; exit 1; }
+          bin="$RUNNER_TEMP/plus/cadence"
+          [ -x "$bin" ] || { echo "::error::nothing installed at $bin"; exit 1; }
+          want=$(git show "$BASE:bench.txt" | tr -d '[:space:]')
+          got=$("$bin" bench | tail -n 1 | awk '{print $1}')
+          id=$(printf 'uci\nquit\n' | "$bin" | sed -n 's/^id name //p')
+          echo "installed $bin: bench $got against $want, id name $id"
+          [ "$got" = "$want" ] || { echo "::error::the build's bench is $got and $BASE's bench.txt says $want"; exit 1; }
+          [ "$id" = "$DEV_NAME" ] || { echo "::error::the build calls itself $id and not $DEV_NAME"; exit 1; }
+          printf '### %s\n%s installed, bench %s\n' "install.sh --source $BASE" "$id" "$got" >> "$GITHUB_STEP_SUMMARY"
+
+      # A git that answers the build script's tag question with the version makes the +n source call
+      # itself the release, and passes every other call through.
+      - name: install.sh refuses the +n base built under the release's name
+        run: |
+          real=$(command -v git)
+          mkdir -p "$RUNNER_TEMP/release-git"
+          cat > "$RUNNER_TEMP/release-git/git" <<EOF
+          #!/bin/sh
+          [ "\$1" = describe ] && { echo "${BASE%%+*}"; exit 0; }
+          exec "$real" "\$@"
+          EOF
+          chmod 755 "$RUNNER_TEMP/release-git/git"
+          rc=0
+          PATH="$RUNNER_TEMP/release-git:$PATH" bash install.sh --yes --source --version "$BASE" \
+            --prefix "$RUNNER_TEMP/misnamed" 2>&1 | tee misnamed.txt || rc=$?
+          [ "$rc" -ne 0 ] || { echo "::error::install.sh installed a +n build that calls itself the release"; exit 1; }
+          grep -qF "it calls itself '$RELEASE_NAME' and not '$DEV_NAME', so it is not installed" misnamed.txt \
+            || { echo "::error::install.sh failed, but not for the build's name"; exit 1; }
+          [ ! -e "$RUNNER_TEMP/misnamed/cadence" ] || { echo "::error::a binary was installed"; exit 1; }
+          grep -qF 'Attach this file to a GitHub issue' misnamed.txt \
+            || { echo "::error::no note to attach the log"; exit 1; }
+          echo "refused, as it must be: $(grep -F 'it calls itself' misnamed.txt | tail -n 1)"
+
+      - name: The logs, when an install failed
+        if: failure()
+        run: |
+          for log in "$HOME"/.cache/cadence/install-*.log; do
+            [ -f "$log" ] && { echo "== $log"; cat "$log"; }
+          done
+          true
