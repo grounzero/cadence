@@ -8,7 +8,7 @@ use std::process::Command;
 
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
-use cadence_core::{Move, generate_legal, parse_uci};
+use cadence_core::{Move, PieceType, generate_legal, parse_uci};
 use cadence_engine::datagen::game::{Ending, Outcome, ending};
 use cadence_engine::datagen::opening::{self, RANDOM_PLIES, WINDOW};
 use cadence_engine::datagen::record::Record;
@@ -306,6 +306,36 @@ fn extraction_refuses_games_out_of_turn_in_their_run() {
     }
 }
 
+/// A record's result labels every position it gives, so moves that end otherwise, or go on after
+/// the end, are refused; a move after mate was already illegal.
+#[test]
+fn extraction_refuses_a_false_result_and_moves_after_the_end() {
+    let mate = "f2f3:0 e7e5:0 g2g4:0 d8h4:0";
+    let shuffle = "g1f3:0 g8f6:0 f3g1:0 f6g8:0";
+    let repeated = format!("{shuffle} {shuffle}");
+    let record = |moves: &str, result: &str| format!("0 | 518 518 |  | {moves} | {result} | 0");
+    let extracts = |line: &str| {
+        let (mut train, mut holdout) = (Vec::new(), Vec::new());
+        extract::extract(line.as_bytes(), &mut train, &mut holdout, 0).is_ok()
+    };
+    for (line, what) in [
+        (record("e2e4:12", "1-0 mate"), "a mate after one move"),
+        (record(mate, "1-0 mate"), "Black's mate as White's"),
+        (
+            record(&format!("{mate} e1f2:0"), "0-1 mate"),
+            "a move after mate",
+        ),
+        (
+            record(&format!("{repeated} g1f3:0"), "1/2-1/2 repetition"),
+            "a move after the third occurrence",
+        ),
+    ] {
+        assert!(!extracts(&line), "{what} was extracted");
+    }
+    assert!(extracts(&record(mate, "0-1 mate")));
+    assert!(extracts(&record(&repeated, "1/2-1/2 repetition")));
+}
+
 /// A stage that fails leaves no output for the next one to read as whole.
 #[test]
 fn a_failed_extraction_leaves_no_output_behind() {
@@ -359,21 +389,72 @@ fn the_tuner_uses_a_named_holdout_whole() {
     assert!(stdout.lines().any(|l| l == want), "{stdout}");
 }
 
+/// From the start, each ply the first in generation order to reach a position not seen before, a
+/// pawn moving only near the fifty-move limit: up to `quiet` plies none captures or checks.
+/// After that no pawn moves, so a rule ends the game within a hundred plies.
+fn walked_game(quiet: usize) -> (Vec<Move>, Ending, Outcome) {
+    let mut b = Position::new(board(cadence_core::START_FEN));
+    let mut seen = vec![b.key()];
+    let mut played = Vec::new();
+    loop {
+        if let Some((end, outcome)) = ending(&b) {
+            return (played, end, outcome);
+        }
+        let in_window = played.len() < quiet;
+        let legal = generate_legal(&b);
+        let (mut pawn, mut piece, mut any) = (None, None, None);
+        for m in legal.iter().filter(|m| !m.is_noisy()) {
+            let is_pawn = b.by_type(PieceType::Pawn).contains(m.from_sq());
+            b.make_move(m);
+            let fresh = !seen.contains(&b.key());
+            let clean = !b.in_check() && ending(&b).is_none();
+            b.unmake_move(m);
+            let first = if is_pawn { &mut pawn } else { &mut piece };
+            if fresh && (clean || !in_window) && first.is_none() {
+                *first = Some(m);
+            }
+            if !is_pawn && any.is_none() {
+                any = Some(m);
+            }
+        }
+        let next = if in_window && b.halfmove_clock() >= 90 {
+            pawn.or(piece)
+        } else if in_window {
+            piece.or(pawn)
+        } else {
+            piece.or(any).or_else(|| legal.iter().next())
+        };
+        let m = next.unwrap_or_else(|| panic!("no move fits at ply {}", played.len()));
+        b.play(m);
+        seen.push(b.key());
+        played.push(m);
+    }
+}
+
 #[test]
 fn the_window_keeps_plies_eight_to_two_hundred_and_forty_inclusive() {
-    // Knights shuffling from the standard start: every position is quiet and none is in check.
-    let shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"];
-    let moves: Vec<String> = (0..300).map(|i| format!("{}:0", shuffle[i % 4])).collect();
-    let plies: Vec<&str> = (0..8).map(|i| shuffle[i % 4]).collect();
+    let (played, end, outcome) = walked_game(8 + extract::LAST_PLY + 2);
+    let (plies, moves) = played.split_at(8);
+    assert!(
+        moves.len() > extract::LAST_PLY + 1,
+        "the game ended inside the window"
+    );
+    let plies: Vec<String> = plies.iter().map(|m| m.to_uci_chess960()).collect();
+    let moves: Vec<String> = moves
+        .iter()
+        .map(|m| format!("{}:0", m.to_uci_chess960()))
+        .collect();
     let line = format!(
-        "0 | 518 518 | {} | {} | 1/2-1/2 repetition | 0\n",
+        "0 | 518 518 | {} | {} | {} {} | 0\n",
         plies.join(" "),
-        moves.join(" ")
+        moves.join(" "),
+        outcome.text(),
+        end.word()
     );
     let (train, _, stats) = extract(line.as_bytes(), 0);
     let kept = extract::LAST_PLY - extract::FIRST_PLY + 1;
     assert_eq!(positions(&train).len(), kept);
-    assert_eq!(stats.outside, (300 - kept) as u64);
+    assert_eq!(stats.outside, (moves.len() - kept) as u64);
 }
 
 /// A provenance line must parse to its end, or a header cut short would skip the count it carries;
