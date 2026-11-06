@@ -16,7 +16,7 @@ TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
 MARK="# Added by the Cadence installer"
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
-INSTALLER_VERSION="0.5.23"
+INSTALLER_VERSION="0.6.0-rc.1"
 
 YES=0
 KEEP_LOG=0
