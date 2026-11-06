@@ -446,7 +446,8 @@ jobs:
   # check job's own steps. It takes nearly twice the other legs, so it runs on main, nightly and by
   # hand, and no pull request waits on it.
   intel:
-    name: ${{ matrix.name }}
+    # Named outright, since a skipped job's matrix is never expanded.
+    name: x86_64-apple-darwin
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
