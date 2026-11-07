@@ -5,6 +5,7 @@
 
 mod support;
 
+use std::fmt::Write as _;
 use std::process::Command;
 
 use cadence_core::position::Board;
@@ -402,6 +403,92 @@ fn ucinewgame_is_accepted_and_the_next_go_works() {
     let out = talk("ucinewgame\nisready\nposition startpos\ngo depth 1\nquit\n");
     assert!(out.lines().any(|l| l == "readyok"));
     assert_bestmove_legal(&out, START_FEN, false);
+}
+
+/// Each `bestmove` in `out`, in order, is legal in the position its `go` searched. So a `go` that
+/// answered twice, or not at all, fails the count.
+fn assert_each_legal(out: &str, fens: &[&str]) {
+    let moves = bestmoves(out);
+    assert_eq!(moves.len(), fens.len(), "one bestmove per go: {out:?}");
+    for (i, (mv, fen)) in moves.iter().zip(fens).enumerate() {
+        let board = Board::from_fen(fen).expect("fen parses");
+        assert!(
+            parse_uci(&generate_legal(&board), mv).is_some(),
+            "bestmove {i}, {mv}, is not legal in {fen}: {out:?}"
+        );
+    }
+}
+
+/// `ucinewgame` stops a running search before it empties the table, so that search answers once,
+/// before `readyok`. At four threads the stop joins every helper first.
+#[test]
+fn ucinewgame_during_a_search_answers_it_once_and_the_next_go_is_legal() {
+    let kiwipete = support::standard_fen("kiwipete");
+    for threads in [1, 4] {
+        let out = talk(&format!(
+            "setoption name Threads value {threads}\nposition startpos\ngo infinite\nucinewgame\n\
+             isready\nposition fen {kiwipete}\ngo depth 2\nquit\n"
+        ));
+        let lines: Vec<&str> = out.lines().collect();
+        let first = lines
+            .iter()
+            .position(|l| l.starts_with("bestmove "))
+            .unwrap_or_else(|| panic!("Threads {threads}: no bestmove in {out:?}"));
+        let ready = lines
+            .iter()
+            .position(|l| *l == "readyok")
+            .unwrap_or_else(|| panic!("Threads {threads}: no readyok in {out:?}"));
+        assert!(
+            first < ready,
+            "Threads {threads}: readyok before the stopped search answered: {out:?}"
+        );
+        assert_each_legal(&out, &[START_FEN, &kiwipete]);
+    }
+}
+
+/// Sent all at once, so many a `stop` arrives before its search has started. Each `go` still
+/// answers exactly once, for the position it was given.
+#[test]
+fn a_burst_of_go_and_stop_answers_every_go_once() {
+    let fens = [
+        START_FEN.to_string(),
+        support::standard_fen("kiwipete"),
+        support::standard_fen("pos3"),
+    ];
+    for threads in [1, 4] {
+        let mut input = format!("setoption name Threads value {threads}\n");
+        let mut asked = Vec::new();
+        for i in 0..24 {
+            let fen = &fens[i % fens.len()];
+            let go = if i % 3 == 0 {
+                "go depth 3"
+            } else {
+                "go infinite"
+            };
+            writeln!(input, "position fen {fen}\n{go}\nstop").expect("a String takes any write");
+            asked.push(fen.as_str());
+        }
+        input.push_str("isready\nquit\n");
+        let out = talk(&input);
+        assert!(
+            out.lines().any(|l| l == "readyok"),
+            "Threads {threads}: isready went unanswered: {out:?}"
+        );
+        assert_each_legal(&out, &asked);
+    }
+}
+
+/// The opponent did not play the move pondered on: the ponder answers `stop`, and the next search
+/// answers for the position actually reached.
+#[test]
+fn a_ponder_miss_answers_the_stop_and_then_the_position_reached() {
+    const PONDERED: &str = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
+    const REACHED: &str = "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
+    let out = talk(
+        "position startpos moves e2e4 e7e5\ngo ponder wtime 60000 btime 60000\nstop\n\
+         position startpos moves e2e4 d7d5\ngo depth 2\nquit\n",
+    );
+    assert_each_legal(&out, &[PONDERED, REACHED]);
 }
 
 /// The running search holds its own table, its own tables and a copy of the board, so a change sent

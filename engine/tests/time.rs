@@ -117,6 +117,74 @@ fn any_go_holding_a_clock_keyword_is_budgeted() {
     }
 }
 
+/// Random `go` lines of every keyword, good and bad values and stray tokens, for a fixed time. A
+/// line naming a clock budgets both sides within that side's clock, and a ponder only once its hit.
+#[test]
+fn random_go_lines_naming_a_clock_are_budgeted_for_a_fixed_time() {
+    const BUDGET: Duration = Duration::from_secs(2);
+    const CLOCKS: [&str; 6] = ["wtime", "btime", "winc", "binc", "movestogo", "movetime"];
+    const OTHERS: [&str; 7] = [
+        "depth",
+        "nodes",
+        "mate",
+        "infinite",
+        "ponder",
+        "searchmoves",
+        "e2e4",
+    ];
+    const VALUES: [&str; 14] = [
+        "0",
+        "1",
+        "7",
+        "1000",
+        "3600000",
+        "-1",
+        "+7",
+        "1000.0",
+        "1e3",
+        "abc",
+        "9223372036854775807",
+        "9223372036854775808",
+        "-9223372036854775809",
+        "99999999999999999999",
+    ];
+    let mut rng = support::Rng::new(0x5EED_2026_1106);
+    let start = Instant::now();
+    let (mut lines, mut clocked) = (0u64, 0u64);
+    while clocked == 0 || start.elapsed() < BUDGET {
+        let len = 1 + rng.below(12);
+        let tokens: Vec<&str> = (0..len)
+            .map(|_| match rng.below(10) {
+                0..=3 => CLOCKS[rng.below(CLOCKS.len())],
+                4..=6 => OTHERS[rng.below(OTHERS.len())],
+                _ => VALUES[rng.below(VALUES.len())],
+            })
+            .collect();
+        lines += 1;
+        if !tokens.iter().any(|t| CLOCKS.contains(t)) {
+            continue;
+        }
+        clocked += 1;
+        let line = tokens.join(" ");
+        let l = limits(&line);
+        let hit = Limits { ponder: false, ..l };
+        for us in [Colour::White, Colour::Black] {
+            if l.ponder {
+                assert_eq!(budget(&l, us), None, "go {line}: a ponder took a budget");
+            }
+            let Some(b) = budget(&hit, us) else {
+                panic!("go {line}: no budget for {us:?}");
+            };
+            let time = hit.movetime.or(hit.clock(us).map(|(t, _)| t)).unwrap_or(0);
+            assert!(
+                b.soft <= b.hard && b.hard <= time.saturating_sub(MOVE_OVERHEAD_MS),
+                "go {line}: {b:?} for {us:?}"
+            );
+        }
+    }
+    println!("{lines} lines, {clocked} naming a clock");
+}
+
 #[test]
 fn movetime_is_the_budget_less_the_overhead() {
     let b = budget(&limits("movetime 500"), Colour::White).expect("budget");
