@@ -64,7 +64,7 @@ impl Search<'_> {
         // So the extension cap reads this depth, not what the last iteration left, and no frame or
         // flag is read from an earlier run.
         self.root_depth = depth;
-        self.frames.fill(None);
+        self.heuristics.frames.fill(None);
         self.tt_pv.fill(false);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
@@ -113,7 +113,7 @@ impl Search<'_> {
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
         let us_eval = board.side_to_move();
-        self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
+        self.heuristics.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -150,7 +150,7 @@ impl Search<'_> {
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts.
-        let futile = futile_node(self.evals[ply], depth, alpha);
+        let futile = futile_node(self.heuristics.evals[ply], depth, alpha);
         self.stats.futility_nodes.add_if(futile);
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
@@ -187,7 +187,7 @@ impl Search<'_> {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
                 self.count_lmr_losing_capture(base, m);
-                let history = move_history(m, self.history.get(us, m));
+                let history = move_history(m, self.heuristics.history.get(us, m));
                 self.late_move(board, child, base, history, ply, alpha, pv, kind)
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
@@ -210,7 +210,7 @@ impl Search<'_> {
                         self.table.update(ply, m);
                     }
                     if alpha >= beta {
-                        remember_killer(&mut self.killers[ply], m);
+                        remember_killer(&mut self.heuristics.killers[ply], m);
                         // A move the margin or the count gave up was never played, so it is
                         // passed over rather than debited.
                         self.remember_history(board, ply, legal.as_slice(), i, &searched, depth);
@@ -236,16 +236,16 @@ impl Search<'_> {
         ply: usize,
     ) -> ([Move; 2], Picker) {
         let ordered = usize::from(order_first(legal, tt_move));
-        let killers = self.killers[ply];
+        let killers = self.heuristics.killers[ply];
         let mut continuation = [None; OFFSETS.len()];
         for (row, &offset) in continuation.iter_mut().zip(OFFSETS.iter()) {
-            match conthist::context(&self.frames, ply, offset) {
-                Some(context) => *row = Some(self.conthist.row(context)),
+            match conthist::context(&self.heuristics.frames, ply, offset) {
+                Some(context) => *row = Some(self.heuristics.conthist.row(context)),
                 None => self.stats.continuation_absent.add_one(),
             }
         }
         let tables = Tables {
-            butterfly: self.history.side(us),
+            butterfly: self.heuristics.history.side(us),
             continuation,
         };
         let picker = Picker::new(
@@ -261,7 +261,7 @@ impl Search<'_> {
 
     /// Every descent into `negamax` makes its move here, so a child's frames are its path's.
     pub(super) fn make(&mut self, board: &mut Position, ply: usize, m: Move) {
-        self.frames[ply] = conthist::frame(board, m);
+        self.heuristics.frames[ply] = conthist::frame(board, m);
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = m;
@@ -493,7 +493,7 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let admitted = self.evals[ply].is_some_and(|eval| eval >= beta)
+        let admitted = self.heuristics.evals[ply].is_some_and(|eval| eval >= beta)
             && beta == alpha + 1
             && !score::is_decisive(beta)
             && board.plies_from_null() != 0
@@ -508,7 +508,7 @@ impl Search<'_> {
         self.stats.null_attempts.add_one();
         let reduced = depth.saturating_sub(1 + null_reduction(depth));
         // No move, so the child reads none one ply up.
-        self.frames[ply] = None;
+        self.heuristics.frames[ply] = None;
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = Move::NULL;
@@ -542,7 +542,7 @@ impl Search<'_> {
         beta: Score,
         kind: Expected,
     ) -> Option<Score> {
-        let eval = self.evals[ply];
+        let eval = self.heuristics.evals[ply];
         let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
             // Asked as though the window were null, so the counter sees only nodes the window
             // alone refused.
@@ -772,7 +772,7 @@ mod tests {
         let mut board = Position::new(root);
         search.root_depth = DEPTH;
         search.make(&mut board, 0, m);
-        search.evals[1] = Some(BETA + 200);
+        search.heuristics.evals[1] = Some(BETA + 200);
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
         assert!(
             search.stats.null_attempts.get() > 0,
@@ -797,7 +797,7 @@ mod tests {
             let static_eval = eval::evaluate(&root);
             let mut board = Position::new(root);
             search.root_depth = 6;
-            search.evals[0] = Some(static_eval);
+            search.heuristics.evals[0] = Some(static_eval);
             let beta = static_eval;
             let cut = search.probcut(&mut board, 6, 0, beta - 1, beta, parent);
             assert!(cut.is_some(), "the capture did not cut");
@@ -856,11 +856,11 @@ mod tests {
         let mut board = Position::new(root);
         search.root_depth = DEPTH;
         search.make(&mut board, 0, m);
-        let root_frame = search.frames[0].expect("the root move's frame");
+        let root_frame = search.heuristics.frames[0].expect("the root move's frame");
         // Black's king onto a1, which no move below the null move can be.
         let stale = 11 * 64;
-        search.frames[1] = Some(stale);
-        search.evals[1] = Some(BETA + 200);
+        search.heuristics.frames[1] = Some(stale);
+        search.heuristics.evals[1] = Some(BETA + 200);
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
 
         // Nodes below it try their own, but only after this one was admitted.
@@ -868,13 +868,24 @@ mod tests {
             search.stats.null_attempts.get() > 0,
             "the null move was refused"
         );
-        assert_eq!(conthist::context(&search.frames, 2, 1), None, "one ply up");
         assert_eq!(
-            conthist::context(&search.frames, 2, 2),
+            conthist::context(&search.heuristics.frames, 2, 1),
+            None,
+            "one ply up"
+        );
+        assert_eq!(
+            conthist::context(&search.heuristics.frames, 2, 2),
             Some(root_frame),
             "two plies up"
         );
-        let written = |context| search.conthist.row(context).iter().any(|&v| v != 0);
+        let written = |context| {
+            search
+                .heuristics
+                .conthist
+                .row(context)
+                .iter()
+                .any(|&v| v != 0)
+        };
         assert!(
             !written(stale),
             "a node below the null move read its ply's old frame"

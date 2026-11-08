@@ -371,12 +371,12 @@ impl Search<'_> {
 
     #[must_use]
     pub fn history(&self) -> &History {
-        &self.history
+        &self.heuristics.history
     }
 
     #[must_use]
     pub fn continuation(&self) -> &ContinuationHistory {
-        &self.conthist
+        &self.heuristics.conthist
     }
 
     /// Continuation entries the cutoffs credited.
@@ -500,7 +500,7 @@ impl Search<'_> {
         if in_check {
             return None;
         }
-        let correction = self.corrhist.correction(pawn_key, side);
+        let correction = self.heuristics.corrhist.correction(pawn_key, side);
         self.stats.corrhist_applied.add_if(correction != 0);
         Some(eval::evaluate_cached(board, &mut self.pawns) + correction)
     }
@@ -518,7 +518,7 @@ impl Search<'_> {
         bound: Bound,
         depth: u32,
     ) {
-        let Some(eval) = self.evals[ply] else {
+        let Some(eval) = self.heuristics.evals[ply] else {
             return;
         };
         if score::is_decisive(best) || best_move == Move::NULL || best_move.is_noisy() {
@@ -530,7 +530,9 @@ impl Search<'_> {
             Bound::Upper => best < eval,
         };
         if usable {
-            self.corrhist.update(pawn_key, side, best - eval, depth);
+            self.heuristics
+                .corrhist
+                .update(pawn_key, side, best - eval, depth);
             self.stats.corrhist_updates.add_one();
         }
     }
@@ -552,12 +554,13 @@ impl Search<'_> {
             return;
         }
         let us = board.side_to_move();
-        let contexts = OFFSETS.map(|offset| conthist::context(&self.frames, ply, offset));
+        let contexts =
+            OFFSETS.map(|offset| conthist::context(&self.heuristics.frames, ply, offset));
         let bonus = history::bonus(depth);
-        self.history.update(us, cut, bonus);
+        self.heuristics.history.update(us, cut, bonus);
         let cut_to = conthist::piece_to(board, cut);
         for &context in contexts.iter().flatten() {
-            self.conthist.update(context, cut_to, bonus);
+            self.heuristics.conthist.update(context, cut_to, bonus);
             self.stats.continuation_credits.add_one();
         }
         for (i, &beaten) in passed.iter().enumerate() {
@@ -565,10 +568,10 @@ impl Search<'_> {
                 continue;
             }
             self.stats.history_debits.add_one();
-            self.history.update(us, beaten, -bonus);
+            self.heuristics.history.update(us, beaten, -bonus);
             let beaten_to = conthist::piece_to(board, beaten);
             for &context in contexts.iter().flatten() {
-                self.conthist.update(context, beaten_to, -bonus);
+                self.heuristics.conthist.update(context, beaten_to, -bonus);
                 self.stats.continuation_debits.add_one();
             }
         }
@@ -665,19 +668,19 @@ mod tests {
         searched.set(0);
         // Any two rows, as the moves one and two plies above the node.
         let contexts = [200, 100];
-        search.frames[..2].copy_from_slice(&contexts.map(Some));
+        search.heuristics.frames[..2].copy_from_slice(&contexts.map(Some));
         search.remember_history(&board, 2, &[tried, given_up, cutter], 2, &searched, 6);
 
         let bonus = history::bonus(6);
         let side = board.side_to_move();
         for (m, expected) in [(tried, -bonus), (given_up, 0), (cutter, bonus)] {
             assert_eq!(
-                search.history.get(side, m),
+                search.heuristics.history.get(side, m),
                 expected,
                 "the butterfly, {m:?}"
             );
             for context in contexts {
-                let entry = search.conthist.row(context)[conthist::piece_to(&board, m)];
+                let entry = search.heuristics.conthist.row(context)[conthist::piece_to(&board, m)];
                 assert_eq!(i32::from(entry), expected, "row {context}, {m:?}");
             }
         }
