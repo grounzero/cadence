@@ -151,7 +151,7 @@ impl Stats {
 impl Search<'_> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
-        self.nodes
+        self.run.nodes
     }
 
     #[cfg(feature = "counters")]
@@ -403,22 +403,23 @@ impl Search<'_> {
     /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
-        &self.iterations
+        &self.run.iterations
     }
 
     #[must_use]
     pub fn iteration_roots(&self) -> &[(Move, Score)] {
-        &self.roots
+        &self.run.roots
     }
 
     /// Completed iterations in a row ending on the last one's move, counting it. Derived from
     /// [`Search::iteration_roots`], so the two cannot disagree.
     #[must_use]
     pub fn stable_iterations(&self) -> usize {
-        let Some(&(last, _)) = self.roots.last() else {
+        let Some(&(last, _)) = self.run.roots.last() else {
             return 0;
         };
-        self.roots
+        self.run
+            .roots
             .iter()
             .rev()
             .take_while(|&&(m, _)| m == last)
@@ -428,18 +429,18 @@ impl Search<'_> {
     /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {
-        self.completed_depth
+        self.run.completed_depth
     }
 
     /// From the side to move's point of view.
     #[must_use]
     pub fn score(&self) -> Score {
-        self.score
+        self.run.score
     }
 
     #[must_use]
     pub fn pv(&self) -> &[Move] {
-        &self.pv
+        &self.run.pv
     }
 
     #[must_use]
@@ -481,9 +482,9 @@ impl Search<'_> {
 
     #[inline]
     pub(super) fn visit(&mut self, ply: usize) {
-        self.nodes += 1;
-        self.seldepth = self.seldepth.max(ply);
-        if self.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
+        self.run.nodes += 1;
+        self.run.seldepth = self.run.seldepth.max(ply);
+        if self.run.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
             self.publish_nodes();
         }
     }
@@ -578,7 +579,7 @@ impl Search<'_> {
     }
 
     pub(super) fn elapsed_ms(&self) -> u64 {
-        u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+        u64::try_from(self.clock.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     /// The group's where one is watching: the siblings' counts from their slots, this worker's
@@ -586,11 +587,11 @@ impl Search<'_> {
     #[inline]
     pub(super) fn reported_nodes(&self) -> u64 {
         let Some((nodes, worker_index)) = self.shared_nodes else {
-            return self.nodes;
+            return self.run.nodes;
         };
         nodes.iter().enumerate().fold(0, |total, (index, nodes)| {
             total.saturating_add(if index == worker_index {
-                self.nodes
+                self.run.nodes
             } else {
                 nodes.load(Ordering::Relaxed)
             })
@@ -602,7 +603,7 @@ impl Search<'_> {
     #[inline]
     pub(super) fn publish_nodes(&self) {
         if let Some((nodes, worker_index)) = self.shared_nodes {
-            nodes[worker_index].store(self.nodes, Ordering::Relaxed);
+            nodes[worker_index].store(self.run.nodes, Ordering::Relaxed);
         }
     }
 }
@@ -632,7 +633,7 @@ mod tests {
         slots[3].store(3, Ordering::Relaxed);
 
         let mut search = Search::new(&stop, &tt);
-        search.nodes = 7;
+        search.run.nodes = 7;
         assert_eq!(
             search.reported_nodes(),
             7,

@@ -192,11 +192,11 @@ impl Search<'_> {
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
-            if i > 0 && !self.aborted && score > alpha && score < beta {
+            if i > 0 && !self.run.aborted && score > alpha && score < beta {
                 score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
             }
             board.unmake_move(m);
-            if self.aborted {
+            if self.run.aborted {
                 return ABORTED;
             }
             if score > best {
@@ -350,7 +350,7 @@ impl Search<'_> {
     /// The one store, and where a node failing low takes its parent's flag.
     fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
         // An aborted node's value is `ABORTED` and not a bound, and the draw score besides.
-        debug_assert!(!self.aborted, "a store after the stop");
+        debug_assert!(!self.run.aborted, "a store after the stop");
         let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
         let score = score::to_tt(best, ply);
         // Nothing here beat alpha, so the move into it may have been the good one.
@@ -477,7 +477,7 @@ impl Search<'_> {
         let reduced = reduced_depth(child, r);
         let cut = self.derive(kind, Via::Reduced);
         let score = -self.negamax(board, reduced, ply + 1, -alpha - 1, -alpha, cut);
-        if score > alpha && !self.aborted {
+        if score > alpha && !self.run.aborted {
             self.stats.lmr_researches.add_one();
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
@@ -517,7 +517,7 @@ impl Search<'_> {
         // The pass hands the move over, and the null move cuts only where that child fails low.
         let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1, Expected::All);
         board.unmake_null_move();
-        if self.aborted {
+        if self.run.aborted {
             return Some(ABORTED);
         }
         if score >= beta {
@@ -572,7 +572,7 @@ impl Search<'_> {
                 score = -self.negamax(board, child, ply + 1, -raised, -raised + 1, flipped);
             }
             board.unmake_move(m);
-            if self.aborted {
+            if self.run.aborted {
                 return Some(ABORTED);
             }
             if score >= raised {

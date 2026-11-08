@@ -140,11 +140,11 @@ impl Search<'_> {
     /// The limits and stop flag at every node; the clock only every `CLOCK_INTERVAL` nodes, and
     /// only with a budget.
     pub(super) fn out_of_time(&mut self) -> bool {
-        if self.aborted {
+        if self.run.aborted {
             return true;
         }
         if self.stop.load(Ordering::Relaxed) {
-            self.aborted = true;
+            self.run.aborted = true;
             return true;
         }
         if self.limits.infinite {
@@ -154,17 +154,17 @@ impl Search<'_> {
             && self.reported_nodes() >= n
             && !self.owes_first_line()
         {
-            self.aborted = true;
+            self.run.aborted = true;
             return true;
         }
-        if self.nodes & (CLOCK_INTERVAL - 1) == 0 {
+        if self.run.nodes & (CLOCK_INTERVAL - 1) == 0 {
             // On the existing interval: a hit that waited for the iteration's end would spend the
             // clock it just took.
             self.absorb_ponder_hit();
-            if let Some(b) = self.budget
+            if let Some(b) = self.clock.budget
                 && self.elapsed_ms() >= b.hard
             {
-                self.aborted = true;
+                self.run.aborted = true;
                 return true;
             }
         }
@@ -174,25 +174,25 @@ impl Search<'_> {
     /// Helpers can spend a group's node count before its primary has a line, so the primary answers
     /// from its first completed iteration whatever the count says.
     fn owes_first_line(&self) -> bool {
-        self.shared_nodes.is_some() && self.worker_index == 0 && self.completed_depth == 0
+        self.shared_nodes.is_some() && self.worker_index == 0 && self.run.completed_depth == 0
     }
 
     /// The ladder is cleared: an entry measured from the ponder's origin gives a branching factor
     /// below one and starts an iteration on it.
     pub(super) fn absorb_ponder_hit(&mut self) {
-        if !self.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
+        if !self.clock.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
             return;
         }
-        self.pondering = false;
-        self.start = Instant::now();
-        self.iterations.clear();
-        self.budget = self.budget_on_hit;
+        self.clock.pondering = false;
+        self.clock.start = Instant::now();
+        self.run.iterations.clear();
+        self.clock.budget = self.clock.budget_on_hit;
     }
 
     /// Under `infinite` or an unhit ponder, both of which mean do not answer until told. A hit is a
     /// telling too: a ponder that ran out of iterations before it would otherwise never move.
     pub(super) fn wait_if_open_ended(&mut self) {
-        while (self.limits.infinite || self.pondering) && !self.stop_requested() {
+        while (self.limits.infinite || self.clock.pondering) && !self.stop_requested() {
             self.absorb_ponder_hit();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -236,21 +236,21 @@ mod tests {
             nodes: Some(100),
             ..Limits::default()
         });
-        alone.nodes = 100;
+        alone.run.nodes = 100;
         assert!(alone.out_of_time(), "one thread stops at the limit");
 
         let mut helper = member(&stop, &tt, &slots, 1);
         assert!(helper.out_of_time(), "a helper stops");
 
         let mut primary = member(&stop, &tt, &slots, 0);
-        primary.nodes = 1;
+        primary.run.nodes = 1;
         assert!(!primary.out_of_time(), "the primary owes its first line");
-        primary.completed_depth = 1;
+        primary.run.completed_depth = 1;
         assert!(primary.out_of_time(), "and stops once it has one");
 
         let mut clocked = member(&stop, &tt, &slots, 0);
-        clocked.budget = Some(Budget { soft: 0, hard: 0 });
-        clocked.nodes = CLOCK_INTERVAL;
+        clocked.clock.budget = Some(Budget { soft: 0, hard: 0 });
+        clocked.run.nodes = CLOCK_INTERVAL;
         assert!(clocked.out_of_time(), "a hard deadline still ends it");
 
         stop.store(true, Ordering::Relaxed);
