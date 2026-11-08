@@ -332,8 +332,12 @@ x86_level() {
         LEVEL=unread
         return
     fi
-    # /proc/cpuinfo names LZCNT abm.
+    # /proc/cpuinfo names LZCNT abm, and on Windows prints abm only on AMD. Every processor with AVX2
+    # has LZCNT, so on Windows AVX2 stands for it, as it does in install.ps1.
     case " $flags " in *" abm "*) flags="$flags lzcnt" ;; esac
+    if [ "$OS" = windows ]; then
+        case " $flags " in *" avx2 "*) flags="$flags lzcnt" ;; esac
+    fi
     for f in avx2 bmi1 lzcnt popcnt; do
         case " $flags " in *" $f "*) ;; *) LACKS="$LACKS $f" ;; esac
     done
