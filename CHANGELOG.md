@@ -17,12 +17,13 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
-## [0.6.0-rc.1] - 2026-11-06
+## [0.6.0-rc.2] - 2026-11-08
 
-A release candidate for 0.6.0, published as a pre-release. Two things come
-in rc.2 and are not here: the change that keeps only the fastest wins at a
-won tablebase root, pull request 189, whose test is still running, and the
-release checks run on our own machines, which wait for that test to end.
+A release candidate for 0.6.0, published as a pre-release, after
+0.6.0-rc.1 of 2026-11-06. It adds the change that keeps only the fastest
+wins at a won tablebase root, pull request 189, which rc.1 left out while
+its test ran, and a fix to the install script under Git Bash. The release
+checks run on our own machines have passed.
 
 ### Added
 
@@ -43,9 +44,17 @@ release checks run on our own machines, which wait for that test to end.
   asked for, and reports the move it plays.
 - UCI: `SyzygyPath` is taken exactly as sent, spaces included.
 - The README documents every UCI option, the tools and the generic build.
+- Search: its state is grouped into its counters, its move-ordering
+  tables, the run's result and its clock, with no change to play: every
+  bench position searches the same nodes as before.
 
 ### Fixed
 
+- Tablebases: at a won root, only the winning moves that reach a capture
+  or a pawn move soonest are searched. The losing side is unchanged.
+- Install scripts: under Git Bash on an Intel processor, `install.sh`
+  chose the generic build where the AVX2 build runs. It now chooses as
+  `install.ps1` does.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its
@@ -79,6 +88,12 @@ control, both sides given the tables up to five pieces. This was a
 non-regression test, which asks only whether the fix costs strength. It
 was stopped at 24,106 games before it decided, and the fix was taken on a
 result that shows no cost. It is not a rating.
+
+Test 77, for keeping the fastest wins at a won tablebase root: +0.36, give
+or take 1.63, a self-play estimate against the build before it at the
+short control, both sides given the tables up to five pieces. This was a
+non-regression test, which asks only whether the change costs strength,
+and it passed at 54,626 games. It is not a rating.
 
 ## [0.5.23] - 2026-11-03
 
@@ -512,8 +527,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.1...main
-[0.6.0-rc.1]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.1
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.2...main
+[0.6.0-rc.2]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.2
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21

@@ -13,7 +13,7 @@ resolver = "3"
 # plays, inside it. The archived binary is
 # still what identifies a promotion, because a version says which release a
 # build is and not what it played like.
-version      = "0.6.0-rc.1"
+version      = "0.6.0-rc.2"
 edition      = "2024"
 rust-version = "1.99"
 license      = "GPL-3.0-or-later"
