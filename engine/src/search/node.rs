@@ -223,7 +223,7 @@ impl Search<'_> {
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
         self.store(key, ply, depth, best, best_move, bound);
-        self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
+        self.remember_correction(board, ply, best, best_move, bound, depth);
         best
     }
 
