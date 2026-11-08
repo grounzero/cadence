@@ -1130,6 +1130,10 @@ fn info_time(line: &str) -> u64 {
 /// ladder and returns without `stop`.
 #[test]
 fn a_ponder_that_is_hit_becomes_a_clocked_search() {
+    // The clock is read every 1024 nodes, so a runner that stalls between two reads can finish an
+    // iteration past the limit by the stall: 9 ms on one Windows runner.
+    const STALL_MS: u64 = 100;
+
     let stop = AtomicBool::new(false);
     let hit = AtomicBool::new(true);
     let tt = Table::new(16).expect("a table");
@@ -1151,7 +1155,7 @@ fn a_ponder_that_is_hit_becomes_a_clocked_search() {
     assert!(
         s.iterations_ms()
             .last()
-            .is_some_and(|&ms| ms <= budget.hard),
+            .is_some_and(|&ms| ms <= budget.hard + STALL_MS),
         "the ladder ran past the hard budget it took on the hit: {:?}",
         s.iterations_ms()
     );
