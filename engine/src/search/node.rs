@@ -26,6 +26,31 @@ use crate::see;
 use crate::syzygy::Wdl;
 use crate::tt::Bound;
 
+/// What a node was asked, fixed for the whole node: built once from the window it was given, so
+/// nothing in it is read from the board again. Depth and alpha stay out, since each takes a second
+/// value inside the node.
+#[derive(Clone, Copy)]
+struct Node {
+    key: u64,
+    ply: usize,
+    beta: Score,
+    kind: Expected,
+    /// Wider than a null window, read before the loop raises `alpha`.
+    open: bool,
+}
+
+impl Node {
+    fn new(key: u64, ply: usize, alpha: Score, beta: Score, kind: Expected) -> Node {
+        Node {
+            key,
+            ply,
+            beta,
+            kind,
+            open: beta > alpha + 1,
+        }
+    }
+}
+
 impl Search<'_> {
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
@@ -104,7 +129,8 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, tb) = match self.lookup(board, key, depth, ply, alpha, beta) {
+        let node = Node::new(key, ply, alpha, beta, kind);
+        let (tt_move, tb) = match self.lookup(board, node, depth, alpha) {
             Ok(found) => found,
             Err(score) => return score,
         };
@@ -130,11 +156,9 @@ impl Search<'_> {
             return score;
         }
 
-        // The node's own window, read before the loop raises `alpha`.
-        let pv = beta > alpha + 1;
         // Last above the move loop, so the margins, the count and every child read the shortened
         // depth.
-        let depth = self.iir_depth(depth, pv, in_check, tt_move);
+        let depth = self.iir_depth(depth, node.open, in_check, tt_move);
 
         let mut legal = generate_legal(board);
         if legal.is_empty() {
@@ -155,7 +179,7 @@ impl Search<'_> {
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
         // asked first keeps the moves it takes.
-        let give_up = lmp_index(&self.tunables, in_check, pv, depth, legal.len());
+        let give_up = lmp_index(&self.tunables, in_check, node.open, depth, legal.len());
         self.stats.lmp_nodes.add_if(give_up.is_some());
 
         let original_alpha = alpha;
@@ -182,18 +206,18 @@ impl Search<'_> {
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
             let mut score = if i == 0 {
-                self.own_window(board, child, ply, alpha, beta, kind, Via::First)
+                self.own_window(board, child, node, alpha, Via::First)
             } else {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
                 self.count_lmr_losing_capture(base, m);
                 let history = move_history(m, self.heuristics.history.get(us, m));
-                self.late_move(board, child, base, history, ply, alpha, pv, kind)
+                self.late_move(board, child, base, history, node, alpha)
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
             if i > 0 && !self.run.aborted && score > alpha && score < beta {
-                score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
+                score = self.own_window(board, child, node, alpha, Via::Open);
             }
             board.unmake_move(m);
             if self.run.aborted {
@@ -363,12 +387,11 @@ impl Search<'_> {
     fn lookup(
         &mut self,
         board: &Board,
-        key: u64,
+        node: Node,
         depth: u32,
-        ply: usize,
         alpha: Score,
-        beta: Score,
     ) -> Result<(Move, (Score, Score)), Score> {
+        let Node { key, ply, beta, .. } = node;
         let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return Err(score);
@@ -378,23 +401,21 @@ impl Search<'_> {
         self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
         // After the table, so a hit saves the probe, and before the static readings, which an
         // ending the tables decide makes moot.
-        let tb = self.tablebase(board, key, depth, ply, alpha, beta, tt_move)?;
+        let tb = self.tablebase(board, node, depth, alpha, tt_move)?;
         Ok((tt_move, tb))
     }
 
     /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
     /// every other node and wherever no table answers.
-    #[allow(clippy::too_many_arguments)]
     fn tablebase(
         &mut self,
         board: &Board,
-        key: u64,
+        node: Node,
         depth: u32,
-        ply: usize,
         alpha: Score,
-        beta: Score,
         tt_move: Move,
     ) -> Result<(Score, Score), Score> {
+        let Node { key, ply, beta, .. } = node;
         let open = (-INFINITE, INFINITE);
         let Some(tables) = self.probing else {
             return Ok(open);
@@ -432,34 +453,37 @@ impl Search<'_> {
 
     /// The child searched with the node's own window, as the first move is and a later one that
     /// beat alpha is again.
-    #[allow(clippy::too_many_arguments)]
     fn own_window(
         &mut self,
         board: &mut Position,
         child: u32,
-        ply: usize,
+        node: Node,
         alpha: Score,
-        beta: Score,
-        kind: Expected,
         via: Via,
     ) -> Score {
+        let Node {
+            ply, beta, kind, ..
+        } = node;
         let derived = self.derive(kind, via);
         -self.negamax(board, child, ply + 1, -beta, -alpha, derived)
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
-    #[allow(clippy::too_many_arguments)]
     fn late_move(
         &mut self,
         board: &mut Position,
         child: u32,
         base: u32,
         history: i32,
-        ply: usize,
+        node: Node,
         alpha: Score,
-        pv: bool,
-        kind: Expected,
     ) -> Score {
+        let Node {
+            ply,
+            kind,
+            open: pv,
+            ..
+        } = node;
         // The history term first, then the PV and cut-node terms on what each leaves, each counted
         // where it acted.
         let shifted = history_reduction(base, history);
@@ -633,6 +657,7 @@ mod tests {
     use cadence_core::position::Board;
     use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 
+    use super::Node;
     use crate::conthist;
     use crate::eval;
     use crate::position::Position;
@@ -696,11 +721,18 @@ mod tests {
         let m = parse_uci(&generate_legal(&root), "h2h3").expect("a legal move");
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = searcher(&stop, &tt);
+        let key = root.key();
         let mut board = Position::new(root);
         search.root_depth = 4;
         search.make(&mut board, 0, m);
-        let pv = parent == Expected::Pv;
-        let _ = search.late_move(&mut board, 4, base, 0, 0, alpha, pv, parent);
+        // Only the ply, the kind and the open flag are read; the window matches the parent's kind.
+        let beta = if parent == Expected::Pv {
+            alpha + 2
+        } else {
+            alpha + 1
+        };
+        let node = Node::new(key, 0, alpha, beta, parent);
+        let _ = search.late_move(&mut board, 4, base, 0, node, alpha);
         at(&search, 1)
     }
 
