@@ -29,7 +29,7 @@ mod quiesce;
 mod report;
 mod root;
 
-use counters::Counter;
+use counters::Stats;
 pub use depth::{
     REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
     lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduced_depth,
@@ -151,9 +151,6 @@ pub struct Search<'a> {
     corrhist: CorrectionHistory,
     /// Kept across runs, which its verification makes safe: a stale entry can only miss.
     pawns: PawnCache,
-    /// Read on no decision path.
-    corrhist_updates: Counter,
-    corrhist_applied: Counter,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
@@ -169,50 +166,7 @@ pub struct Search<'a> {
     /// How the next call's kind was derived, which that call's entry takes.
     #[cfg(debug_assertions)]
     asked: Option<(Expected, Via)>,
-    /// These counters are read on no decision path, so a depth-limited search stays a function of
-    /// the code.
-    null_attempts: Counter,
-    null_cutoffs: Counter,
-    /// Lets the zugzwang gate see the refusal decide, not merely no null move.
-    null_refused_material: Counter,
-    lmr_reductions: Counter,
-    lmr_researches: Counter,
-    lmr_pv_lessened: Counter,
-    lmr_cut_reduced_more: Counter,
-    lmr_losing_captures: Counter,
-    /// Two, so a gate can tell a table that only credits from one that also debits.
-    history_reduced_less: Counter,
-    history_reduced_more: Counter,
-    history_debits: Counter,
-    /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
-    /// move skipped.
-    continuation_credits: Counter,
-    continuation_debits: Counter,
-    continuation_absent: Counter,
-    /// The check-exemption count lets a gate see the exemption decide.
-    futility_nodes: Counter,
-    futility_skipped: Counter,
-    futility_kept_check: Counter,
-    /// What this rule adds over the margin, which is asked first.
-    lmp_nodes: Counter,
-    lmp_skipped: Counter,
-    lmp_kept_check: Counter,
-    /// The refusal count lets a gate see the full-window refusal decide.
-    reverse_futility_cutoffs: Counter,
-    reverse_futility_refused_window: Counter,
-    probcut_attempts: Counter,
-    probcut_searches: Counter,
-    probcut_cutoffs: Counter,
-    probcut_refused_window: Counter,
-    iir_nodes: Counter,
-    /// The first shows the in-check horizon is reached, without which the second proves nothing.
-    evasion_lists: Counter,
-    evasion_lists_reordered: Counter,
-    /// With the picker's own count, one for each place an exchange is read, so a gate can account
-    /// for every read.
-    probcut_exchanges: Counter,
-    quiescence_exchanges: Counter,
-    evasion_exchanges: Counter,
+    stats: Stats,
     /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
@@ -273,8 +227,6 @@ impl<'a> Search<'a> {
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
             pawns: PawnCache::new(),
-            corrhist_updates: Counter::ZERO,
-            corrhist_applied: Counter::ZERO,
             root_depth: 0,
             evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
@@ -284,38 +236,7 @@ impl<'a> Search<'a> {
             calls: None,
             #[cfg(debug_assertions)]
             asked: None,
-            null_attempts: Counter::ZERO,
-            null_cutoffs: Counter::ZERO,
-            null_refused_material: Counter::ZERO,
-            lmr_reductions: Counter::ZERO,
-            lmr_researches: Counter::ZERO,
-            lmr_pv_lessened: Counter::ZERO,
-            lmr_cut_reduced_more: Counter::ZERO,
-            lmr_losing_captures: Counter::ZERO,
-            history_reduced_less: Counter::ZERO,
-            history_reduced_more: Counter::ZERO,
-            history_debits: Counter::ZERO,
-            continuation_credits: Counter::ZERO,
-            continuation_debits: Counter::ZERO,
-            continuation_absent: Counter::ZERO,
-            futility_nodes: Counter::ZERO,
-            futility_skipped: Counter::ZERO,
-            futility_kept_check: Counter::ZERO,
-            lmp_nodes: Counter::ZERO,
-            lmp_skipped: Counter::ZERO,
-            lmp_kept_check: Counter::ZERO,
-            reverse_futility_cutoffs: Counter::ZERO,
-            reverse_futility_refused_window: Counter::ZERO,
-            probcut_attempts: Counter::ZERO,
-            probcut_searches: Counter::ZERO,
-            probcut_cutoffs: Counter::ZERO,
-            probcut_refused_window: Counter::ZERO,
-            iir_nodes: Counter::ZERO,
-            evasion_lists: Counter::ZERO,
-            evasion_lists_reordered: Counter::ZERO,
-            probcut_exchanges: Counter::ZERO,
-            quiescence_exchanges: Counter::ZERO,
-            evasion_exchanges: Counter::ZERO,
+            stats: Stats::ZERO,
             iterations: Vec::new(),
             roots: Vec::new(),
             multipv: 1,
@@ -412,41 +333,8 @@ impl<'a> Search<'a> {
         self.conthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
-        self.null_attempts = Counter::ZERO;
-        self.null_cutoffs = Counter::ZERO;
-        self.null_refused_material = Counter::ZERO;
-        self.lmr_reductions = Counter::ZERO;
-        self.lmr_researches = Counter::ZERO;
-        self.lmr_pv_lessened = Counter::ZERO;
-        self.lmr_cut_reduced_more = Counter::ZERO;
-        self.lmr_losing_captures = Counter::ZERO;
-        self.history_reduced_less = Counter::ZERO;
-        self.history_reduced_more = Counter::ZERO;
-        self.history_debits = Counter::ZERO;
-        self.continuation_credits = Counter::ZERO;
-        self.continuation_debits = Counter::ZERO;
-        self.continuation_absent = Counter::ZERO;
+        self.stats = Stats::ZERO;
         self.corrhist.clear();
-        self.corrhist_updates = Counter::ZERO;
-        self.corrhist_applied = Counter::ZERO;
-        self.futility_nodes = Counter::ZERO;
-        self.futility_skipped = Counter::ZERO;
-        self.futility_kept_check = Counter::ZERO;
-        self.lmp_nodes = Counter::ZERO;
-        self.lmp_skipped = Counter::ZERO;
-        self.lmp_kept_check = Counter::ZERO;
-        self.reverse_futility_cutoffs = Counter::ZERO;
-        self.reverse_futility_refused_window = Counter::ZERO;
-        self.probcut_attempts = Counter::ZERO;
-        self.probcut_searches = Counter::ZERO;
-        self.probcut_cutoffs = Counter::ZERO;
-        self.probcut_refused_window = Counter::ZERO;
-        self.iir_nodes = Counter::ZERO;
-        self.evasion_lists = Counter::ZERO;
-        self.evasion_lists_reordered = Counter::ZERO;
-        self.probcut_exchanges = Counter::ZERO;
-        self.quiescence_exchanges = Counter::ZERO;
-        self.evasion_exchanges = Counter::ZERO;
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();

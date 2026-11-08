@@ -60,6 +60,94 @@ impl Counter {
     }
 }
 
+/// Every count the search keeps for its gates, each read on no decision path, so a
+/// depth-limited search stays a function of the code.
+pub(super) struct Stats {
+    pub(super) corrhist_updates: Counter,
+    pub(super) corrhist_applied: Counter,
+    pub(super) null_attempts: Counter,
+    pub(super) null_cutoffs: Counter,
+    /// Lets the zugzwang gate see the refusal decide, not merely no null move.
+    pub(super) null_refused_material: Counter,
+    pub(super) lmr_reductions: Counter,
+    pub(super) lmr_researches: Counter,
+    pub(super) lmr_pv_lessened: Counter,
+    pub(super) lmr_cut_reduced_more: Counter,
+    pub(super) lmr_losing_captures: Counter,
+    /// Two, so a gate can tell a table that only credits from one that also debits.
+    pub(super) history_reduced_less: Counter,
+    pub(super) history_reduced_more: Counter,
+    pub(super) history_debits: Counter,
+    /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
+    /// move skipped.
+    pub(super) continuation_credits: Counter,
+    pub(super) continuation_debits: Counter,
+    pub(super) continuation_absent: Counter,
+    /// The check-exemption count lets a gate see the exemption decide.
+    pub(super) futility_nodes: Counter,
+    pub(super) futility_skipped: Counter,
+    pub(super) futility_kept_check: Counter,
+    /// What this rule adds over the margin, which is asked first.
+    pub(super) lmp_nodes: Counter,
+    pub(super) lmp_skipped: Counter,
+    pub(super) lmp_kept_check: Counter,
+    /// The refusal count lets a gate see the full-window refusal decide.
+    pub(super) reverse_futility_cutoffs: Counter,
+    pub(super) reverse_futility_refused_window: Counter,
+    pub(super) probcut_attempts: Counter,
+    pub(super) probcut_searches: Counter,
+    pub(super) probcut_cutoffs: Counter,
+    pub(super) probcut_refused_window: Counter,
+    pub(super) iir_nodes: Counter,
+    /// The first shows the in-check horizon is reached, without which the second proves nothing.
+    pub(super) evasion_lists: Counter,
+    pub(super) evasion_lists_reordered: Counter,
+    /// With the picker's own count, one for each place an exchange is read, so a gate can account
+    /// for every read.
+    pub(super) probcut_exchanges: Counter,
+    pub(super) quiescence_exchanges: Counter,
+    pub(super) evasion_exchanges: Counter,
+}
+
+impl Stats {
+    pub(super) const ZERO: Stats = Stats {
+        corrhist_updates: Counter::ZERO,
+        corrhist_applied: Counter::ZERO,
+        null_attempts: Counter::ZERO,
+        null_cutoffs: Counter::ZERO,
+        null_refused_material: Counter::ZERO,
+        lmr_reductions: Counter::ZERO,
+        lmr_researches: Counter::ZERO,
+        lmr_pv_lessened: Counter::ZERO,
+        lmr_cut_reduced_more: Counter::ZERO,
+        lmr_losing_captures: Counter::ZERO,
+        history_reduced_less: Counter::ZERO,
+        history_reduced_more: Counter::ZERO,
+        history_debits: Counter::ZERO,
+        continuation_credits: Counter::ZERO,
+        continuation_debits: Counter::ZERO,
+        continuation_absent: Counter::ZERO,
+        futility_nodes: Counter::ZERO,
+        futility_skipped: Counter::ZERO,
+        futility_kept_check: Counter::ZERO,
+        lmp_nodes: Counter::ZERO,
+        lmp_skipped: Counter::ZERO,
+        lmp_kept_check: Counter::ZERO,
+        reverse_futility_cutoffs: Counter::ZERO,
+        reverse_futility_refused_window: Counter::ZERO,
+        probcut_attempts: Counter::ZERO,
+        probcut_searches: Counter::ZERO,
+        probcut_cutoffs: Counter::ZERO,
+        probcut_refused_window: Counter::ZERO,
+        iir_nodes: Counter::ZERO,
+        evasion_lists: Counter::ZERO,
+        evasion_lists_reordered: Counter::ZERO,
+        probcut_exchanges: Counter::ZERO,
+        quiescence_exchanges: Counter::ZERO,
+        evasion_exchanges: Counter::ZERO,
+    };
+}
+
 impl Search<'_> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
@@ -69,73 +157,73 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_attempts(&self) -> u64 {
-        self.null_attempts.get()
+        self.stats.null_attempts.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_cutoffs(&self) -> u64 {
-        self.null_cutoffs.get()
+        self.stats.null_cutoffs.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_refused_by_material(&self) -> u64 {
-        self.null_refused_material.get()
+        self.stats.null_refused_material.get()
     }
 
     /// Late moves first searched at reduced depth.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_reductions(&self) -> u64 {
-        self.lmr_reductions.get()
+        self.stats.lmr_reductions.get()
     }
 
     /// Reduced searches that beat alpha and were re-run at full depth.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_researches(&self) -> u64 {
-        self.lmr_researches.get()
+        self.stats.lmr_researches.get()
     }
 
     /// Late moves at PV nodes whose reduction the PV term lowered.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_pv_lessened(&self) -> u64 {
-        self.lmr_pv_lessened.get()
+        self.stats.lmr_pv_lessened.get()
     }
 
     /// Late moves at expected cut nodes whose reduction the cut-node term raised.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_cut_reduced_more(&self) -> u64 {
-        self.lmr_cut_reduced_more.get()
+        self.stats.lmr_cut_reduced_more.get()
     }
 
     /// Losing captures given a reduction before the PV term.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {
-        self.lmr_losing_captures.get()
+        self.stats.lmr_losing_captures.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
-        self.history_reduced_less.get()
+        self.stats.history_reduced_less.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_reduced_more(&self) -> u64 {
-        self.history_reduced_more.get()
+        self.stats.history_reduced_more.get()
     }
 
     /// Quiet moves the cutoffs debited.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_debits(&self) -> u64 {
-        self.history_debits.get()
+        self.stats.history_debits.get()
     }
 
     /// Nodes the margin admitted; its siblings count the quiet moves skipped there and the skips
@@ -143,25 +231,25 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_nodes(&self) -> u64 {
-        self.futility_nodes.get()
+        self.stats.futility_nodes.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_skipped(&self) -> u64 {
-        self.futility_skipped.get()
+        self.stats.futility_skipped.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_kept_check(&self) -> u64 {
-        self.futility_kept_check.get()
+        self.stats.futility_kept_check.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
-        self.lmp_nodes.get()
+        self.stats.lmp_nodes.get()
     }
 
     /// Observations folded into the correction table, and nodes that read a non-zero correction
@@ -169,38 +257,38 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn corrhist_updates(&self) -> u64 {
-        self.corrhist_updates.get()
+        self.stats.corrhist_updates.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn corrhist_applied(&self) -> u64 {
-        self.corrhist_applied.get()
+        self.stats.corrhist_applied.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_skipped(&self) -> u64 {
-        self.lmp_skipped.get()
+        self.stats.lmp_skipped.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_kept_check(&self) -> u64 {
-        self.lmp_kept_check.get()
+        self.stats.lmp_kept_check.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn reverse_futility_cutoffs(&self) -> u64 {
-        self.reverse_futility_cutoffs.get()
+        self.stats.reverse_futility_cutoffs.get()
     }
 
     /// Nodes the margin would have returned but for the full window.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn reverse_futility_refused_by_window(&self) -> u64 {
-        self.reverse_futility_refused_window.get()
+        self.stats.reverse_futility_refused_window.get()
     }
 
     /// Nodes that ran the capture probe, captures it searched at reduced depth, and those that cut
@@ -208,64 +296,64 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_attempts(&self) -> u64 {
-        self.probcut_attempts.get()
+        self.stats.probcut_attempts.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_searches(&self) -> u64 {
-        self.probcut_searches.get()
+        self.stats.probcut_searches.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_cutoffs(&self) -> u64 {
-        self.probcut_cutoffs.get()
+        self.stats.probcut_cutoffs.get()
     }
 
     /// Probes refused for the full window.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_refused_by_window(&self) -> u64 {
-        self.probcut_refused_window.get()
+        self.stats.probcut_refused_window.get()
     }
 
     /// Nodes searched shallower because their table probe named no move.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn iir_nodes(&self) -> u64 {
-        self.iir_nodes.get()
+        self.stats.iir_nodes.get()
     }
 
     /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_lists(&self) -> u64 {
-        self.evasion_lists.get()
+        self.stats.evasion_lists.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_lists_reordered(&self) -> u64 {
-        self.evasion_lists_reordered.get()
+        self.stats.evasion_lists_reordered.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_exchanges(&self) -> u64 {
-        self.probcut_exchanges.get()
+        self.stats.probcut_exchanges.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn quiescence_exchanges(&self) -> u64 {
-        self.quiescence_exchanges.get()
+        self.stats.quiescence_exchanges.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_exchanges(&self) -> u64 {
-        self.evasion_exchanges.get()
+        self.stats.evasion_exchanges.get()
     }
 
     /// Since the `Search` was built, not since the run: the cache is kept across runs.
@@ -295,21 +383,21 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_credits(&self) -> u64 {
-        self.continuation_credits.get()
+        self.stats.continuation_credits.get()
     }
 
     /// Continuation entries the cutoffs debited.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_debits(&self) -> u64 {
-        self.continuation_debits.get()
+        self.stats.continuation_debits.get()
     }
 
     /// Offsets a node found no frame for, above the root or below a null move.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_absent(&self) -> u64 {
-        self.continuation_absent.get()
+        self.stats.continuation_absent.get()
     }
 
     /// Elapsed milliseconds at the end of each completed iteration.
@@ -383,6 +471,14 @@ impl Search<'_> {
         self.stop.load(Ordering::Relaxed)
     }
 
+    /// Before the PV term changes `base`, so it counts the term deciding and not the ply delivered.
+    #[inline]
+    pub(super) fn count_lmr_losing_capture(&mut self, base: u32, m: Move) {
+        self.stats
+            .lmr_losing_captures
+            .add_if(base > 0 && m.is_noisy());
+    }
+
     #[inline]
     pub(super) fn visit(&mut self, ply: usize) {
         self.nodes += 1;
@@ -405,7 +501,7 @@ impl Search<'_> {
             return None;
         }
         let correction = self.corrhist.correction(pawn_key, side);
-        self.corrhist_applied.add_if(correction != 0);
+        self.stats.corrhist_applied.add_if(correction != 0);
         Some(eval::evaluate_cached(board, &mut self.pawns) + correction)
     }
 
@@ -435,7 +531,7 @@ impl Search<'_> {
         };
         if usable {
             self.corrhist.update(pawn_key, side, best - eval, depth);
-            self.corrhist_updates.add_one();
+            self.stats.corrhist_updates.add_one();
         }
     }
 
@@ -462,18 +558,18 @@ impl Search<'_> {
         let cut_to = conthist::piece_to(board, cut);
         for &context in contexts.iter().flatten() {
             self.conthist.update(context, cut_to, bonus);
-            self.continuation_credits.add_one();
+            self.stats.continuation_credits.add_one();
         }
         for (i, &beaten) in passed.iter().enumerate() {
             if beaten.is_noisy() || !searched.contains(i) {
                 continue;
             }
-            self.history_debits.add_one();
+            self.stats.history_debits.add_one();
             self.history.update(us, beaten, -bonus);
             let beaten_to = conthist::piece_to(board, beaten);
             for &context in contexts.iter().flatten() {
                 self.conthist.update(context, beaten_to, -bonus);
-                self.continuation_debits.add_one();
+                self.stats.continuation_debits.add_one();
             }
         }
     }
