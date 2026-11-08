@@ -1118,6 +1118,58 @@ fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
     }
 }
 
+/// The iteration a hit finds began unbudgeted and rarely finishes, so until one completes after the
+/// hit the move comes at the soft budget and not the hard one. An attempt where one does complete
+/// cannot tell, so the next is tried.
+#[test]
+fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
+    // No increment: the soft budget is a 25th of the clock and the hard one three times that.
+    const CLOCK: &str = "wtime 6000 btime 6000";
+    const PONDERED_MS: u64 = 3000;
+    const SLACK_MS: u64 = 150;
+    const ATTEMPTS: usize = 5;
+
+    let b = budget(&limits(CLOCK), Colour::White).expect("a budget");
+    assert!(
+        b.soft + SLACK_MS < b.hard,
+        "{b:?} leaves no room to tell soft from hard"
+    );
+    for _ in 0..ATTEMPTS {
+        let (completed, after_hit) = Engine::within(Duration::from_secs(30), || {
+            let mut e = Engine::spawn();
+            e.send("position startpos");
+            e.sync();
+            e.send(&format!("go ponder {CLOCK}"));
+            std::thread::sleep(Duration::from_millis(PONDERED_MS));
+            e.sync();
+            let hit = Instant::now();
+            e.send("ponderhit");
+            let mut completed = false;
+            loop {
+                let line = e.read_until("").pop().expect("a line");
+                if line.starts_with("bestmove ") {
+                    break;
+                }
+                completed |= line.starts_with("info depth ");
+            }
+            let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
+            e.quit();
+            (completed, after_hit)
+        });
+        if completed {
+            continue;
+        }
+        assert!(
+            after_hit <= b.soft + SLACK_MS,
+            "no iteration completed after the hit, and the move came {after_hit} ms after it, \
+             past the soft budget of {} ms",
+            b.soft
+        );
+        return;
+    }
+    panic!("an iteration completed after the hit in each of {ATTEMPTS} attempts");
+}
+
 fn info_time(line: &str) -> u64 {
     let toks: Vec<&str> = line.split_whitespace().collect();
     toks.iter()
