@@ -161,11 +161,16 @@ impl Search<'_> {
             // On the existing interval: a hit that waited for the iteration's end would spend the
             // clock it just took.
             self.absorb_ponder_hit();
-            if let Some(b) = self.clock.budget
-                && self.elapsed_ms() >= b.hard
-            {
-                self.run.aborted = true;
-                return true;
+            if let Some(b) = self.clock.budget {
+                let limit = if self.clock.unbudgeted_iteration {
+                    b.soft
+                } else {
+                    b.hard
+                };
+                if self.elapsed_ms() >= limit {
+                    self.run.aborted = true;
+                    return true;
+                }
             }
         }
         false
@@ -187,6 +192,7 @@ impl Search<'_> {
         self.clock.start = Instant::now();
         self.run.iterations.clear();
         self.clock.budget = self.clock.budget_on_hit;
+        self.clock.unbudgeted_iteration = true;
     }
 
     /// Under `infinite` or an unhit ponder, both of which mean do not answer until told. A hit is a
