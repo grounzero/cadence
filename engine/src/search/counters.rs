@@ -17,18 +17,13 @@ use crate::tt::Bound;
 
 /// A count only tests read, kept by the `counters` feature and compiled to nothing without it.
 /// Nothing on a decision path reads one, so a search is the same with the feature as without.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct Counter {
     #[cfg(feature = "counters")]
     n: u64,
 }
 
 impl Counter {
-    pub(super) const ZERO: Counter = Counter {
-        #[cfg(feature = "counters")]
-        n: 0,
-    };
-
     #[inline(always)]
     pub(super) fn add_one(&mut self) {
         self.add(1);
@@ -62,6 +57,7 @@ impl Counter {
 
 /// Every count the search keeps for its gates, each read on no decision path, so a
 /// depth-limited search stays a function of the code.
+#[derive(Default)]
 pub(super) struct Stats {
     pub(super) corrhist_updates: Counter,
     pub(super) corrhist_applied: Counter,
@@ -107,45 +103,6 @@ pub(super) struct Stats {
     pub(super) probcut_exchanges: Counter,
     pub(super) quiescence_exchanges: Counter,
     pub(super) evasion_exchanges: Counter,
-}
-
-impl Stats {
-    pub(super) const ZERO: Stats = Stats {
-        corrhist_updates: Counter::ZERO,
-        corrhist_applied: Counter::ZERO,
-        null_attempts: Counter::ZERO,
-        null_cutoffs: Counter::ZERO,
-        null_refused_material: Counter::ZERO,
-        lmr_reductions: Counter::ZERO,
-        lmr_researches: Counter::ZERO,
-        lmr_pv_lessened: Counter::ZERO,
-        lmr_cut_reduced_more: Counter::ZERO,
-        lmr_losing_captures: Counter::ZERO,
-        history_reduced_less: Counter::ZERO,
-        history_reduced_more: Counter::ZERO,
-        history_debits: Counter::ZERO,
-        continuation_credits: Counter::ZERO,
-        continuation_debits: Counter::ZERO,
-        continuation_absent: Counter::ZERO,
-        futility_nodes: Counter::ZERO,
-        futility_skipped: Counter::ZERO,
-        futility_kept_check: Counter::ZERO,
-        lmp_nodes: Counter::ZERO,
-        lmp_skipped: Counter::ZERO,
-        lmp_kept_check: Counter::ZERO,
-        reverse_futility_cutoffs: Counter::ZERO,
-        reverse_futility_refused_window: Counter::ZERO,
-        probcut_attempts: Counter::ZERO,
-        probcut_searches: Counter::ZERO,
-        probcut_cutoffs: Counter::ZERO,
-        probcut_refused_window: Counter::ZERO,
-        iir_nodes: Counter::ZERO,
-        evasion_lists: Counter::ZERO,
-        evasion_lists_reordered: Counter::ZERO,
-        probcut_exchanges: Counter::ZERO,
-        quiescence_exchanges: Counter::ZERO,
-        evasion_exchanges: Counter::ZERO,
-    };
 }
 
 impl Search<'_> {

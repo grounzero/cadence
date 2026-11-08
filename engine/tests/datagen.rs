@@ -547,8 +547,8 @@ fn names(left: &[(String, Vec<u8>)]) -> Vec<&str> {
     left.iter().map(|(entry, _)| entry.as_str()).collect()
 }
 
-/// The stage beside an output was once the output's name and `.partial`, here the input's own
-/// name, so the input was emptied before it was read.
+/// The input carries the name a stage beside an output could take, the output's name and
+/// `.partial`, and extraction must still read it whole rather than write over it.
 #[test]
 fn extraction_never_writes_over_its_input() {
     let (dir, games) = scratch("extract-stage");
