@@ -235,6 +235,99 @@ fn mate_in_two_is_found_with_the_score_mate_2() {
     }
 }
 
+/// Every completed iteration's root move and score.
+fn iterations(b: &mut Position, depth: u32) -> (Move, Vec<(Move, Score)>) {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut sink = Vec::new();
+    let mut s = support::search(Limits::depth(depth), &stop, &tt);
+    let best = s.run(b, &mut sink);
+    (best, s.iteration_roots().to_vec())
+}
+
+/// Every iteration from the first that scores a mate scores `expected`.
+fn assert_mate_holds(fen: &str, roots: &[(Move, Score)], expected: Score) {
+    let first = roots
+        .iter()
+        .position(|&(_, v)| score::is_mate(v))
+        .unwrap_or_else(|| panic!("{fen}: no iteration scored a mate"));
+    for (i, &(_, v)) in roots.iter().enumerate().skip(first) {
+        assert_eq!(
+            v,
+            expected,
+            "{fen}: depth {} scored {}",
+            i + 1,
+            score::uci(v)
+        );
+    }
+}
+
+/// Every iteration past the one that finds it keeps the shortest mate, for the side giving it and
+/// the side receiving it.
+#[test]
+fn deeper_iterations_keep_the_shortest_mate() {
+    let depth = 8;
+    for (fen, _) in MATES_IN_TWO {
+        let mut b = support::position(fen);
+        let keys = mates_in_two(&mut b);
+        let (best, roots) = iterations(&mut b, depth);
+        assert_eq!(roots.len(), depth as usize, "{fen}: iterations");
+        assert!(
+            keys.contains(&best),
+            "{fen}: played {best:?}, mates in two are {keys:?}"
+        );
+        assert_mate_holds(fen, &roots, mate_in(3));
+
+        b.make_move(best);
+        let (_, roots) = iterations(&mut b, depth);
+        assert_eq!(roots.len(), depth as usize, "{fen}: the reply's iterations");
+        assert_mate_holds(fen, &roots, mated_in(2));
+    }
+}
+
+/// One search at a depth that sees longer mates too, with no iteration before it to order the
+/// shortest first: a longer mate found first must not close the window on it.
+#[test]
+fn a_longer_mate_found_first_does_not_hide_the_shortest() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for (fen, _) in MATES_IN_TWO {
+        tt.clear();
+        let mut b = support::position(fen);
+        let mut s = support::search(Limits::default(), &stop, &tt);
+        let v = s.node(&mut b, 6, 0);
+        assert_eq!(v, mate_in(3), "{fen}: scored {}", score::uci(v));
+    }
+}
+
+/// A node narrows its window to these bounds, so every score it can be handed lies strictly inside
+/// them: a tablebase verdict at its own ply, and a mate stored at any ply and read back at its own.
+#[test]
+fn the_mate_bounds_hold_every_tablebase_and_stored_score() {
+    for ply in 0..MAX_PLY {
+        let (low, high) = (mated_in(ply), mate_in(ply + 1));
+        for s in [score::tb_win_in(ply), score::tb_loss_in(ply)] {
+            assert!(low < s && s < high, "{s} at ply {ply}");
+        }
+        for stored_at in [0, 1, 2, 7, 64, MAX_PLY - 1] {
+            for distance in 0..MAX_PLY - stored_at {
+                let lost = score::to_tt(mated_in(stored_at + distance), stored_at);
+                assert!(
+                    score::from_tt(lost, ply) >= low,
+                    "mated at {distance}, read at {ply}"
+                );
+                if distance > 0 {
+                    let won = score::to_tt(mate_in(stored_at + distance), stored_at);
+                    assert!(
+                        score::from_tt(won, ply) <= high,
+                        "mate at {distance}, read at {ply}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Brute force, five plies: every reply leaves a mate in one or two.
 fn mates_in_three(b: &mut Position) -> Vec<Move> {
     let mut out = Vec::new();

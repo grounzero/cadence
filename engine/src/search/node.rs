@@ -21,7 +21,7 @@ use crate::conthist::{self, OFFSETS};
 use crate::eval;
 use crate::picker::{self, Picker, Tables};
 use crate::position::Position;
-use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
+use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mate_in, mated_in};
 use crate::see;
 use crate::syzygy::Wdl;
 use crate::tt::Bound;
@@ -75,7 +75,7 @@ impl Search<'_> {
         board: &mut Position,
         depth: u32,
         ply: usize,
-        mut alpha: Score,
+        alpha: Score,
         beta: Score,
         kind: Expected,
     ) -> Score {
@@ -92,15 +92,11 @@ impl Search<'_> {
             return ABORTED;
         }
 
-        if board.is_repetition() {
-            return DRAW;
-        }
-
-        // Above the sort, where the first read past the arrays would be; release has only a bounds
-        // check.
-        if ply >= MAX_PLY {
-            return eval::evaluate_cached(board, &mut self.pawns);
-        }
+        // Before the table, so its cutoff and every rule below read the narrowed window.
+        let (mut alpha, beta) = match self.settle(board, ply, alpha, beta, kind) {
+            Ok(window) => window,
+            Err(score) => return score,
+        };
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
@@ -225,6 +221,41 @@ impl Search<'_> {
         self.store(key, ply, depth, best, best_move, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
+    }
+
+    /// `Err` is the node's value where it is known before the table is asked. Otherwise the window,
+    /// narrowed to the scores a node at `ply` can reach.
+    fn settle(
+        &mut self,
+        board: &Board,
+        ply: usize,
+        alpha: Score,
+        beta: Score,
+        kind: Expected,
+    ) -> Result<(Score, Score), Score> {
+        if board.is_repetition() {
+            return Err(DRAW);
+        }
+        // Above the sort, where the first read past the arrays would be; release has only a bounds
+        // check.
+        if ply >= MAX_PLY {
+            return Err(eval::evaluate_cached(board, &mut self.pawns));
+        }
+        // Nothing below scores under being mated here or over mating with the next move, and a
+        // window that narrows to nothing returns its alpha.
+        let alpha = alpha.max(mated_in(ply));
+        let beta = beta.min(mate_in(ply + 1));
+        if alpha >= beta {
+            return Err(alpha);
+        }
+        // An open window's mate bounds are an odd number of plies away for a mate and an even
+        // number for being mated, so narrowing closes one or leaves it open.
+        debug_assert_eq!(
+            kind == Expected::Pv,
+            beta > alpha + 1,
+            "ply {ply}: {kind:?}"
+        );
+        Ok((alpha, beta))
     }
 
     fn order(
