@@ -251,6 +251,9 @@ impl Run {
 /// The run's clock, started in `begin` from the origin a `go` left and budgeted from its limits.
 struct Clock {
     start: Instant,
+    /// Where the run began, which a `ponderhit` leaves where it is: the reported `time` counts from
+    /// here, as `nodes` does.
+    reported_from: Instant,
     /// When the `go` was read, so the work before the search starts is spent from the clock too;
     /// taken by the next run.
     origin: Option<Instant>,
@@ -264,8 +267,10 @@ struct Clock {
 
 impl Clock {
     fn new() -> Self {
+        let now = Instant::now();
         Clock {
-            start: Instant::now(),
+            start: now,
+            reported_from: now,
             origin: None,
             budget: None,
             pondering: false,
@@ -276,6 +281,7 @@ impl Clock {
     /// The origin first, then both budgets, from the limits and the side to move.
     fn begin(&mut self, limits: &Limits, us: Colour) {
         self.start = self.origin.take().unwrap_or_else(Instant::now);
+        self.reported_from = self.start;
         self.pondering = limits.ponder;
         self.budget = if limits.infinite {
             None

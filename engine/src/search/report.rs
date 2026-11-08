@@ -83,7 +83,7 @@ impl Search<'_> {
         number: usize,
         out: &mut dyn Write,
     ) {
-        let ms = self.elapsed_ms();
+        let ms = self.reported_ms();
         let nps = self.reported_nodes() * 1000 / ms.max(1);
         let numbered = if self.shown > 1 {
             format!(" multipv {number}")
