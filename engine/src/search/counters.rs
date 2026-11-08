@@ -508,11 +508,9 @@ impl Search<'_> {
 
     /// Disqualified: no static reading, a decided score, a noisy or absent best move, or a bound
     /// pointing against the difference.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn remember_correction(
         &mut self,
-        pawn_key: u64,
-        side: Colour,
+        board: &Board,
         ply: usize,
         best: Score,
         best_move: Move,
@@ -531,6 +529,7 @@ impl Search<'_> {
             Bound::Upper => best < eval,
         };
         if usable {
+            let (pawn_key, side) = (board.pawn_key(), board.side_to_move());
             self.heuristics
                 .corrhist
                 .update(pawn_key, side, best - eval, depth);
