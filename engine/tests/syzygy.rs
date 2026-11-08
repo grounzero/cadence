@@ -11,12 +11,13 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 use cadence_engine::corrhist::MAX_CORRECTION;
+use cadence_engine::position::Position;
 use cadence_engine::score::{
     MAX_EVAL, Score, TB_WIN, TB_WIN_IN_MAX_PLY, from_tt, is_decisive, is_mate, mate_in, mated_in,
     tb_loss_in, tb_win_in, to_tt,
 };
 use cadence_engine::search::{Limits, futile_node, probcut_bound};
-use cadence_engine::syzygy::{Rank, Tables, Wdl};
+use cadence_engine::syzygy::{Rank, Ranked, Tables, Wdl};
 use cadence_engine::tt::Bound;
 use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded};
 use support::{Engine, table};
@@ -61,16 +62,20 @@ fn wdl_only(name: &str) -> PathBuf {
     )
 }
 
-/// Only the three- and four-piece tables `tests/fixtures/syzygy.sha256` names, for a gate that
-/// counts what loads and so must not see a fuller set installed beside them.
-fn fixture_set(name: &str) -> PathBuf {
-    let files: Vec<&str> = include_str!("../../tests/fixtures/syzygy.sha256")
+/// The three- and four-piece tables `tests/fixtures/syzygy.sha256` names.
+fn fixture_files() -> Vec<&'static str> {
+    include_str!("../../tests/fixtures/syzygy.sha256")
         .lines()
         .filter_map(|l| l.split_whitespace().nth(1))
         // A name's letters before the dot are its pieces and a `v`.
         .filter(|f| f.find('.').is_some_and(|dot| dot <= 5))
-        .collect();
-    scratch(name, &files)
+        .collect()
+}
+
+/// Only those tables, for a gate that counts what loads and so must not see a fuller set installed
+/// beside them.
+fn fixture_set(name: &str) -> PathBuf {
+    scratch(name, &fixture_files())
 }
 
 /// Mate in one, the side to move's loss, a capture into a won ending, a pawn about to queen, and
@@ -345,7 +350,7 @@ fn a_bad_file_is_named_and_the_rest_of_its_directory_loads() {
         problems,
         vec![format!("{}: unexpected file size", path.display())]
     );
-    assert_eq!(tables.files(), 19);
+    assert_eq!(tables.files(), fixture_files().len() - 1);
     assert_eq!(
         tables.probe_wdl(&board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1")),
         Some(Wdl::Win)
@@ -400,18 +405,14 @@ fn a_path_set_over_uci_probes_and_an_empty_one_stops() {
         only.display()
     ));
     let said = e.sync();
-    assert!(
-        said.iter()
-            .any(|l| l == "info string SyzygyPath: 20 table files, probing up to 4 pieces"),
-        "{said:?}"
-    );
+    let files = fixture_files().len();
+    let loaded = |pieces: u32| {
+        format!("info string SyzygyPath: {files} table files, probing up to {pieces} pieces")
+    };
+    assert!(said.iter().any(|l| *l == loaded(4)), "{said:?}");
     e.send("setoption name SyzygyProbeLimit value 3");
     let said = e.sync();
-    assert!(
-        said.iter()
-            .any(|l| l == "info string SyzygyPath: 20 table files, probing up to 3 pieces"),
-        "{said:?}"
-    );
+    assert!(said.iter().any(|l| *l == loaded(3)), "{said:?}");
     e.send("position fen 8/8/8/8/8/8/1b2R3/K5k1 w - - 0 1");
     e.send("go depth 4");
     let lines = e.read_until("bestmove ");
@@ -574,6 +575,124 @@ fn a_rounded_distance_on_the_hundredth_half_move_outranks_the_certain_outcomes_b
         assert!(!banded, "{fen}: {score}");
     }
     let _ = std::fs::remove_dir_all(only);
+}
+
+/// A won root keeps only its fastest wins, here the two moves that read 26 plies to zeroing where
+/// every other win reads 28, and a lost root keeps every losing move.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_won_root_keeps_only_its_fastest_wins_and_a_lost_root_every_loss() {
+    let tables = loaded(&fixtures());
+    let mut won = board("8/8/8/3k4/8/8/8/R3K3 w - - 0 1");
+    let ranked = tables.rank_root(&mut won, &[]).unwrap();
+    assert_eq!(ranked.best, Rank::Win);
+    assert!(ranked.decided);
+    let legal = generate_legal(&won);
+    assert_eq!(ranked.moves.len(), 2, "{:?}", ranked.moves);
+    for m in ["a1a5", "e1e2"] {
+        assert!(ranked.moves.contains(&parse_uci(&legal, m).unwrap()), "{m}");
+    }
+    let mut lost = board("8/8/8/3k4/8/8/8/R3K3 b - - 0 1");
+    let ranked = tables.rank_root(&mut lost, &[]).unwrap();
+    assert_eq!(ranked.best, Rank::Loss);
+    assert_eq!(ranked.moves.len(), generate_legal(&lost).len());
+}
+
+/// The position `moves` reach from `fen`, its history kept so a repetition reads as one.
+fn replay(fen: &str, moves: &[Move]) -> Board {
+    let mut b = board(fen);
+    for &m in moves {
+        b.make_move(m);
+    }
+    b
+}
+
+/// The engine's move at a fixed depth among the moves the root keeps, as `go` gives them.
+fn engine_move(tables: &Tables, ranked: &Ranked, fen: &str, moves: &[Move]) -> Move {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut search = support::search(Limits::depth(6), &stop, &tt);
+    search.set_root_filter(&ranked.moves);
+    search.set_tables(tables, ranked.decided);
+    search.run(&mut Position::new(replay(fen, moves)), &mut Vec::new())
+}
+
+fn line(moves: &[Move]) -> String {
+    moves
+        .iter()
+        .map(|m| m.to_uci_chess960())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Among the loser's best-ranked moves, the one that leaves the winner furthest from zeroing.
+fn longest_resistance(tables: &Tables, game: &mut Board, moves: &[Move]) -> Move {
+    let mut longest = None;
+    for &m in moves {
+        game.make_move(m);
+        let plies = tables
+            .probe_dtz(game)
+            .expect("a distance after the loser's move");
+        game.unmake_move(m);
+        if longest.is_none_or(|(_, most)| plies > most) {
+            longest = Some((m, plies));
+        }
+    }
+    longest.expect("a move for the loser").0
+}
+
+/// Each won position is played out by the engine at a fixed depth against the tables' longest
+/// resistance, and mated within the fifty-move rule. Each stretch between zeroing moves takes no
+/// more plies than its distance at the start, and one more where a rounded distance wastes one.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_won_ending_is_converted_within_the_fifty_move_rule_making_progress_every_move() {
+    let tables = loaded(&fixtures());
+    for fen in [
+        "8/8/8/3k4/8/8/7Q/K7 w - - 0 1",
+        "8/8/8/3k4/8/8/7Q/K7 w - - 60 80",
+        "8/8/8/3k4/8/8/8/R3K3 w - - 0 1",
+        "4k3/8/4K3/4P3/8/8/8/8 w - - 0 1",
+        "8/8/8/4k3/8/8/8/KBN5 w - - 0 1",
+    ] {
+        let mut moves: Vec<Move> = Vec::new();
+        let mut stretch: Option<(i32, i32)> = None;
+        loop {
+            let mut game = replay(fen, &moves);
+            if generate_legal(&game).is_empty() {
+                assert!(game.in_check(), "{fen}: stalemate after {}", line(&moves));
+                assert!(game.halfmove_clock() <= 100, "{fen}: {}", line(&moves));
+                break;
+            }
+            assert!(moves.len() < 300, "{fen}: no mate in {}", line(&moves));
+            let ranked = tables.rank_root(&mut game, &[]).unwrap();
+            let winner = moves.len().is_multiple_of(2);
+            let m = if winner {
+                assert_eq!(ranked.best, Rank::Win, "{fen}: {}", line(&moves));
+                assert!(ranked.decided, "{fen}");
+                if stretch.is_none() {
+                    stretch = Some((tables.probe_dtz(&game).unwrap(), 0));
+                }
+                engine_move(&tables, &ranked, fen, &moves)
+            } else {
+                longest_resistance(&tables, &mut game, &ranked.moves)
+            };
+            game.make_move(m);
+            moves.push(m);
+            if let Some((_, plies)) = stretch.as_mut() {
+                *plies += 1;
+            }
+            let ended = game.halfmove_clock() == 0 || generate_legal(&game).is_empty();
+            if winner && ended {
+                let (distance, plies) = stretch.take().unwrap();
+                assert!(
+                    plies <= distance + 1,
+                    "{fen}: {plies} plies from a distance of {distance} in {}",
+                    line(&moves)
+                );
+            }
+        }
+    }
 }
 
 /// Part-way through the counter the WDL files cannot say whether a win outlasts it, so the root
@@ -949,10 +1068,10 @@ fn a_five_piece_pawn_ending_keeps_only_the_wins_its_counter_allows() {
     let mut fresh = board("8/8/2k5/3pP3/3P4/8/8/4K3 w - - 0 1");
     assert_eq!(tables.probe_wdl(&fresh), Some(Wdl::Win));
     assert_eq!(tables.probe_dtz(&fresh), Some(11));
+    let fastest = ["e1d2", "e1e2", "e1f2"];
     let ranked = tables.rank_root(&mut fresh, &[]).expect("a ranked root");
     assert_eq!(ranked.best, Rank::Win);
-    let kings = ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2"];
-    assert_eq!(spelled(&ranked.moves), kings);
+    assert_eq!(spelled(&ranked.moves), fastest);
     let mut late = board("8/8/2k5/3pP3/3P4/8/8/4K3 w - - 89 60");
     let ranked = tables.rank_root(&mut late, &[]).expect("a ranked root");
     assert!(
@@ -960,7 +1079,22 @@ fn a_five_piece_pawn_ending_keeps_only_the_wins_its_counter_allows() {
         "{:?}",
         ranked.best
     );
-    assert_eq!(spelled(&ranked.moves), ["e1d2", "e1e2", "e1f2"]);
+    assert_eq!(spelled(&ranked.moves), fastest);
+    let legal = generate_legal(&fresh);
+    for king in ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2"] {
+        let m = parse_uci(&legal, king).unwrap();
+        let fresh_rank = tables
+            .rank_root(&mut fresh, &[m])
+            .expect("a ranked move")
+            .best;
+        assert_eq!(fresh_rank, Rank::Win, "{king}");
+        let late_rank = tables
+            .rank_root(&mut late, &[m])
+            .expect("a ranked move")
+            .best;
+        let allowed = matches!(late_rank, Rank::Win | Rank::MaybeWin);
+        assert_eq!(allowed, fastest.contains(&king), "{king}: {late_rank:?}");
+    }
 }
 
 /// Black's last move was d7d5, so e5 takes en passant, and that wins as e6 does; without the square
