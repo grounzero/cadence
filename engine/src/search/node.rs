@@ -384,7 +384,10 @@ impl Search<'_> {
 
     /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
     /// every other node and wherever no table answers.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     fn tablebase(
         &mut self,
         board: &Board,
@@ -432,7 +435,10 @@ impl Search<'_> {
 
     /// The child searched with the node's own window, as the first move is and a later one that
     /// beat alpha is again.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     fn own_window(
         &mut self,
         board: &mut Position,
@@ -448,7 +454,10 @@ impl Search<'_> {
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     fn late_move(
         &mut self,
         board: &mut Position,
