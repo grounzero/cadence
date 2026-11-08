@@ -74,7 +74,8 @@ impl Search<'_> {
             self.run.lines.clear();
             let mut partial = (root_moves[0], -INFINITE);
             for _ in 0..wanted {
-                let (best, score) = self.aspirate(board, &legal, &root_moves, depth, out, previous);
+                let (best, score) =
+                    self.aspirate(board, (&legal, &root_moves), depth, out, previous);
                 if self.run.aborted {
                     partial = (best, score);
                     break;
@@ -192,8 +193,7 @@ impl Search<'_> {
     fn aspirate(
         &mut self,
         board: &mut Position,
-        legal: &MoveList,
-        moves: &[Move],
+        root: (&MoveList, &[Move]),
         depth: u32,
         out: &mut dyn Write,
         previous: Option<Score>,
@@ -201,13 +201,13 @@ impl Search<'_> {
         let centre = previous
             .filter(|&p| self.multipv == 1 && depth >= ASPIRATION_DEPTH && !score::is_decisive(p));
         let Some(centre) = centre else {
-            return self.search_root(board, legal, moves, depth, out, -INFINITE, INFINITE);
+            return self.search_root(board, root, depth, out, -INFINITE, INFINITE);
         };
         let mut delta = ASPIRATION_DELTA;
         let mut alpha = centre.saturating_sub(delta).max(-INFINITE);
         let mut beta = centre.saturating_add(delta).min(INFINITE);
         loop {
-            let (best, score) = self.search_root(board, legal, moves, depth, out, alpha, beta);
+            let (best, score) = self.search_root(board, root, depth, out, alpha, beta);
             if self.run.aborted {
                 return (best, score);
             }
@@ -237,17 +237,18 @@ impl Search<'_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// `root` is the root's legal list, which names a move for `currmove`, and the moves this line
+    /// searches, in order.
     fn search_root(
         &mut self,
         board: &mut Position,
-        legal: &MoveList,
-        moves: &[Move],
+        root: (&MoveList, &[Move]),
         depth: u32,
         out: &mut dyn Write,
         mut alpha: Score,
         beta: Score,
     ) -> (Move, Score) {
+        let (legal, moves) = root;
         // The root is checked and recorded as its children are.
         self.expect(0, depth, Expected::Pv, alpha, beta);
         self.visit(0);
