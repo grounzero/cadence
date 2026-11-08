@@ -508,7 +508,10 @@ impl Search<'_> {
 
     /// Disqualified: no static reading, a decided score, a noisy or absent best move, or a bound
     /// pointing against the difference.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing the pawn key and side measured +0.23% faster than reading them from the board (pull request 231 timing, 2026-11-08)"
+    )]
     pub(super) fn remember_correction(
         &mut self,
         pawn_key: u64,
