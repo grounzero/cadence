@@ -471,6 +471,14 @@ impl Search<'_> {
         self.stop.load(Ordering::Relaxed)
     }
 
+    /// Before the PV term changes `base`, so it counts the term deciding and not the ply delivered.
+    #[inline]
+    pub(super) fn count_lmr_losing_capture(&mut self, base: u32, m: Move) {
+        self.stats
+            .lmr_losing_captures
+            .add_if(base > 0 && m.is_noisy());
+    }
+
     #[inline]
     pub(super) fn visit(&mut self, ply: usize) {
         self.nodes += 1;

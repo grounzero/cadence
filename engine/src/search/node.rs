@@ -186,9 +186,7 @@ impl Search<'_> {
             } else {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
-                self.stats
-                    .lmr_losing_captures
-                    .add_if(base > 0 && m.is_noisy());
+                self.count_lmr_losing_capture(base, m);
                 let history = move_history(m, self.history.get(us, m));
                 self.late_move(board, child, base, history, ply, alpha, pv, kind)
             };
