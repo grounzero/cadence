@@ -510,7 +510,7 @@ impl Search<'_> {
     /// pointing against the difference.
     #[allow(
         clippy::too_many_arguments,
-        reason = "passing the pawn key and side measured +0.23% faster than reading them from the board (PR 4b timing, 2026-11-08)"
+        reason = "passing the pawn key and side measured +0.23% faster than reading them from the board (pull request 231 timing, 2026-11-08)"
     )]
     pub(super) fn remember_correction(
         &mut self,
