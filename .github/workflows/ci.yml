@@ -576,14 +576,33 @@ jobs:
 
       - name: Install with install.sh --yes
         if: matrix.script == 'install.sh'
-        run: bash install.sh --yes --keep-log
+        run: bash install.sh --yes --keep-log 2>&1 | tee install.txt
 
       - name: Install with install.ps1 --yes
         if: matrix.script == 'install.ps1'
         shell: powershell
         run: |
-          & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --keep-log
-          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --keep-log | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          Set-Content -Path install.txt -Value $out -Encoding ascii
+          if ($code -ne 0) { throw "install.ps1 exited $code" }
+
+      # Git Bash's /proc/cpuinfo prints abm, LZCNT's flag, only on AMD processors. Every processor with
+      # AVX2 has LZCNT, so the build install.sh chose is checked against AVX2.
+      - name: The build install.sh chose under Git Bash
+        if: matrix.script == 'install.sh' && runner.os == 'Windows'
+        run: |
+          sed -n 's/^vendor_id[[:space:]]*: //p; s/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 2
+          flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+          echo "flags: $flags"
+          grep -F 'build runs here' install.txt
+          case " $flags " in
+            *" avx2 "*)
+              grep -qF 'the AVX2 build runs here' install.txt \
+                || { echo "::error::install.sh did not take the AVX2 build on a processor with AVX2"; exit 1; }
+              ;;
+          esac
 
       # Read here and not from the script, so a script that checked the wrong thing would fail.
       - name: The installed binary's bench and id name
@@ -615,7 +634,12 @@ jobs:
           tmp=$RUNNER_TEMP
           exe=""
           if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); exe=.exe; fi
-          file="cadence-$RELEASE_VERSION-${{ matrix.asset }}$exe"
+          # The file is named for the build the installer chose, which it then looks for.
+          asset=${{ matrix.asset }}
+          case "$asset" in
+            *-avx2) if grep -qF 'the generic build runs here' install.txt; then asset=${asset%-avx2}-generic; fi ;;
+          esac
+          file="cadence-$RELEASE_VERSION-$asset$exe"
           good="$tmp/releases/good/$RELEASE_VERSION"
           corrupt="$tmp/releases/corrupt/$RELEASE_VERSION"
           mkdir -p "$good" "$corrupt"
