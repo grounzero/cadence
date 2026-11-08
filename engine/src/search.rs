@@ -140,21 +140,13 @@ pub struct Search<'a> {
     /// Read by nothing that decides anything.
     seldepth: usize,
     table: PvTable,
-    killers: [[Move; 2]; MAX_PLY],
+    heuristics: Heuristics,
     /// The picker's buffer, one row per ply, allocated once so that no node clears one.
     slots: Box<[[Slot; MAX_MOVES]]>,
-    /// On the heap: `Search` is returned by value.
-    history: History,
-    conthist: ContinuationHistory,
-    /// The move made at each ply of the current path, which the continuation history reads back.
-    frames: [Frame; MAX_PLY],
-    corrhist: CorrectionHistory,
     /// Kept across runs, which its verification makes safe: a stale entry can only miss.
     pawns: PawnCache,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
-    /// `None` in check: a position under attack has no quiet reading worth comparing.
-    evals: [Option<Score>; MAX_PLY],
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
     /// The move made at each ply of the current path, which each call's entry takes.
@@ -191,6 +183,42 @@ struct RootLine {
     pv: Vec<Move>,
 }
 
+/// What a run learns, and the per-ply stacks it learns from, cleared together in `begin` so a
+/// reused search starts where a fresh one would.
+struct Heuristics {
+    killers: [[Move; 2]; MAX_PLY],
+    /// On the heap: `Search` is returned by value.
+    history: History,
+    conthist: ContinuationHistory,
+    /// The move made at each ply of the current path, which the continuation history reads back.
+    frames: [Frame; MAX_PLY],
+    corrhist: CorrectionHistory,
+    /// `None` in check: a position under attack has no quiet reading worth comparing.
+    evals: [Option<Score>; MAX_PLY],
+}
+
+impl Heuristics {
+    fn new() -> Self {
+        Heuristics {
+            killers: [[Move::NULL; 2]; MAX_PLY],
+            history: History::new(),
+            conthist: ContinuationHistory::new(),
+            frames: [None; MAX_PLY],
+            corrhist: CorrectionHistory::new(),
+            evals: [None; MAX_PLY],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.killers = [[Move::NULL; 2]; MAX_PLY];
+        self.history.clear();
+        self.conthist.clear();
+        self.frames = [None; MAX_PLY];
+        self.evals = [None; MAX_PLY];
+        self.corrhist.clear();
+    }
+}
+
 impl<'a> Search<'a> {
     #[must_use]
     pub fn new(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
@@ -220,15 +248,10 @@ impl<'a> Search<'a> {
             pv: Vec::with_capacity(MAX_PLY),
             seldepth: 0,
             table: PvTable::new(),
-            killers: [[Move::NULL; 2]; MAX_PLY],
+            heuristics: Heuristics::new(),
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
-            history: History::new(),
-            conthist: ContinuationHistory::new(),
-            frames: [None; MAX_PLY],
-            corrhist: CorrectionHistory::new(),
             pawns: PawnCache::new(),
             root_depth: 0,
-            evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
@@ -328,13 +351,8 @@ impl<'a> Search<'a> {
         self.score = ABORTED;
         self.pv.clear();
         self.seldepth = 0;
-        self.killers = [[Move::NULL; 2]; MAX_PLY];
-        self.history.clear();
-        self.conthist.clear();
-        self.frames = [None; MAX_PLY];
-        self.evals = [None; MAX_PLY];
+        self.heuristics.clear();
         self.stats = Stats::ZERO;
-        self.corrhist.clear();
         self.iterations.clear();
         self.roots.clear();
         self.lines.clear();

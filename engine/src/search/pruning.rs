@@ -196,7 +196,7 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let bound = reverse_futile(&self.tunables, self.evals[ply], depth, beta)?;
+        let bound = reverse_futile(&self.tunables, self.heuristics.evals[ply], depth, beta)?;
         if board.halfmove_clock() >= 100 {
             return None;
         }
