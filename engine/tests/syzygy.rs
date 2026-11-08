@@ -1068,10 +1068,10 @@ fn a_five_piece_pawn_ending_keeps_only_the_wins_its_counter_allows() {
     let mut fresh = board("8/8/2k5/3pP3/3P4/8/8/4K3 w - - 0 1");
     assert_eq!(tables.probe_wdl(&fresh), Some(Wdl::Win));
     assert_eq!(tables.probe_dtz(&fresh), Some(11));
+    let fastest = ["e1d2", "e1e2", "e1f2"];
     let ranked = tables.rank_root(&mut fresh, &[]).expect("a ranked root");
     assert_eq!(ranked.best, Rank::Win);
-    let kings = ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2"];
-    assert_eq!(spelled(&ranked.moves), kings);
+    assert_eq!(spelled(&ranked.moves), fastest);
     let mut late = board("8/8/2k5/3pP3/3P4/8/8/4K3 w - - 89 60");
     let ranked = tables.rank_root(&mut late, &[]).expect("a ranked root");
     assert!(
@@ -1079,7 +1079,22 @@ fn a_five_piece_pawn_ending_keeps_only_the_wins_its_counter_allows() {
         "{:?}",
         ranked.best
     );
-    assert_eq!(spelled(&ranked.moves), ["e1d2", "e1e2", "e1f2"]);
+    assert_eq!(spelled(&ranked.moves), fastest);
+    let legal = generate_legal(&fresh);
+    for king in ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2"] {
+        let m = parse_uci(&legal, king).unwrap();
+        let fresh_rank = tables
+            .rank_root(&mut fresh, &[m])
+            .expect("a ranked move")
+            .best;
+        assert_eq!(fresh_rank, Rank::Win, "{king}");
+        let late_rank = tables
+            .rank_root(&mut late, &[m])
+            .expect("a ranked move")
+            .best;
+        let allowed = matches!(late_rank, Rank::Win | Rank::MaybeWin);
+        assert_eq!(allowed, fastest.contains(&king), "{king}: {late_rank:?}");
+    }
 }
 
 /// Black's last move was d7d5, so e5 takes en passant, and that wins as e6 does; without the square
