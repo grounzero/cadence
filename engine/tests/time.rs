@@ -1120,27 +1120,28 @@ fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
 
 /// The iteration a hit finds began unbudgeted and rarely finishes, so until one completes after the
 /// hit the move comes at the soft budget and not the hard one. An attempt where one does complete
-/// cannot tell, so the next is tried.
+/// cannot tell, so the next ponders longer and meets an iteration at another point.
 #[test]
 fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
     // No increment: the soft budget is a 25th of the clock and the hard one three times that.
     const CLOCK: &str = "wtime 6000 btime 6000";
-    const PONDERED_MS: u64 = 3000;
+    // A search's timing barely varies on one machine, so a retry at the same length meets the same
+    // iteration at the same point.
+    const PONDERED_MS: [u64; 5] = [3000, 3900, 5100, 6600, 8600];
     const SLACK_MS: u64 = 150;
-    const ATTEMPTS: usize = 5;
 
     let b = budget(&limits(CLOCK), Colour::White).expect("a budget");
     assert!(
         b.soft + SLACK_MS < b.hard,
         "{b:?} leaves no room to tell soft from hard"
     );
-    for _ in 0..ATTEMPTS {
-        let (completed, after_hit) = Engine::within(Duration::from_secs(30), || {
+    for pondered in PONDERED_MS {
+        let (completed, after_hit) = Engine::within(Duration::from_secs(30), move || {
             let mut e = Engine::spawn();
             e.send("position startpos");
             e.sync();
             e.send(&format!("go ponder {CLOCK}"));
-            std::thread::sleep(Duration::from_millis(PONDERED_MS));
+            std::thread::sleep(Duration::from_millis(pondered));
             e.sync();
             let hit = Instant::now();
             e.send("ponderhit");
@@ -1167,7 +1168,10 @@ fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
         );
         return;
     }
-    panic!("an iteration completed after the hit in each of {ATTEMPTS} attempts");
+    panic!(
+        "an iteration completed after the hit in each of {} attempts",
+        PONDERED_MS.len()
+    );
 }
 
 fn info_time(line: &str) -> u64 {
