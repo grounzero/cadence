@@ -14,7 +14,7 @@ use cadence_engine::eval;
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, extension};
-use cadence_engine::tt::Table;
+use cadence_engine::tt::{Bound, Table};
 use support::{Outcome, Rng, play_game, random_mover, table};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -859,6 +859,76 @@ fn a_null_window_beside_the_value_returns_the_value_in_check() {
     assert!(
         asked > 0,
         "no checking move in the sample, so nothing was asked"
+    );
+}
+
+/// Fail-soft, so what a node stores under any window bounds the value a full window gives it. Asked
+/// in check at depth one, where no pruning rule runs, and each kind of bound is met at least once.
+#[test]
+fn a_stored_bound_holds_against_the_full_window_value_in_check() {
+    let stop = AtomicBool::new(false);
+    let (mut lower, mut upper, mut exact) = (0, 0, 0);
+    for fen in sample()
+        .into_iter()
+        .chain(support::PAWN_ENDGAMES.into_iter().map(str::to_string))
+    {
+        let mut b = support::position(&fen);
+        let checks: Vec<Move> = generate_legal(&b)
+            .iter()
+            .filter(|m| b.gives_check(*m))
+            .collect();
+        for m in checks {
+            b.make_move(m);
+            let none = no_table();
+            let v = support::search(Limits::default(), &stop, &none).node(&mut b, 1, 0);
+            if score::is_decisive(v) {
+                b.unmake_move(m);
+                continue;
+            }
+            let windows = [
+                (-score::INFINITE, score::INFINITE),
+                (v - 50, v + 50),
+                (v - 301, v - 300),
+                (v - 2, v - 1),
+                (v - 1, v),
+                (v, v + 1),
+                (v + 1, v + 2),
+                (v + 300, v + 301),
+            ];
+            for (alpha, beta) in windows {
+                let tt = Table::new(1).expect("a one mebibyte table");
+                let _ = support::search(Limits::default(), &stop, &tt)
+                    .node_window(&mut b, 1, 0, alpha, beta);
+                let Some(hit) = tt.probe(b.key()) else {
+                    continue;
+                };
+                let stored = Score::from(hit.score);
+                let ctx = format!(
+                    "{fen} after {}, window ({alpha}, {beta}): {:?} {stored} against {v}",
+                    m.to_uci_chess960(),
+                    hit.bound
+                );
+                match hit.bound {
+                    Bound::Lower => {
+                        assert!(stored <= v, "{ctx}");
+                        lower += 1;
+                    }
+                    Bound::Upper => {
+                        assert!(stored >= v, "{ctx}");
+                        upper += 1;
+                    }
+                    Bound::Exact => {
+                        assert_eq!(stored, v, "{ctx}");
+                        exact += 1;
+                    }
+                }
+            }
+            b.unmake_move(m);
+        }
+    }
+    assert!(
+        lower > 0 && upper > 0 && exact > 0,
+        "lower {lower}, upper {upper}, exact {exact}: a kind of bound was never stored"
     );
 }
 

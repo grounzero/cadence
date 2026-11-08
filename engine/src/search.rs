@@ -10,6 +10,7 @@ use crate::conthist::{ContinuationHistory, Frame};
 use crate::corrhist::CorrectionHistory;
 use crate::eval::PawnCache;
 use crate::history::History;
+use crate::level;
 use crate::picker::Slot;
 use crate::score::{ABORTED, Score};
 use crate::syzygy::{Rank, Tables};
@@ -217,6 +218,9 @@ pub struct Search<'a> {
     /// Kept under every limit: it costs no clock read and decides nothing.
     roots: Vec<(Move, Score)>,
     multipv: usize,
+    /// How many of those lines an iteration prints, since a level searches more than the GUI asked
+    /// to see.
+    shown: usize,
     /// `go searchmoves`: the root searches only these, and every move where it is empty.
     root_filter: Vec<Move>,
     /// Best first once the iteration is accepted.
@@ -315,6 +319,7 @@ impl<'a> Search<'a> {
             iterations: Vec::new(),
             roots: Vec::new(),
             multipv: 1,
+            shown: 1,
             root_filter: Vec::new(),
             lines: Vec::new(),
             accepted: Vec::new(),
@@ -346,6 +351,14 @@ impl<'a> Search<'a> {
 
     pub fn set_multipv(&mut self, n: usize) {
         self.multipv = n.max(1);
+        self.shown = self.multipv;
+    }
+
+    /// The GUI's `MultiPV`, which is what an iteration prints, and the level, whose candidates the
+    /// root searches however few the GUI asked to see.
+    pub fn set_lines(&mut self, shown: usize, level: Option<level::Policy>) {
+        self.multipv = level.map_or(shown, |policy| policy.candidates).max(1);
+        self.shown = shown.clamp(1, self.multipv);
     }
 
     /// For the gates alone: no UCI option and no `bench` path reaches it. Held below the

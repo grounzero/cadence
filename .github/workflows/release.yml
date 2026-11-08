@@ -1,7 +1,7 @@
-# Release binaries from a version tag: six builds, their checksums and a provenance attestation for
-# each, drafted for publishing by hand, a release candidate as a pre-release. A manual run or a
-# change to this file only builds and checks, unless a manual run names an existing tag and asks for
-# the draft, which re-runs a failed release.
+# Release binaries from a version tag: seven builds, their checksums and a provenance attestation for
+# each, with bench.txt and the two install scripts summed beside them, drafted for publishing by hand,
+# a release candidate as a pre-release. A manual run or a change to this file only builds and checks,
+# unless a manual run names an existing tag and asks for the draft, which re-runs a failed release.
 
 name: release
 
@@ -93,7 +93,12 @@ jobs:
           else
             [ "$INPUT_DRAFT" != true ] || { echo "::error::a draft needs a tag"; exit 1; }
             # As engine/build.rs reads it: the release only at the annotated tag naming the version.
-            at=$(git describe --exact-match --dirty --match "$version" HEAD 2>/dev/null || true)
+            # Git's two answers that no tag matches are read as none, and any other failure fails here.
+            if ! at=$(git describe --exact-match --dirty --match "$version" 2> "$RUNNER_TEMP/describe"); then
+              grep -qE '^fatal: (no tag exactly matches|No names found)' "$RUNNER_TEMP/describe" \
+                || { cat "$RUNNER_TEMP/describe"; echo "::error::git describe failed"; exit 1; }
+              at=""
+            fi
             if [ "$at" = "$version" ]; then
               expected="$version"
             else
@@ -149,6 +154,11 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             features: +neon
+          # The AVX2 build for Intel Macs; install.sh builds the generic one for a Mac without AVX2.
+          - name: macos-x86-64
+            os: macos-26-intel
+            target: x86_64-apple-darwin
+            features: +avx2,+bmi1,+popcnt,+lzcnt
     env:
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
       EXPECTED: ${{ needs.version.outputs.expected }}
@@ -200,29 +210,7 @@ jobs:
           cargo clean --release -p cadence-core
           cargo build --locked --release -p cadence-engine --bin cadence -v --color never $CONFIG_ARG \
             > release.log 2>&1 || { cat release.log; exit 1; }
-          base=$(rustc --print cfg --target ${{ matrix.target }} -C target-feature=${{ matrix.features }} \
-            | grep target_feature | sort)
-          grep -E '^ +Running `.*rustc(\.exe)? .*--crate-name ' release.log > invocations.txt || true
-          for crate in cadence_core cadence_engine cadence; do
-            if ! grep -q -- "--crate-name $crate " invocations.txt; then
-              echo "::error::no rustc invocation for $crate in the release build log"
-              exit 1
-            fi
-          done
-          n=0
-          while read -r line; do
-            name=$(echo "$line" | grep -oE -- '--crate-name [^ ]+')
-            set --
-            for f in $(echo "$line" | grep -oE "target-feature=[^ '\`\"]+"); do set -- "$@" -C "$f"; done
-            [ "$#" -gt 0 ] || { echo "::error::$name was built with no target feature"; exit 1; }
-            got=$(rustc --print cfg --target ${{ matrix.target }} "$@" | grep target_feature | sort)
-            if [ "$got" != "$base" ]; then
-              echo "::error::$name resolves to $(echo $got) and not the baseline with ${{ matrix.features }}"
-              exit 1
-            fi
-            n=$((n + 1))
-          done < invocations.txt
-          echo "$n rustc invocations, every one at the baseline with ${{ matrix.features }}: $(echo $base)"
+          bash .github/check-features.sh ${{ matrix.target }} ${{ matrix.features }} release.log
 
       # A build that would call itself anything but the expected version fails here rather than
       # ships.
@@ -264,28 +252,42 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The six together, summed, on every run, so a dry run checks what a release would assemble.
+  # The seven together, summed with bench.txt and the install scripts on every run, so a dry run
+  # checks what a release would assemble.
   assemble:
-    name: the six together
-    needs: build
+    name: the seven together
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+
+      - name: The commit the version job checked
+        shell: bash
+        env:
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$COMMIT" ] \
+            || { echo "::error::checked out $(git rev-parse HEAD) and not $COMMIT"; exit 1; }
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
 
-      - name: Six binaries and their checksums
+      - name: Seven binaries and their checksums
         shell: bash
         run: |
           cd dist
           ls -l
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n binaries and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n digests and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
-          sha256sum cadence-* | tee SHA256SUMS
+          cp ../install.sh ../install.ps1 ../bench.txt .
+          sha256sum cadence-* install.sh install.ps1 bench.txt | tee SHA256SUMS
           cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
 
   # Only at a pushed tag or a run asking for the draft, and the only job that may write: it attests
@@ -339,16 +341,18 @@ jobs:
           merge-multiple: true
 
       # Counted and held to the digests the build jobs took, so what is attested is what they checked.
+      # The install scripts and bench.txt come from the tagged commit and are summed beside the binaries.
       - name: Checksums
         shell: bash
         run: |
           cd dist
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n binaries and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 6 ] || { echo "::error::$n digests and not six"; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
-          sha256sum cadence-* > SHA256SUMS
+          cp ../install.sh ../install.ps1 ../bench.txt .
+          sha256sum cadence-* install.sh install.ps1 bench.txt > SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -381,11 +385,17 @@ jobs:
               echo "A release candidate, published as a pre-release."
             fi
             echo
-            echo "Six binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64 and macOS arm64. SHA256SUMS lists their checksums, and each carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo "Seven binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of bench.txt, which holds the bench count every binary was checked against, and of the install scripts. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
-            echo "The macOS binary is not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
+            echo "The macOS binaries are not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
             echo
-            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`."
+            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. Where no binary fits or the check fails, as on an Intel Mac without AVX2, they build the release from source and hold the build to the same bench. They take the latest published release, which is never a release candidate, unless \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
+            echo
+            echo '```'
+            grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`. On an x86-64 processor without AVX2, build with \`cargo build --release --config .cargo/x86-64-generic.toml\`."
             echo
             awk -v h="## [$VERSION]" '$0 == h || index($0, h " - ") == 1 {on = 1; next} on && /^## \[/ {exit} on' \
               CHANGELOG.md
@@ -397,4 +407,5 @@ jobs:
             echo "replaced the earlier draft $id"
           done
           gh release create "$VERSION" "${kind[@]}" --title "Cadence $VERSION" \
-            --notes-file notes.txt dist/cadence-* dist/SHA256SUMS LICENSE
+            --notes-file notes.txt dist/cadence-* dist/install.sh dist/install.ps1 dist/bench.txt dist/SHA256SUMS \
+            LICENSE

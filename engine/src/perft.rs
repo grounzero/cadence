@@ -3,12 +3,13 @@
 //! `cadence perft [--divide] [--threads N] <fen | startpos> <depth>`. Root moves are dealt to
 //! worker threads, each with its own `Board` and nothing shared.
 
+use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
-use cadence_core::{generate_legal, perft};
+use cadence_core::{MAX_PLY, generate_legal, perft};
 
 pub const USAGE: &str = "usage: cadence perft [--divide] [--threads N] <fen | startpos> <depth>";
 
@@ -46,6 +47,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let depth: u32 = depth
         .parse()
         .map_err(|_| format!("`{depth}` is not a depth"))?;
+    if !usize::try_from(depth).is_ok_and(|d| d <= MAX_PLY) {
+        return Err(format!("depth {depth} is deeper than {MAX_PLY} plies"));
+    }
     if fen.is_empty() {
         return Err("missing <fen>".to_string());
     }
@@ -91,11 +95,24 @@ pub fn run(args: &[String]) -> ExitCode {
     let start = Instant::now();
     let mut rows = root_split(&root, &args.fen, args.depth, args.threads);
     let elapsed = start.elapsed();
-
     if args.divide {
         rows.sort();
-        for (mv, n) in &rows {
-            println!("{mv}: {n}");
+    }
+    match write_counts(&rows, args.divide, elapsed) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("cadence perft: writing the output: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Each root move's count under `--divide`, then the total, the time and the rate.
+fn write_counts(rows: &[(String, u64)], divide: bool, elapsed: Duration) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    if divide {
+        for (mv, n) in rows {
+            writeln!(out, "{mv}: {n}")?;
         }
     }
     let nodes: u64 = rows.iter().map(|(_, n)| n).sum();
@@ -106,10 +123,10 @@ pub fn run(args: &[String]) -> ExitCode {
     } else {
         (nodes as f64 / elapsed.as_secs_f64()) as u64
     };
-    println!("nodes {nodes}");
-    println!("time {millis} ms");
-    println!("nps {nps}");
-    ExitCode::SUCCESS
+    writeln!(out, "nodes {nodes}")?;
+    writeln!(out, "time {millis} ms")?;
+    writeln!(out, "nps {nps}")?;
+    out.flush()
 }
 
 /// Depth 1 is the root move list, counted in bulk.

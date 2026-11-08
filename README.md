@@ -36,6 +36,15 @@ The engine is now at `target/release/cadence`. In your GUI, add it as a UCI
 engine. For Chess960, turn on the GUI's Chess960 mode and it will tell the
 engine.
 
+On x86-64 Linux and Windows this builds for processors with AVX2, using the
+flags in `.cargo/config.toml`. On a processor without AVX2 that engine stops
+at once with an illegal instruction. For one of those, build the generic
+version instead, which needs only POPCNT:
+
+```sh
+cargo build --release --config .cargo/x86-64-generic.toml
+```
+
 Build from the repository's root. Cargo reads the per-target flags in
 `.cargo/config.toml` from the directory it runs in, so a build started
 elsewhere, with `cargo install --path` or `--manifest-path` from a parent
@@ -52,6 +61,40 @@ go depth 8
 quit
 ```
 
+### With an install script
+
+`install.sh` installs Cadence on Linux, macOS, and Windows under Git Bash or
+WSL. `install.ps1` does the same on Windows with PowerShell alone. Each asks
+before every step. It reads the system, and on x86-64 which of the two builds
+the processor runs, then takes the latest release's binary for it. The binary
+is used only once its SHA-256 matches the release's `SHA256SUMS`, its bench
+count matches the release's `bench.txt` and it names the release's version.
+Where no binary fits or one fails that check, the script says why and offers
+to build the release from source: it checks for Git, a C linker and Rust
+installed through rustup, offers to install whichever is missing, and holds
+the build to the same bench and version. The default folder is
+`~/.local/bin`, or `%LOCALAPPDATA%\Cadence` on Windows. It can also download
+the 3-4-5 piece Syzygy tablebases, held to their published checksums.
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/grounzero/cadence/main/install.sh
+bash install.sh
+```
+
+On Windows without a Unix shell, in PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Both take `--version X.Y.Z`, `--prefix DIR`, `--source` to build from source
+even where a binary fits, `--update`, `--uninstall`, `--yes` to take every
+default without asking, `--keep-log`, and on x86-64 `--build avx2` or `--build
+generic`. The release workflow publishes both scripts and `bench.txt` with
+each release and lists their SHA-256s beside the binaries'. A run that fails
+keeps its log and says where it is: attach that file to a GitHub issue.
+
 ### Options
 
 | Option | Default | What it does |
@@ -60,11 +103,16 @@ quit
 | `Threads` | 1 | Search threads. Only one thread gives the same result every time. |
 | `MultiPV` | 1 | How many best lines to show. More lines cost search time. |
 | `Ponder` | off | Think on the opponent's time. Rating lists turn this off. |
+| `Move Overhead` | 20 | Milliseconds kept back from every move for the GUI and the connection (0 to 5000). |
+| `Clear Hash` | button | Empties the search table. |
 | `UCI_LimitStrength` | off | Play weaker, at the level set by `UCI_Elo`. |
 | `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). |
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
+| `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
+| `reverse_futility_margin` | 150 | A search constant offered to tuners (50 to 300). Leave it alone for play. |
+| `lmp_multiplier` | 0.500 | A search constant offered to tuners (0 to 2). Leave it alone for play. |
 
 Cadence keeps each tablebase file open once it has read it, until `SyzygyPath`
 is set again. So the system's limit on open files must be above the number of
@@ -72,6 +120,19 @@ files. The 3-4-5 piece set is 290 files, and macOS starts programs with a
 limit of 256. Raise it with `ulimit -n` in the shell that starts the engine or
 the GUI. A file that cannot be read is named in an `info string`, and the
 search goes on without it.
+
+### Unusual commands
+
+`go searchmoves` limits the search to the moves listed. A listed move that is
+not legal in the position is named in an `info string` and left out. If no
+listed move is legal, the engine searches every legal move, as a plain `go`
+would.
+
+A `position` command can fail: its FEN may be one the engine cannot accept,
+its `moves` list may hold an illegal move, or it may name neither `startpos`
+nor `fen`. The engine says why in an `info string` and remembers the failure.
+Every `go` after it answers `bestmove 0000` and searches nothing, until a
+valid `position` command clears it.
 
 ## Strength
 
@@ -203,6 +264,30 @@ from and how DFRC castling is written. The tests read the
 [machine-readable copy](tests/fixtures/perft-corpus.txt), so everything
 needed to reproduce a failure is public.
 
+### Tools
+
+Besides UCI, the binary has these subcommands. Each says what it expects
+when it is given arguments it cannot use.
+
+- `cadence bench`: the fixed benchmark above.
+- `cadence perft [--divide] [--threads N] <fen | startpos> <depth>`: counts
+  the legal moves to a depth.
+- `cadence spsa`: prints the input an SPSA tuner reads, one line for each
+  search constant a tune may move. They are the tuning options in the table
+  above.
+- `cadence datagen play --games N [--seed S] [--threads N] [--out PATH]`:
+  plays games against itself and writes one record a game. The same seed and
+  number of games give the same file at any thread count.
+- `cadence datagen extract <games> --train PATH --holdout PATH [--every N]`:
+  cuts those games into positions, sending every Nth game to the holdout set.
+- `cadence texel <data> [--holdout N | --holdout-file PATH] [--iterations N]
+  [--rate R] ...`: fits the evaluation's weights to a file of positions, each
+  a FEN, a `|` and the result, and prints the table.
+
+`cadence-tools magics [seed]`, a second binary built from `tools/`, searches
+for the sliding-attack magic numbers and prints them as Rust. Nothing it does
+ships.
+
 ### Git hooks
 
 ```sh
@@ -211,12 +296,14 @@ cargo xtask install-hooks
 
 Run this once in each clone, because Git does not copy hooks. The
 `pre-commit` hook runs the boundary and punctuation checks on what you are
-committing. The `commit-msg` hook checks the `Bench:` line against
-`bench.txt`.
+committing. The `commit-msg` hook checks the message: the `Bench:` line
+against `bench.txt`, no other trailer, no link, no numbered plan step, and a
+subject of one line.
 
-The hooks only make problems show up sooner. CI runs every check apart from
-the commit message, so a clone without hooks is not less correct. It just
-finds out later.
+The hooks only make problems show up sooner. CI runs every check, the commit
+messages included: it reads each message a change adds, and a pull request's
+title as the merge message it becomes. So a clone without hooks is not less
+correct. It just finds out later.
 
 ### Running an OpenBench worker
 

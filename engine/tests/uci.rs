@@ -5,6 +5,7 @@
 
 mod support;
 
+use std::fmt::Write as _;
 use std::process::Command;
 
 use cadence_core::position::Board;
@@ -109,7 +110,7 @@ fn end_of_input_exits_cleanly() {
 
 #[test]
 fn unknown_subcommand_is_a_usage_error() {
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .arg("frobnicate")
         .output()
         .expect("run cadence");
@@ -154,6 +155,42 @@ fn a_move_outside_ascii_is_refused_and_the_session_survives() {
             "the session died on {input:?}: {out:?}"
         );
     }
+}
+
+/// Longer lines are discarded unread, so a sender cannot grow the engine's memory without bound.
+/// One at the cap is read, one past it is reported, and the end of input ends an unterminated one.
+#[test]
+fn a_line_longer_than_a_mebibyte_is_discarded_with_an_info_string() {
+    const CAP: usize = 1 << 20;
+    let padded = |len: usize| format!("isready{}\n", " ".repeat(len - "isready".len()));
+    let mut input = [padded(CAP), padded(CAP + 1), "isready\n".to_string()]
+        .concat()
+        .into_bytes();
+    input.extend(std::iter::repeat_n(b'x', CAP + 1));
+    let out = talk_bytes(&input);
+    let discarded = format!("info string line discarded: longer than {CAP} bytes");
+    let lines: Vec<&str> = out.lines().skip(1).collect();
+    assert_eq!(
+        lines,
+        ["readyok", discarded.as_str(), "readyok", discarded.as_str()],
+        "after the identity line"
+    );
+}
+
+/// The discarded bytes are never held: the buffer stays the size of the cap however long the line,
+/// and the next line reads as usual.
+#[test]
+fn a_discarded_line_is_never_held() {
+    use cadence_engine::uci::{Line, read_line};
+    let data = [vec![b'x'; 1 << 20], b"\nisready\n".to_vec()].concat();
+    let mut input = std::io::BufReader::with_capacity(4, &data[..]);
+    let mut line = Vec::new();
+    let mut next = |line: &mut Vec<u8>| read_line(&mut input, line, 8).expect("reads");
+    assert_eq!(next(&mut line), Line::TooLong);
+    assert!(line.capacity() <= 64, "held {} bytes", line.capacity());
+    assert_eq!(next(&mut line), Line::Read);
+    assert_eq!(line, b"isready\n");
+    assert_eq!(next(&mut line), Line::End);
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +405,92 @@ fn ucinewgame_is_accepted_and_the_next_go_works() {
     assert_bestmove_legal(&out, START_FEN, false);
 }
 
+/// Each `bestmove` in `out`, in order, is legal in the position its `go` searched. So a `go` that
+/// answered twice, or not at all, fails the count.
+fn assert_each_legal(out: &str, fens: &[&str]) {
+    let moves = bestmoves(out);
+    assert_eq!(moves.len(), fens.len(), "one bestmove per go: {out:?}");
+    for (i, (mv, fen)) in moves.iter().zip(fens).enumerate() {
+        let board = Board::from_fen(fen).expect("fen parses");
+        assert!(
+            parse_uci(&generate_legal(&board), mv).is_some(),
+            "bestmove {i}, {mv}, is not legal in {fen}: {out:?}"
+        );
+    }
+}
+
+/// `ucinewgame` stops a running search before it empties the table, so that search answers once,
+/// before `readyok`. At four threads the stop joins every helper first.
+#[test]
+fn ucinewgame_during_a_search_answers_it_once_and_the_next_go_is_legal() {
+    let kiwipete = support::standard_fen("kiwipete");
+    for threads in [1, 4] {
+        let out = talk(&format!(
+            "setoption name Threads value {threads}\nposition startpos\ngo infinite\nucinewgame\n\
+             isready\nposition fen {kiwipete}\ngo depth 2\nquit\n"
+        ));
+        let lines: Vec<&str> = out.lines().collect();
+        let first = lines
+            .iter()
+            .position(|l| l.starts_with("bestmove "))
+            .unwrap_or_else(|| panic!("Threads {threads}: no bestmove in {out:?}"));
+        let ready = lines
+            .iter()
+            .position(|l| *l == "readyok")
+            .unwrap_or_else(|| panic!("Threads {threads}: no readyok in {out:?}"));
+        assert!(
+            first < ready,
+            "Threads {threads}: readyok before the stopped search answered: {out:?}"
+        );
+        assert_each_legal(&out, &[START_FEN, &kiwipete]);
+    }
+}
+
+/// Sent all at once, so many a `stop` arrives before its search has started. Each `go` still
+/// answers exactly once, for the position it was given.
+#[test]
+fn a_burst_of_go_and_stop_answers_every_go_once() {
+    let fens = [
+        START_FEN.to_string(),
+        support::standard_fen("kiwipete"),
+        support::standard_fen("pos3"),
+    ];
+    for threads in [1, 4] {
+        let mut input = format!("setoption name Threads value {threads}\n");
+        let mut asked = Vec::new();
+        for i in 0..24 {
+            let fen = &fens[i % fens.len()];
+            let go = if i % 3 == 0 {
+                "go depth 3"
+            } else {
+                "go infinite"
+            };
+            writeln!(input, "position fen {fen}\n{go}\nstop").expect("a String takes any write");
+            asked.push(fen.as_str());
+        }
+        input.push_str("isready\nquit\n");
+        let out = talk(&input);
+        assert!(
+            out.lines().any(|l| l == "readyok"),
+            "Threads {threads}: isready went unanswered: {out:?}"
+        );
+        assert_each_legal(&out, &asked);
+    }
+}
+
+/// The opponent did not play the move pondered on: the ponder answers `stop`, and the next search
+/// answers for the position actually reached.
+#[test]
+fn a_ponder_miss_answers_the_stop_and_then_the_position_reached() {
+    const PONDERED: &str = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
+    const REACHED: &str = "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
+    let out = talk(
+        "position startpos moves e2e4 e7e5\ngo ponder wtime 60000 btime 60000\nstop\n\
+         position startpos moves e2e4 d7d5\ngo depth 2\nquit\n",
+    );
+    assert_each_legal(&out, &[PONDERED, REACHED]);
+}
+
 /// The running search holds its own table, its own tables and a copy of the board, so a change sent
 /// while it runs waits for the next search: the answer is legal where the search started, and the
 /// next answer is legal where the change left the session.
@@ -414,6 +537,46 @@ fn bestmove_on_a_position_with_no_legal_move_is_the_null_move() {
         let out = talk(&format!("position fen {fen}\ngo depth 1\nquit\n"));
         assert_eq!(bestmove(&out), "0000", "{fen}: {out:?}");
     }
+}
+
+/// A root with no move to search still says how it stands before `bestmove 0000`, so a GUI that
+/// reads the score from the last `info` line reads this one.
+#[test]
+fn a_root_with_no_legal_move_reports_its_score() {
+    for (fen, score) in [
+        ("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", "mate 0"),
+        ("7k/8/6Q1/8/8/8/8/7K b - - 0 1", "cp 0"),
+    ] {
+        let out = talk(&format!("position fen {fen}\ngo depth 1\nquit\n"));
+        let line = format!("info depth 0 score {score}");
+        assert!(
+            out.lines().any(|l| l == line),
+            "{fen}: no `{line}` in {out:?}"
+        );
+    }
+}
+
+/// The path is the value as the GUI sent it, so one holding a run of spaces names its own
+/// directory and not another.
+#[test]
+fn a_syzygy_path_keeps_its_own_spacing() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("syzygy  two spaces");
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let path = dir.to_str().expect("a path");
+    let input = format!("setoption name SyzygyPath value {path}\nisready\nquit\n");
+    let out = talk(&input);
+    let said: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("info string SyzygyPath"))
+        .collect();
+    assert!(
+        said.iter().all(|l| !l.contains("two spaces")),
+        "{path:?}: {said:?}"
+    );
+    assert!(
+        said.iter().any(|l| l.contains(" 0 table files")),
+        "{path:?}: {said:?}"
+    );
 }
 
 /// A castle is what exercises the branch, so at least one castling bestmove is required. It sits at
@@ -466,29 +629,39 @@ fn castling_bestmove_is_spelled_per_the_option() {
     );
 }
 
-/// Over the pipe: after an illegal move in the list, `go` searches the
-/// position where the replay stopped, and its bestmove is legal there.
+/// Ruled: a `position` command that fails is remembered, and every `go` until a valid one answers
+/// `bestmove 0000`, saying why in an info string and searching nothing.
 #[test]
-fn go_after_an_illegal_move_searches_where_the_replay_stopped() {
-    let out = talk("position startpos moves e2e4 e7e5 e2e4\ngo depth 1\nquit\n");
-    assert_bestmove_legal(
-        &out,
-        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
-        false,
-    );
-    assert!(
-        out.lines().any(|l| l.starts_with("info string position:")),
-        "the rejected move is reported: {out:?}"
-    );
-    // And after a malformed FEN, the previous position is what is searched.
-    let out = talk(
-        "position startpos moves e2e4 e7e5\nposition fen garbage moves g1f3\ngo depth 1\nquit\n",
-    );
-    assert_bestmove_legal(
-        &out,
-        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
-        false,
-    );
+fn go_after_a_failed_position_searches_nothing_until_a_valid_one() {
+    const FAILED: &str = "info string go: the last position command failed";
+    for failed in [
+        "position startpos moves e2e4 e7e5 e2e4",
+        "position startpos moves e2e5",
+        "position fen garbage moves g1f3",
+        "position fen 8/8/8/8/8/8/8/8 w - - 0 1",
+        "position somethingelse",
+    ] {
+        let mut e = Engine::spawn();
+        e.send("position startpos moves e2e4 e7e5");
+        e.send(failed);
+        for _ in 0..2 {
+            e.send("go depth 1");
+            let lines = e.read_until("bestmove ");
+            let said = lines.iter().any(|l| l.starts_with(FAILED));
+            assert!(said, "{failed}: {lines:?}");
+            assert_eq!(lines.last().map(String::as_str), Some("bestmove 0000"));
+        }
+        e.send("position startpos moves e2e4");
+        e.send("go depth 1");
+        let out = e.read_until("bestmove ").join("\n");
+        assert_bestmove_legal(
+            &out,
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            false,
+        );
+        assert!(!out.contains(FAILED), "{failed}: {out:?}");
+        e.quit();
+    }
 }
 
 /// The side not to move in check once made generation offer the king capture and abort the process
@@ -1040,10 +1213,33 @@ fn go_searchmoves_names_an_illegal_move_and_leaves_it_out() {
     assert_eq!(bestmove(&out), "h2h3", "{out:?}");
 }
 
+/// Ruled to stand: a list naming no legal move is warned of and every legal move is searched, so
+/// the answer is a plain `go`'s, and a bare `searchmoves` warns of nothing.
 #[test]
 fn go_searchmoves_with_no_legal_move_searches_them_all() {
-    let out = talk("position startpos\ngo depth 2 searchmoves e2e5\nquit\n");
-    assert_bestmove_legal(&out, START_FEN, false);
+    let answer = |go: &str| {
+        let out = Engine::go(&["position startpos"], go).join("\n");
+        (bestmove(&out), out)
+    };
+    let (plain, _) = answer("go depth 4");
+    for go in [
+        "go depth 4 searchmoves e2e5",
+        "go searchmoves e2e5 a1a8 depth 4",
+    ] {
+        let (best, out) = answer(go);
+        assert_eq!(best, plain, "{go}: {out:?}");
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("info string") && l.contains("e2e5")),
+            "{go}: {out:?}"
+        );
+    }
+    let (best, out) = answer("go searchmoves depth 4");
+    assert_eq!(best, plain, "{out:?}");
+    assert!(
+        !out.lines().any(|l| l.starts_with("info string")),
+        "{out:?}"
+    );
 }
 
 /// With no other limit the search would run to its depth cap, so returning at all is the stop.

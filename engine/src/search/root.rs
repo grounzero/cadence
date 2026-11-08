@@ -46,6 +46,11 @@ impl Search<'_> {
         let legal = generate_legal(board);
         if legal.is_empty() {
             self.score = if board.in_check() { mated_in(0) } else { DRAW };
+            // Said here, as `mate 0` where the formatter would write `mate -0`, so a GUI that reads
+            // the score from the last `info` line has one.
+            let said = if board.in_check() { "mate 0" } else { "cp 0" };
+            let _ = writeln!(out, "info depth 0 score {said}");
+            let _ = out.flush();
             self.wait_if_open_ended();
             self.publish_nodes();
             return Move::NULL;
@@ -107,7 +112,7 @@ impl Search<'_> {
             self.roots.push((best, score));
             self.pv.clear();
             self.pv.extend_from_slice(&self.lines[0].pv);
-            for number in 1..=self.lines.len() {
+            for number in 1..=self.lines.len().min(self.shown) {
                 self.report(board, number, out);
             }
             // Best move first next time, which is what makes an aborted iteration's fallback good.
@@ -140,11 +145,22 @@ impl Search<'_> {
         self.best
     }
 
-    /// Called after `run`, so a level costs the search nothing.
-    pub fn sample(&mut self, policy: level::Policy, board: &Position) -> Move {
-        if self.accepted.len() < 2 {
-            return self.best;
+    /// Called after `run`, so a level costs the search nothing. The set it drew from is reported
+    /// with the move it plays.
+    pub fn sample(
+        &mut self,
+        policy: level::Policy,
+        board: &mut Position,
+        out: &mut dyn Write,
+    ) -> Move {
+        if self.accepted.len() >= 2 {
+            self.choose(policy, board);
         }
+        self.report_level(board, out);
+        self.best
+    }
+
+    fn choose(&mut self, policy: level::Policy, board: &Position) {
         let best = self.accepted[0].score;
         // Sorted, so the first line outside the margin ends the set.
         let admitted = self
@@ -166,7 +182,6 @@ impl Search<'_> {
         self.score = line.score;
         self.pv.clear();
         self.pv.extend_from_slice(&line.pv);
-        self.best
     }
 
     /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded

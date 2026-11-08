@@ -65,6 +65,9 @@ pub struct Session {
     probe_limit: usize,
     /// Until `stop`, the next `go`, or shutdown joins it; it may already have finished.
     search: Option<Running>,
+    /// Why the last `position` command failed, until a valid one clears it; every `go` meanwhile
+    /// answers `bestmove 0000` and searches nothing.
+    refused: Option<String>,
 }
 
 struct Running {
@@ -102,6 +105,7 @@ impl Session {
             syzygy_path: String::new(),
             probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
+            refused: None,
         }
     }
 
@@ -212,9 +216,9 @@ impl Session {
                 say(format_args!("uciok"));
             }
             "isready" => say(format_args!("readyok")),
-            "setoption" => self.set_option(tokens),
+            "setoption" => self.set_option(line),
             "position" => self.set_position(tokens),
-            "go" => self.go(tokens),
+            "go" => self.go_unless_refused(tokens),
             // A running search is stopped either way. `ucinewgame` also empties the table: a
             // surviving entry is a score for a position reached by a different route.
             "stop" => self.stop_search(),
@@ -246,17 +250,14 @@ impl Session {
                 match Board::from_fen(&fen.join(" ")) {
                     Ok(b) => b,
                     Err(e) => {
-                        say(format_args!(
-                            "info string position: FEN rejected ({e:?}): {}",
-                            fen.join(" ")
-                        ));
+                        self.refuse(format!("FEN rejected ({e:?}): {}", fen.join(" ")));
                         return;
                     }
                 }
             }
             other => {
-                say(format_args!(
-                    "info string position: expected startpos or fen, got {}",
+                self.refuse(format!(
+                    "expected startpos or fen, got {}",
                     other.unwrap_or("nothing")
                 ));
                 return;
@@ -268,15 +269,15 @@ impl Session {
         for tok in tokens.by_ref() {
             let legal = generate_legal(&board);
             let Some(m) = parse_uci(&legal, tok) else {
-                say(format_args!(
-                    "info string position: `{tok}` is not a legal move here, ignoring it and the rest"
-                ));
-                break;
+                // The replay is kept where it stopped, though no `go` searches it.
+                self.board = board;
+                self.refuse(format!("`{tok}` is not a legal move here"));
+                return;
             };
             board.play(m);
         }
-        // Accepted, then named: refusing leaves the previous position in place, and the `go` that
-        // follows answers with a move illegal in the position the GUI believes it set.
+        // Accepted, then named: it parses and replays, so it is searched, though no legal play
+        // reaches it.
         if board.opponent_in_check() {
             say(format_args!(
                 "info string position: the side not to move is in check; \
@@ -284,6 +285,15 @@ impl Session {
             ));
         }
         self.board = board;
+        self.refused = None;
+    }
+
+    /// Named now, and again by every `go` until a valid `position` clears it.
+    fn refuse(&mut self, why: String) {
+        say(format_args!(
+            "info string position: {why}; go answers 0000 until a valid position"
+        ));
+        self.refused = Some(why);
     }
 }
 
@@ -291,6 +301,62 @@ impl Session {
 fn start_position() -> Board {
     #[allow(clippy::expect_used, reason = "a constant FEN")]
     Board::from_fen(START_FEN).expect("the start position parses")
+}
+
+/// Longer lines are discarded unread, so a sender cannot grow the engine's memory without bound.
+/// The newline is not counted.
+pub const MAX_LINE_BYTES: usize = 1 << 20;
+
+/// What [`read_line`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Line {
+    /// In the buffer, with its newline where it had one.
+    Read,
+    /// Past the cap, and read to its newline or the end of input without being kept.
+    TooLong,
+    End,
+}
+
+/// One line into `line`, of which no more than `cap` bytes are ever kept.
+///
+/// # Errors
+///
+/// A read that fails, other than one interrupted, which is retried.
+pub fn read_line(
+    input: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<Line> {
+    line.clear();
+    let (mut read, mut over) = (false, false);
+    loop {
+        let chunk = match input.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            return Ok(match (read, over) {
+                (false, _) => Line::End,
+                (true, false) => Line::Read,
+                (true, true) => Line::TooLong,
+            });
+        }
+        read = true;
+        let newline = chunk.iter().position(|&b| b == b'\n');
+        let used = newline.map_or(chunk.len(), |i| i + 1);
+        if !over && line.len() + newline.unwrap_or(chunk.len()) > cap {
+            over = true;
+            line.clear();
+        }
+        if !over {
+            line.extend_from_slice(&chunk[..used]);
+        }
+        input.consume(used);
+        if newline.is_some() {
+            return Ok(if over { Line::TooLong } else { Line::Read });
+        }
+    }
 }
 
 #[must_use]
@@ -307,12 +373,15 @@ pub fn run() -> ExitCode {
     loop {
         // Bytes, not `lines()`: a line that is not UTF-8 would end the session silently, exit 0,
         // leaving a GUI a crash with nothing to attribute it to.
-        raw.clear();
-        match stdin.read_until(b'\n', &mut raw) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+        match read_line(&mut stdin, &mut raw, MAX_LINE_BYTES) {
+            Ok(Line::Read) => {}
+            Ok(Line::TooLong) => {
+                say(format_args!(
+                    "info string line discarded: longer than {MAX_LINE_BYTES} bytes"
+                ));
+                continue;
+            }
+            Ok(Line::End) | Err(_) => break,
         }
         let line = String::from_utf8_lossy(&raw);
         if !session.handle_line(&line) {

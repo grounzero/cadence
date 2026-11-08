@@ -8,9 +8,8 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use cadence_core::Move;
 use cadence_core::position::Board;
-use cadence_core::{MAX_PLY, generate_legal, parse_uci};
+use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 use cadence_engine::corrhist::MAX_CORRECTION;
 use cadence_engine::position::Position;
 use cadence_engine::score::{
@@ -63,15 +62,18 @@ fn wdl_only(name: &str) -> PathBuf {
     )
 }
 
+/// The three- and four-piece tables `tests/fixtures/syzygy.sha256` names.
 fn fixture_files() -> Vec<&'static str> {
     include_str!("../../tests/fixtures/syzygy.sha256")
         .lines()
         .filter_map(|l| l.split_whitespace().nth(1))
+        // A name's letters before the dot are its pieces and a `v`.
+        .filter(|f| f.find('.').is_some_and(|dot| dot <= 5))
         .collect()
 }
 
-/// Only the tables `tests/fixtures/syzygy.sha256` names, for a gate that counts what loads and so
-/// must not see a fuller set installed beside them.
+/// Only those tables, for a gate that counts what loads and so must not see a fuller set installed
+/// beside them.
 fn fixture_set(name: &str) -> PathBuf {
     scratch(name, &fixture_files())
 }
@@ -814,6 +816,40 @@ fn an_unranked_root_prints_a_table_win_found_below_it_in_the_band() {
     let _ = std::fs::remove_dir_all(only);
 }
 
+/// A root whose budget is spent before its first probe is not ranked: the search answers alone,
+/// with a legal move and its own score rather than the table's.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_root_with_no_time_left_is_not_probed() {
+    let only = fixture_set("no-time");
+    let fen = "8/8/8/3k4/8/8/8/R3K3 w - - 0 1";
+    let (scores, best) = scores_after(&only, &[], fen, "go movetime 0");
+    let last = centipawns(scores.last().expect("a score"));
+    assert!(last.abs() < TB_WIN_IN_MAX_PLY, "{scores:?}");
+    assert!(
+        parse_uci(&generate_legal(&board(fen)), &best).is_some(),
+        "{best}"
+    );
+    let _ = std::fs::remove_dir_all(only);
+}
+
+/// The ranking asks before each probe and stops at the first no, so a stop or a spent budget waits
+/// for one probe at most rather than for every move the root has.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn the_root_ranking_stops_between_probes_when_told() {
+    let tables = loaded(&fixtures());
+    let mut b = board("8/8/8/3k4/8/8/8/R3K3 w - - 0 1");
+    let asked = std::cell::Cell::new(0);
+    let go_on = || {
+        asked.set(asked.get() + 1);
+        asked.get() <= 3
+    };
+    assert!(tables.rank_root_while(&mut b, &[], &go_on).is_none());
+    assert_eq!(asked.get(), 4);
+    assert!(tables.rank_root_while(&mut b, &[], &|| true).is_some());
+}
+
 /// A drawn rank reads 0 whatever the search found, and a won or lost one the table's score unless
 /// the search found a mate for the side the table says wins.
 #[test]
@@ -1014,4 +1050,91 @@ fn no_search_rule_reads_the_mate_scale_alone() {
     ] {
         assert!(!source.contains("is_mate("), "{name}");
     }
+}
+
+/// The moves as `bestmove` spells them, sorted.
+fn spelled(moves: &[Move]) -> Vec<String> {
+    let mut out: Vec<String> = moves.iter().map(|m| m.to_uci_chess960()).collect();
+    out.sort();
+    out
+}
+
+/// A five-piece pawn ending where each king move wins and the e-pawn's push draws. At a counter of
+/// 89 only the wins ten plies from zeroing still end inside the hundredth half-move.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_five_piece_pawn_ending_keeps_only_the_wins_its_counter_allows() {
+    let tables = loaded(&fixtures());
+    let mut fresh = board("8/8/2k5/3pP3/3P4/8/8/4K3 w - - 0 1");
+    assert_eq!(tables.probe_wdl(&fresh), Some(Wdl::Win));
+    assert_eq!(tables.probe_dtz(&fresh), Some(11));
+    let ranked = tables.rank_root(&mut fresh, &[]).expect("a ranked root");
+    assert_eq!(ranked.best, Rank::Win);
+    let kings = ["e1d1", "e1d2", "e1e2", "e1f1", "e1f2"];
+    assert_eq!(spelled(&ranked.moves), kings);
+    let mut late = board("8/8/2k5/3pP3/3P4/8/8/4K3 w - - 89 60");
+    let ranked = tables.rank_root(&mut late, &[]).expect("a ranked root");
+    assert!(
+        matches!(ranked.best, Rank::Win | Rank::MaybeWin),
+        "{:?}",
+        ranked.best
+    );
+    assert_eq!(spelled(&ranked.moves), ["e1d2", "e1e2", "e1f2"]);
+}
+
+/// Black's last move was d7d5, so e5 takes en passant, and that wins as e6 does; without the square
+/// only e6 wins.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn an_en_passant_capture_in_a_five_piece_ending_is_ranked() {
+    let tables = loaded(&fixtures());
+    let mut with = board("8/8/8/3pP3/5k2/8/P7/7K w - d6 0 1");
+    assert_eq!(tables.probe_wdl(&with), Some(Wdl::Win));
+    let ranked = tables.rank_root(&mut with, &[]).expect("a ranked root");
+    assert_eq!(ranked.best, Rank::Win);
+    assert_eq!(spelled(&ranked.moves), ["e5d6", "e5e6"]);
+    let mut without = board("8/8/8/3pP3/5k2/8/P7/7K w - - 0 1");
+    let ranked = tables.rank_root(&mut without, &[]).expect("a ranked root");
+    assert_eq!(spelled(&ranked.moves), ["e5e6"]);
+}
+
+/// Every quiet move into a loss is ranked at the counters putting its end a ply inside, on and a
+/// ply past the hundredth half-move. A rounded distance on it may be a ply longer, so it ranks
+/// below a certain win, and these five-piece tables must store at least one.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_rounded_five_piece_distance_on_the_hundredth_half_move_is_not_a_certain_win() {
+    let tables = loaded(&fixtures());
+    let mut rounded = 0;
+    for root in [
+        "8/8/8/4k3/8/8/r7/RR2K3 w - -",
+        "8/8/2k5/3pP3/3P4/8/8/4K3 w - -",
+        "8/8/1k6/8/pP6/P7/8/1K6 w - -",
+    ] {
+        let mut start = board(&format!("{root} 0 1"));
+        for m in generate_legal(&start).iter() {
+            start.make_move(m);
+            let quiet = start.halfmove_clock() > 0 && !generate_legal(&start).is_empty();
+            let Some(found) = tables.probe_dtz(&start) else {
+                panic!("{root} {m:?}: no distance");
+            };
+            start.unmake_move(m);
+            let plies = found.unsigned_abs();
+            if !quiet || found >= 0 || plies > 98 {
+                continue;
+            }
+            let rank_at = |end: u32| {
+                let mut b = board(&format!("{root} {} 1", end - plies - 1));
+                tables.rank_root(&mut b, &[m]).expect("a ranked move").best
+            };
+            assert_eq!(rank_at(99), Rank::Win, "{root} {m:?}");
+            assert_eq!(rank_at(101), Rank::CursedWin, "{root} {m:?}");
+            match rank_at(100) {
+                Rank::Win => {}
+                Rank::MaybeWin => rounded += 1,
+                other => panic!("{root} {m:?}: {other:?}"),
+            }
+        }
+    }
+    assert!(rounded > 0, "no quiet move read a rounded distance");
 }

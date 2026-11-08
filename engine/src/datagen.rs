@@ -11,9 +11,10 @@ pub mod record;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Condvar, LockResult, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -32,6 +33,13 @@ pub const NODES: u64 = 5_000;
 pub const HASH_MB: usize = 16;
 
 pub const HOLDOUT_EVERY: u64 = 10;
+
+/// The most workers a run starts.
+pub const MAX_THREADS: usize = 256;
+
+/// The most games past the next one to be written that a worker may start, which bounds the records
+/// held for reordering; four times `MAX_THREADS`, so a run nothing delays never waits on it.
+pub const AHEAD: u64 = 1_024;
 
 /// Hashed twice, so runs with different seeds share a game only by a 64-bit coincidence.
 #[must_use]
@@ -72,13 +80,30 @@ pub fn generate(
     out: &mut dyn Write,
     progress: &mut dyn FnMut(u64),
 ) -> io::Result<()> {
+    let line_for = |number: u64, tt: &Table| play(seed, number, tt).line();
+    generate_with(seed, games, threads, AHEAD, out, progress, &line_for)
+}
+
+/// `line_for` makes a game's record line, so a test can hold a game back.
+fn generate_with(
+    seed: u64,
+    games: u64,
+    threads: usize,
+    ahead: u64,
+    out: &mut dyn Write,
+    progress: &mut dyn FnMut(u64),
+    line_for: &(dyn Fn(u64, &Table) -> String + Sync),
+) -> io::Result<()> {
     writeln!(out, "{}", provenance(seed, games))?;
     let next = AtomicU64::new(0);
+    let window = Window::new(ahead);
     let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
     thread::scope(|scope| {
-        for _ in 0..threads.max(1) {
+        let _closing = Closing(&window);
+        for _ in 0..workers(threads, games) {
             let tx = tx.clone();
             let next = &next;
+            let window = &window;
             // The stack a `go` gives its search, since these games are the same search.
             let spawned = thread::Builder::new()
                 .stack_size(SEARCH_STACK_BYTES)
@@ -89,10 +114,10 @@ pub fn generate(
                     };
                     loop {
                         let number = next.fetch_add(1, Ordering::Relaxed);
-                        if number >= games {
+                        if number >= games || !window.wait_for(number) {
                             return;
                         }
-                        let line = play(seed, number, &tt).line();
+                        let line = line_for(number, &tt);
                         if tx.send(Some((number, line))).is_err() {
                             return;
                         }
@@ -118,13 +143,82 @@ pub fn generate(
                 wanted += 1;
                 progress(wanted);
             }
+            window.advance(wanted);
         }
         out.flush()
     })
 }
 
+/// How far the workers may run ahead of the next record to be written.
+struct Window {
+    ahead: u64,
+    state: Mutex<WindowState>,
+    moved: Condvar,
+}
+
+struct WindowState {
+    written: u64,
+    closed: bool,
+}
+
+impl Window {
+    /// At least one, or the next game to be written would wait on itself.
+    fn new(ahead: u64) -> Window {
+        Window {
+            ahead: ahead.max(1),
+            state: Mutex::new(WindowState {
+                written: 0,
+                closed: false,
+            }),
+            moved: Condvar::new(),
+        }
+    }
+
+    /// The next record to be written is always inside, so its game never waits and the window
+    /// moves. False once the writer has stopped, when no game is worth starting.
+    fn wait_for(&self, number: u64) -> bool {
+        let mut state = unpoisoned(self.state.lock());
+        while !state.closed && number >= state.written.saturating_add(self.ahead) {
+            state = unpoisoned(self.moved.wait(state));
+        }
+        !state.closed
+    }
+
+    fn advance(&self, written: u64) {
+        unpoisoned(self.state.lock()).written = written;
+        self.moved.notify_all();
+    }
+
+    fn close(&self) {
+        unpoisoned(self.state.lock()).closed = true;
+        self.moved.notify_all();
+    }
+}
+
+/// The lock guards two plain fields, which no panic can leave half-written.
+fn unpoisoned<T>(result: LockResult<T>) -> T {
+    result.unwrap_or_else(PoisonError::into_inner)
+}
+
+/// On every way out of the writer, so no worker waits on a window that will not move again.
+struct Closing<'a>(&'a Window);
+
+impl Drop for Closing<'_> {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+/// Each worker holds a stack and a table before it asks for a game, so none start for no games.
+fn workers(threads: usize, games: u64) -> usize {
+    threads
+        .clamp(1, MAX_THREADS)
+        .min(usize::try_from(games).unwrap_or(usize::MAX))
+}
+
 const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
-     cadence datagen extract <games> --train PATH --holdout PATH [--every N]";
+     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
+     --threads is cut to the number of games and to 256";
 
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
@@ -181,7 +275,13 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     }
     let games = games.ok_or("--games is required")?;
-    let mut staged = path.as_deref().map(Staged::create).transpose()?;
+    if threads > MAX_THREADS {
+        eprintln!("cadence datagen: --threads {threads} is cut to {MAX_THREADS}");
+    }
+    let mut staged = match path.as_deref().map(Path::new) {
+        Some(out) => Some(Staged::create(out, stage_name(out)?)?),
+        None => None,
+    };
     let mut stdout = BufWriter::new(io::stdout().lock());
     let out: &mut dyn Write = match &mut staged {
         Some(file) => file,
@@ -197,7 +297,7 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
         }
     };
     generate(seed, games, threads, out, &mut progress).map_err(|e| e.to_string())?;
-    staged.map_or(Ok(()), Staged::finish)
+    staged.map_or(Ok(()), |stage| publish(vec![stage]))
 }
 
 fn extract_from_args(args: &[String]) -> Result<(), String> {
@@ -216,42 +316,124 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
     }
     let train = train.ok_or("--train is required")?;
     let holdout = holdout.ok_or("--holdout is required")?;
+    let (train_path, holdout_path) = (Path::new(&train), Path::new(&holdout));
+    let (train_temp, holdout_temp) = (stage_name(train_path)?, stage_name(holdout_path)?);
+    distinct(&[
+        Path::new(input),
+        train_path,
+        holdout_path,
+        train_temp.as_path(),
+        holdout_temp.as_path(),
+    ])?;
     let input = BufReader::new(File::open(input).map_err(|e| format!("{input}: {e}"))?);
-    let mut train = Staged::create(&train)?;
-    let mut holdout = Staged::create(&holdout)?;
+    let mut train = Staged::create(train_path, train_temp)?;
+    let mut holdout = Staged::create(holdout_path, holdout_temp)?;
     let stats = extract::extract(input, &mut train, &mut holdout, every)?;
-    train.finish()?;
-    holdout.finish()?;
+    publish(vec![train, holdout])?;
     stats
         .report(&mut io::stdout().lock())
         .map_err(|e| e.to_string())
 }
 
+/// Refused before anything is created: an output or a stage that is the input, or another output
+/// or stage, would be written or published over it.
+fn distinct(paths: &[&Path]) -> Result<(), String> {
+    let resolved = paths
+        .iter()
+        .map(|&p| resolve(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (i, a) in resolved.iter().enumerate() {
+        if let Some(j) = resolved[i + 1..].iter().position(|b| same_file(a, b)) {
+            return Err(format!(
+                "{} and {} name one file",
+                paths[i].display(),
+                paths[i + 1 + j].display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Where `path` is or would be: itself resolved where it exists, else its directory resolved and
+/// its name added, so two spellings of one file resolve alike.
+fn resolve(path: &Path) -> Result<PathBuf, String> {
+    let failed = |e: io::Error| format!("{}: {e}", path.display());
+    if path.exists() {
+        return std::fs::canonicalize(path).map_err(failed);
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{}: not a file name", path.display()))?;
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    Ok(std::fs::canonicalize(dir).map_err(failed)?.join(name))
+}
+
+/// Spellings differing only in case are one file where the file system ignores case, as macOS and
+/// Windows do by default.
+fn same_file(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+    } else {
+        a == b
+    }
+}
+
+/// Beside `path`, named by this process and a count, so no two stages share a name and an earlier
+/// run's leftover is refused by the creation rather than written over.
+fn stage_name(path: &Path) -> Result<PathBuf, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{}: not a file name", path.display()))?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut temp = name.to_os_string();
+    temp.push(format!(".{}.{n}.partial", std::process::id()));
+    Ok(path.with_file_name(temp))
+}
+
 /// A file written under a temporary name beside its own and renamed to it only once complete, so
 /// a stage that fails leaves nothing a later one could read as whole.
 struct Staged {
-    path: String,
-    temp: String,
+    path: PathBuf,
+    temp: PathBuf,
     file: Option<BufWriter<File>>,
+    /// Until it is, dropping the stage removes its file, written out or not.
+    published: bool,
 }
 
 impl Staged {
-    fn create(path: &str) -> Result<Staged, String> {
-        let temp = format!("{path}.partial");
-        let file = File::create(&temp).map_err(|e| format!("{temp}: {e}"))?;
+    /// Created new, so a stage can never be a file already there.
+    fn create(path: &Path, temp: PathBuf) -> Result<Staged, String> {
+        let file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|e| format!("{}: {e}", temp.display()))?;
         Ok(Staged {
-            path: path.to_string(),
+            path: path.to_path_buf(),
             temp,
             file: Some(BufWriter::new(file)),
+            published: false,
         })
     }
 
-    fn finish(mut self) -> Result<(), String> {
+    /// Written out and closed, which some platforms require of a file before it is renamed.
+    fn close(&mut self) -> Result<(), String> {
         if let Some(file) = self.file.take() {
             file.into_inner()
-                .map_err(|e| format!("{}: {}", self.temp, e.error()))?;
+                .map_err(|e| format!("{}: {}", self.temp.display(), e.error()))?;
         }
-        std::fs::rename(&self.temp, &self.path).map_err(|e| format!("{}: {e}", self.path))
+        Ok(())
+    }
+
+    fn rename(mut self) -> Result<(), String> {
+        std::fs::rename(&self.temp, &self.path)
+            .map_err(|e| format!("{}: {e}", self.path.display()))?;
+        self.published = true;
+        Ok(())
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
@@ -274,9 +456,94 @@ impl Write for Staged {
 impl Drop for Staged {
     /// The file is closed before it is removed, which some platforms require.
     fn drop(&mut self) {
-        if let Some(file) = self.file.take() {
-            drop(file);
+        drop(self.file.take());
+        if !self.published {
             let _ = std::fs::remove_file(&self.temp);
         }
+    }
+}
+
+/// Every stage is written out and every destination checked before any is renamed, so one that
+/// cannot be published leaves the others' destinations as they were.
+fn publish(mut stages: Vec<Staged>) -> Result<(), String> {
+    for stage in &mut stages {
+        stage.close()?;
+    }
+    if let Some(stage) = stages.iter().find(|stage| stage.path.is_dir()) {
+        return Err(format!("{}: a directory, not a file", stage.path.display()));
+    }
+    for stage in stages {
+        stage.rename()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::{MAX_THREADS, USAGE, generate_with, provenance, workers};
+    use crate::tt::Table;
+
+    #[test]
+    fn workers_number_at_most_the_games_and_the_maximum() {
+        assert_eq!(workers(100_000, 0), 0, "no games, no workers");
+        assert_eq!(workers(100_000, 1), 1);
+        assert_eq!(workers(100_000, 1_000_000), MAX_THREADS);
+        assert_eq!(workers(0, 10), 1);
+        assert_eq!(workers(4, 10), 4);
+        assert!(USAGE.ends_with(&format!("and to {MAX_THREADS}")), "{USAGE}");
+    }
+
+    /// Game 0 is held until the others have started every game the window allows, and a while
+    /// longer, so a worker that ran past the window shows in what had started.
+    #[test]
+    fn holding_game_zero_back_keeps_every_worker_inside_the_window() {
+        const AHEAD_HERE: u64 = 8;
+        const GAMES: u64 = 64;
+        let started = Mutex::new(Vec::new());
+        let held = Mutex::new(Vec::new());
+        let line_for = |number: u64, _: &Table| {
+            started.lock().expect("a lock").push(number);
+            if number == 0 {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while (started.lock().expect("a lock").len() as u64) < AHEAD_HERE
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                thread::sleep(Duration::from_millis(200));
+                let snapshot = started.lock().expect("a lock").clone();
+                *held.lock().expect("a lock") = snapshot;
+            }
+            format!("game {number}")
+        };
+        let mut out = Vec::new();
+        let run = generate_with(1, GAMES, 3, AHEAD_HERE, &mut out, &mut |_| {}, &line_for);
+        run.expect("a run into memory");
+
+        let mut held = held.into_inner().expect("a lock");
+        held.sort_unstable();
+        assert_eq!(
+            held,
+            (0..AHEAD_HERE).collect::<Vec<_>>(),
+            "started while held"
+        );
+        let lines: Vec<&str> = std::str::from_utf8(&out).expect("utf-8").lines().collect();
+        let names: Vec<String> = (0..GAMES).map(|n| format!("game {n}")).collect();
+        assert_eq!(lines[1..], names, "written in number order");
+    }
+
+    /// A writer that fails releases every worker the window holds, so the run ends.
+    #[test]
+    fn a_failed_write_ends_a_run_whose_workers_are_held() {
+        const GAMES: u64 = 64;
+        let mut room = vec![0_u8; provenance(1, GAMES).len() + "\ngame 0\n".len()];
+        let mut out: &mut [u8] = &mut room;
+        let line_for = |number: u64, _: &Table| format!("game {number}");
+        let run = generate_with(1, GAMES, 3, 2, &mut out, &mut |_| {}, &line_for);
+        assert!(run.is_err(), "the second record did not fit");
     }
 }

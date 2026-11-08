@@ -22,7 +22,7 @@ fn main() -> ExitCode {
         None => Err("no subcommand".to_string()),
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("cadence-tools: {e}");
             usage();

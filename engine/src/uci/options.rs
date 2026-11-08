@@ -12,16 +12,25 @@ use crate::tt::{self, Table};
 use crate::tune::{self, Param};
 
 impl Session {
-    /// `name` and `value` delimit names and values, which may contain spaces.
-    pub(super) fn set_option<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
+    /// `name` and `value` delimit names and values, which may contain spaces. A path is kept as
+    /// sent between its first and last character that is not blank, its own spacing included.
+    pub(super) fn set_option(&mut self, line: &str) {
         let mut name = Vec::new();
         let mut value = Vec::new();
+        let mut path = "";
         let mut into_value = false;
         let mut seen_name = false;
-        for tok in tokens {
+        // Where the last word ended: words are found in order, so a word's text first occurs at it.
+        let mut end = 0;
+        for tok in line.split_whitespace() {
+            let at = line[end..].find(tok).map_or(end, |found| end + found);
+            end = at + tok.len();
             match tok {
                 "name" if !seen_name => seen_name = true,
-                "value" if seen_name && !into_value => into_value = true,
+                "value" if seen_name && !into_value => {
+                    into_value = true;
+                    path = line[end..].trim();
+                }
                 _ if into_value => value.push(tok),
                 _ if seen_name => name.push(tok),
                 _ => {}
@@ -58,7 +67,7 @@ impl Session {
             self.stop_search();
             self.tt.clear();
         } else if name.eq_ignore_ascii_case("SyzygyPath") {
-            self.set_syzygy_path(&value);
+            self.set_syzygy_path(path);
         } else if name.eq_ignore_ascii_case("SyzygyProbeLimit") {
             self.set_probe_limit(&value);
         } else if let Some(param) = tune::find(&name) {
