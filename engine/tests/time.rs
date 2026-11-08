@@ -1048,44 +1048,82 @@ fn a_ponderhit_after_the_ponder_has_finished_is_answered() {
     }
 }
 
-/// The gap between an `info` line's `time` and the whole exchange's wall clock is the pondering the
-/// budget no longer counts.
+/// Pondered past a 20 s clock's hard limit of 2.4 s and then hit, the move still waits for a search:
+/// were the pondering counted, the limit would have passed at the hit.
 #[test]
 fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
-    const PONDERED_MS: u64 = 700;
+    const PONDERED_MS: u64 = 3000;
+    const SEARCHED_MS: u64 = 150;
 
-    let (wall, lines) = Engine::within(Duration::from_secs(30), || {
+    let after_hit = Engine::within(Duration::from_secs(30), || {
         let mut e = Engine::spawn();
         e.send("position startpos");
         e.sync();
-        let start = Instant::now();
         e.send("go ponder wtime 20000 btime 20000");
         std::thread::sleep(Duration::from_millis(PONDERED_MS));
+        let hit = Instant::now();
         e.send("ponderhit");
-        let lines = e.read_until("bestmove ");
-        let wall = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        e.read_until("bestmove ");
+        let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
         e.quit();
-        (wall, lines)
+        after_hit
     });
 
-    // The last iteration line before the move: its `time` is what the search thinks it has
-    // spent, and after a hit that is measured from the hit.
-    let reported: u64 = lines
-        .iter()
-        .rev()
-        .filter(|l| l.starts_with("info depth "))
-        .find_map(|l| {
-            let toks: Vec<&str> = l.split_whitespace().collect();
-            let at = toks.iter().position(|t| *t == "time")?;
-            toks.get(at + 1)?.parse().ok()
-        })
-        .unwrap_or_else(|| panic!("no info line with a time: {lines:?}"));
-
     assert!(
-        wall >= reported + PONDERED_MS / 2,
-        "the search reported {reported} ms of a {wall} ms exchange, so the clock still counts \
-         the {PONDERED_MS} ms it spent pondering"
+        after_hit >= SEARCHED_MS,
+        "the move came {after_hit} ms after the hit, so the clock still counts the \
+         {PONDERED_MS} ms it spent pondering"
     );
+}
+
+/// After a hit `time` counts from the `go`, as `nodes` does, so a line's `time` exceeds the time
+/// since the hit by the pondering. The hit is absorbed after the first iteration line that follows
+/// it, so the second is the one that can tell.
+#[test]
+fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
+    const PONDERED_MS: u64 = 600;
+    // A line read this soon after the hit may have been written before it.
+    const SETTLED_MS: u64 = 50;
+
+    let lines = Engine::within(Duration::from_secs(60), || {
+        let mut e = Engine::spawn();
+        e.send("position startpos");
+        e.sync();
+        e.send("go ponder wtime 600000 btime 600000");
+        std::thread::sleep(Duration::from_millis(PONDERED_MS));
+        e.sync();
+        let hit = Instant::now();
+        e.send("ponderhit");
+        let mut lines = Vec::new();
+        while lines.len() < 2 {
+            let line = e.read_until("").pop().expect("a line");
+            let since_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
+            assert!(!line.starts_with("bestmove "), "moved after {lines:?}");
+            if line.starts_with("info depth ") && since_hit >= SETTLED_MS {
+                lines.push((since_hit, info_time(&line)));
+            }
+        }
+        e.send("stop");
+        e.read_until("bestmove ");
+        e.quit();
+        lines
+    });
+
+    for (since_hit, reported) in lines {
+        assert!(
+            reported >= since_hit + PONDERED_MS / 2,
+            "a line read {since_hit} ms after the hit reported time {reported}, which counts from \
+             the hit and not from the go"
+        );
+    }
+}
+
+fn info_time(line: &str) -> u64 {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    toks.iter()
+        .position(|t| *t == "time")
+        .and_then(|at| toks.get(at + 1)?.parse().ok())
+        .unwrap_or_else(|| panic!("no time in {line:?}"))
 }
 
 /// The hit is raised before the run, so the whole search is what a `ponderhit` leaves: it records a
