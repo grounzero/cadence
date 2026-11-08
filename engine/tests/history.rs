@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, MoveList, START_FEN, generate_legal};
+use cadence_engine::datagen;
 use cadence_engine::history::{self, HISTORY_MAX, History, SHIFT_MAX, SPAN};
 use cadence_engine::picker::{Tables, sort_from};
 use cadence_engine::search::{Limits, history_reduction, lmr_reduction};
@@ -406,5 +407,38 @@ fn a_second_search_starts_from_the_history_a_fresh_one_would() {
         run(&mut reused, MIDDLEGAME),
         expected,
         "a second search did not search the tree a fresh one did"
+    );
+}
+
+/// The same under datagen's node limit, which ends each run partway through an iteration, so a
+/// field `begin` missed would carry over from wherever the last run stopped.
+#[test]
+fn a_node_limited_search_after_another_finds_what_a_fresh_one_would() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let limits = Limits {
+        nodes: Some(datagen::NODES),
+        ..Limits::default()
+    };
+    let run = |s: &mut cadence_engine::search::Search<'_>, fen: &str| {
+        tt.clear();
+        let mut b = support::position(fen);
+        let best = s.run(&mut b, &mut Vec::new());
+        (best, s.score(), s.nodes())
+    };
+    let mut alone = support::search(limits, &stop, &tt);
+    let expected = run(&mut alone, MIDDLEGAME);
+
+    let kiwipete = support::standard_fen("kiwipete");
+    let mut reused = support::search(limits, &stop, &tt);
+    let (_, _, first) = run(&mut reused, &kiwipete);
+    assert!(
+        first >= datagen::NODES,
+        "the first search ended before its node limit, so it did not stop partway through"
+    );
+    assert_eq!(
+        run(&mut reused, MIDDLEGAME),
+        expected,
+        "a second search under a node limit did not find what a fresh one did"
     );
 }

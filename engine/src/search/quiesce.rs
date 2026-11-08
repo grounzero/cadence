@@ -84,7 +84,7 @@ impl Search<'_> {
             board.make_move(m);
             let score = -self.quiesce(board, ply + 1, -beta, -alpha);
             board.unmake_move(m);
-            if self.aborted {
+            if self.run.aborted {
                 return ABORTED;
             }
             if score > best {
