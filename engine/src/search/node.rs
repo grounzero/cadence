@@ -186,7 +186,9 @@ impl Search<'_> {
             } else {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
-                self.stats.lmr_losing_captures.add_if(base > 0 && m.is_noisy());
+                self.stats
+                    .lmr_losing_captures
+                    .add_if(base > 0 && m.is_noisy());
                 let history = move_history(m, self.history.get(us, m));
                 self.late_move(board, child, base, history, ply, alpha, pv, kind)
             };
@@ -774,7 +776,10 @@ mod tests {
         search.make(&mut board, 0, m);
         search.evals[1] = Some(BETA + 200);
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
-        assert!(search.stats.null_attempts.get() > 0, "the null move was refused");
+        assert!(
+            search.stats.null_attempts.get() > 0,
+            "the null move was refused"
+        );
         let read: Vec<_> = at(&search, 2).iter().map(|c| (c.asked, c.kind)).collect();
         assert_eq!(read, [(None, Expected::All)]);
     }
@@ -861,7 +866,10 @@ mod tests {
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
 
         // Nodes below it try their own, but only after this one was admitted.
-        assert!(search.stats.null_attempts.get() > 0, "the null move was refused");
+        assert!(
+            search.stats.null_attempts.get() > 0,
+            "the null move was refused"
+        );
         assert_eq!(conthist::context(&search.frames, 2, 1), None, "one ply up");
         assert_eq!(
             conthist::context(&search.frames, 2, 2),
