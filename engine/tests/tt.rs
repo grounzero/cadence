@@ -733,8 +733,8 @@ fn no_entry_claims_more_depth_than_was_searched() {
 }
 
 /// The second search must be cheaper, or the table was cold and nothing observed proved anything.
-/// Same-move stability across repeats is not asserted: index-keyed pruning breaks it, as it did on
-/// `0.4.6` in one cell.
+/// Same-move stability across repeats is not asserted, since index-keyed pruning can change the
+/// move a repeat finds.
 #[test]
 fn a_repeated_search_reuses_a_warm_table() {
     let fens = gate_fens();

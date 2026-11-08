@@ -322,7 +322,7 @@ impl<'a> Search<'a> {
             calls: None,
             #[cfg(debug_assertions)]
             asked: None,
-            stats: Stats::ZERO,
+            stats: Stats::default(),
             multipv: 1,
             shown: 1,
             root_filter: Vec::new(),
@@ -407,7 +407,7 @@ impl<'a> Search<'a> {
         self.clock.begin(&self.limits, board.side_to_move());
         self.run.clear();
         self.heuristics.clear();
-        self.stats = Stats::ZERO;
+        self.stats = Stats::default();
     }
 
     /// The table, the stop flag and the node slots are all a group shares.
