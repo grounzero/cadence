@@ -429,7 +429,7 @@ impl Staged {
         Ok(())
     }
 
-    fn rename(mut self, rename: &mut Rename) -> Result<(), String> {
+    fn rename(mut self, rename: &mut Rename<'_>) -> Result<(), String> {
         rename(&self.temp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))?;
         self.published = true;
         Ok(())
@@ -463,7 +463,7 @@ impl Drop for Staged {
 }
 
 /// `rename_file` outside the tests, which put a failure where they choose.
-type Rename = dyn FnMut(&Path, &Path) -> io::Result<()>;
+type Rename<'a> = dyn FnMut(&Path, &Path) -> io::Result<()> + 'a;
 
 fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
@@ -475,7 +475,7 @@ fn publish(stages: Vec<Staged>) -> Result<(), String> {
 
 /// Every stage is written out and every destination checked before any is renamed, so one that
 /// cannot be published leaves the others' destinations as they were.
-fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename) -> Result<(), String> {
+fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), String> {
     for stage in &mut stages {
         stage.close()?;
     }
