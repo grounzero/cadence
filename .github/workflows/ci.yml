@@ -870,7 +870,7 @@ jobs:
       - name: The proofs
         id: proofs
         continue-on-error: true
-        run: cargo kani -p cadence-engine
+        run: cargo kani -p cadence-core -p cadence-engine
 
       - name: The outcome
         if: always()

@@ -316,3 +316,58 @@ impl Table {
 const fn age_distance(now: u8, then: u8) -> u8 {
     now.wrapping_sub(then) & AGE_MASK
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn bound() -> Bound {
+        match kani::any::<u8>() % 3 {
+            0 => Bound::Lower,
+            1 => Bound::Upper,
+            _ => Bound::Exact,
+        }
+    }
+
+    /// An entry decodes to what built it, its age masked to six bits and its spare high bits empty.
+    #[kani::proof]
+    fn an_entry_decodes_to_what_built_it() {
+        let mv = Move::from_bits(kani::any());
+        let (score, depth, age, pv) = (kani::any(), kani::any(), kani::any(), kani::any());
+        let bound = bound();
+        let entry = Entry::new(mv, score, depth, bound, age, pv);
+        let hit = Hit {
+            mv,
+            score,
+            depth,
+            bound,
+            pv,
+        };
+        assert!(entry.decode() == Some(hit));
+        assert!(entry.age() == age & AGE_MASK);
+        assert!(entry.to_bits() >> (PV_SHIFT + 1) == 0);
+    }
+
+    /// A slot read back answers the key it was written under and no other.
+    #[kani::proof]
+    fn a_slot_answers_only_its_own_key() {
+        let (key, other, data): (u64, u64, u64) = (kani::any(), kani::any(), kani::any());
+        let slot = Slot::empty();
+        slot.write(key, Entry::from_bits(data));
+        let (word0, word1) = slot.read();
+        assert!(verify(word0, word1, key) == Entry::from_bits(data).decode());
+        assert!(other == key || verify(word0, word1, other).is_none());
+    }
+
+    /// Every key lands in a bucket of a table of one to four buckets, and in none of an empty one.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn every_key_lands_in_a_bucket() {
+        let buckets: usize = kani::any();
+        kani::assume((1..=4).contains(&buckets));
+        let table = Table::with_buckets(buckets).expect("a table of at most four buckets");
+        assert!(table.bucket(kani::any()).is_some());
+        let empty = Table::with_buckets(0).expect("a table of no buckets");
+        assert!(empty.bucket(kani::any()).is_none());
+    }
+}
