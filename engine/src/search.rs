@@ -263,6 +263,9 @@ struct Clock {
     pondering: bool,
     /// Derived up front: the hit is absorbed where no board is at hand.
     budget_on_hit: Option<Budget>,
+    /// From a hit absorbed inside an iteration until that or a later one completes: it began with
+    /// no budget and rarely finishes in the one the hit brings, so the soft budget ends it.
+    unbudgeted_iteration: bool,
 }
 
 impl Clock {
@@ -275,6 +278,7 @@ impl Clock {
             budget: None,
             pondering: false,
             budget_on_hit: None,
+            unbudgeted_iteration: false,
         }
     }
 
@@ -283,6 +287,7 @@ impl Clock {
         self.start = self.origin.take().unwrap_or_else(Instant::now);
         self.reported_from = self.start;
         self.pondering = limits.ponder;
+        self.unbudgeted_iteration = false;
         self.budget = if limits.infinite {
             None
         } else {

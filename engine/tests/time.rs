@@ -1118,6 +1118,62 @@ fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
     }
 }
 
+/// The iteration a hit finds began unbudgeted and rarely finishes, so until one completes after the
+/// hit the move comes at the soft budget and not the hard one. An attempt where one does complete
+/// cannot tell, so the next ponders longer and meets an iteration at another point.
+#[test]
+fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
+    // No increment: the soft budget is a 25th of the clock and the hard one three times that.
+    const CLOCK: &str = "wtime 6000 btime 6000";
+    // A search's timing barely varies on one machine, so a retry at the same length meets the same
+    // iteration at the same point.
+    const PONDERED_MS: [u64; 5] = [3000, 3900, 5100, 6600, 8600];
+    const SLACK_MS: u64 = 150;
+
+    let b = budget(&limits(CLOCK), Colour::White).expect("a budget");
+    assert!(
+        b.soft + SLACK_MS < b.hard,
+        "{b:?} leaves no room to tell soft from hard"
+    );
+    for pondered in PONDERED_MS {
+        let (completed, after_hit) = Engine::within(Duration::from_secs(30), move || {
+            let mut e = Engine::spawn();
+            e.send("position startpos");
+            e.sync();
+            e.send(&format!("go ponder {CLOCK}"));
+            std::thread::sleep(Duration::from_millis(pondered));
+            e.sync();
+            let hit = Instant::now();
+            e.send("ponderhit");
+            let mut completed = false;
+            loop {
+                let line = e.read_until("").pop().expect("a line");
+                if line.starts_with("bestmove ") {
+                    break;
+                }
+                completed |= line.starts_with("info depth ");
+            }
+            let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
+            e.quit();
+            (completed, after_hit)
+        });
+        if completed {
+            continue;
+        }
+        assert!(
+            after_hit <= b.soft + SLACK_MS,
+            "no iteration completed after the hit, and the move came {after_hit} ms after it, \
+             past the soft budget of {} ms",
+            b.soft
+        );
+        return;
+    }
+    panic!(
+        "an iteration completed after the hit in each of {} attempts",
+        PONDERED_MS.len()
+    );
+}
+
 fn info_time(line: &str) -> u64 {
     let toks: Vec<&str> = line.split_whitespace().collect();
     toks.iter()
