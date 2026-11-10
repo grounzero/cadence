@@ -446,6 +446,33 @@ fn ucinewgame_during_a_search_answers_it_once_and_the_next_go_is_legal() {
     }
 }
 
+/// `position` stops a running search before it replaces the board, as `go` and `ucinewgame` do, so
+/// the old search answers before `readyok` and no answer for it follows the new position.
+#[test]
+fn position_during_a_search_answers_it_before_the_board_changes() {
+    let kiwipete = support::standard_fen("kiwipete");
+    for threads in [1, 4] {
+        let out = talk(&format!(
+            "setoption name Threads value {threads}\nposition startpos\ngo infinite\n\
+             position fen {kiwipete}\nisready\nstop\nisready\nquit\n"
+        ));
+        let lines: Vec<&str> = out.lines().collect();
+        let first = lines
+            .iter()
+            .position(|l| l.starts_with("bestmove "))
+            .unwrap_or_else(|| panic!("Threads {threads}: no bestmove in {out:?}"));
+        let ready = lines
+            .iter()
+            .position(|l| *l == "readyok")
+            .unwrap_or_else(|| panic!("Threads {threads}: no readyok in {out:?}"));
+        assert!(
+            first < ready,
+            "Threads {threads}: the old search answered after the new position: {out:?}"
+        );
+        assert_each_legal(&out, &[START_FEN]);
+    }
+}
+
 /// Sent all at once, so many a `stop` arrives before its search has started. Each `go` still
 /// answers exactly once, for the position it was given.
 #[test]
@@ -491,13 +518,11 @@ fn a_ponder_miss_answers_the_stop_and_then_the_position_reached() {
     assert_each_legal(&out, &[PONDERED, REACHED]);
 }
 
-/// The running search holds its own table, its own tables and a copy of the board, so a change sent
-/// while it runs waits for the next search: the answer is legal where the search started, and the
-/// next answer is legal where the change left the session.
+/// The running search holds its own table and its own tables, so an option set while it runs waits
+/// for the next search: both answers are legal where the search started.
 #[test]
 fn what_is_set_during_a_search_waits_for_the_next_one() {
     const SEARCHED: &str = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
-    const MOVED: &str = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
     let tables = std::env::temp_dir().display().to_string();
     for (change, next) in [
         ("setoption name Hash value 2".to_string(), SEARCHED),
@@ -505,7 +530,6 @@ fn what_is_set_during_a_search_waits_for_the_next_one() {
             format!("setoption name SyzygyPath value {tables}"),
             SEARCHED,
         ),
-        (format!("position fen {MOVED}"), MOVED),
     ] {
         let sent = change.clone();
         let (during, after) = Engine::within(std::time::Duration::from_secs(60), move || {
