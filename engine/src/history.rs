@@ -88,3 +88,44 @@ impl Default for History {
         History::new()
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn side() -> Colour {
+        if kani::any() {
+            Colour::White
+        } else {
+            Colour::Black
+        }
+    }
+
+    /// A bonus lies in `0..=HISTORY_MAX` and never falls as the depth rises.
+    #[kani::proof]
+    fn a_bonus_is_bounded_and_rises_with_depth() {
+        let (low, high): (u32, u32) = (kani::any(), kani::any());
+        kani::assume(low <= high);
+        assert!(0 <= bonus(low) && bonus(low) <= bonus(high) && bonus(high) <= HISTORY_MAX);
+    }
+
+    /// An update stays within `HISTORY_MAX` and never moves an entry against its bonus's sign.
+    #[kani::proof]
+    fn an_update_stays_in_range_and_moves_with_its_bonus() {
+        let (entry, b): (i32, i32) = (kani::any(), kani::any());
+        let next = apply(entry, b);
+        assert!((-HISTORY_MAX..=HISTORY_MAX).contains(&next));
+        let e = entry.clamp(-HISTORY_MAX, HISTORY_MAX);
+        assert!(b < 0 || next >= e);
+        assert!(b > 0 || next <= e);
+    }
+
+    /// An update reads and writes inside the table for any side and move.
+    #[kani::proof]
+    fn an_update_stays_inside_the_table() {
+        let mut history = History::new();
+        let (side, m) = (side(), Move::from_bits(kani::any()));
+        history.update(side, m, kani::any());
+        assert!((-HISTORY_MAX..=HISTORY_MAX).contains(&history.get(side, m)));
+    }
+}

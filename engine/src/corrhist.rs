@@ -52,7 +52,10 @@ impl CorrectionHistory {
     /// ceiling.
     pub fn update(&mut self, pawn_key: u64, side: Colour, delta: Score, depth: u32) {
         let delta = delta.clamp(-MAX_DELTA, MAX_DELTA);
-        let weight = (i32::try_from(depth).unwrap_or(MAX_WEIGHT) + 1).min(MAX_WEIGHT);
+        let weight = i32::try_from(depth)
+            .unwrap_or(MAX_WEIGHT)
+            .saturating_add(1)
+            .min(MAX_WEIGHT);
         let slot = &mut self.slots[Self::index(pawn_key, side)];
         let next = (*slot * (WEIGHT_UNIT - weight) + delta * GRAIN * weight) / WEIGHT_UNIT;
         *slot = next.clamp(-MAX_CORRECTION * GRAIN, MAX_CORRECTION * GRAIN);
@@ -85,5 +88,28 @@ mod proofs {
         let eval: Score = kani::any();
         kani::assume(eval > -score::MAX_EVAL && eval < score::MAX_EVAL);
         assert!(!score::is_decisive(eval + correction));
+    }
+
+    /// An update keeps its slot within the bound `correction` assumes, for any delta and depth.
+    #[kani::proof]
+    fn an_update_keeps_its_slot_in_bounds() {
+        let slot: i32 = kani::any();
+        kani::assume((-MAX_CORRECTION * GRAIN..=MAX_CORRECTION * GRAIN).contains(&slot));
+        let mut history = CorrectionHistory {
+            slots: vec![slot; 1].into_boxed_slice(),
+        };
+        history.update(0, Colour::White, kani::any(), kani::any());
+        assert!((-MAX_CORRECTION * GRAIN..=MAX_CORRECTION * GRAIN).contains(&history.slots[0]));
+    }
+
+    /// Every pawn key and side index a slot of the table.
+    #[kani::proof]
+    fn every_key_indexes_a_slot() {
+        let side = if kani::any() {
+            Colour::White
+        } else {
+            Colour::Black
+        };
+        assert!(CorrectionHistory::index(kani::any(), side) < 2 * TABLE_SLOTS);
     }
 }
