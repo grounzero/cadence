@@ -302,13 +302,17 @@ impl Table {
         bucket.slots[victim].write(key, fresh);
     }
 
-    /// The high half of `key * buckets`, which spreads a key over any bucket count, not only a
-    /// power of two.
     #[inline]
     fn bucket(&self, key: u64) -> Option<&Bucket> {
-        let index = ((u128::from(key) * self.buckets.len() as u128) >> 64) as usize;
-        self.buckets.get(index)
+        self.buckets.get(bucket_index(key, self.buckets.len()))
     }
+}
+
+/// The high half of `key * buckets`, which spreads a key over any bucket count, not only a power of
+/// two.
+#[inline]
+fn bucket_index(key: u64, buckets: usize) -> usize {
+    ((u128::from(key) * buckets as u128) >> 64) as usize
 }
 
 /// Generations between `now` and `then`, on the six-bit ring.
@@ -369,5 +373,13 @@ mod proofs {
         assert!(table.bucket(kani::any()).is_some());
         let empty = Table::with_buckets(0).expect("a table of no buckets");
         assert!(empty.bucket(kani::any()).is_none());
+    }
+
+    /// Every key's index is below the bucket count, for every count up to the largest table's.
+    #[kani::proof]
+    fn every_key_indexes_inside_a_table_of_any_size() {
+        let buckets: usize = kani::any();
+        kani::assume((1..=MAX_HASH_MB * (1 << 20) / size_of::<Bucket>()).contains(&buckets));
+        assert!(bucket_index(kani::any(), buckets) < buckets);
     }
 }

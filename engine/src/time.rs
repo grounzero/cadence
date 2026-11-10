@@ -49,6 +49,20 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     Some(Budget { soft, hard })
 }
 
+/// What a `ponderhit` brings: the same limits' budget without the ponder flag, and `None` for a
+/// search that is not pondering.
+#[must_use]
+pub fn hit_budget(limits: &Limits, us: Colour) -> Option<Budget> {
+    if !limits.ponder {
+        return None;
+    }
+    let clocked = Limits {
+        ponder: false,
+        ..*limits
+    };
+    budget(&clocked, us)
+}
+
 /// Thousandths of the soft budget by the run of completed iterations on one move, in bins of 1, 2,
 /// 3 to 4, 5 to 8 and 9 or more. Each is proportional to how often one more iteration changed the
 /// move in self-play at that run, the first two bins pooled.
@@ -108,11 +122,15 @@ pub fn another_iteration_fits(completed: &[u64], budget: Budget) -> bool {
     if two_back == 0 {
         return true;
     }
+    predicted_ms(elapsed, two_back) <= budget.hard
+}
+
+/// The next iteration's time at the branching factor of the last two; `two_back` is not zero.
+fn predicted_ms(elapsed: u64, two_back: u64) -> u64 {
     // Two iterations apart the times are in the ratio EBF squared; scaled by a million so the root
     // comes back in thousandths, all integer.
     let ebf_milli = (elapsed.saturating_mul(1_000_000) / two_back).isqrt();
-    let predicted = elapsed.saturating_mul(ebf_milli) / 1_000;
-    predicted <= budget.hard
+    elapsed.saturating_mul(ebf_milli) / 1_000
 }
 
 #[cfg(kani)]
@@ -162,6 +180,36 @@ mod proofs {
                 }
             }
         }
+    }
+
+    /// The hit budget `Clock::begin` takes is none unless pondering, and else inside the clock.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_hit_budget_stays_inside_the_clock() {
+        let (limits, us) = (limits(), side());
+        let hit = hit_budget(&limits, us);
+        assert!(limits.ponder || hit.is_none());
+        if let Some(b) = hit {
+            let overhead = limits.move_overhead.unwrap_or(MOVE_OVERHEAD_MS);
+            assert!(b.soft <= b.hard);
+            match limits.movetime {
+                Some(t) => assert!(b.hard == t.saturating_sub(overhead)),
+                None => {
+                    let time = limits.time[us.index()].unwrap_or(0);
+                    assert!(b.hard <= time.saturating_sub(overhead));
+                }
+            }
+        }
+    }
+
+    /// No step of the prediction overflows, and short of saturating it never falls below a growing
+    /// iteration's own time.
+    #[kani::proof]
+    fn the_prediction_never_overflows_or_undercuts_a_growing_iteration() {
+        let (elapsed, two_back): (u64, u64) = (kani::any(), kani::any());
+        kani::assume(two_back > 0);
+        let predicted = predicted_ms(elapsed, two_back);
+        assert!(elapsed < two_back || elapsed > u64::MAX / 1_000_000 || predicted >= elapsed);
     }
 
     /// The run-scaled soft budget never passes the hard one.
