@@ -430,8 +430,7 @@ impl Staged {
     }
 
     fn rename(mut self, rename: &mut Rename) -> Result<(), String> {
-        rename(&self.temp, &self.path)
-            .map_err(|e| format!("{}: {e}", self.path.display()))?;
+        rename(&self.temp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))?;
         self.published = true;
         Ok(())
     }
