@@ -462,14 +462,20 @@ pub fn evaluate_cached(board: &Board, cache: &mut PawnCache) -> Score {
     score
 }
 
+/// White's view of the tapered sum, strictly inside `(-MAX_EVAL, MAX_EVAL)`.
 #[inline(always)]
-fn blend(board: &Board, sum: &Sum, phase: i32) -> Score {
+fn blend_white(mg: i32, eg: i32, phase: i32) -> Score {
     // Truncating division: symmetric under negation, so the mirror of a position evaluates to
     // the exact negative.
-    let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
+    let white = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX;
     // No material `from_fen` accepts comes near the bound; the clamp keeps any weights that would
     // off the mate scale.
-    let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
+    white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1)
+}
+
+#[inline(always)]
+fn blend(board: &Board, sum: &Sum, phase: i32) -> Score {
+    let white = blend_white(sum.mg, sum.eg, phase);
     match board.side_to_move() {
         Colour::White => white,
         Colour::Black => -white,
@@ -574,6 +580,23 @@ impl PawnCache {
 impl Default for PawnCache {
     fn default() -> PawnCache {
         PawnCache::new()
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// For sums that cannot overflow, a blend is on the evaluation scale and mirrors exactly.
+    #[kani::proof]
+    fn a_blend_stays_on_the_evaluation_scale() {
+        let (mg, eg, phase): (i32, i32, i32) = (kani::any(), kani::any(), kani::any());
+        kani::assume((0..=PHASE_MAX).contains(&phase));
+        let bound = i32::MAX / PHASE_MAX;
+        kani::assume((-bound..=bound).contains(&mg) && (-bound..=bound).contains(&eg));
+        let white = blend_white(mg, eg, phase);
+        assert!(white > -MAX_EVAL && white < MAX_EVAL);
+        assert!(blend_white(-mg, -eg, phase) == -white);
     }
 }
 

@@ -288,13 +288,7 @@ impl Clock {
         } else {
             time::budget(limits, us)
         };
-        self.budget_on_hit = if self.pondering {
-            let mut clocked = *limits;
-            clocked.ponder = false;
-            time::budget(&clocked, us)
-        } else {
-            None
-        };
+        self.budget_on_hit = time::hit_budget(limits, us);
     }
 }
 

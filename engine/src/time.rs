@@ -49,6 +49,20 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     Some(Budget { soft, hard })
 }
 
+/// What a `ponderhit` brings: the same limits' budget without the ponder flag, and `None` for a
+/// search that is not pondering.
+#[must_use]
+pub fn hit_budget(limits: &Limits, us: Colour) -> Option<Budget> {
+    if !limits.ponder {
+        return None;
+    }
+    let clocked = Limits {
+        ponder: false,
+        ..*limits
+    };
+    budget(&clocked, us)
+}
+
 /// Thousandths of the soft budget by the run of completed iterations on one move, in bins of 1, 2,
 /// 3 to 4, 5 to 8 and 9 or more. Each is proportional to how often one more iteration changed the
 /// move in self-play at that run, the first two bins pooled.
@@ -158,6 +172,26 @@ mod proofs {
                 Some(t) => assert!(b.hard == t.saturating_sub(overhead)),
                 None => {
                     let time = hit.time[us.index()].unwrap_or(0);
+                    assert!(b.hard <= time.saturating_sub(overhead));
+                }
+            }
+        }
+    }
+
+    /// The hit budget `Clock::begin` takes is none unless pondering, and else inside the clock.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_hit_budget_stays_inside_the_clock() {
+        let (limits, us) = (limits(), side());
+        let hit = hit_budget(&limits, us);
+        assert!(limits.ponder || hit.is_none());
+        if let Some(b) = hit {
+            let overhead = limits.move_overhead.unwrap_or(MOVE_OVERHEAD_MS);
+            assert!(b.soft <= b.hard);
+            match limits.movetime {
+                Some(t) => assert!(b.hard == t.saturating_sub(overhead)),
+                None => {
+                    let time = limits.time[us.index()].unwrap_or(0);
                     assert!(b.hard <= time.saturating_sub(overhead));
                 }
             }

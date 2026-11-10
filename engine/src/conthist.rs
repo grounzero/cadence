@@ -4,7 +4,7 @@
 //! piece and destination; every offset reads the one table.
 
 use cadence_core::position::Board;
-use cadence_core::{Move, Piece};
+use cadence_core::{Move, Piece, Square};
 
 use crate::history::{HISTORY_MAX, apply};
 
@@ -24,10 +24,17 @@ pub type Frame = Option<u16>;
 /// If the move's origin is empty.
 #[must_use]
 pub fn piece_to(board: &Board, m: Move) -> usize {
-    let piece = board
-        .piece_at(m.from_sq())
-        .map_or_else(|| panic!("no piece on {}", m.from_sq()), Piece::index);
-    piece * 64 + m.to_sq().index()
+    let Some(piece) = board.piece_at(m.from_sq()) else {
+        panic!("no piece on {}", m.from_sq());
+    };
+    piece_to_index(piece, m.to_sq())
+}
+
+/// A coloured piece and a destination as one index, below [`PIECE_TO`].
+#[inline]
+#[must_use]
+pub fn piece_to_index(piece: Piece, to: Square) -> usize {
+    piece.index() * 64 + to.index()
 }
 
 /// # Panics
@@ -102,5 +109,15 @@ mod proofs {
         };
         table.update(0, 0, b);
         assert!(i32::from(table.rows[0]) == apply(i32::from(entry), b));
+    }
+
+    /// Every coloured piece and destination index below `PIECE_TO`, which a frame's `u16` holds.
+    #[kani::proof]
+    fn every_piece_and_square_index_inside_the_table() {
+        let piece = Piece::ALL[usize::from(kani::any::<u8>() % 12)];
+        let to: u8 = kani::any();
+        kani::assume(to < 64);
+        let index = piece_to_index(piece, Square::new(to));
+        assert!(index < PIECE_TO && u16::try_from(index).is_ok());
     }
 }
