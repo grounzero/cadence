@@ -393,7 +393,15 @@ mod proofs {
             assert!(Move::from_bits(m.to_bits()) == m);
             assert!(from == to || !m.is_null());
         }
-        let [quiet, double, capture, en_passant, castle, promotion, promotion_capture] = moves;
+        let [
+            quiet,
+            double,
+            capture,
+            en_passant,
+            castle,
+            promotion,
+            promotion_capture,
+        ] = moves;
         assert!(!quiet.is_noisy() && quiet.promotion_piece().is_none());
         assert!(double.is_double_push() && !double.is_noisy());
         assert!(capture.is_capture() && !capture.is_promotion() && !capture.is_en_passant());
