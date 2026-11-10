@@ -163,3 +163,31 @@ pub const fn from_tt(stored: i16, ply: usize) -> Score {
         score
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// `from_tt` inverts `to_tt` at every ply, and every stored value fits in an `i16`.
+    #[kani::proof]
+    fn the_table_scale_round_trips() {
+        let score: Score = kani::any();
+        kani::assume((-INFINITE..=INFINITE).contains(&score));
+        let ply: usize = kani::any();
+        kani::assume(ply <= MAX_PLY);
+        assert_eq!(from_tt(to_tt(score, ply), ply), score);
+    }
+
+    /// Mate and tablebase scores are decisive at every ply, and no evaluation inside `MAX_EVAL` is.
+    #[kani::proof]
+    fn the_scales_do_not_overlap() {
+        let ply: usize = kani::any();
+        kani::assume(ply <= MAX_PLY);
+        assert!(is_mate(mate_in(ply)) && is_mate(mated_in(ply)));
+        assert!(is_decisive(tb_win_in(ply)) && !is_mate(tb_win_in(ply)));
+        assert!(is_decisive(tb_loss_in(ply)) && !is_mate(tb_loss_in(ply)));
+        let eval: Score = kani::any();
+        kani::assume(eval > -MAX_EVAL && eval < MAX_EVAL);
+        assert!(!is_decisive(eval));
+    }
+}
