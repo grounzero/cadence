@@ -88,3 +88,19 @@ impl Default for ContinuationHistory {
         ContinuationHistory::new()
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// An update's narrowing to `i16` is lossless for any entry and bonus.
+    #[kani::proof]
+    fn an_update_narrows_without_loss() {
+        let (entry, b): (i16, i32) = (kani::any(), kani::any());
+        let mut table = ContinuationHistory {
+            rows: vec![entry; 1].into_boxed_slice(),
+        };
+        table.update(0, 0, b);
+        assert!(i32::from(table.rows[0]) == apply(i32::from(entry), b));
+    }
+}

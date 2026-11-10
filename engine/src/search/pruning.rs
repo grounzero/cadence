@@ -208,3 +208,50 @@ impl Search<'_> {
         Some(bound)
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use crate::tune::PARAMS;
+
+    fn tunables() -> Tunables {
+        let mut tunables = Tunables::DEFAULT;
+        for param in PARAMS {
+            param.set(&mut tunables, kani::any());
+        }
+        tunables
+    }
+
+    /// No margin rule fires on a decided bound or in check, and none overflows near a mate.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn no_margin_fires_on_a_decided_bound() {
+        let tunables = tunables();
+        let (eval, depth): (Option<Score>, u32) = (kani::any(), kani::any());
+        let (alpha, beta): (Score, Score) = (kani::any(), kani::any());
+        kani::assume(alpha.abs() <= score::INFINITE && beta.abs() <= score::INFINITE);
+        kani::assume(eval.is_none_or(|e| e.abs() <= score::INFINITE));
+        if futile_node(eval, depth, alpha) {
+            assert!(eval.is_some() && !score::is_decisive(alpha));
+        }
+        if let Some(cut) = reverse_futile(&tunables, eval, depth, beta) {
+            assert!(cut == beta && eval.is_some() && !score::is_decisive(beta));
+        }
+        if let Some(raised) = probcut_bound(eval, depth, alpha, beta) {
+            assert!(eval.is_some() && !score::is_decisive(beta) && !score::is_decisive(raised));
+        }
+    }
+
+    /// Late move pruning gives up no move before `REDUCTION_INDEX`, nor in check, nor at a PV node.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn late_move_pruning_keeps_its_exemptions() {
+        let tunables = tunables();
+        let (in_check, pv) = (kani::any(), kani::any());
+        let (depth, moves): (u32, usize) = (kani::any(), kani::any());
+        assert!(lmp_count(&tunables, depth) >= REDUCTION_INDEX);
+        if let Some(count) = lmp_index(&tunables, in_check, pv, depth, moves) {
+            assert!(!in_check && !pv && count >= REDUCTION_INDEX && moves > count);
+        }
+    }
+}
