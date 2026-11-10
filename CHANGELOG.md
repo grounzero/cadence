@@ -17,16 +17,19 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
-## [0.6.0-rc.2] - 2026-11-08
+## [0.6.0-rc.3] - 2026-11-10
 
 A release candidate for 0.6.0, published as a pre-release, after
-0.6.0-rc.1 of 2026-11-06. It adds the change that keeps only the fastest
-wins at a won tablebase root, pull request 189, which rc.1 left out while
-its test ran, and a fix to the install script under Git Bash. The release
-checks run on our own machines have passed.
+0.6.0-rc.2 of 2026-11-08. It adds two fixes to pondering, and proofs that
+CI checks on every change. The release checks run on our own machines have
+passed.
 
 ### Added
 
+- Tests: proofs, checked by the Kani model checker on every change, that
+  the score encoding, the transposition table's entries and buckets, the
+  history and correction updates, the pruning margins and reductions, and
+  the time budget stay within their bounds. A failed proof fails the build.
 - Install scripts: `install.sh` for Linux, macOS, and Windows under Git
   Bash or WSL, and `install.ps1` for Windows PowerShell. Each installs a
   release's binary for the system it runs on once the binary's SHA-256 and
@@ -50,6 +53,12 @@ checks run on our own machines have passed.
 
 ### Fixed
 
+- Pondering: after a ponderhit, the iteration the search was running stops
+  at the move's planned time until an iteration completes. It could run on
+  to the limit of half the remaining clock and then play the ponder's last
+  result.
+- UCI: after a ponderhit, the reported `time` and `nps` count from the
+  `go`, as `nodes` does. `nps` was overstated.
 - Tablebases: at a won root, only the winning moves that reach a capture
   or a pawn move soonest are searched. The losing side is unchanged.
 - Install scripts: under Git Bash on an Intel processor, `install.sh`
@@ -527,8 +536,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.2...main
-[0.6.0-rc.2]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.2
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.3...main
+[0.6.0-rc.3]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.3
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21

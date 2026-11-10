@@ -19,7 +19,7 @@ $AssetsUrl = if ($env:CADENCE_RELEASES_URL) { $env:CADENCE_RELEASES_URL } else {
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
-$InstallerVersion = '0.6.0-rc.2'
+$InstallerVersion = '0.6.0-rc.3'
 
 $script:Yes = $false
 $script:KeepLog = $false
