@@ -851,3 +851,31 @@ jobs:
             [ -f "$log" ] && { echo "== $log"; cat "$log"; }
           done
           true
+
+  # The `#[cfg(kani)]` proofs, by bounded model checking at one pinned Kani release, which brings its
+  # own toolchain. It reports and does not gate until every proof is clean: a failed proof is a
+  # warning on the run.
+  kani:
+    name: kani
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Kani 0.68.0
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+
+      - name: The proofs
+        id: proofs
+        continue-on-error: true
+        run: cargo kani -p cadence-engine
+
+      - name: The outcome
+        if: always()
+        run: |
+          echo "### kani: ${{ steps.proofs.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.proofs.outcome }}" != success ]; then
+            echo "::warning::a Kani proof failed or did not run; the proofs step's log names it"
+          fi
