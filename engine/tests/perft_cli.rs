@@ -90,14 +90,15 @@ fn castling_legality_positions_to_depth_3() {
     }
 }
 
-/// One sorted `move: nodes` line per root move, exactly the corpus divide rows.
+/// One sorted `move: nodes` line per root move, exactly the corpus divide rows, whose castling is
+/// spelled king takes rook where these standard positions spell it as a GUI does.
 #[test]
 fn divide_matches_the_corpus_rows() {
     for (name, depth) in [("startpos", "1"), ("startpos", "2"), ("kiwipete", "1")] {
         let mut want: Vec<(String, u64)> = tsv("perft-divide")
             .into_iter()
             .filter(|r| r[0] == name && r[1] == depth)
-            .map(|r| (r[2].clone(), r[3].parse().expect("nodes")))
+            .map(|r| (standard(&r[2]), r[3].parse().expect("nodes")))
             .collect();
         want.sort();
         let mut args = vec!["--divide"];
@@ -113,6 +114,17 @@ fn divide_matches_the_corpus_rows() {
         assert_eq!(got, want, "{name} d{depth} divide");
         assert_eq!(nodes_line(&lines), want.iter().map(|(_, n)| n).sum::<u64>());
     }
+}
+
+fn standard(mv: &str) -> String {
+    match mv {
+        "e1h1" => "e1g1",
+        "e1a1" => "e1c1",
+        "e8h8" => "e8g8",
+        "e8a8" => "e8c8",
+        other => other,
+    }
+    .to_string()
 }
 
 /// A standard position's castling is spelled as a GUI spells it, and a Chess960 one's king takes
