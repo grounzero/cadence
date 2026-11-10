@@ -9,6 +9,7 @@ pub mod opening;
 pub mod record;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -435,10 +436,11 @@ impl Staged {
 
     /// A file already at the destination is moved aside first, and every step is recorded so a
     /// later failure can undo it.
-    fn publish(&self, rename: &mut Rename<'_>, undo: &mut Vec<Undo>) -> Result<(), String> {
+    fn publish(&mut self, rename: &mut Rename<'_>, undo: &mut Vec<Undo>) -> Result<(), String> {
         let failed = |e: io::Error| format!("{}: {e}", self.path.display());
         if self.path.symlink_metadata().is_err() {
             rename(&self.temp, &self.path).map_err(failed)?;
+            self.published = true;
             undo.push(Undo::Remove(self.path.clone()));
             return Ok(());
         }
@@ -451,7 +453,9 @@ impl Staged {
             aside,
             path: self.path.clone(),
         });
-        rename(&self.temp, &self.path).map_err(failed)
+        rename(&self.temp, &self.path).map_err(failed)?;
+        self.published = true;
+        Ok(())
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
@@ -510,13 +514,10 @@ fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), 
         return Err(format!("{}: a directory, not a file", stage.path.display()));
     }
     let mut undo = Vec::new();
-    for stage in &stages {
+    for stage in &mut stages {
         if let Err(e) = stage.publish(rename, &mut undo) {
             return Err(roll_back(undo, rename, e));
         }
-    }
-    for mut stage in stages {
-        stage.published = true;
     }
     for step in undo {
         if let Undo::Restore { aside, .. } = step {
@@ -539,7 +540,7 @@ fn roll_back(undo: Vec<Undo>, rename: &mut Rename<'_>, mut error: String) -> Str
             }
             Undo::Remove(path) => {
                 if let Err(e) = std::fs::remove_file(&path) {
-                    error.push_str(&format!("; {} not removed: {e}", path.display()));
+                    let _ = write!(error, "; {} not removed: {e}", path.display());
                 }
             }
         }
