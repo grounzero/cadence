@@ -238,10 +238,12 @@ impl Stream {
                 self.finish(&searched)?;
             }
             4 => self.ready()?,
+            // A `position` stops the search, which answers before the board changes.
             5 => {
                 self.current = self.random_line();
                 let command = self.current.command();
                 self.send(&command);
+                self.finish(&searched)?;
             }
             6 => {
                 let command = self.option();

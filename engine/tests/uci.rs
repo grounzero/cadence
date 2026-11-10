@@ -446,6 +446,33 @@ fn ucinewgame_during_a_search_answers_it_once_and_the_next_go_is_legal() {
     }
 }
 
+/// `position` stops a running search before it replaces the board, as `go` and `ucinewgame` do, so
+/// the old search answers before `readyok` and no answer for it follows the new position.
+#[test]
+fn position_during_a_search_answers_it_before_the_board_changes() {
+    let kiwipete = support::standard_fen("kiwipete");
+    for threads in [1, 4] {
+        let out = talk(&format!(
+            "setoption name Threads value {threads}\nposition startpos\ngo infinite\n\
+             position fen {kiwipete}\nisready\nstop\nisready\nquit\n"
+        ));
+        let lines: Vec<&str> = out.lines().collect();
+        let first = lines
+            .iter()
+            .position(|l| l.starts_with("bestmove "))
+            .unwrap_or_else(|| panic!("Threads {threads}: no bestmove in {out:?}"));
+        let ready = lines
+            .iter()
+            .position(|l| *l == "readyok")
+            .unwrap_or_else(|| panic!("Threads {threads}: no readyok in {out:?}"));
+        assert!(
+            first < ready,
+            "Threads {threads}: the old search answered after the new position: {out:?}"
+        );
+        assert_each_legal(&out, &[START_FEN]);
+    }
+}
+
 /// Sent all at once, so many a `stop` arrives before its search has started. Each `go` still
 /// answers exactly once, for the position it was given.
 #[test]
