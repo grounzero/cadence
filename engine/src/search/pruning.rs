@@ -229,8 +229,9 @@ mod proofs {
         let tunables = tunables();
         let (eval, depth): (Option<Score>, u32) = (kani::any(), kani::any());
         let (alpha, beta): (Score, Score) = (kani::any(), kani::any());
-        kani::assume(alpha.abs() <= score::INFINITE && beta.abs() <= score::INFINITE);
-        kani::assume(eval.is_none_or(|e| e.abs() <= score::INFINITE));
+        let scores = -score::INFINITE..=score::INFINITE;
+        kani::assume(scores.contains(&alpha) && scores.contains(&beta));
+        kani::assume(eval.is_none_or(|e| scores.contains(&e)));
         if futile_node(eval, depth, alpha) {
             assert!(eval.is_some() && !score::is_decisive(alpha));
         }
