@@ -69,3 +69,21 @@ impl Default for CorrectionHistory {
         CorrectionHistory::new()
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any slot's correction is within `MAX_CORRECTION`, too little to make an evaluation decisive.
+    #[kani::proof]
+    fn a_corrected_evaluation_is_never_decisive() {
+        let history = CorrectionHistory {
+            slots: vec![kani::any(); 1].into_boxed_slice(),
+        };
+        let correction = history.correction(0, Colour::White);
+        assert!(correction.abs() <= MAX_CORRECTION);
+        let eval: Score = kani::any();
+        kani::assume(eval > -score::MAX_EVAL && eval < score::MAX_EVAL);
+        assert!(!score::is_decisive(eval + correction));
+    }
+}

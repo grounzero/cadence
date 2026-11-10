@@ -25,6 +25,8 @@ repository   = "https://github.com/grounzero/cadence"
 # crate sets it in its own root instead, visible to a reader of that file.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# The proofs build under `cargo kani` alone, which sets `cfg(kani)`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
