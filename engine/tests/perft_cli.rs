@@ -115,6 +115,34 @@ fn divide_matches_the_corpus_rows() {
     }
 }
 
+/// A standard position's castling is spelled as a GUI spells it, and a Chess960 one's king takes
+/// rook.
+#[test]
+fn divide_spells_castling_as_the_position_does() {
+    let standard = divide_moves("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+    for (want, not) in [("e1g1", "e1h1"), ("e1c1", "e1a1")] {
+        assert!(standard.iter().any(|m| m == want), "no {want} in {standard:?}");
+        assert!(!standard.iter().any(|m| m == not), "{not} in {standard:?}");
+    }
+    let chess960 = divide_moves("1r2k2r/8/8/8/8/8/8/1R2K2R w KQkq - 0 1");
+    for (want, not) in [("e1h1", "e1g1"), ("e1b1", "e1c1")] {
+        assert!(chess960.iter().any(|m| m == want), "no {want} in {chess960:?}");
+        assert!(!chess960.iter().any(|m| m == not), "{not} in {chess960:?}");
+    }
+}
+
+/// The root moves a depth-1 divide lists.
+fn divide_moves(fen: &str) -> Vec<String> {
+    let mut args = vec!["--divide"];
+    args.extend(words(fen));
+    args.push("1");
+    perft(&args)
+        .iter()
+        .filter_map(|l| l.split_once(": "))
+        .map(|(m, _)| m.to_string())
+        .collect()
+}
+
 /// One thread, several, and more threads than root moves all agree.
 #[test]
 fn thread_count_does_not_change_the_total() {
