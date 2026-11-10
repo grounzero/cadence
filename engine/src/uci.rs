@@ -63,7 +63,7 @@ pub struct Session {
     tables: Option<Arc<Tables>>,
     syzygy_path: String,
     probe_limit: usize,
-    /// Until `stop`, the next `go`, or shutdown joins it; it may already have finished.
+    /// Until `stop`, `position`, the next `go`, or shutdown joins it; it may already have finished.
     search: Option<Running>,
     /// Why the last `position` command failed, until a valid one clears it; every `go` meanwhile
     /// answers `bestmove 0000` and searches nothing.
@@ -217,7 +217,11 @@ impl Session {
             }
             "isready" => say(format_args!("readyok")),
             "setoption" => self.set_option(line),
-            "position" => self.set_position(tokens),
+            // The running search answers for the board it was given before that board is replaced.
+            "position" => {
+                self.stop_search();
+                self.set_position(tokens);
+            }
             "go" => self.go_unless_refused(tokens),
             // A running search is stopped either way. `ucinewgame` also empties the table: a
             // surviving entry is a score for a position reached by a different route.

@@ -518,13 +518,11 @@ fn a_ponder_miss_answers_the_stop_and_then_the_position_reached() {
     assert_each_legal(&out, &[PONDERED, REACHED]);
 }
 
-/// The running search holds its own table, its own tables and a copy of the board, so a change sent
-/// while it runs waits for the next search: the answer is legal where the search started, and the
-/// next answer is legal where the change left the session.
+/// The running search holds its own table and its own tables, so an option set while it runs waits
+/// for the next search: both answers are legal where the search started.
 #[test]
 fn what_is_set_during_a_search_waits_for_the_next_one() {
     const SEARCHED: &str = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
-    const MOVED: &str = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
     let tables = std::env::temp_dir().display().to_string();
     for (change, next) in [
         ("setoption name Hash value 2".to_string(), SEARCHED),
@@ -532,7 +530,6 @@ fn what_is_set_during_a_search_waits_for_the_next_one() {
             format!("setoption name SyzygyPath value {tables}"),
             SEARCHED,
         ),
-        (format!("position fen {MOVED}"), MOVED),
     ] {
         let sent = change.clone();
         let (during, after) = Engine::within(std::time::Duration::from_secs(60), move || {
