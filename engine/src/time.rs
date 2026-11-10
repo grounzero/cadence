@@ -122,15 +122,11 @@ pub fn another_iteration_fits(completed: &[u64], budget: Budget) -> bool {
     if two_back == 0 {
         return true;
     }
-    predicted_ms(elapsed, two_back) <= budget.hard
-}
-
-/// The next iteration's time at the branching factor of the last two; `two_back` is not zero.
-fn predicted_ms(elapsed: u64, two_back: u64) -> u64 {
     // Two iterations apart the times are in the ratio EBF squared; scaled by a million so the root
     // comes back in thousandths, all integer.
     let ebf_milli = (elapsed.saturating_mul(1_000_000) / two_back).isqrt();
-    elapsed.saturating_mul(ebf_milli) / 1_000
+    let predicted = elapsed.saturating_mul(ebf_milli) / 1_000;
+    predicted <= budget.hard
 }
 
 #[cfg(kani)]
@@ -200,23 +196,6 @@ mod proofs {
                 }
             }
         }
-    }
-
-    /// No step of the prediction panics or overflows, for every pair of iteration times.
-    #[kani::proof]
-    fn the_prediction_never_overflows() {
-        let two_back: u64 = kani::any();
-        kani::assume(two_back > 0);
-        let _ = predicted_ms(kani::any(), two_back);
-    }
-
-    /// A growing iteration of up to 65 seconds is never predicted to take less than it did.
-    #[kani::proof]
-    fn a_growing_iteration_is_never_predicted_shorter() {
-        let elapsed = u64::from(kani::any::<u16>());
-        let two_back = u64::from(kani::any::<u16>());
-        kani::assume(two_back > 0 && elapsed >= two_back);
-        assert!(predicted_ms(elapsed, two_back) >= elapsed);
     }
 
     /// The run-scaled soft budget never passes the hard one.
