@@ -52,7 +52,10 @@ impl CorrectionHistory {
     /// ceiling.
     pub fn update(&mut self, pawn_key: u64, side: Colour, delta: Score, depth: u32) {
         let delta = delta.clamp(-MAX_DELTA, MAX_DELTA);
-        let weight = (i32::try_from(depth).unwrap_or(MAX_WEIGHT) + 1).min(MAX_WEIGHT);
+        let weight = i32::try_from(depth)
+            .unwrap_or(MAX_WEIGHT)
+            .saturating_add(1)
+            .min(MAX_WEIGHT);
         let slot = &mut self.slots[Self::index(pawn_key, side)];
         let next = (*slot * (WEIGHT_UNIT - weight) + delta * GRAIN * weight) / WEIGHT_UNIT;
         *slot = next.clamp(-MAX_CORRECTION * GRAIN, MAX_CORRECTION * GRAIN);
