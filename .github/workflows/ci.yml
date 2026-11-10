@@ -866,5 +866,6 @@ jobs:
           cargo install --locked kani-verifier --version 0.68.0
           cargo kani setup
 
+      # Each proof gets ten minutes, so one that cannot finish fails by name and the rest still run.
       - name: The proofs
-        run: cargo kani -p cadence-core -p cadence-engine
+        run: cargo kani -p cadence-core -p cadence-engine -Z unstable-options --harness-timeout 10m

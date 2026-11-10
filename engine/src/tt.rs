@@ -378,8 +378,10 @@ mod proofs {
     /// Every key's index is below the bucket count, for every count up to the largest table's.
     #[kani::proof]
     fn every_key_indexes_inside_a_table_of_any_size() {
-        let buckets: usize = kani::any();
-        kani::assume((1..=MAX_HASH_MB * (1 << 20) / size_of::<Bucket>()).contains(&buckets));
+        // The largest table holds 2^26 buckets, so a count is one more than a 26-bit value; built
+        // that way, the multiplier is only as wide as a count can be.
+        assert!(MAX_HASH_MB * (1 << 20) / size_of::<Bucket>() == 1 << 26);
+        let buckets = (kani::any::<u32>() >> 6) as usize + 1;
         assert!(bucket_index(kani::any(), buckets) < buckets);
     }
 }
