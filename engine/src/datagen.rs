@@ -384,13 +384,17 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// Beside `path`, named by this process and a count, so no two stages share a name and an earlier
 /// run's leftover is refused by the creation rather than written over.
 fn stage_name(path: &Path) -> Result<PathBuf, String> {
+    beside(path, "partial")
+}
+
+fn beside(path: &Path, kind: &str) -> Result<PathBuf, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = path
         .file_name()
         .ok_or_else(|| format!("{}: not a file name", path.display()))?;
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut temp = name.to_os_string();
-    temp.push(format!(".{}.{n}.partial", std::process::id()));
+    temp.push(format!(".{}.{n}.{kind}", std::process::id()));
     Ok(path.with_file_name(temp))
 }
 
@@ -429,10 +433,25 @@ impl Staged {
         Ok(())
     }
 
-    fn rename(mut self, rename: &mut Rename<'_>) -> Result<(), String> {
-        rename(&self.temp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))?;
-        self.published = true;
-        Ok(())
+    /// A file already at the destination is moved aside first, and every step is recorded so a
+    /// later failure can undo it.
+    fn publish(&self, rename: &mut Rename<'_>, undo: &mut Vec<Undo>) -> Result<(), String> {
+        let failed = |e: io::Error| format!("{}: {e}", self.path.display());
+        if self.path.symlink_metadata().is_err() {
+            rename(&self.temp, &self.path).map_err(failed)?;
+            undo.push(Undo::Remove(self.path.clone()));
+            return Ok(());
+        }
+        let aside = beside(&self.path, "previous")?;
+        if aside.symlink_metadata().is_ok() {
+            return Err(format!("{}: already there", aside.display()));
+        }
+        rename(&self.path, &aside).map_err(failed)?;
+        undo.push(Undo::Restore {
+            aside,
+            path: self.path.clone(),
+        });
+        rename(&self.temp, &self.path).map_err(failed)
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
@@ -462,6 +481,14 @@ impl Drop for Staged {
     }
 }
 
+/// What puts one step of a publish back.
+enum Undo {
+    /// The destination's earlier file, moved aside, returns over whatever replaced it.
+    Restore { aside: PathBuf, path: PathBuf },
+    /// The destination had no file, so the one published there is removed.
+    Remove(PathBuf),
+}
+
 /// `rename_file` outside the tests, which put a failure where they choose.
 type Rename<'a> = dyn FnMut(&Path, &Path) -> io::Result<()> + 'a;
 
@@ -473,8 +500,8 @@ fn publish(stages: Vec<Staged>) -> Result<(), String> {
     publish_with(stages, &mut rename_file)
 }
 
-/// Every stage is written out and every destination checked before any is renamed, so one that
-/// cannot be published leaves the others' destinations as they were.
+/// Every stage is written out and every destination checked before any is renamed, and a rename
+/// that fails undoes those before it, so the set is published whole or not at all.
 fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), String> {
     for stage in &mut stages {
         stage.close()?;
@@ -482,10 +509,42 @@ fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), 
     if let Some(stage) = stages.iter().find(|stage| stage.path.is_dir()) {
         return Err(format!("{}: a directory, not a file", stage.path.display()));
     }
-    for stage in stages {
-        stage.rename(rename)?;
+    let mut undo = Vec::new();
+    for stage in &stages {
+        if let Err(e) = stage.publish(rename, &mut undo) {
+            return Err(roll_back(undo, rename, e));
+        }
+    }
+    for mut stage in stages {
+        stage.published = true;
+    }
+    for step in undo {
+        if let Undo::Restore { aside, .. } = step {
+            let _ = std::fs::remove_file(aside);
+        }
     }
     Ok(())
+}
+
+/// Last step first, each tried whatever became of the one before, and any that fails named after
+/// `error`.
+fn roll_back(undo: Vec<Undo>, rename: &mut Rename<'_>, mut error: String) -> String {
+    for step in undo.into_iter().rev() {
+        match step {
+            Undo::Restore { aside, path } => {
+                if let Err(e) = rename(&aside, &path) {
+                    let kept = format!("; {} kept as {}: {e}", path.display(), aside.display());
+                    error.push_str(&kept);
+                }
+            }
+            Undo::Remove(path) => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    error.push_str(&format!("; {} not removed: {e}", path.display()));
+                }
+            }
+        }
+    }
+    error
 }
 
 #[cfg(test)]
