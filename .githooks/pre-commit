@@ -21,7 +21,7 @@
 # machine: 0.02 s through the built binary against a typical index, 0.15 s for
 # the whole-tree read that CI does, and about 0.19 s if it goes through cargo's
 # freshness check instead. So the built binary is preferred when it is newer
-# than its source, and cargo is the fallback that also builds it.
+# than everything it is built from, and cargo is the fallback that also builds it.
 #
 # If neither is usable the hook exits 0 with a note rather than blocking the
 # commit, on the same reasoning `commit-msg` gives for being inert without
@@ -33,14 +33,17 @@ set -eu
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
-SRC=xtask/src/main.rs
 BIN=xtask/target/debug/xtask
+# Everything the checker is built from: one older than any of these is stale.
+SOURCES="xtask/src xtask/Cargo.toml xtask/Cargo.lock"
+STALE=$(find $SOURCES -newer "$BIN" 2>/dev/null | head -n 1)
 
-if [ -x "$BIN" ] && [ "$BIN" -nt "$SRC" ]; then
+if [ -x "$BIN" ] && [ -z "$STALE" ]; then
     RUN="$BIN"
 elif command -v cargo >/dev/null 2>&1; then
     # Said aloud, because cargo's alias is quiet and a build here is otherwise unseen.
-    echo "pre-commit: no checker built since $SRC changed, so this commit builds one with cargo xtask" >&2
+    if [ -n "$STALE" ]; then WHY="$STALE changed since the checker was built"; else WHY="no checker is built"; fi
+    echo "pre-commit: $WHY, so this commit builds one with cargo xtask" >&2
     RUN="cargo xtask"
 else
     echo "pre-commit: no built xtask and no cargo, so the boundary check did not run." >&2
