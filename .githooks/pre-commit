@@ -34,9 +34,9 @@ ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
 BIN=xtask/target/debug/xtask
-# Everything the checker is built from: one older than any of these is stale.
+# The files the checker is built from, not their directories, whose times move with any entry.
 SOURCES="xtask/src xtask/Cargo.toml xtask/Cargo.lock"
-STALE=$(find $SOURCES -newer "$BIN" 2>/dev/null | head -n 1)
+STALE=$(find $SOURCES -type f -newer "$BIN" 2>/dev/null | head -n 1)
 
 if [ -x "$BIN" ] && [ -z "$STALE" ]; then
     RUN="$BIN"
