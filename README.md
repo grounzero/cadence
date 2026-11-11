@@ -128,6 +128,9 @@ not legal in the position is named in an `info string` and left out. If no
 listed move is legal, the engine searches every legal move, as a plain `go`
 would.
 
+`setoption name Hash` sent while a search runs stops that search first, so
+its `bestmove` comes at once and the new table is allocated after it.
+
 A `position` command can fail: its FEN may be one the engine cannot accept,
 its `moves` list may hold an illegal move, or it may name neither `startpos`
 nor `fen`. The engine says why in an `info string` and remembers the failure.
