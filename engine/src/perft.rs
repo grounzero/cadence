@@ -8,8 +8,10 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use cadence_core::castling::ci;
 use cadence_core::position::Board;
-use cadence_core::{MAX_PLY, generate_legal, perft};
+use cadence_core::types::File;
+use cadence_core::{CastleSide, Colour, MAX_PLY, generate_legal, perft, to_uci};
 
 pub const USAGE: &str = "usage: cadence perft [--divide] [--threads N] <fen | startpos> <depth>";
 
@@ -134,7 +136,9 @@ fn root_split(root: &Board, fen: &str, depth: u32, threads: usize) -> Vec<(Strin
     if depth == 0 {
         return vec![("-".to_string(), 1)];
     }
-    let moves: Vec<_> = generate_legal(root).iter().collect();
+    let legal = generate_legal(root);
+    let chess960 = castles_as_chess960(root);
+    let moves: Vec<_> = legal.iter().collect();
     let threads = threads.min(moves.len()).max(1);
 
     // Dynamic balancing: root subtrees vary widely in size.
@@ -158,10 +162,28 @@ fn root_split(root: &Board, fen: &str, depth: u32, threads: usize) -> Vec<(Strin
                     results
                         .lock()
                         .expect("results lock")
-                        .push((m.to_uci_chess960(), n));
+                        .push((to_uci(m, &legal, chess960), n));
                 }
             });
         }
     });
     results.into_inner().expect("results lock")
+}
+
+/// Where a castling king or rook stands off its standard square, so a standard position's castling
+/// is spelled as a GUI spells it and a Chess960 one's king takes rook.
+fn castles_as_chess960(board: &Board) -> bool {
+    let layout = board.layout();
+    for c in Colour::ALL {
+        let king_on_e = layout.king_from[c.index()]
+            .get()
+            .is_some_and(|k| k.file() == File::E);
+        for (s, file) in [(CastleSide::King, File::H), (CastleSide::Queen, File::A)] {
+            let rook = layout.rook_from[ci(c, s)].get();
+            if rook.is_some_and(|r| r.file() != file || !king_on_e) {
+                return true;
+            }
+        }
+    }
+    false
 }
