@@ -2232,18 +2232,24 @@ mod tests {
                 let mode = std::fs::Permissions::from_mode(0o755);
                 std::fs::set_permissions(&exe, mode).unwrap();
             }
-            let sources = ["xtask/src/main.rs", "xtask/src/checks.rs"];
-            for source in sources.into_iter().chain(["xtask/Cargo.toml", "xtask/Cargo.lock"]) {
+            let sources = [
+                "xtask/src/main.rs",
+                "xtask/src/checks.rs",
+                "xtask/Cargo.toml",
+                "xtask/Cargo.lock",
+            ];
+            for source in sources {
                 std::fs::write(root.join(source), "").unwrap();
                 let age = if Some(source) == newer { 0 } else { 200 };
                 set_mtime(&root.join(source), now - Duration::from_secs(age));
             }
             set_mtime(&checker, now - Duration::from_secs(100));
             let inherited = std::env::var("PATH").unwrap_or_default();
+            let path = format!("{}:{inherited}", root.join("bin").display());
             let out = Command::new("sh")
                 .arg(repo_root().join(".githooks").join("pre-commit"))
                 .current_dir(&root)
-                .env("PATH", format!("{}:{inherited}", root.join("bin").display()))
+                .env("PATH", path)
                 .output()
                 .unwrap();
             let _ = std::fs::remove_dir_all(&root);
