@@ -9,6 +9,7 @@ pub mod opening;
 pub mod record;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -384,13 +385,17 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// Beside `path`, named by this process and a count, so no two stages share a name and an earlier
 /// run's leftover is refused by the creation rather than written over.
 fn stage_name(path: &Path) -> Result<PathBuf, String> {
+    beside(path, "partial")
+}
+
+fn beside(path: &Path, kind: &str) -> Result<PathBuf, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = path
         .file_name()
         .ok_or_else(|| format!("{}: not a file name", path.display()))?;
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut temp = name.to_os_string();
-    temp.push(format!(".{}.{n}.partial", std::process::id()));
+    temp.push(format!(".{}.{n}.{kind}", std::process::id()));
     Ok(path.with_file_name(temp))
 }
 
@@ -429,9 +434,26 @@ impl Staged {
         Ok(())
     }
 
-    fn rename(mut self) -> Result<(), String> {
-        std::fs::rename(&self.temp, &self.path)
-            .map_err(|e| format!("{}: {e}", self.path.display()))?;
+    /// A file already at the destination is moved aside first, and every step is recorded so a
+    /// later failure can undo it.
+    fn publish(&mut self, rename: &mut Rename<'_>, undo: &mut Vec<Undo>) -> Result<(), String> {
+        let failed = |e: io::Error| format!("{}: {e}", self.path.display());
+        if self.path.symlink_metadata().is_err() {
+            rename(&self.temp, &self.path).map_err(failed)?;
+            self.published = true;
+            undo.push(Undo::Remove(self.path.clone()));
+            return Ok(());
+        }
+        let aside = beside(&self.path, "previous")?;
+        if aside.symlink_metadata().is_ok() {
+            return Err(format!("{}: already there", aside.display()));
+        }
+        rename(&self.path, &aside).map_err(failed)?;
+        undo.push(Undo::Restore {
+            aside,
+            path: self.path.clone(),
+        });
+        rename(&self.temp, &self.path).map_err(failed)?;
         self.published = true;
         Ok(())
     }
@@ -463,28 +485,80 @@ impl Drop for Staged {
     }
 }
 
-/// Every stage is written out and every destination checked before any is renamed, so one that
-/// cannot be published leaves the others' destinations as they were.
-fn publish(mut stages: Vec<Staged>) -> Result<(), String> {
+/// What puts one step of a publish back.
+enum Undo {
+    /// The destination's earlier file, moved aside, returns over whatever replaced it.
+    Restore { aside: PathBuf, path: PathBuf },
+    /// The destination had no file, so the one published there is removed.
+    Remove(PathBuf),
+}
+
+/// `rename_file` outside the tests, which put a failure where they choose.
+type Rename<'a> = dyn FnMut(&Path, &Path) -> io::Result<()> + 'a;
+
+fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+fn publish(stages: Vec<Staged>) -> Result<(), String> {
+    publish_with(stages, &mut rename_file)
+}
+
+/// Every stage is written out and every destination checked before any is renamed, and a rename
+/// that fails undoes those before it, so the set is published whole or not at all.
+fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), String> {
     for stage in &mut stages {
         stage.close()?;
     }
     if let Some(stage) = stages.iter().find(|stage| stage.path.is_dir()) {
         return Err(format!("{}: a directory, not a file", stage.path.display()));
     }
-    for stage in stages {
-        stage.rename()?;
+    let mut undo = Vec::new();
+    for stage in &mut stages {
+        if let Err(e) = stage.publish(rename, &mut undo) {
+            return Err(roll_back(undo, rename, e));
+        }
+    }
+    for step in undo {
+        if let Undo::Restore { aside, .. } = step {
+            let _ = std::fs::remove_file(aside);
+        }
     }
     Ok(())
 }
 
+/// Last step first, each tried whatever became of the one before, and any that fails named after
+/// `error`.
+fn roll_back(undo: Vec<Undo>, rename: &mut Rename<'_>, mut error: String) -> String {
+    for step in undo.into_iter().rev() {
+        match step {
+            Undo::Restore { aside, path } => {
+                if let Err(e) = rename(&aside, &path) {
+                    let kept = format!("; {} kept as {}: {e}", path.display(), aside.display());
+                    error.push_str(&kept);
+                }
+            }
+            Undo::Remove(path) => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    let _ = write!(error, "; {} not removed: {e}", path.display());
+                }
+            }
+        }
+    }
+    error
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Write};
+    use std::path::Path;
     use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{MAX_THREADS, USAGE, generate_with, provenance, workers};
+    use super::{
+        MAX_THREADS, Staged, USAGE, generate_with, provenance, publish_with, stage_name, workers,
+    };
     use crate::tt::Table;
 
     #[test]
@@ -534,6 +608,68 @@ mod tests {
         let lines: Vec<&str> = std::str::from_utf8(&out).expect("utf-8").lines().collect();
         let names: Vec<String> = (0..GAMES).map(|n| format!("game {n}")).collect();
         assert_eq!(lines[1..], names, "written in number order");
+    }
+
+    /// The pair is published whole or not at all: a rename that fails, whichever it is, leaves both
+    /// destinations as they were and nothing beside them.
+    #[test]
+    fn a_failed_rename_leaves_the_original_pair_untouched() {
+        let dir = std::env::temp_dir();
+        let dir = dir.join(format!("cadence-pair-{}", std::process::id()));
+        let train = dir.join("train.txt");
+        let holdout = dir.join("holdout.txt");
+        let mut failed = 0;
+        for fail_at in 0.. {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch directory");
+            std::fs::write(&train, "train 1").expect("writes");
+            std::fs::write(&holdout, "holdout 1").expect("writes");
+            let stages = vec![staged(&train, "train 2"), staged(&holdout, "holdout 2")];
+            let mut calls = 0;
+            let mut rename = |from: &Path, to: &Path| {
+                calls += 1;
+                if calls == fail_at + 1 {
+                    return Err(io::Error::other("injected"));
+                }
+                std::fs::rename(from, to)
+            };
+            let published = publish_with(stages, &mut rename).is_ok();
+            assert_eq!(
+                listed(&dir),
+                ["holdout.txt", "train.txt"],
+                "call {fail_at} failing"
+            );
+            let pair = [read(&train), read(&holdout)];
+            if published {
+                assert_eq!(pair, ["train 2", "holdout 2"]);
+                break;
+            }
+            failed += 1;
+            assert_eq!(pair, ["train 1", "holdout 1"], "call {fail_at} failing");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failed >= 2, "the second rename was never made to fail");
+    }
+
+    fn staged(path: &Path, text: &str) -> Staged {
+        let name = stage_name(path).expect("a stage name");
+        let mut stage = Staged::create(path, name).expect("a stage");
+        stage.write_all(text.as_bytes()).expect("writes");
+        stage
+    }
+
+    fn listed(dir: &Path) -> Vec<String> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("lists") {
+            let name = entry.expect("an entry").file_name();
+            names.push(name.to_string_lossy().into_owned());
+        }
+        names.sort();
+        names
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).expect("reads")
     }
 
     /// A writer that fails releases every worker the window holds, so the run ends.
