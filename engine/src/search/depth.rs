@@ -18,7 +18,7 @@ pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
 }
 
 /// The shallowest node searched shallower for the move its table did not name.
-const IIR_DEPTH: u32 = 4;
+pub(crate) const IIR_DEPTH: u32 = 4;
 
 /// What every search shortens that node by, unless a gate sets it otherwise.
 pub(crate) const IIR_REDUCTION: u32 = 2;
@@ -108,4 +108,48 @@ pub fn pv_reduction(r: u32, pv: bool) -> u32 {
 #[must_use]
 pub fn cut_node_reduction(r: u32, cut: bool) -> u32 {
     r + u32::from(cut && r > 0)
+}
+
+/// At least one ply. A reduction is made only from depth 3, where the child has two, so the floor
+/// never lifts a reduced search above the move's unreduced depth.
+#[must_use]
+pub fn reduced_depth(child: u32, r: u32) -> u32 {
+    child.saturating_sub(r).max(1)
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// No exempt move is reduced, a noisy one by at most a ply, and no later term creates one.
+    #[kani::proof]
+    fn the_exemptions_hold_through_every_term() {
+        let (in_check, gives_check, losing) = (kani::any(), kani::any(), kani::any());
+        let m = Move::from_bits(kani::any());
+        let killers = [Move::from_bits(kani::any()), Move::from_bits(kani::any())];
+        let (depth, index): (u32, usize) = (kani::any(), kani::any());
+        let base = reduction(in_check, gives_check, m, losing, killers, depth, index);
+        if in_check || gives_check || m == killers[0] || m == killers[1] {
+            assert!(base == 0);
+        }
+        if m.is_noisy() {
+            assert!(base <= u32::from(losing));
+        }
+        let (history, pv, cut): (i32, bool, bool) = (kani::any(), kani::any(), kani::any());
+        let r = cut_node_reduction(pv_reduction(history_reduction(base, history), pv), cut);
+        assert!(base > 0 || r == 0);
+    }
+
+    /// The chain never overflows, and a reduced search keeps between one ply and the move's depth.
+    #[kani::proof]
+    fn a_reduced_depth_stays_between_one_ply_and_the_moves() {
+        let (depth, index): (u32, usize) = (kani::any(), kani::any());
+        let (history, pv, cut): (i32, bool, bool) = (kani::any(), kani::any(), kani::any());
+        let base = lmr_reduction(depth, index);
+        let r = cut_node_reduction(pv_reduction(history_reduction(base, history), pv), cut);
+        let child: u32 = kani::any();
+        kani::assume(child >= 1);
+        let reduced = reduced_depth(child, r);
+        assert!(reduced >= 1 && reduced <= child);
+    }
 }

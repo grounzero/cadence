@@ -735,8 +735,8 @@ fn no_entry_claims_more_depth_than_was_searched() {
 }
 
 /// The second search must be cheaper, or the table was cold and nothing observed proved anything.
-/// Same-move stability across repeats is not asserted: index-keyed pruning breaks it, as it did on
-/// `0.4.6` in one cell.
+/// Same-move stability across repeats is not asserted, since index-keyed pruning can change the
+/// move a repeat finds.
 #[test]
 fn a_repeated_search_reuses_a_warm_table() {
     let fens = gate_fens();
@@ -906,7 +906,7 @@ fn the_bench_clears_the_table_between_positions() {
 #[test]
 fn the_bench_records_the_table_size_it_ran_at() {
     const { assert!(bench::HASH_MB >= 1) };
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = std::process::Command::new(support::binary())
         .arg("bench")
         .output()
         .expect("run cadence bench");

@@ -17,6 +17,93 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
+## [0.6.0-rc.3] - 2026-11-10
+
+A release candidate for 0.6.0, published as a pre-release, after
+0.6.0-rc.2 of 2026-11-08. It adds two fixes to pondering, and proofs that
+CI checks on every change. The release checks run on our own machines have
+passed.
+
+### Added
+
+- Tests: proofs, checked by the Kani model checker on every change, that
+  the score encoding, the transposition table's entries and buckets, the
+  history and correction updates, the pruning margins and reductions, and
+  the time budget stay within their bounds. A failed proof fails the build.
+- Install scripts: `install.sh` for Linux, macOS, and Windows under Git
+  Bash or WSL, and `install.ps1` for Windows PowerShell. Each installs a
+  release's binary for the system it runs on once the binary's SHA-256 and
+  bench match the release's, or builds the release from source where no
+  binary fits, and can download the 3-4-5 piece Syzygy tables. The README
+  says how to run them.
+- Releases: each release builds seven binaries, Windows and Linux x86-64
+  each in an AVX2 build and a generic one, Linux aarch64, macOS arm64 and
+  macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
+  install scripts and a provenance attestation for each binary.
+
+### Changed
+
+- UCI: under `UCI_LimitStrength`, the engine prints only the lines the GUI
+  asked for, and reports the move it plays.
+- UCI: `SyzygyPath` is taken exactly as sent, spaces included.
+- The README documents every UCI option, the tools and the generic build.
+- Search: its state is grouped into its counters, its move-ordering
+  tables, the run's result and its clock, with no change to play: every
+  bench position searches the same nodes as before.
+
+### Fixed
+
+- Pondering: after a ponderhit, the iteration the search was running stops
+  at the move's planned time until an iteration completes. It could run on
+  to the limit of half the remaining clock and then play the ponder's last
+  result.
+- UCI: after a ponderhit, the reported `time` and `nps` count from the
+  `go`, as `nodes` does. `nps` was overstated.
+- Tablebases: at a won root, only the winning moves that reach a capture
+  or a pawn move soonest are searched. The losing side is unchanged.
+- Install scripts: under Git Bash on an Intel processor, `install.sh`
+  chose the generic build where the AVX2 build runs. It now chooses as
+  `install.ps1` does.
+- Search: when the tablebases cut a node, the transposition table keeps
+  that node's move.
+- Tablebases: a root the tables rank reports the tables' verdict as its
+  score, a root move is ranked under the fifty-move counter as the
+  tablebase library ranks it, each table file is opened once and one that
+  fails is named, and stop and the clock are checked between root probes.
+- UCI: the clock starts when `go` is read, and every `go` is answered,
+  with `bestmove 0000` after a `position` command that failed. A clock
+  value that is not a whole number reads as zero, a `go` limit too large
+  to hold reads as the largest the engine holds, the count in `go mate` is
+  clamped, a root with no legal move reports a score line, and an input
+  line is limited to a mebibyte.
+- Positions: a FEN with impossible material is refused, castling letters
+  with no rook to castle with are dropped, and the move counters are
+  clamped.
+- Search: a reduction stays below the depth it reduces, a finished line is
+  kept, and under a node limit with helper threads the main thread
+  finishes its first iteration. `perft` refuses a depth deeper than the
+  search allows.
+- Version: a build calls itself by the release's version only at that
+  version's annotated tag, on an unmodified tree.
+- Tools: `bench`, `perft`, `spsa` and `magics` exit with a failure when
+  they cannot write their output, `texel` checks its arguments and its
+  weights, and `datagen` caps its workers, keeps its games in order and
+  refuses a record whose moves do not end as it says.
+- Build: the generic Windows build keeps SSE3.
+
+Test 76, for the transposition table fix: -0.27 (between -2.75 and
++2.20), a self-play estimate against the build before it at the short
+control, both sides given the tables up to five pieces. This was a
+non-regression test, which asks only whether the fix costs strength. It
+was stopped at 24,106 games before it decided, and the fix was taken on a
+result that shows no cost. It is not a rating.
+
+Test 77, for keeping the fastest wins at a won tablebase root: +0.36, give
+or take 1.63, a self-play estimate against the build before it at the
+short control, both sides given the tables up to five pieces. This was a
+non-regression test, which asks only whether the change costs strength,
+and it passed at 54,626 games. It is not a rating.
+
 ## [0.5.23] - 2026-11-03
 
 ### Added
@@ -449,7 +536,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.5.23...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.3...main
+[0.6.0-rc.3]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.3
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21

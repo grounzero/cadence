@@ -14,7 +14,7 @@ use cadence_engine::eval;
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, DRAW, MATE, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, extension};
-use cadence_engine::tt::Table;
+use cadence_engine::tt::{Bound, Table};
 use support::{Outcome, Rng, play_game, random_mover, table};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -567,28 +567,53 @@ fn the_node_limit_stops_the_search() {
     assert!(generate_legal(&b).contains(r.best));
 }
 
-/// `ABORTED` is the draw score, so this reads a position where nothing within two plies of the root
-/// is worth a draw. A node that stored after the stop would leave that value on one of those keys.
+/// A count past any mate the search can score once overflowed: a debug build panicked and a release
+/// build stopped after one ply.
+#[test]
+fn a_mate_count_past_the_ply_bound_searches_on() {
+    for n in [1 << 30, u32::MAX] {
+        let limits = Limits {
+            depth: Some(4),
+            mate: Some(n),
+            ..Limits::default()
+        };
+        let r = search(&mut support::position(START_FEN), limits);
+        assert_eq!(r.depth, 4, "go mate {n}");
+    }
+}
+
+/// An abort as the second line starts leaves the first one finished, and its whole line is what the
+/// search answers with, the reply a ponder move is read from included.
+#[test]
+fn an_abort_in_the_first_iteration_keeps_the_finished_lines_reply() {
+    // The knight forks king and queen with check, and the check extends the reply into the line.
+    let fen = "2q3k1/8/8/3N4/8/8/8/4K3 w - - 0 1";
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut one = support::search(Limits::depth(1), &stop, &tt);
+    one.run(&mut support::position(fen), &mut std::io::sink());
+    assert!(one.pv().len() >= 2, "no reply in the line: {:?}", one.pv());
+    let tt = table();
+    let limits = Limits {
+        nodes: Some(one.nodes() + 1),
+        ..Limits::default()
+    };
+    let mut two = support::search(limits, &stop, &tt);
+    two.set_multipv(2);
+    two.run(&mut support::position(fen), &mut std::io::sink());
+    assert_eq!(two.completed_depth(), 0, "the first iteration finished");
+    assert_eq!(two.pv(), one.pv());
+}
+
+/// `ABORTED` is the draw score, so a stored one cannot be told from a draw by its value; the store
+/// asserts in a debug build that the search has not stopped, and these stops land across several
+/// iterations and at every ply.
 #[test]
 fn a_stopped_search_stores_no_aborted_value() {
-    // A full army against four pawns: neither side reaches a draw this near the root.
     let fen = "4k3/pppp4/8/8/8/8/PPPPPPPP/RNBQKBNR w KQ - 0 1";
     let mut b = support::position(fen);
-    let mut keys = Vec::new();
-    for m in generate_legal(&b).iter() {
-        b.make_move(m);
-        keys.push(b.key());
-        for r in generate_legal(&b).iter() {
-            b.make_move(r);
-            keys.push(b.key());
-            b.unmake_move(r);
-        }
-        b.unmake_move(m);
-    }
     let stop = AtomicBool::new(false);
-    let mut read = 0;
     for i in 0..30u64 {
-        // Stops spread across several iterations and every ply the abort can land at.
         let n = 1000 + 350 * i * i;
         let tt = table();
         let mut sink = Vec::new();
@@ -603,20 +628,7 @@ fn a_stopped_search_stores_no_aborted_value() {
             "nodes {n}: finished at {} without stopping",
             s.nodes()
         );
-        for &k in &keys {
-            if let Some(hit) = tt.probe(k) {
-                read += 1;
-                assert_ne!(
-                    hit.score, 0,
-                    "nodes {n}: a stored {hit:?} reads the aborted value"
-                );
-            }
-        }
     }
-    assert!(
-        read > 1000,
-        "only {read} entries read, too few to say anything"
-    );
 }
 
 /// Stated here, not imported: a gate reading the constant it checks cannot see it change.
@@ -866,6 +878,76 @@ fn a_null_window_beside_the_value_returns_the_value_in_check() {
     assert!(
         asked > 0,
         "no checking move in the sample, so nothing was asked"
+    );
+}
+
+/// Fail-soft, so what a node stores under any window bounds the value a full window gives it. Asked
+/// in check at depth one, where no pruning rule runs, and each kind of bound is met at least once.
+#[test]
+fn a_stored_bound_holds_against_the_full_window_value_in_check() {
+    let stop = AtomicBool::new(false);
+    let (mut lower, mut upper, mut exact) = (0, 0, 0);
+    for fen in sample()
+        .into_iter()
+        .chain(support::PAWN_ENDGAMES.into_iter().map(str::to_string))
+    {
+        let mut b = support::position(&fen);
+        let checks: Vec<Move> = generate_legal(&b)
+            .iter()
+            .filter(|m| b.gives_check(*m))
+            .collect();
+        for m in checks {
+            b.make_move(m);
+            let none = no_table();
+            let v = support::search(Limits::default(), &stop, &none).node(&mut b, 1, 0);
+            if score::is_decisive(v) {
+                b.unmake_move(m);
+                continue;
+            }
+            let windows = [
+                (-score::INFINITE, score::INFINITE),
+                (v - 50, v + 50),
+                (v - 301, v - 300),
+                (v - 2, v - 1),
+                (v - 1, v),
+                (v, v + 1),
+                (v + 1, v + 2),
+                (v + 300, v + 301),
+            ];
+            for (alpha, beta) in windows {
+                let tt = Table::new(1).expect("a one mebibyte table");
+                let _ = support::search(Limits::default(), &stop, &tt)
+                    .node_window(&mut b, 1, 0, alpha, beta);
+                let Some(hit) = tt.probe(b.key()) else {
+                    continue;
+                };
+                let stored = Score::from(hit.score);
+                let ctx = format!(
+                    "{fen} after {}, window ({alpha}, {beta}): {:?} {stored} against {v}",
+                    m.to_uci_chess960(),
+                    hit.bound
+                );
+                match hit.bound {
+                    Bound::Lower => {
+                        assert!(stored <= v, "{ctx}");
+                        lower += 1;
+                    }
+                    Bound::Upper => {
+                        assert!(stored >= v, "{ctx}");
+                        upper += 1;
+                    }
+                    Bound::Exact => {
+                        assert_eq!(stored, v, "{ctx}");
+                        exact += 1;
+                    }
+                }
+            }
+            b.unmake_move(m);
+        }
+    }
+    assert!(
+        lower > 0 && upper > 0 && exact > 0,
+        "lower {lower}, upper {upper}, exact {exact}: a kind of bound was never stored"
     );
 }
 

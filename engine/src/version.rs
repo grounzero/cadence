@@ -3,7 +3,8 @@
 //! `build.rs` emits the commit and the exact tag raw; the string is composed here, where it can be
 //! tested.
 
-/// Empty when HEAD is at no annotated tag.
+/// Empty when HEAD is at no annotated tag naming the version, and `<version>-dirty` at one with the
+/// tree modified.
 const TAG: &str = env!("CADENCE_TAG");
 
 /// The whole workspace's version.
@@ -52,6 +53,7 @@ mod tests {
             "0.3.1",
             "0.30.0",
             " 0.3.0",
+            "0.3.0-dirty",
         ] {
             assert!(
                 !is_release(tag, "0.3.0"),
@@ -74,9 +76,15 @@ mod tests {
         );
     }
 
-    /// So the dev form never trails off into `<version>-dev-`, which reads as a truncation.
+    /// So the dev form never trails off into `<version>-dev-`, which reads as a truncation, and
+    /// names a commit at one length however large the repository grows.
     #[test]
-    fn the_commit_is_always_something() {
+    fn the_commit_is_always_something_of_one_length() {
         assert_ne!(COMMIT, "");
+        assert!(
+            COMMIT == "unknown"
+                || (COMMIT.len() == 7 && COMMIT.bytes().all(|b| b.is_ascii_hexdigit())),
+            "{COMMIT}"
+        );
     }
 }

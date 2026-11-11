@@ -33,6 +33,7 @@ const HEADERS_NOT_EXAMINED: &[&str] = &[
 /// outside this tree still reads it.
 const BOUNDARY_NOT_EXAMINED: &[&str] = &[
     "xtask/src/main.rs, which spells the rules out",
+    "files git ignores, which a whole-tree read leaves out as not source",
     "commit messages (.githooks/check-message-metadata reads them)",
     "exact names from outside this tree (a list of them here would inventory what is withheld)",
 ];
@@ -126,6 +127,14 @@ fn check_headers() -> ExitCode {
         return ExitCode::FAILURE;
     }
     files.sort();
+    // As check-boundary refuses a whole-tree read of nothing: a pass over no file passes anything.
+    if files.is_empty() {
+        eprintln!(
+            "check-headers: DID NOT RUN: found no .rs file under {}",
+            root.display()
+        );
+        return ExitCode::FAILURE;
+    }
 
     let mut bad = Vec::new();
     for path in &files {
@@ -174,8 +183,8 @@ fn header_defect(text: &str) -> Option<String> {
 // nothing private is named here:
 //
 //   * a `docs/...` path must exist;
-//   * the only capitals `NAME.md` are [`ROOT_DOCUMENTS`];
-//   * no `/Users/` path;
+//   * the only capitals `NAME.md` are [`ROOT_DOCUMENTS`], and any other `.md` path must exist;
+//   * no home directory's absolute path, [`HOME_PATHS`];
 //   * ASCII outside [`ALLOWED_NON_ASCII`] and [`ALLOWED_IN_PLACE`];
 //   * no planning noun with a number;
 //   * no `ADR` citation;
@@ -259,6 +268,17 @@ const CITATION_RULE_FILES: &[&str] = &[".githooks/check-message-metadata"];
 /// Adding one publishes a document, so it lands with the file.
 const ROOT_DOCUMENTS: &[&str] = &["README.md", "CHANGELOG.md"];
 
+/// Where a machine's home directories live, compared without case, so none is published.
+const HOME_PATHS: &[&str] = &["/Users/", "/home/", "C:\\Users\\"];
+
+fn home_path(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    HOME_PATHS
+        .iter()
+        .copied()
+        .find(|p| lower.contains(&p.to_ascii_lowercase()))
+}
+
 const fn is_path_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')
 }
@@ -292,6 +312,24 @@ fn caps_md_tokens(line: &str) -> Vec<&str> {
             name_start == 0 || !line[..name_start].ends_with(|c: char| is_path_char(c) && c != '/');
         if name.len() >= 2 && bounded {
             out.push(&line[name_start..at + 3]);
+        }
+    }
+    out
+}
+
+/// Every `.md` name with the path written before it, so one that names no file here is caught
+/// whatever its case.
+fn md_paths(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for (at, _) in line.match_indices(".md") {
+        if line[at + 3..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        let start = line[..at]
+            .rfind(|c: char| !is_path_char(c))
+            .map_or(0, |i| i + c_len(&line[..at], i));
+        if start < at {
+            out.push(&line[start..at + 3]);
         }
     }
     out
@@ -424,7 +462,11 @@ fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
                 continue;
             }
             let after_word = at + word.len();
-            let plural = usize::from(lower[after_word..].starts_with('s'));
+            let plural = if lower[after_word..].starts_with("es") {
+                2
+            } else {
+                usize::from(lower[after_word..].starts_with('s'))
+            };
             let rest = &lower[after_word + plural..];
             let digits = rest.trim_start_matches(is_label_gap);
             if digits.starts_with(|c: char| c.is_ascii_digit()) {
@@ -439,14 +481,15 @@ fn planning_label<'a>(line: &'a str, rel: &str) -> Option<&'a str> {
     None
 }
 
-/// Case-sensitive, because the letters occur inside lower-case words.
+/// `ADR` bare, or with its number in any case, since a lower-case `adr` alone is a name in code.
 fn record_citation(line: &str) -> Option<&str> {
-    for (at, _) in line.match_indices("ADR") {
+    let lower = line.to_ascii_lowercase();
+    for (at, _) in lower.match_indices("adr") {
         if line[..at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
             continue;
         }
         let after_word = at + 3;
-        let plural = usize::from(line[after_word..].starts_with('s'));
+        let plural = usize::from(lower[after_word..].starts_with('s'));
         let rest = &line[after_word + plural..];
         if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
             continue;
@@ -460,6 +503,9 @@ fn record_citation(line: &str) -> Option<&str> {
         } else {
             0
         };
+        if number == 0 && &line[at..after_word] != "ADR" {
+            continue;
+        }
         return Some(&line[at..after_word + plural + number]);
     }
     None
@@ -564,8 +610,7 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
     let mut out = Vec::new();
     match source {
         Source::WorkingTree => {
-            let mut paths = Vec::new();
-            collect_all(root, &mut paths).map_err(|e| e.to_string())?;
+            let mut paths = working_paths(root)?;
             paths.sort();
             for path in paths {
                 let rel = path.strip_prefix(root).unwrap_or(&path);
@@ -595,6 +640,32 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
     Ok(out)
 }
 
+/// The files git would show as the tree: tracked or untracked but never ignored, so a table
+/// fetched into the tree or a build's output is not read as source. Walked where git cannot answer.
+fn working_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let args = [
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ];
+    let Ok(listed) = git(root, &args) else {
+        let mut paths = Vec::new();
+        collect_all(root, &mut paths).map_err(|e| e.to_string())?;
+        return Ok(paths);
+    };
+    Ok(nul_separated(&listed)
+        .into_iter()
+        .filter(|rel| {
+            !rel.split('/')
+                .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store")
+        })
+        .map(|rel| root.join(rel))
+        .filter(|path| path.is_file())
+        .collect())
+}
+
 /// Separate from [`check_boundary`] because clippy refuses one function that long.
 fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, String)> {
     let in_place = in_place_allowances(rel);
@@ -614,8 +685,15 @@ fn scan(rel: &str, text: &str, resolves: &impl Fn(&str) -> bool) -> Vec<(usize, 
                 ));
             }
         }
-        if line.contains("/Users/") {
-            out.push((at, "contains an absolute `/Users/` path".to_string()));
+        for token in md_paths(line) {
+            let named = token.trim_start_matches("./");
+            let caps = !caps_md_tokens(token).is_empty();
+            if !caps && !ROOT_DOCUMENTS.contains(&named) && !resolves(named) {
+                out.push((at, format!("`{token}` is not a file in this repository")));
+            }
+        }
+        if let Some(home) = home_path(line) {
+            out.push((at, format!("contains an absolute `{home}` path")));
         }
         for c in stray_non_ascii(line, &in_place) {
             let reason = if let Some(entry) = in_place_entry(c) {
@@ -745,33 +823,45 @@ struct Heading {
     date: Option<String>,
 }
 
-/// Digits only, so `+1` or an empty part is not a version.
-fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 3
-        || !parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    {
+/// Digits only, so `+1` or an empty part is not a version; a candidate is `-rc.` and a fourth run.
+fn parse_version(s: &str) -> Option<Version> {
+    let digits = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    let (release, candidate) = match s.split_once("-rc.") {
+        Some((release, n)) if digits(n) => (release, n.parse().ok()?),
+        Some(_) => return None,
+        None => (s, RELEASE),
+    };
+    let parts: Vec<&str> = release.split('.').collect();
+    if parts.len() != 3 || !parts.iter().all(|p| digits(p)) {
         return None;
     }
     Some((
         parts[0].parse().ok()?,
         parts[1].parse().ok()?,
         parts[2].parse().ok()?,
+        candidate,
     ))
 }
 
+/// Major, minor, patch and the candidate's number.
+type Version = (u64, u64, u64, u64);
+
+/// The fourth part of a release's version, so a candidate, `x.y.z-rc.N`, sorts below it.
+const RELEASE: u64 = u64::MAX;
+
+/// A month and a day that can exist, not only the shape.
 fn is_iso_date(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() == 10
+    let shaped = b.len() == 10
         && b.iter().enumerate().all(|(i, c)| {
             if i == 4 || i == 7 {
                 *c == b'-'
             } else {
                 c.is_ascii_digit()
             }
-        })
+        });
+    let number = |range: std::ops::Range<usize>| s[range].parse::<u32>().unwrap_or(0);
+    shaped && (1..=12).contains(&number(5..7)) && (1..=31).contains(&number(8..10))
 }
 
 fn workspace_version(manifest: &str) -> Option<String> {
@@ -814,7 +904,7 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
         }
     }
 
-    let mut previous: Option<(&Heading, (u64, u64, u64))> = None;
+    let mut previous: Option<(&Heading, Version)> = None;
     for (index, h) in headings.iter().enumerate() {
         if !links.contains(&h.label) {
             out.push(format!(
@@ -833,7 +923,7 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
         }
         let Some(v) = parse_version(&h.label) else {
             out.push(format!(
-                "line {}: `{}` is not an x.y.z version",
+                "line {}: `{}` is not an x.y.z or x.y.z-rc.N version",
                 h.line, h.label
             ));
             continue;
@@ -868,7 +958,11 @@ fn changelog_problems(changelog: &str, tags: &[String], version: &str) -> Vec<St
     }
 
     let has = |label: &str| headings.iter().any(|h| h.label == label);
-    for tag in tags.iter().filter(|t| parse_version(t).is_some()) {
+    // A candidate's entry is renamed by the release after it, so only a release's tag needs one.
+    for tag in tags
+        .iter()
+        .filter(|t| matches!(parse_version(t), Some((.., RELEASE))))
+    {
         if !has(tag) {
             out.push(format!("tag `{tag}` has no `## [{tag}]` entry"));
         }
@@ -988,7 +1082,9 @@ struct NpsArgs {
 
 fn parse_nps_args(args: &[String]) -> Result<NpsArgs, String> {
     let mut out = NpsArgs {
-        binary: repo_root().join("target/release/cadence"),
+        binary: repo_root()
+            .join("target/release")
+            .join(format!("cadence{}", std::env::consts::EXE_SUFFIX)),
         concurrency: DEFAULT_CONCURRENCY,
         pairs: DEFAULT_PAIRS,
         reference: None,
@@ -1034,7 +1130,7 @@ fn run_round(binary: &Path, copies: usize) -> Result<Round, String> {
             Command::new(binary)
                 .arg("bench")
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("could not run {}: {e}", binary.display()))
         })
@@ -1046,6 +1142,14 @@ fn run_round(binary: &Path, copies: usize) -> Result<Round, String> {
         let out = child
             .wait_with_output()
             .map_err(|e| format!("bench did not finish: {e}"))?;
+        // A run that failed after printing its last line is still a failed run.
+        if !out.status.success() {
+            return Err(format!(
+                "bench exited with {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
         let text = String::from_utf8_lossy(&out.stdout);
         let last = text
             .lines()
@@ -1285,15 +1389,26 @@ fn install_hooks() -> ExitCode {
     match status {
         Ok(s) if s.success() => {
             println!("install-hooks: core.hooksPath = .githooks");
+            let mut all = true;
             for hook in HOOKS {
                 let p = hooks.join(hook);
-                println!(
-                    "  {} {}",
-                    if p.is_file() { "ok  " } else { "MISSING" },
-                    hook
-                );
+                // git skips a hook it cannot execute, with a hint a GUI client hides.
+                let state = if !p.is_file() {
+                    "MISSING"
+                } else if !executable(&p) {
+                    "NOT EXECUTABLE"
+                } else {
+                    "ok"
+                };
+                all &= state == "ok";
+                println!("  {state:<14} {hook}");
             }
-            ExitCode::SUCCESS
+            if all {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("install-hooks: a hook above will not run; restore it with its mode");
+                ExitCode::FAILURE
+            }
         }
         Ok(s) => {
             eprintln!("install-hooks: git config exited with {s}");
@@ -1303,6 +1418,20 @@ fn install_hooks() -> ExitCode {
             eprintln!("install-hooks: could not run git: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Where the platform has an execute bit; elsewhere a file is all git asks.
+fn executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
     }
 }
 
@@ -1551,6 +1680,7 @@ mod tests {
             "// batch #7",
             "// tasks 9",
             "// Review 2026-08-25 finding 2.3",
+            "// batches 3",
         ] {
             assert!(planning_label(line, NOT_ALLOWED).is_some(), "{line} passed");
         }
@@ -1567,6 +1697,8 @@ mod tests {
             ("/// ADR0010 is the ruling", "ADR0010"),
             ("// the ADRs agree on this", "ADRs"),
             ("the reasoning is the one ADR-0002 asks for", "ADR-0002"),
+            ("// as adr-0008 orders it", "adr-0008"),
+            ("// Adr 3", "Adr 3"),
         ] {
             assert_eq!(record_citation(line), Some(cite), "{line}");
         }
@@ -1802,6 +1934,70 @@ mod tests {
         );
     }
 
+    /// A candidate's own heading, `## [0.3.0-rc.1]`, while it is the workspace version.
+    const CANDIDATE: &str = "\
+# Changelog
+
+## [Unreleased]
+
+## [0.3.0-rc.1] - 2026-03-01
+
+## [0.2.0] - 2026-02-01
+
+## [0.1.0] - 2026-01-01
+
+[Unreleased]: https://example.invalid/compare/0.3.0-rc.1...main
+[0.3.0-rc.1]: https://example.invalid/compare/0.2.0...0.3.0-rc.1
+[0.2.0]: https://example.invalid/compare/0.1.0...0.2.0
+[0.1.0]: https://example.invalid/tree/0.1.0
+";
+
+    #[test]
+    fn a_release_candidate_has_its_entry_while_it_is_the_workspace_version() {
+        assert_eq!(
+            changelog_problems(CANDIDATE, &tags(&["0.1.0", "0.2.0"]), "0.3.0-rc.1"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            changelog_problems(
+                CANDIDATE,
+                &tags(&["0.1.0", "0.2.0", "0.3.0-rc.1"]),
+                "0.3.0-rc.1"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The release after its candidates renames their one entry, so no candidate's tag needs one.
+    #[test]
+    fn the_release_after_its_candidates_needs_no_entry_for_them() {
+        let released = CANDIDATE.replace("0.3.0-rc.1", "0.3.0");
+        assert_eq!(
+            changelog_problems(
+                &released,
+                &tags(&["0.1.0", "0.2.0", "0.3.0-rc.1", "0.3.0-rc.2"]),
+                "0.3.0"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_candidate_sorts_below_its_release_and_above_the_one_before() {
+        assert!(parse_version("0.6.0-rc.1") < parse_version("0.6.0-rc.2"));
+        assert!(parse_version("0.6.0-rc.2") < parse_version("0.6.0"));
+        assert!(parse_version("0.5.23") < parse_version("0.6.0-rc.1"));
+        for bad in [
+            "0.6.0-rc.",
+            "0.6.0-rc.x",
+            "0.6.0-beta.1",
+            "0.6.0-rc.1-rc.2",
+            "0.6.0+1",
+        ] {
+            assert_eq!(parse_version(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn the_workspace_version_is_read_from_its_own_section_only() {
         let manifest =
@@ -1812,9 +2008,246 @@ mod tests {
 
     #[test]
     fn a_version_is_three_runs_of_digits() {
-        assert_eq!(parse_version("0.4.10"), Some((0, 4, 10)));
+        assert_eq!(parse_version("0.4.10"), Some((0, 4, 10, RELEASE)));
+        assert_eq!(parse_version("0.6.0-rc.2"), Some((0, 6, 0, 2)));
         for bad in ["0.4", "0.4.1.2", "0.+4.1", "v0.4.1", "0..1", "Unreleased"] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_docs_path_is_read_to_its_end_and_only_when_rooted_here() {
+        assert_eq!(
+            docs_tokens("see docs/testing/perft.md."),
+            ["docs/testing/perft.md"]
+        );
+        assert_eq!(docs_tokens("cadence/docs/x and docs/"), ["docs/x", "docs"]);
+        assert_eq!(docs_tokens("xyzdocs/a my-docs/b"), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn a_markdown_name_in_any_case_must_be_a_file_here() {
+        assert_eq!(
+            md_paths("see docs/testing/perft.md, notes.md and a.mdx."),
+            ["docs/testing/perft.md", "notes.md"]
+        );
+        let resolves = |t: &str| t == "docs/testing/perft.md";
+        for (line, refused) in [
+            ("docs/testing/perft.md", false),
+            ("README.md", false),
+            ("./CHANGELOG.md", false),
+            ("Plan.md", true),
+            ("notes.md", true),
+            ("docs/Findings.md", true),
+        ] {
+            let found = scan("x.rs", line, &resolves)
+                .iter()
+                .any(|(_, r)| r.contains("is not a file"));
+            assert_eq!(found, refused, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_home_directory_is_refused_on_every_platform() {
+        for line in [
+            "/Users/someone/x",
+            "/home/someone/x",
+            "C:\\Users\\someone",
+            "c:\\users\\someone",
+        ] {
+            assert!(home_path(line).is_some(), "{line}");
+        }
+        for line in ["/usr/local/bin", "the users' home", "~/git/cadence"] {
+            assert_eq!(home_path(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn the_header_is_the_exact_first_line() {
+        assert_eq!(header_defect(&format!("{HEADER}\nfn main() {{}}\n")), None);
+        for text in [
+            String::new(),
+            format!("\n{HEADER}\n"),
+            format!(" {HEADER}\n"),
+            "// SPDX-License-Identifier: GPL-3.0-only\n".to_string(),
+        ] {
+            assert!(header_defect(&text).is_some(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_date_has_a_month_and_a_day_that_exist() {
+        for good in ["2026-11-05", "2026-01-31", "2026-12-01"] {
+            assert!(is_iso_date(good), "{good}");
+        }
+        for bad in [
+            "2026-13-45",
+            "2026-00-10",
+            "2026-11-00",
+            "2026-11-32",
+            "2026-1-05",
+            "2026/11/05",
+            "26-11-05x",
+        ] {
+            assert!(!is_iso_date(bad), "{bad}");
+        }
+    }
+
+    /// A scratch repository, since both read git: a file git ignores is not read, and a staged read
+    /// takes what the commit adds.
+    #[test]
+    fn the_tree_read_skips_what_git_ignores_and_the_staged_read_takes_the_commit() {
+        let root = std::env::temp_dir().join(format!("xtask-inputs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("fetched")).unwrap();
+        let run = |args: &[&str]| git(&root, args).unwrap();
+        run(&["init", "-q"]);
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "fetched/\n").unwrap();
+        std::fs::write(root.join("fetched/table.bin"), [0xff_u8, 0xfe]).unwrap();
+        std::fs::write(root.join("src/kept.rs"), "kept").unwrap();
+        std::fs::write(root.join("src/also.rs"), "also").unwrap();
+        run(&["add", "src/kept.rs", "src/also.rs"]);
+        let read: Vec<String> = boundary_inputs(&root, Source::WorkingTree)
+            .unwrap()
+            .into_iter()
+            .map(|(rel, _)| rel)
+            .collect();
+        assert_eq!(read, ["src/also.rs", "src/kept.rs"]);
+        let mut staged = staged_changes(&root).unwrap();
+        staged.sort();
+        assert_eq!(staged, ["src/also.rs", "src/kept.rs"], "the first commit");
+        run(&[
+            "-c",
+            "user.name=xtask",
+            "-c",
+            "user.email=xtask@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=.git/hooks",
+            "commit",
+            "-q",
+            "-m",
+            "kept",
+        ]);
+        std::fs::write(root.join("src/new.rs"), "new").unwrap();
+        run(&["add", "src/new.rs"]);
+        assert_eq!(staged_changes(&root).unwrap(), ["src/new.rs"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runs a hook on a message from the repository's root, as git does, and says if it passed.
+    #[cfg(unix)]
+    fn hook_passes(hook: &str, message: &str) -> bool {
+        hook_passes_at(hook, message, &repo_root(), None)
+    }
+
+    /// The same from `dir`, naming the commit as CI does for a stored message. Each call writes its
+    /// own file, since the tests that call it run at once in one process.
+    #[cfg(unix)]
+    fn hook_passes_at(hook: &str, message: &str, dir: &Path, commit: Option<&str>) -> bool {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = std::env::temp_dir().join(format!("xtask-{hook}-{}-{call}", std::process::id()));
+        std::fs::write(&file, message).unwrap();
+        let out = Command::new("sh")
+            .arg(repo_root().join(".githooks").join(hook))
+            .arg(&file)
+            .args(commit)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&file);
+        out.status.success()
+    }
+
+    /// `git commit -v` hands the hook the staged diff below a scissors line, which git drops only
+    /// once the hook has run, so nothing below it is the message.
+    #[cfg(unix)]
+    #[test]
+    fn the_hooks_read_nothing_below_the_scissors_line() {
+        let message = "Change the search\n\nA line or two.\n\
+            # ------------------------ >8 ------------------------\n\
+            # Do not modify or remove the line above.\n\
+            diff --git a/x b/x\n+let nodes = 0;\n+// see https://example.invalid\n";
+        for hook in ["check-message-metadata", "check-bench-declaration"] {
+            assert!(hook_passes(hook, message), "{hook} read the diff");
+        }
+    }
+
+    /// A commit that falls back to building the checker says so, so cargo never runs unseen; a
+    /// stand-in `cargo` on the path answers for it here.
+    #[cfg(unix)]
+    #[test]
+    fn the_pre_commit_hook_says_when_it_builds_the_checker() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("xtask-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        git(&root, &["init", "-q"]).unwrap();
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let out = Command::new("sh")
+            .arg(repo_root().join(".githooks").join("pre-commit"))
+            .current_dir(&root)
+            .env("PATH", format!("{}:{inherited}", bin.display()))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("cargo xtask"), "a silent fallback: {said:?}");
+    }
+
+    /// A fixup is exempt only where it is written, before the rebase that folds it, so a merge
+    /// without autosquash cannot land one that CI did not read.
+    #[cfg(unix)]
+    #[test]
+    fn a_fixup_is_read_in_full_once_a_commit_is_named() {
+        let root = std::env::temp_dir().join(format!("xtask-fixup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&str]| git(&root, args).unwrap();
+        run(&["init", "-q"]);
+        run(&[
+            "-c",
+            "user.name=xtask",
+            "-c",
+            "user.email=xtask@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=.git/hooks",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "empty",
+        ]);
+        let head = String::from_utf8(run(&["rev-parse", "HEAD"])).unwrap();
+        let head = Some(head.trim());
+        let clean = "fixup! Change the search\n\nA line or two.\n";
+        let linked = "fixup! Change the search\n\nSee https://example.invalid for why.\n";
+        assert!(hook_passes("commit-msg", linked), "refused locally");
+        assert!(hook_passes_at("commit-msg", clean, &root, head));
+        assert!(
+            !hook_passes_at("commit-msg", linked, &root, head),
+            "passed unread with its commit named"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// GitHub's merge puts the title on line 3, where it reads as a subject and not a trailer.
+    #[cfg(unix)]
+    #[test]
+    fn a_pull_request_title_shaped_word_colon_is_not_a_trailer() {
+        let merge = "Merge pull request #12 from someone/branch\n\nSearch: null-move pruning\n";
+        assert!(hook_passes("check-message-metadata", merge));
+        let body = "Change the search\n\nSearch: null-move pruning\n";
+        assert!(!hook_passes("check-message-metadata", body));
     }
 }

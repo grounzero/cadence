@@ -39,6 +39,8 @@ BIN=xtask/target/debug/xtask
 if [ -x "$BIN" ] && [ "$BIN" -nt "$SRC" ]; then
     RUN="$BIN"
 elif command -v cargo >/dev/null 2>&1; then
+    # Said aloud, because cargo's alias is quiet and a build here is otherwise unseen.
+    echo "pre-commit: no checker built since $SRC changed, so this commit builds one with cargo xtask" >&2
     RUN="cargo xtask"
 else
     echo "pre-commit: no built xtask and no cargo, so the boundary check did not run." >&2

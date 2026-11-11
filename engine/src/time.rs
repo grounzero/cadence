@@ -49,6 +49,20 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     Some(Budget { soft, hard })
 }
 
+/// What a `ponderhit` brings: the same limits' budget without the ponder flag, and `None` for a
+/// search that is not pondering.
+#[must_use]
+pub fn hit_budget(limits: &Limits, us: Colour) -> Option<Budget> {
+    if !limits.ponder {
+        return None;
+    }
+    let clocked = Limits {
+        ponder: false,
+        ..*limits
+    };
+    budget(&clocked, us)
+}
+
 /// Thousandths of the soft budget by the run of completed iterations on one move, in bins of 1, 2,
 /// 3 to 4, 5 to 8 and 9 or more. Each is proportional to how often one more iteration changed the
 /// move in self-play at that run, the first two bins pooled.
@@ -113,4 +127,85 @@ pub fn another_iteration_fits(completed: &[u64], budget: Budget) -> bool {
     let ebf_milli = (elapsed.saturating_mul(1_000_000) / two_back).isqrt();
     let predicted = elapsed.saturating_mul(ebf_milli) / 1_000;
     predicted <= budget.hard
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn limits() -> Limits {
+        Limits {
+            movetime: kani::any(),
+            ponder: kani::any(),
+            time: [kani::any(), kani::any()],
+            inc: [kani::any(), kani::any()],
+            movestogo: kani::any(),
+            move_overhead: kani::any(),
+            ..Limits::default()
+        }
+    }
+
+    fn side() -> Colour {
+        if kani::any() {
+            Colour::White
+        } else {
+            Colour::Black
+        }
+    }
+
+    /// A ponder gets no budget, and once a hit clears it, soft <= hard <= the clock less overhead.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_budget_stays_inside_the_clock() {
+        let (limits, us) = (limits(), side());
+        if limits.ponder {
+            assert!(budget(&limits, us).is_none());
+        }
+        let hit = Limits {
+            ponder: false,
+            ..limits
+        };
+        let overhead = hit.move_overhead.unwrap_or(MOVE_OVERHEAD_MS);
+        if let Some(b) = budget(&hit, us) {
+            assert!(b.soft <= b.hard);
+            match hit.movetime {
+                Some(t) => assert!(b.hard == t.saturating_sub(overhead)),
+                None => {
+                    let time = hit.time[us.index()].unwrap_or(0);
+                    assert!(b.hard <= time.saturating_sub(overhead));
+                }
+            }
+        }
+    }
+
+    /// The hit budget `Clock::begin` takes is none unless pondering, and else inside the clock.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_hit_budget_stays_inside_the_clock() {
+        let (limits, us) = (limits(), side());
+        let hit = hit_budget(&limits, us);
+        assert!(limits.ponder || hit.is_none());
+        if let Some(b) = hit {
+            let overhead = limits.move_overhead.unwrap_or(MOVE_OVERHEAD_MS);
+            assert!(b.soft <= b.hard);
+            match limits.movetime {
+                Some(t) => assert!(b.hard == t.saturating_sub(overhead)),
+                None => {
+                    let time = limits.time[us.index()].unwrap_or(0);
+                    assert!(b.hard <= time.saturating_sub(overhead));
+                }
+            }
+        }
+    }
+
+    /// The run-scaled soft budget never passes the hard one.
+    #[kani::proof]
+    fn the_run_scale_stays_under_the_hard_budget() {
+        let b = Budget {
+            soft: kani::any(),
+            hard: kani::any(),
+        };
+        kani::assume(b.soft <= b.hard);
+        assert!(soft_for_run(&limits(), b, kani::any()) <= b.hard);
+    }
 }

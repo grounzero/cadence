@@ -7,7 +7,7 @@ use std::io::{BufRead, Write};
 
 use cadence_core::{FenStyle, PieceType};
 
-use super::game::{Ending, Outcome};
+use super::game::{Ending, Outcome, ending};
 use super::record::Record;
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
@@ -53,7 +53,9 @@ pub struct Stats {
 ///
 /// # Errors
 ///
-/// A record that does not parse, or an output that cannot be written.
+/// A record that does not parse or whose moves do not end as it says, an output that cannot be
+/// written, a file holding another number of games than its provenance lines name, or a game out
+/// of turn in its run.
 pub fn extract(
     input: impl BufRead,
     train: &mut dyn Write,
@@ -66,9 +68,16 @@ pub fn extract(
         ply: vec![0; PLY_BANDS],
         ..Stats::default()
     };
+    let mut named = None;
+    let mut run = None;
     for (i, line) in input.lines().enumerate() {
         let line = line.map_err(|e| format!("line {}: {e}", i + 1))?;
         if line.starts_with('#') {
+            // Summed, so runs joined end to end are checked as one.
+            if let Some(n) = games_named(&line).map_err(|e| format!("line {}: {e}", i + 1))? {
+                named = Some(named.unwrap_or(0) + n);
+                run = Some(Run { games: n, due: 0 });
+            }
             writeln!(train, "{line}").map_err(|e| e.to_string())?;
             writeln!(holdout, "{line}").map_err(|e| e.to_string())?;
             continue;
@@ -77,6 +86,12 @@ pub fn extract(
             continue;
         }
         let record = Record::parse(&line).map_err(|e| format!("line {}: {e}", i + 1))?;
+        let replayed = replay(&record);
+        replayed.map_err(|e| format!("line {}: {e}", i + 1))?;
+        if let Some(run) = &mut run {
+            let admitted = run.admit(record.number);
+            admitted.map_err(|e| format!("line {}: {e}", i + 1))?;
+        }
         let held = every > 0 && record.number % every == 0;
         if held {
             stats.holdout += positions(&record, &mut stats, holdout).map_err(|e| e.to_string())?;
@@ -84,7 +99,85 @@ pub fn extract(
             stats.train += positions(&record, &mut stats, train).map_err(|e| e.to_string())?;
         }
     }
+    if let Some(n) = named
+        && n != stats.games
+    {
+        return Err(format!(
+            "the provenance names {n} games and the file holds {}",
+            stats.games
+        ));
+    }
     Ok(stats)
+}
+
+/// The result labels every position the game gives, so the moves must end there and nothing may
+/// follow the end.
+fn replay(record: &Record) -> Result<(), String> {
+    let mut board = record.start();
+    let plies = record.plies.iter();
+    for &m in plies.chain(record.moves.iter().map(|(m, _)| m)) {
+        if let Some((end, _)) = ending(&board) {
+            return Err(format!("a move after the game ended by {}", end.word()));
+        }
+        board.play(m);
+    }
+    match ending(&board) {
+        Some(found) if found == (record.ending, record.outcome) => Ok(()),
+        Some((end, won)) => Err(format!("the moves end {} {}", won.text(), end.word())),
+        None => Err("the moves do not end the game".to_string()),
+    }
+}
+
+/// What a provenance line names, and the game due next under it.
+struct Run {
+    games: u64,
+    due: u64,
+}
+
+impl Run {
+    /// From 0 in order, and no more than the line names: records before any provenance line are
+    /// held to nothing.
+    fn admit(&mut self, number: u64) -> Result<(), String> {
+        let (games, due) = (self.games, self.due);
+        if due >= games {
+            return Err(format!("game {number} past the {games} its run names"));
+        }
+        if number != due {
+            return Err(format!("game {number} where game {due} is due"));
+        }
+        self.due += 1;
+        Ok(())
+    }
+}
+
+/// The words a provenance line opens with, as `provenance` writes them.
+const PROVENANCE: [&str; 3] = ["#", "cadence", "datagen"];
+
+/// The count a run's provenance line names, which a file cut short no longer matches, or `None` for
+/// any other comment. A line opening as provenance must parse to its end, or a header cut short
+/// would skip the count it carries.
+fn games_named(line: &str) -> Result<Option<u64>, String> {
+    let mut words = line.split_whitespace();
+    if !PROVENANCE.iter().all(|&w| words.next() == Some(w)) {
+        return Ok(None);
+    }
+    let refused = || format!("a provenance line that does not parse: {line}");
+    if words.next().is_none() || words.next() != Some("self-play") {
+        return Err(refused());
+    }
+    let fields: Vec<&str> = words.collect();
+    let (pairs, rest) = fields.as_chunks::<2>();
+    if !rest.is_empty() {
+        return Err(refused());
+    }
+    let mut games = None;
+    for [name, value] in pairs {
+        let value: u64 = value.parse().map_err(|_| refused())?;
+        if *name == "games" {
+            games = Some(value);
+        }
+    }
+    games.map(Some).ok_or_else(refused)
 }
 
 fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io::Result<u64> {

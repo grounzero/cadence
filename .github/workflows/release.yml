@@ -1,0 +1,411 @@
+# Release binaries from a version tag: seven builds, their checksums and a provenance attestation for
+# each, with bench.txt and the two install scripts summed beside them, drafted for publishing by hand,
+# a release candidate as a pre-release. A manual run or a change to this file only builds and checks,
+# unless a manual run names an existing tag and asks for the draft, which re-runs a failed release.
+
+name: release
+
+on:
+  push:
+    # A release and a candidate for one, `x.y.z-rc.N`; a `+n` tag names a base for a test and is not
+    # a release, so it never matches.
+    tags: ['[0-9]+.[0-9]+.[0-9]+', '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+']
+  pull_request:
+    paths: ['.github/workflows/release.yml']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing version tag to build with this workflow; empty builds the ref run from
+        required: false
+        default: ''
+      draft:
+        description: With a tag, attest the binaries and draft its release, replacing an earlier draft
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Refused before anything builds: a release must be an annotated tag on the commit it names, equal
+  # to the workspace version, with a changelog entry.
+  version:
+    name: the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      expected: ${{ steps.read.outputs.expected }}
+      tag: ${{ steps.read.outputs.tag }}
+      ref: ${{ steps.read.outputs.ref }}
+      commit: ${{ steps.read.outputs.commit }}
+      publish: ${{ steps.read.outputs.publish }}
+      prerelease: ${{ steps.read.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
+          fetch-depth: 0
+
+      - id: read
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -eu
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
+          [ -n "$version" ] || { echo "::error::no workspace version in Cargo.toml"; exit 1; }
+          tag=""
+          [ "$GITHUB_REF_TYPE" != tag ] || tag="$GITHUB_REF_NAME"
+          if [ -n "$INPUT_TAG" ]; then
+            [ -z "$tag" ] || [ "$tag" = "$INPUT_TAG" ] \
+              || { echo "::error::run at the tag $tag and asked for $INPUT_TAG"; exit 1; }
+            tag="$INPUT_TAG"
+          fi
+          publish=false
+          prerelease=false
+          if [ -n "$tag" ]; then
+            echo "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?' \
+              || { echo "::error::$tag is not a version tag"; exit 1; }
+            case "$tag" in *-rc.*) prerelease=true ;; esac
+            git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+            [ "$(git cat-file -t "refs/tags/$tag")" = tag ] \
+              || { echo "::error::$tag is not an annotated tag"; exit 1; }
+            [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ] \
+              || { echo "::error::$tag does not name the commit checked out"; exit 1; }
+            [ "$tag" = "$version" ] \
+              || { echo "::error::$tag is not the workspace version, $version"; exit 1; }
+            awk -v h="## [$version]" '$0 == h || index($0, h " - ") == 1 {found = 1} END {exit !found}' \
+              CHANGELOG.md || { echo "::error::CHANGELOG.md has no entry for $version"; exit 1; }
+            expected="$version"
+            if [ "$GITHUB_EVENT_NAME" = push ] || [ "$INPUT_DRAFT" = true ]; then
+              publish=true
+            fi
+            echo "the tag $tag, built by the workflow at $GITHUB_REF; draft release: $publish; pre-release: $prerelease"
+          else
+            [ "$INPUT_DRAFT" != true ] || { echo "::error::a draft needs a tag"; exit 1; }
+            # As engine/build.rs reads it: the release only at the annotated tag naming the version.
+            # Git's two answers that no tag matches are read as none, and any other failure fails here.
+            if ! at=$(git describe --exact-match --dirty --match "$version" 2> "$RUNNER_TEMP/describe"); then
+              grep -qE '^fatal: (no tag exactly matches|No names found)' "$RUNNER_TEMP/describe" \
+                || { cat "$RUNNER_TEMP/describe"; echo "::error::git describe failed"; exit 1; }
+              at=""
+            fi
+            if [ "$at" = "$version" ]; then
+              expected="$version"
+            else
+              expected="$version-dev-$(git rev-parse HEAD | cut -c1-7)"
+            fi
+            echo "a dry run on $GITHUB_REF: built and checked, published nowhere"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "expected=$expected" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=${tag:+refs/tags/$tag}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "the binaries must call themselves Cadence $expected"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The build a rating list is asked to rate. `features` is what each build's flags must
+          # resolve to, read off every rustc command line.
+          - name: windows-x86-64-avx2
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+crt-static
+            exe: .exe
+          - name: windows-x86-64-generic
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            config: .cargo/x86-64-generic.toml
+            features: +popcnt,+crt-static
+            exe: .exe
+          # 22.04 rather than the latest, so the binaries ask for an older glibc.
+          - name: linux-x86-64-avx2
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            features: +avx2,+bmi1,+popcnt,+lzcnt
+          - name: linux-x86-64-generic
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-generic.toml
+            features: +popcnt
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            features: +neon
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            features: +neon
+          # The AVX2 build for Intel Macs; install.sh builds the generic one for a Mac without AVX2.
+          - name: macos-x86-64
+            os: macos-26-intel
+            target: x86_64-apple-darwin
+            features: +avx2,+bmi1,+popcnt,+lzcnt
+    env:
+      CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
+      EXPECTED: ${{ needs.version.outputs.expected }}
+      COMMIT: ${{ needs.version.outputs.commit }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # The full history and the tags, since the binary reads its version from the tag at HEAD.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+          fetch-depth: 0
+
+      - name: The annotated tag, fetched as itself
+        if: needs.version.outputs.tag != ''
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: git fetch --force origin "+refs/tags/$TAG:refs/tags/$TAG"
+
+      # The checkout resolves the tag again, so a tag moved since the version job is caught here.
+      - name: The commit the version job checked
+        run: |
+          [ "$(git rev-parse HEAD)" = "$COMMIT" ] \
+            || { echo "::error::checked out $(git rev-parse HEAD) and not $COMMIT"; exit 1; }
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+
+      - name: Assert the runner is the architecture we think it is
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "host triple: $host"
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::expected ${{ matrix.target }}, runner is $host"
+            exit 1
+          fi
+
+      - name: build --release
+        run: cargo build --locked --release -p cadence-engine --bin cadence $CONFIG_ARG
+
+      # As in CI: every crate's rustc command line carries flags that resolve to the triple's baseline
+      # with the build's features, so a binary never ships under a name its code does not hold.
+      - name: Assert the features every crate was built with
+        run: |
+          cargo clean --release -p cadence-core
+          cargo build --locked --release -p cadence-engine --bin cadence -v --color never $CONFIG_ARG \
+            > release.log 2>&1 || { cat release.log; exit 1; }
+          bash .github/check-features.sh ${{ matrix.target }} ${{ matrix.features }} release.log
+
+      # A build that would call itself anything but the expected version fails here rather than
+      # ships.
+      - name: The UCI id names the version
+        run: |
+          out=$(printf 'uci\nisready\nquit\n' | ./target/release/cadence)
+          echo "$out"
+          echo "$out" | grep -Fqx "id name Cadence $EXPECTED" \
+            || { echo "::error::the binary does not call itself Cadence $EXPECTED"; exit 1; }
+          echo "$out" | grep -qx 'uciok' || { echo "::error::no uciok"; exit 1; }
+          echo "$out" | grep -qx 'readyok' || { echo "::error::no readyok"; exit 1; }
+
+      - name: bench against bench.txt
+        run: |
+          last=$(./target/release/cadence bench | tail -n 1)
+          echo "$last"
+          got=$(echo "$last" | awk '{print $1}')
+          expected=$(tr -d '[:space:]' < bench.txt)
+          if [ "$got" != "$expected" ]; then
+            echo "::error::cadence bench is $got nodes but bench.txt says $expected"
+            exit 1
+          fi
+          printf '### %s\n%s\n' "${{ matrix.name }}" "$last" >> "$GITHUB_STEP_SUMMARY"
+
+      # Its digest travels with it, taken here where the checks above ran, so the jobs after this one
+      # can show they hold the binary this one checked.
+      - name: Name the binary
+        run: |
+          mkdir -p dist/digests
+          file="cadence-$EXPECTED-${{ matrix.name }}${{ matrix.exe }}"
+          cp "target/release/cadence${{ matrix.exe }}" "dist/$file"
+          if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
+          (cd dist && $hash "$file" > "digests/$file.sha256")
+          ls -l dist dist/digests
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
+
+  # The seven together, summed with bench.txt and the install scripts on every run, so a dry run
+  # checks what a release would assemble.
+  assemble:
+    name: the seven together
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+
+      - name: The commit the version job checked
+        shell: bash
+        env:
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$COMMIT" ] \
+            || { echo "::error::checked out $(git rev-parse HEAD) and not $COMMIT"; exit 1; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Seven binaries and their checksums
+        shell: bash
+        run: |
+          cd dist
+          ls -l
+          n=$(ls cadence-* | wc -l)
+          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
+          n=$(ls digests/*.sha256 | wc -l)
+          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
+          cat digests/*.sha256 | sha256sum -c
+          cp ../install.sh ../install.ps1 ../bench.txt .
+          sha256sum cadence-* install.sh install.ps1 bench.txt | tee SHA256SUMS
+          cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+
+  # Only at a pushed tag or a run asking for the draft, and the only job that may write: it attests
+  # each binary and drafts the release, which is published by hand.
+  release:
+    name: the draft release
+    needs: [version, assemble]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # Nothing is attested or drafted from a commit CI has not passed on main itself: a pull
+      # request's run tested a merge and not the commit. A run that failed here is re-run once it has.
+      - name: The tagged commit is on main and passed CI there
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          set -eu
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$COMMIT" --jq '.status')
+          case "$status" in
+            behind | identical) ;;
+            *) echo "::error::$COMMIT is $status against main, so nothing is drafted from it"; exit 1 ;;
+          esac
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT&event=push&status=success&per_page=1" \
+            --jq '.total_count')
+          [ "$passed" -gt 0 ] \
+            || { echo "::error::no push run of CI has passed at $COMMIT, so nothing is drafted from it"; exit 1; }
+          echo "$COMMIT is on main and CI passed there"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+
+      - name: The commit the version job checked
+        shell: bash
+        env:
+          COMMIT: ${{ needs.version.outputs.commit }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$COMMIT" ] \
+            || { echo "::error::checked out $(git rev-parse HEAD) and not $COMMIT"; exit 1; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Counted and held to the digests the build jobs took, so what is attested is what they checked.
+      # The install scripts and bench.txt come from the tagged commit and are summed beside the binaries.
+      - name: Checksums
+        shell: bash
+        run: |
+          cd dist
+          n=$(ls cadence-* | wc -l)
+          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
+          n=$(ls digests/*.sha256 | wc -l)
+          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
+          cat digests/*.sha256 | sha256sum -c
+          cp ../install.sh ../install.ps1 ../bench.txt .
+          sha256sum cadence-* install.sh install.ps1 bench.txt > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/cadence-*
+
+      # A re-run replaces an earlier draft of the same version, hand edits included, and refuses once the
+      # release is published.
+      - name: Draft the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          set -eu
+          found=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$VERSION\") | \"\(.id) \(.draft)\"")
+          if echo "$found" | grep -q ' false$'; then
+            echo "::error::$VERSION is published, and a re-run never changes a published release"
+            exit 1
+          fi
+          kind=(--draft --verify-tag)
+          [ "${PRERELEASE:-false}" != true ] || kind+=(--prerelease)
+          {
+            echo "Cadence $VERSION, built from $COMMIT at the tag $VERSION. Bench: $(tr -d '[:space:]' < bench.txt) nodes."
+            if [ "${PRERELEASE:-false}" = true ]; then
+              echo
+              echo "A release candidate, published as a pre-release."
+            fi
+            echo
+            echo "Seven binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of bench.txt, which holds the bench count every binary was checked against, and of the install scripts. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo
+            echo "The macOS binaries are not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
+            echo
+            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. Where no binary fits or the check fails, as on an Intel Mac without AVX2, they build the release from source and hold the build to the same bench. They take the latest published release, which is never a release candidate, unless \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
+            echo
+            echo '```'
+            grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`. On an x86-64 processor without AVX2, build with \`cargo build --release --config .cargo/x86-64-generic.toml\`."
+            echo
+            awk -v h="## [$VERSION]" '$0 == h || index($0, h " - ") == 1 {on = 1; next} on && /^## \[/ {exit} on' \
+              CHANGELOG.md
+          } > notes.txt
+          cat notes.txt
+          echo "$found" | while read -r id _; do
+            [ -n "$id" ] || continue
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+            echo "replaced the earlier draft $id"
+          done
+          gh release create "$VERSION" "${kind[@]}" --title "Cadence $VERSION" \
+            --notes-file notes.txt dist/cadence-* dist/install.sh dist/install.ps1 dist/bench.txt dist/SHA256SUMS \
+            LICENSE

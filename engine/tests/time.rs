@@ -72,6 +72,119 @@ fn a_clock_for_the_other_side_only_is_a_budget_of_zero() {
     );
 }
 
+/// A clock value that is no integer reads as zero and never as no clock: `go wtime 1000.0` once
+/// searched until `stop`. A keyword where the value belongs is still read as itself.
+#[test]
+fn a_clock_value_that_is_no_integer_reads_as_zero() {
+    let l = limits("wtime 1000.0 btime 1000.0 winc 0.0 binc 0.0");
+    assert_eq!((l.time, l.inc), ([Some(0); 2], [Some(0); 2]));
+    let l = limits("wtime btime 5000 movestogo x movetime");
+    assert_eq!(l.time, [Some(0), Some(5000)]);
+    assert_eq!((l.movestogo, l.movetime), (Some(0), Some(0)));
+}
+
+/// Token lists drawn from the keywords and from good and bad values: every one holding a clock
+/// keyword budgets both sides within that side's clock less the overhead, and none panics.
+#[test]
+fn any_go_holding_a_clock_keyword_is_budgeted() {
+    const CLOCKS: &str = "wtime btime winc binc movestogo movetime";
+    const OTHERS: &str = "depth nodes mate infinite searchmoves e2e4";
+    const VALUES: &str = "0 1 1000 -5 +7 1000.0 1e3 abc 99999999999999999999";
+    let clocks: Vec<&str> = CLOCKS.split(' ').collect();
+    let words: Vec<&str> = [CLOCKS, OTHERS, VALUES]
+        .into_iter()
+        .flat_map(|s| s.split(' '))
+        .collect();
+    let mut rng = support::Rng::new(3);
+    for _ in 0..20_000 {
+        let len = 1 + rng.below(8);
+        let tokens: Vec<&str> = (0..len).map(|_| words[rng.below(words.len())]).collect();
+        if !tokens.iter().any(|t| clocks.contains(t)) {
+            continue;
+        }
+        let line = tokens.join(" ");
+        let l = limits(&line);
+        for us in [Colour::White, Colour::Black] {
+            let Some(b) = budget(&l, us) else {
+                panic!("go {line}: no budget for {us:?}");
+            };
+            let time = l.movetime.or(l.clock(us).map(|(t, _)| t)).unwrap_or(0);
+            assert!(
+                b.hard <= time.saturating_sub(MOVE_OVERHEAD_MS),
+                "go {line}: {b:?} for {us:?}"
+            );
+        }
+    }
+}
+
+/// Random `go` lines of every keyword, good and bad values and stray tokens, for a fixed time. A
+/// line naming a clock budgets both sides within that side's clock, and a ponder only once its hit.
+#[test]
+fn random_go_lines_naming_a_clock_are_budgeted_for_a_fixed_time() {
+    const BUDGET: Duration = Duration::from_secs(2);
+    const CLOCKS: [&str; 6] = ["wtime", "btime", "winc", "binc", "movestogo", "movetime"];
+    const OTHERS: [&str; 7] = [
+        "depth",
+        "nodes",
+        "mate",
+        "infinite",
+        "ponder",
+        "searchmoves",
+        "e2e4",
+    ];
+    const VALUES: [&str; 14] = [
+        "0",
+        "1",
+        "7",
+        "1000",
+        "3600000",
+        "-1",
+        "+7",
+        "1000.0",
+        "1e3",
+        "abc",
+        "9223372036854775807",
+        "9223372036854775808",
+        "-9223372036854775809",
+        "99999999999999999999",
+    ];
+    let mut rng = support::Rng::new(0x5EED_2026_1106);
+    let start = Instant::now();
+    let (mut lines, mut clocked) = (0u64, 0u64);
+    while clocked == 0 || start.elapsed() < BUDGET {
+        let len = 1 + rng.below(12);
+        let tokens: Vec<&str> = (0..len)
+            .map(|_| match rng.below(10) {
+                0..=3 => CLOCKS[rng.below(CLOCKS.len())],
+                4..=6 => OTHERS[rng.below(OTHERS.len())],
+                _ => VALUES[rng.below(VALUES.len())],
+            })
+            .collect();
+        lines += 1;
+        if !tokens.iter().any(|t| CLOCKS.contains(t)) {
+            continue;
+        }
+        clocked += 1;
+        let line = tokens.join(" ");
+        let l = limits(&line);
+        let hit = Limits { ponder: false, ..l };
+        for us in [Colour::White, Colour::Black] {
+            if l.ponder {
+                assert_eq!(budget(&l, us), None, "go {line}: a ponder took a budget");
+            }
+            let Some(b) = budget(&hit, us) else {
+                panic!("go {line}: no budget for {us:?}");
+            };
+            let time = hit.movetime.or(hit.clock(us).map(|(t, _)| t)).unwrap_or(0);
+            assert!(
+                b.soft <= b.hard && b.hard <= time.saturating_sub(MOVE_OVERHEAD_MS),
+                "go {line}: {b:?} for {us:?}"
+            );
+        }
+    }
+    println!("{lines} lines, {clocked} naming a clock");
+}
+
 #[test]
 fn movetime_is_the_budget_less_the_overhead() {
     let b = budget(&limits("movetime 500"), Colour::White).expect("budget");
@@ -260,24 +373,39 @@ fn a_clock_below_the_overhead_yields_a_move_at_once() {
     assert!(elapsed <= Duration::from_secs(1), "took {elapsed:?}");
 }
 
-/// 1000 ms + 20 ms, timed around each `go` with pipe latency included. The property is the clock,
-/// not the result.
-#[test]
-fn a_game_on_the_clock_never_runs_out_of_time() {
+/// Past half of what is left, the most the engine ever gives a move, timed around the pipe and the
+/// scheduler: a release build's clock check comes every millisecond or so, and this is for a loaded
+/// runner.
+const MAX_OVERRUN_MS: u64 = 150;
+
+/// A game on the clock: the plies played, the clocks left, the worst overrun past the engine's hard
+/// cap, and whether the board ended it with a mate, a stalemate or the fifty-move rule.
+struct Game {
+    plies: u32,
+    clocks: [u64; 2],
+    worst_overrun_ms: u64,
+    ended_by_board: bool,
+}
+
+/// The game from `start`; or the first move timed past the clock or past the cap by more than
+/// [`MAX_OVERRUN_MS`].
+fn play_on_the_clock(start: &str) -> Result<Game, String> {
     let mut e = Engine::spawn();
-    let mut board = Board::from_fen(START_FEN).unwrap();
+    let mut board = Board::from_fen(start).unwrap();
     let mut moves: Vec<String> = Vec::new();
     let mut time = [1000u64, 1000u64];
     let inc = 20u64;
     let mut plies = 0;
     let mut max_overrun_ms = 0u64;
+    let mut ended_by_board = false;
     while plies < 120 {
         let legal = generate_legal(&board);
         if legal.is_empty() || board.halfmove_clock() >= 100 {
+            ended_by_board = true;
             break;
         }
         let us = board.side_to_move().index();
-        e.send(&format!("position startpos moves {}", moves.join(" ")));
+        e.send(&format!("position fen {start} moves {}", moves.join(" ")));
         e.sync();
         let start = Instant::now();
         e.send(&format!(
@@ -293,23 +421,73 @@ fn a_game_on_the_clock_never_runs_out_of_time() {
             .unwrap()
             .to_string();
         let m = parse_uci(&legal, &mv).unwrap_or_else(|| panic!("illegal bestmove {mv}"));
-        assert!(
-            spent < time[us],
-            "ply {plies}: {spent} ms spent with {} ms on the clock",
-            time[us]
-        );
-        // The engine's own hard cap is half of what is left after the
-        // overhead; record the worst overrun past that, for the log.
+        if spent >= time[us] {
+            e.quit();
+            return Err(format!(
+                "ply {plies}: {spent} ms spent with {} ms on the clock",
+                time[us]
+            ));
+        }
+        // The engine's own hard cap is half of what is left after the overhead.
         let cap = time[us].saturating_sub(MOVE_OVERHEAD_MS) / 2;
         max_overrun_ms = max_overrun_ms.max(spent.saturating_sub(cap));
+        if spent > cap + MAX_OVERRUN_MS {
+            e.quit();
+            return Err(format!(
+                "ply {plies}: {spent} ms spent against a cap of {cap} ms"
+            ));
+        }
         time[us] = time[us] - spent + inc;
         board.play(m);
         moves.push(mv);
         plies += 1;
     }
     e.quit();
-    println!("{plies} plies, clocks {time:?}, worst overrun past the hard cap {max_overrun_ms} ms");
-    assert!(plies >= 40, "only {plies} plies");
+    Ok(Game {
+        plies,
+        clocks: time,
+        worst_overrun_ms: max_overrun_ms,
+        ended_by_board,
+    })
+}
+
+/// 1000 ms + 20 ms, timed around each `go` with the pipe and the scheduler included. A game that
+/// runs out or overruns is printed and played once more, and only a second such game fails.
+fn played_on_the_clock(start: &str) -> Game {
+    let game = play_on_the_clock(start).unwrap_or_else(|first| {
+        println!("{first}; playing the game again");
+        play_on_the_clock(start).unwrap_or_else(|second| panic!("{first}, and again {second}"))
+    });
+    let Game {
+        plies,
+        clocks,
+        worst_overrun_ms,
+        ended_by_board,
+    } = &game;
+    println!("{plies} plies, clocks {clocks:?}, worst overrun {worst_overrun_ms} ms past the cap");
+    println!("ended by the board: {ended_by_board}");
+    game
+}
+
+/// Long enough to have spent the clock, forty plies, or ended first by the board, which is a game
+/// played; a time loss or an overrun has already failed it.
+fn assert_played_out(game: &Game) {
+    assert!(
+        game.plies >= 40 || game.ended_by_board,
+        "only {} plies, and the board did not end the game",
+        game.plies
+    );
+}
+
+#[test]
+fn a_game_on_the_clock_never_runs_out_of_time() {
+    assert_played_out(&played_on_the_clock(START_FEN));
+}
+
+/// Mate in two, which the board ends after a few plies with no time lost, so the game passes.
+#[test]
+fn a_game_the_board_ends_early_passes_on_the_clock() {
+    assert_played_out(&played_on_the_clock("7k/8/5K2/8/8/8/8/Q7 w - - 0 1"));
 }
 
 /// The same, end to end: a `go` carrying only the opponent's clock comes
@@ -870,50 +1048,148 @@ fn a_ponderhit_after_the_ponder_has_finished_is_answered() {
     }
 }
 
-/// The gap between an `info` line's `time` and the whole exchange's wall clock is the pondering the
-/// budget no longer counts.
+/// Pondered past a 20 s clock's hard limit of 2.4 s and then hit, the move still waits for a search:
+/// were the pondering counted, the limit would have passed at the hit.
 #[test]
 fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
-    const PONDERED_MS: u64 = 700;
+    const PONDERED_MS: u64 = 3000;
+    const SEARCHED_MS: u64 = 150;
 
-    let (wall, lines) = Engine::within(Duration::from_secs(30), || {
+    let after_hit = Engine::within(Duration::from_secs(30), || {
         let mut e = Engine::spawn();
         e.send("position startpos");
         e.sync();
-        let start = Instant::now();
         e.send("go ponder wtime 20000 btime 20000");
         std::thread::sleep(Duration::from_millis(PONDERED_MS));
+        let hit = Instant::now();
         e.send("ponderhit");
-        let lines = e.read_until("bestmove ");
-        let wall = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        e.read_until("bestmove ");
+        let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
         e.quit();
-        (wall, lines)
+        after_hit
     });
 
-    // The last iteration line before the move: its `time` is what the search thinks it has
-    // spent, and after a hit that is measured from the hit.
-    let reported: u64 = lines
-        .iter()
-        .rev()
-        .filter(|l| l.starts_with("info depth "))
-        .find_map(|l| {
-            let toks: Vec<&str> = l.split_whitespace().collect();
-            let at = toks.iter().position(|t| *t == "time")?;
-            toks.get(at + 1)?.parse().ok()
-        })
-        .unwrap_or_else(|| panic!("no info line with a time: {lines:?}"));
-
     assert!(
-        wall >= reported + PONDERED_MS / 2,
-        "the search reported {reported} ms of a {wall} ms exchange, so the clock still counts \
-         the {PONDERED_MS} ms it spent pondering"
+        after_hit >= SEARCHED_MS,
+        "the move came {after_hit} ms after the hit, so the clock still counts the \
+         {PONDERED_MS} ms it spent pondering"
     );
+}
+
+/// After a hit `time` counts from the `go`, as `nodes` does, so a line's `time` exceeds the time
+/// since the hit by the pondering. The hit is absorbed after the first iteration line that follows
+/// it, so the second is the one that can tell.
+#[test]
+fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
+    const PONDERED_MS: u64 = 600;
+    // A line read this soon after the hit may have been written before it.
+    const SETTLED_MS: u64 = 50;
+
+    let lines = Engine::within(Duration::from_secs(60), || {
+        let mut e = Engine::spawn();
+        e.send("position startpos");
+        e.sync();
+        e.send("go ponder wtime 600000 btime 600000");
+        std::thread::sleep(Duration::from_millis(PONDERED_MS));
+        e.sync();
+        let hit = Instant::now();
+        e.send("ponderhit");
+        let mut lines = Vec::new();
+        while lines.len() < 2 {
+            let line = e.read_until("").pop().expect("a line");
+            let since_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
+            assert!(!line.starts_with("bestmove "), "moved after {lines:?}");
+            if line.starts_with("info depth ") && since_hit >= SETTLED_MS {
+                lines.push((since_hit, info_time(&line)));
+            }
+        }
+        e.send("stop");
+        e.read_until("bestmove ");
+        e.quit();
+        lines
+    });
+
+    for (since_hit, reported) in lines {
+        assert!(
+            reported >= since_hit + PONDERED_MS / 2,
+            "a line read {since_hit} ms after the hit reported time {reported}, which counts from \
+             the hit and not from the go"
+        );
+    }
+}
+
+/// The iteration a hit finds began unbudgeted and rarely finishes, so until one completes after the
+/// hit the move comes at the soft budget and not the hard one. An attempt where one does complete
+/// cannot tell, so the next ponders longer and meets an iteration at another point.
+#[test]
+fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
+    // No increment: the soft budget is a 25th of the clock and the hard one three times that.
+    const CLOCK: &str = "wtime 6000 btime 6000";
+    // A search's timing barely varies on one machine, so a retry at the same length meets the same
+    // iteration at the same point.
+    const PONDERED_MS: [u64; 5] = [3000, 3900, 5100, 6600, 8600];
+    const SLACK_MS: u64 = 150;
+
+    let b = budget(&limits(CLOCK), Colour::White).expect("a budget");
+    assert!(
+        b.soft + SLACK_MS < b.hard,
+        "{b:?} leaves no room to tell soft from hard"
+    );
+    for pondered in PONDERED_MS {
+        let (completed, after_hit) = Engine::within(Duration::from_secs(30), move || {
+            let mut e = Engine::spawn();
+            e.send("position startpos");
+            e.sync();
+            e.send(&format!("go ponder {CLOCK}"));
+            std::thread::sleep(Duration::from_millis(pondered));
+            e.sync();
+            let hit = Instant::now();
+            e.send("ponderhit");
+            let mut completed = false;
+            loop {
+                let line = e.read_until("").pop().expect("a line");
+                if line.starts_with("bestmove ") {
+                    break;
+                }
+                completed |= line.starts_with("info depth ");
+            }
+            let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
+            e.quit();
+            (completed, after_hit)
+        });
+        if completed {
+            continue;
+        }
+        assert!(
+            after_hit <= b.soft + SLACK_MS,
+            "no iteration completed after the hit, and the move came {after_hit} ms after it, \
+             past the soft budget of {} ms",
+            b.soft
+        );
+        return;
+    }
+    panic!(
+        "an iteration completed after the hit in each of {} attempts",
+        PONDERED_MS.len()
+    );
+}
+
+fn info_time(line: &str) -> u64 {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    toks.iter()
+        .position(|t| *t == "time")
+        .and_then(|at| toks.get(at + 1)?.parse().ok())
+        .unwrap_or_else(|| panic!("no time in {line:?}"))
 }
 
 /// The hit is raised before the run, so the whole search is what a `ponderhit` leaves: it records a
 /// ladder and returns without `stop`.
 #[test]
 fn a_ponder_that_is_hit_becomes_a_clocked_search() {
+    // The clock is read every 1024 nodes, so a runner that stalls between two reads can finish an
+    // iteration past the limit by the stall: 9 ms on one Windows runner.
+    const STALL_MS: u64 = 100;
+
     let stop = AtomicBool::new(false);
     let hit = AtomicBool::new(true);
     let tt = Table::new(16).expect("a table");
@@ -935,7 +1211,7 @@ fn a_ponder_that_is_hit_becomes_a_clocked_search() {
     assert!(
         s.iterations_ms()
             .last()
-            .is_some_and(|&ms| ms <= budget.hard),
+            .is_some_and(|&ms| ms <= budget.hard + STALL_MS),
         "the ladder ran past the hard budget it took on the hit: {:?}",
         s.iterations_ms()
     );
@@ -1114,4 +1390,27 @@ fn the_run_survives_a_ponderhit() {
         s.iteration_roots()
     );
     assert_the_run_is_the_trailing_one(&s);
+}
+
+/// The budget is spent from when `go` was read, so a search whose clock started a second before
+/// it, with 200 ms to spend, answers at its first clock check.
+#[test]
+fn the_budget_is_spent_from_the_clock_origin() {
+    let stop = AtomicBool::new(false);
+    let tt = Table::new(1).expect("a one mebibyte table");
+    let mut s = Search::new(&stop, &tt);
+    s.set_limits(limits("movetime 200"));
+    let origin = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("a clock running a second");
+    s.set_clock_origin(origin);
+    let start = Instant::now();
+    let mut b = Position::new(Board::from_fen(START_FEN).unwrap());
+    let best = s.run(&mut b, &mut std::io::sink());
+    assert!(generate_legal(&b).contains(best));
+    assert!(
+        start.elapsed() < Duration::from_millis(100),
+        "took {:?} with its clock spent",
+        start.elapsed()
+    );
 }

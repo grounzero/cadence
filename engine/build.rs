@@ -6,6 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Cut from the full hash rather than asked of `--short`, whose length grows with the repository,
+/// so the string is a function of the commit alone.
+const COMMIT_LEN: usize = 7;
+
 fn main() {
     // Emitting anything turns off the default rerun heuristic, so the script and the refs are named
     // explicitly.
@@ -20,8 +24,8 @@ fn main() {
     println!("cargo::rustc-env=CADENCE_TAG={}", facts.tag);
 }
 
-/// `commit` is never empty; `tag` is empty when HEAD is not at an annotated tag or nobody could be
-/// asked.
+/// `commit` is never empty; `tag` is empty when HEAD is not at the annotated tag naming the version
+/// or nobody could be asked, and ends `-dirty` when the tree differs from it.
 struct Facts {
     commit: String,
     tag: String,
@@ -37,17 +41,23 @@ impl Facts {
     }
 
     fn read(root: &Path) -> Self {
-        let commit = git(root, &["rev-parse", "--short", "HEAD"]);
         // The archived binaries are filed under the short commit, so a build and its archive share
         // one searchable string.
-        let Some(commit) = commit else {
+        let Some(full) = git(root, &["rev-parse", "HEAD"]) else {
             return Self::unknown();
         };
+        let version = env!("CARGO_PKG_VERSION");
+        // Annotated tags only, and only the one naming this version, so neither a lightweight tag
+        // nor another tag on the commit can make a release; a modified tree reads `-dirty`. No
+        // commit is named, because git refuses one beside `--dirty` and reads HEAD itself.
+        let args = ["describe", "--exact-match", "--dirty", "--match", version];
+        let tag = git(root, &args).unwrap_or_default();
+        if !tag.is_empty() {
+            watch_tree(root);
+        }
         Self {
-            // `--exact-match` without `--tags`: annotated tags only, so a lightweight tag left by
-            // hand cannot make a release.
-            tag: git(root, &["describe", "--exact-match", "HEAD"]).unwrap_or_default(),
-            commit,
+            commit: full.chars().take(COMMIT_LEN).collect(),
+            tag,
         }
     }
 }
@@ -72,13 +82,29 @@ fn repo_root() -> Option<PathBuf> {
 fn watch_refs(root: &Path) {
     let own = git(root, &["rev-parse", "--git-dir"]);
     let common = git(root, &["rev-parse", "--git-common-dir"]);
-    for (dir, name) in [(&own, "HEAD"), (&common, "refs"), (&common, "packed-refs")] {
+    for (dir, name) in [
+        (&own, "HEAD"),
+        (&common, "refs"),
+        (&common, "packed-refs"),
+        (&common, "reftable"),
+    ] {
         let Some(dir) = dir else { continue };
         // Either answer may be relative to the root, and joining an absolute one replaces it.
         let path = root.join(dir).join(name);
         if path.exists() {
             println!("cargo::rerun-if-changed={}", path.display());
         }
+    }
+}
+
+/// At the tag, an edit to any tracked path decides whether the build is the release, so each
+/// top-level one reruns the script.
+fn watch_tree(root: &Path) {
+    let Some(names) = git(root, &["ls-tree", "--name-only", "HEAD"]) else {
+        return;
+    };
+    for name in names.lines() {
+        println!("cargo::rerun-if-changed={}", root.join(name).display());
     }
 }
 

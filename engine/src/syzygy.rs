@@ -3,12 +3,20 @@
 //! Syzygy tables, probed through `shakmaty-syzygy` on a copy of the board in that crate's types.
 //! Nothing is loaded until a path is set, so a search without one is the search it always was.
 
+use std::collections::BTreeSet;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, PieceType, generate_legal};
 use shakmaty::{CastlingMode, Chess, FromSetup as _};
-use shakmaty_syzygy::{MaybeRounded, Metric, SyzygyError, Tablebase};
+use shakmaty_syzygy::filesystem::{Filesystem, OsFilesystem, RandomAccessFile};
+use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Metric, SyzygyError, Tablebase};
+
+use crate::score::{DRAW, Score, is_mate, tb_loss_in, tb_win_in};
+use crate::uci::say::say;
 
 /// The largest tables published, so the highest `SyzygyProbeLimit` that means anything.
 pub const MAX_PROBE_LIMIT: usize = 7;
@@ -30,24 +38,147 @@ pub struct Tables {
     cardinality: usize,
     hits: AtomicU64,
     failures: AtomicU64,
+    /// The tables a probe has failed on, each named once.
+    named: Mutex<BTreeSet<String>>,
 }
 
-/// A root move's outcome for the side that plays it, under the fifty-move counter it is played at.
+/// The crate keeps every table it opens for as long as the set lives, so a second open of a path
+/// follows a failure: refused here, so a failed table costs one system call and not one per probe.
+#[derive(Default)]
+struct OpenOnce {
+    os: OsFilesystem,
+    opened: Mutex<BTreeSet<PathBuf>>,
+}
+
+impl Filesystem for OpenOnce {
+    fn regular_file_size(&self, path: &Path) -> io::Result<u64> {
+        self.os.regular_file_size(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        self.os.read_dir(path)
+    }
+
+    fn open(&self, path: &Path) -> io::Result<Box<dyn RandomAccessFile>> {
+        let first = self
+            .opened
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(path.to_path_buf());
+        if !first {
+            return Err(io::Error::other("failed before, so not opened again"));
+        }
+        self.os.open(path)
+    }
+}
+
+/// A root move's outcome for the side that plays it, under the fifty-move counter it is played at,
+/// ordered as the crate orders its outcomes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
     Loss,
+    /// A loss the counter may save, which the table cannot settle.
+    MaybeLoss,
     /// A loss the counter saves.
     BlessedLoss,
     Draw,
-    /// A win the counter may not allow.
+    /// A win the counter does not allow.
     CursedWin,
+    /// A win the counter may not allow, which the table cannot settle.
+    MaybeWin,
     Win,
+}
+
+impl Rank {
+    /// What a root of this rank reports: the search's own mate for the side the table says wins,
+    /// and otherwise the table's verdict, a draw wherever the fifty-move counter makes one.
+    #[must_use]
+    pub fn reported(self, searched: Score) -> Score {
+        match self {
+            Rank::Win if is_mate(searched) && searched > 0 => searched,
+            Rank::Win => tb_win_in(1),
+            Rank::Loss if is_mate(searched) && searched < 0 => searched,
+            Rank::Loss => tb_loss_in(1),
+            // The counter decides these and the table cannot say how, so the search speaks.
+            Rank::MaybeWin | Rank::MaybeLoss => searched,
+            Rank::CursedWin | Rank::Draw | Rank::BlessedLoss => DRAW,
+        }
+    }
+
+    /// The rank of a move into a position whose side to move is `found` plies from zeroing, the
+    /// move leaving the counter at `counter`.
+    #[must_use]
+    pub fn from_distance(found: MaybeRounded<Dtz>, counter: u32) -> Rank {
+        let (Dtz(plies), rounded) = match found {
+            MaybeRounded::Rounded(d) => (d, true),
+            MaybeRounded::Precise(d) => (d, false),
+        };
+        let to_move_wins = plies > 0;
+        let total = plies.unsigned_abs().saturating_add(counter);
+        // A rounded distance may be a ply longer than it reads, so one landing on the hundredth
+        // half-move is either outcome; the crate says none lands there after zeroing, and this does
+        // not rely on it.
+        Rank::own(match total {
+            _ if plies == 0 => AmbiguousWdl::Draw,
+            100 if rounded && to_move_wins => AmbiguousWdl::MaybeWin,
+            100 if rounded => AmbiguousWdl::MaybeLoss,
+            t if t <= 100 && to_move_wins => AmbiguousWdl::Win,
+            t if t <= 100 => AmbiguousWdl::Loss,
+            _ if to_move_wins => AmbiguousWdl::CursedWin,
+            _ => AmbiguousWdl::BlessedLoss,
+        })
+        .reversed()
+    }
+
+    /// The same from what a WDL table holds, the outcome for the side to move as though the move
+    /// had zeroed the counter, which a counter run part-way leaves unsettled.
+    #[must_use]
+    pub fn from_outcome(wdl: shakmaty_syzygy::Wdl, counter: u32) -> Rank {
+        use shakmaty_syzygy::Wdl;
+        Rank::own(match wdl {
+            Wdl::Win if counter >= 100 => AmbiguousWdl::CursedWin,
+            Wdl::Win if counter > 0 => AmbiguousWdl::MaybeWin,
+            Wdl::Loss if counter >= 100 => AmbiguousWdl::BlessedLoss,
+            Wdl::Loss if counter > 0 => AmbiguousWdl::MaybeLoss,
+            settled => AmbiguousWdl::from(settled),
+        })
+        .reversed()
+    }
+
+    /// The same outcome for the other side.
+    fn reversed(self) -> Rank {
+        match self {
+            Rank::Loss => Rank::Win,
+            Rank::MaybeLoss => Rank::MaybeWin,
+            Rank::BlessedLoss => Rank::CursedWin,
+            Rank::Draw => Rank::Draw,
+            Rank::CursedWin => Rank::BlessedLoss,
+            Rank::MaybeWin => Rank::MaybeLoss,
+            Rank::Win => Rank::Loss,
+        }
+    }
+
+    /// The side to move's own rank.
+    fn own(outcome: AmbiguousWdl) -> Rank {
+        match outcome {
+            AmbiguousWdl::Loss => Rank::Loss,
+            AmbiguousWdl::MaybeLoss => Rank::MaybeLoss,
+            AmbiguousWdl::BlessedLoss => Rank::BlessedLoss,
+            AmbiguousWdl::Draw => Rank::Draw,
+            AmbiguousWdl::CursedWin => Rank::CursedWin,
+            AmbiguousWdl::MaybeWin => Rank::MaybeWin,
+            AmbiguousWdl::Win => Rank::Win,
+        }
+    }
 }
 
 /// The root moves a table ranks best.
 pub struct Ranked {
     pub moves: Vec<Move>,
     pub best: Rank,
+    /// What the root reports: `best`, or the root's own outcome where that is exact and the moves'
+    /// ranks are not.
+    pub verdict: Rank,
     /// Ranked by distance to zeroing, so the result is settled and a probe in the search would only
     /// flatten the kept moves' scores into one band.
     pub decided: bool,
@@ -55,11 +186,13 @@ pub struct Ranked {
 
 impl Tables {
     /// Every directory in `paths`, separated as UCI separates them: `;` on Windows and `:`
-    /// elsewhere. One that cannot be read is named in the second value and the rest are kept.
+    /// elsewhere. A directory or a file that cannot be read is named in the second value and the
+    /// rest are kept.
     #[must_use]
     pub fn load(paths: &str, limit: usize) -> (Tables, Vec<String>) {
         let separator = if cfg!(windows) { ';' } else { ':' };
-        let mut tablebase = Tablebase::new();
+        let filesystem = Arc::new(OpenOnce::default());
+        let mut tablebase = Tablebase::with_filesystem(filesystem.clone());
         let mut files = 0;
         let mut problems = Vec::new();
         for dir in paths
@@ -67,9 +200,21 @@ impl Tables {
             .map(str::trim)
             .filter(|d| !d.is_empty())
         {
-            match tablebase.add_directory(dir) {
-                Ok(n) => files += n,
-                Err(e) => problems.push(format!("{dir}: {e}")),
+            // File by file, since the crate's own scan of a directory stops at its first bad file.
+            let mut entries = match filesystem.read_dir(Path::new(dir)) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    problems.push(format!("{dir}: {e}"));
+                    continue;
+                }
+            };
+            entries.sort();
+            for entry in entries {
+                match tablebase.add_file(&entry) {
+                    Ok(()) => files += 1,
+                    Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
+                    Err(e) => problems.push(format!("{}: {e}", entry.display())),
+                }
             }
         }
         let cardinality = limit.min(tablebase.max_pieces());
@@ -79,6 +224,7 @@ impl Tables {
             cardinality,
             hits: AtomicU64::new(0),
             failures: AtomicU64::new(0),
+            named: Mutex::new(BTreeSet::new()),
         };
         (tables, problems)
     }
@@ -136,10 +282,23 @@ impl Tables {
         Some(found.ignore_rounding().0)
     }
 
-    /// The moves of `candidates`, or every legal move where it is empty, that a table ranks best.
-    /// `None` where the root is outside the tables or a probe fails.
+    /// The moves of `candidates`, or every legal move where it is empty, that a table ranks best,
+    /// and of a win ranked by distance only the fastest to zeroing. `None` where the root is outside
+    /// the tables or a probe fails.
     #[must_use]
     pub fn rank_root(&self, board: &mut Board, candidates: &[Move]) -> Option<Ranked> {
+        self.rank_root_while(board, candidates, &|| true)
+    }
+
+    /// The same, asking `go_on` before each probe and giving up, `None`, once it says no. A probe
+    /// already blocked in a read finishes that read first.
+    #[must_use]
+    pub fn rank_root_while(
+        &self,
+        board: &mut Board,
+        candidates: &[Move],
+        go_on: &dyn Fn() -> bool,
+    ) -> Option<Ranked> {
         if !self.covers(board) {
             return None;
         }
@@ -147,30 +306,55 @@ impl Tables {
             .iter()
             .filter(|m| candidates.is_empty() || candidates.contains(m))
             .collect();
-        let (ranks, decided) = match self.ranks(board, &moves, true) {
+        let (ranks, decided) = match self.ranks(board, &moves, true, go_on) {
             Ok(ranks) => (ranks, true),
             // Without a distance the ranking cannot settle the fifty-move rule, so the search keeps
             // probing.
-            Err(Missing::Dtz) => (self.ranks(board, &moves, false).ok()?, false),
-            Err(Missing::Other) => return None,
+            Err(Missing::Dtz) => (self.ranks(board, &moves, false, go_on).ok()?, false),
+            Err(Missing::Other | Missing::Stopped) => return None,
         };
-        let best = ranks.iter().copied().max()?;
+        let best = ranks.iter().map(|&(rank, _)| rank).max()?;
+        // Every win kept brings zeroing nearer, so the search cannot spend the fifty-move counter
+        // choosing among them.
+        let fastest = ranks
+            .iter()
+            .filter(|&&(rank, _)| decided && rank == Rank::Win)
+            .map(|&(_, plies)| plies)
+            .min();
         let moves = moves
             .iter()
             .zip(&ranks)
-            .filter(|&(_, &rank)| rank == best)
+            .filter(|&(_, &(rank, plies))| rank == best && fastest.is_none_or(|f| plies == f))
             .map(|(&m, _)| m)
             .collect();
+        // A root at a zeroed counter is read exactly by the WDL files, where its quiet moves are not.
+        let unsettled = matches!(best, Rank::MaybeWin | Rank::MaybeLoss) && go_on();
+        let verdict = if unsettled && candidates.is_empty() && board.halfmove_clock() == 0 {
+            self.answered(Tablebase::probe_wdl_after_zeroing, board)
+                .map_or(best, |own| Rank::own(AmbiguousWdl::from(own)))
+        } else {
+            best
+        };
         Some(Ranked {
             moves,
             best,
+            verdict,
             decided,
         })
     }
 
-    fn ranks(&self, board: &mut Board, moves: &[Move], dtz: bool) -> Result<Vec<Rank>, Missing> {
+    fn ranks(
+        &self,
+        board: &mut Board,
+        moves: &[Move],
+        dtz: bool,
+        go_on: &dyn Fn() -> bool,
+    ) -> Result<Vec<(Rank, u32)>, Missing> {
         let mut ranks = Vec::with_capacity(moves.len());
         for &m in moves {
+            if !go_on() {
+                return Err(Missing::Stopped);
+            }
             board.make_move(m);
             let rank = self.rank_after(board, dtz);
             board.unmake_move(m);
@@ -180,42 +364,33 @@ impl Tables {
     }
 
     /// `board` is the position after the move, so its side to move is the one that did not play it.
-    fn rank_after(&self, board: &Board, dtz: bool) -> Result<Rank, Missing> {
+    /// With the rank, the move's own distance to zeroing in plies, which the WDL files leave at 0.
+    fn rank_after(&self, board: &Board, dtz: bool) -> Result<(Rank, u32), Missing> {
         if generate_legal(board).is_empty() {
             return Ok(if board.in_check() {
-                Rank::Win
+                (Rank::Win, 1)
             } else {
-                Rank::Draw
+                (Rank::Draw, 0)
             });
         }
         if board.is_repetition() {
-            return Ok(Rank::Draw);
+            return Ok((Rank::Draw, 0));
         }
         let pos = to_chess(board).ok_or(Missing::Other)?;
-        if !dtz {
+        let counter = u32::from(board.halfmove_clock());
+        Ok(if dtz {
+            let found = self.counted(self.tablebase.probe_dtz(&pos))?;
+            // A capture or a pawn move zeroes the counter itself, so like a mate it is one ply from
+            // zeroing whatever follows it.
+            let plies = if counter == 0 {
+                1
+            } else {
+                1 + found.ignore_rounding().0.unsigned_abs()
+            };
+            (Rank::from_distance(found, counter), plies)
+        } else {
             let wdl = self.counted(self.tablebase.probe_wdl_after_zeroing(&pos))?;
-            return Ok(match wdl {
-                shakmaty_syzygy::Wdl::Loss => Rank::Win,
-                shakmaty_syzygy::Wdl::BlessedLoss => Rank::CursedWin,
-                shakmaty_syzygy::Wdl::Draw => Rank::Draw,
-                shakmaty_syzygy::Wdl::CursedWin => Rank::BlessedLoss,
-                shakmaty_syzygy::Wdl::Win => Rank::Loss,
-            });
-        }
-        let found = self.counted(self.tablebase.probe_dtz(&pos))?;
-        // A rounded distance may be one ply longer than it reads, so a win is kept only if that
-        // longer one fits too.
-        let (plies, rounded) = match found {
-            MaybeRounded::Rounded(d) => (d.0, 1),
-            MaybeRounded::Precise(d) => (d.0, 0),
-        };
-        let counter = i32::from(board.halfmove_clock());
-        Ok(match plies {
-            0 => Rank::Draw,
-            p if p < 0 && counter - p + rounded <= 100 => Rank::Win,
-            p if p < 0 => Rank::CursedWin,
-            p if counter + p > 100 => Rank::BlessedLoss,
-            _ => Rank::Loss,
+            (Rank::from_outcome(wdl, counter), 0)
         })
     }
 
@@ -237,6 +412,7 @@ impl Tables {
             }
             Err(e) => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
+                self.name_once(&e);
                 Err(match e {
                     SyzygyError::MissingTable {
                         metric: Metric::Dtz,
@@ -247,12 +423,30 @@ impl Tables {
             }
         }
     }
+
+    /// An `info string` the first time a probe fails on a table, from whichever thread it was,
+    /// through the writer every UCI line takes.
+    fn name_once(&self, e: &SyzygyError) {
+        let table = match e {
+            SyzygyError::MissingTable { metric, material }
+            | SyzygyError::ProbeFailed {
+                metric, material, ..
+            } => format!("{metric} {material}"),
+            other => other.to_string(),
+        };
+        let mut named = self.named.lock().unwrap_or_else(PoisonError::into_inner);
+        if named.insert(table) {
+            say(format_args!("info string Syzygy: {e}"));
+        }
+    }
 }
 
 /// Why a ranking stopped: a missing distance table falls back to the outcome alone.
 enum Missing {
     Dtz,
     Other,
+    /// The caller said not to go on.
+    Stopped,
 }
 
 /// No castling rights: the caller has refused any position that keeps one. The crate validates

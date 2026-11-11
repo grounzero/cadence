@@ -122,3 +122,15 @@ fn has_legal_move_agrees_along_walks() {
     assert!(seen.nodes >= WALKS * 20, "walks ended early: {seen:?}");
     assert!(seen.no_king_move >= 100, "{seen:?}");
 }
+
+/// The king's only square is its own and the rook's only move is the castle, so the generator's
+/// castling block alone must answer.
+#[test]
+fn a_castle_as_the_only_move_is_a_legal_move() {
+    let board =
+        Board::from_fen("k4r2/8/8/8/8/7p/7P/6KR w K - 0 1").unwrap_or_else(|e| panic!("{e:?}"));
+    let legal = generate_legal(&board);
+    assert_eq!(legal.len(), 1, "{:?}", legal.as_slice());
+    assert!(legal.as_slice()[0].is_castle());
+    assert!(has_legal_move(&board));
+}

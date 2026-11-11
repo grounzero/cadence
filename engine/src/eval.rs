@@ -462,13 +462,20 @@ pub fn evaluate_cached(board: &Board, cache: &mut PawnCache) -> Score {
     score
 }
 
+/// White's view of the tapered sum, strictly inside `(-MAX_EVAL, MAX_EVAL)`.
 #[inline(always)]
-fn blend(board: &Board, sum: &Sum, phase: i32) -> Score {
+fn blend_white(mg: i32, eg: i32, phase: i32) -> Score {
     // Truncating division: symmetric under negation, so the mirror of a position evaluates to
     // the exact negative.
-    let white = (sum.mg * phase + sum.eg * (PHASE_MAX - phase)) / PHASE_MAX;
-    // `from_fen` accepts sixty queens, which must still not reach the mate scale.
-    let white = white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1);
+    let white = (mg * phase + eg * (PHASE_MAX - phase)) / PHASE_MAX;
+    // No material `from_fen` accepts comes near the bound; the clamp keeps any weights that would
+    // off the mate scale.
+    white.clamp(-MAX_EVAL + 1, MAX_EVAL - 1)
+}
+
+#[inline(always)]
+fn blend(board: &Board, sum: &Sum, phase: i32) -> Score {
+    let white = blend_white(sum.mg, sum.eg, phase);
     match board.side_to_move() {
         Colour::White => white,
         Colour::Black => -white,
@@ -576,16 +583,21 @@ impl Default for PawnCache {
     }
 }
 
-/// From the owner's point of view. For inspection and tests; the evaluation reads [`WEIGHTS`]
-/// directly.
-#[must_use]
-pub fn piece_square(colour: Colour, pt: PieceType, sq: Square) -> (i32, i32) {
-    let s = match colour {
-        Colour::White => sq.index(),
-        Colour::Black => sq.flip_vertical().index(),
-    };
-    let w = WEIGHTS[PST + 64 * pt.index() + s];
-    (w.mg, w.eg)
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// For sums that cannot overflow, a blend is on the evaluation scale and mirrors exactly.
+    #[kani::proof]
+    fn a_blend_stays_on_the_evaluation_scale() {
+        let (mg, eg, phase): (i32, i32, i32) = (kani::any(), kani::any(), kani::any());
+        kani::assume((0..=PHASE_MAX).contains(&phase));
+        let bound = i32::MAX / PHASE_MAX;
+        kani::assume((-bound..=bound).contains(&mg) && (-bound..=bound).contains(&eg));
+        let white = blend_white(mg, eg, phase);
+        assert!(white > -MAX_EVAL && white < MAX_EVAL);
+        assert!(blend_white(-mg, -eg, phase) == -white);
+    }
 }
 
 #[cfg(test)]
@@ -593,7 +605,11 @@ mod tests {
     use cadence_core::position::Board;
     use cadence_core::{Colour, PieceType};
 
-    use super::{PAWN_CACHE_ENTRIES, PawnCache, PawnEntry, evaluate, evaluate_cached};
+    use crate::score::MAX_EVAL;
+
+    use super::{
+        PAWN_CACHE_ENTRIES, PHASE_MAX, PawnCache, PawnEntry, Sum, blend, evaluate, evaluate_cached,
+    };
 
     /// Each plant matches one side's pawns at the position's own index, with sums no structure
     /// has, so a lookup that checked one set or the key alone would take them.
@@ -617,5 +633,29 @@ mod tests {
             assert_eq!(evaluate_cached(&board, &mut cache), evaluate(&board));
         }
         assert_eq!((cache.probes(), cache.hits()), (4, 2));
+    }
+
+    /// No position `from_fen` accepts reaches the bound, so the clamp is held to sums planted past
+    /// it, at every weighting of the two phases.
+    #[test]
+    fn a_sum_past_the_bound_is_clamped_inside_it() {
+        let white = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/8/8/8/8/8/8/4K3 b - - 0 1").unwrap();
+        for value in [40_000, 1_000_000] {
+            let up = Sum {
+                mg: value,
+                eg: value,
+            };
+            let down = Sum {
+                mg: -value,
+                eg: -value,
+            };
+            for phase in [0, PHASE_MAX / 2, PHASE_MAX] {
+                assert_eq!(blend(&white, &up, phase), MAX_EVAL - 1);
+                assert_eq!(blend(&white, &down, phase), -(MAX_EVAL - 1));
+                assert_eq!(blend(&black, &up, phase), -(MAX_EVAL - 1));
+                assert_eq!(blend(&black, &down, phase), MAX_EVAL - 1);
+            }
+        }
     }
 }

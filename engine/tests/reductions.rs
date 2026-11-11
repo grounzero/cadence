@@ -13,7 +13,7 @@ use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::history::HISTORY_MAX;
 use cadence_engine::search::{
     Limits, REDUCTION_INDEX, cut_node_reduction, history_reduction, lmr_reduction, losing_capture,
-    move_history, pv_reduction, reduction,
+    move_history, pv_reduction, reduced_depth, reduction,
 };
 use cadence_engine::see::see;
 use support::table;
@@ -387,4 +387,33 @@ fn a_search_reduces_more_at_some_expected_cut_nodes() {
         "depth {GATE_DEPTH} reduced {} late moves and raised none at an expected cut node",
         s.lmr_reductions()
     );
+}
+
+/// Every term together, at every depth, move index and history bucket a search can meet: a reduced
+/// search never runs deeper than the move would unreduced, so no reduction becomes an extension.
+#[test]
+fn a_reduced_search_never_runs_deeper_than_the_move_would_unreduced() {
+    let max_depth = u32::try_from(cadence_core::MAX_PLY).unwrap();
+    let step = usize::try_from(HISTORY_MAX / 16).unwrap();
+    for depth in 1..=max_depth {
+        // A reduced move gives no check, so its child is never extended.
+        let child = depth - 1;
+        for index in 0..cadence_core::MAX_MOVES {
+            for history in (-HISTORY_MAX..=HISTORY_MAX).step_by(step) {
+                for (pv, cut) in [(false, false), (false, true), (true, false)] {
+                    let base = lmr_reduction(depth, index);
+                    let r =
+                        cut_node_reduction(pv_reduction(history_reduction(base, history), pv), cut);
+                    if r > 0 {
+                        assert!(
+                            reduced_depth(child, r) <= child,
+                            "depth {depth}, index {index}, history {history}, pv {pv}, cut {cut}: \
+                             reduced to {} from {child}",
+                            reduced_depth(child, r)
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

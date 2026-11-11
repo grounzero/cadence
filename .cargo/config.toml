@@ -57,5 +57,18 @@ rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt"]
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+neon"]
 
+# --- x86_64-pc-windows-msvc (the release a rating list is asked to rate, windows-latest CI) ------
+#
+# The Linux AVX2 set above, for the same reasons, and `+crt-static`, so the binary starts on a
+# machine with no Visual C++ runtime installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt,+crt-static"]
+
+# --- x86_64-apple-darwin (Intel macOS, macos-26-intel CI, the macos-x86-64 release) ----------
+#
+# The Linux AVX2 set above, for the same reasons. The generic tier is `.cargo/x86-64-generic.toml`.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt"]
+
 [alias]
-xtask = "run --quiet --manifest-path xtask/Cargo.toml --"
+xtask = "run --locked --quiet --manifest-path xtask/Cargo.toml --"

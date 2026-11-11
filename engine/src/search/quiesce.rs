@@ -46,12 +46,12 @@ impl Search<'_> {
             let generated_first = evasions.as_slice()[0];
             // The sort reads each noisy evasion's exchange once.
             let noisy = evasions.iter().filter(|m| m.is_noisy()).count();
-            self.evasion_exchanges.add(noisy as u64);
+            self.stats.evasion_exchanges.add(noisy as u64);
             picker::sort_evasions(board, &mut evasions);
             // The head is what a cutoff here is bought with.
-            self.evasion_lists.add_one();
+            self.stats.evasion_lists.add_one();
             if evasions.as_slice()[0] != generated_first {
-                self.evasion_lists_reordered.add_one();
+                self.stats.evasion_lists_reordered.add_one();
             }
             (evasions, -INFINITE)
         } else {
@@ -76,7 +76,7 @@ impl Search<'_> {
         };
 
         for m in moves.iter() {
-            self.quiescence_exchanges.add_if(!in_check);
+            self.stats.quiescence_exchanges.add_if(!in_check);
             // Out of check only: in check every move answers the check.
             if !in_check && !see::see_ge(board, m, 0) {
                 continue;
@@ -84,7 +84,7 @@ impl Search<'_> {
             board.make_move(m);
             let score = -self.quiesce(board, ply + 1, -beta, -alpha);
             board.unmake_move(m);
-            if self.aborted {
+            if self.run.aborted {
                 return ABORTED;
             }
             if score > best {

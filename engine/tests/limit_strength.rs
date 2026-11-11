@@ -106,23 +106,12 @@ fn nodes(out: &[String]) -> u64 {
         .unwrap_or_else(|| panic!("no nodes field in {out:?}"))
 }
 
-/// The root move of every line of the deepest iteration that reported one.
+/// The candidate set a level reports once its search ends, best first.
 fn candidate_moves(out: &[String]) -> Vec<String> {
-    let deepest = out
-        .iter()
-        .filter(|l| l.starts_with("info depth") && l.contains(" pv "))
-        .filter_map(|l| {
-            let parts: Vec<&str> = l.split_whitespace().collect();
-            let depth: u32 = parts.get(2)?.parse().ok()?;
-            let mv = l.split(" pv ").nth(1)?.split_whitespace().next()?;
-            Some((depth, mv.to_string()))
-        })
-        .collect::<Vec<_>>();
-    let max = deepest.iter().map(|(d, _)| *d).max().unwrap_or(0);
-    deepest
-        .into_iter()
-        .filter(|(d, _)| *d == max)
-        .map(|(_, mv)| mv)
+    out.iter()
+        .filter_map(|l| l.strip_prefix("info string candidate "))
+        .filter_map(|rest| rest.split_whitespace().nth(1))
+        .map(str::to_string)
         .collect()
 }
 
@@ -231,8 +220,8 @@ fn a_level_refuses_beside_more_than_one_thread() {
     );
     assert_eq!(
         candidate_moves(&out).len(),
-        1,
-        "a refused level still took the root's line count"
+        0,
+        "a refused level still reported a candidate set"
     );
 
     let mut threads_last: Vec<String> = on.to_vec();
@@ -349,6 +338,36 @@ fn a_level_reports_its_full_candidate_set_under_a_node_limit() {
                 "level {elo} reported a short candidate set on {fen}"
             );
         }
+    }
+}
+
+/// A level searches its candidates where the GUI asked for one line, so it prints one an iteration
+/// and the candidates as text, and the last main line it prints is the move it plays.
+#[test]
+fn a_level_prints_the_lines_asked_for_and_the_move_it_plays() {
+    let on = level_on(MIN_ELO);
+    for fen in FENS {
+        let out = search(fen, &as_refs(&on));
+        let lines: Vec<&String> = out
+            .iter()
+            .filter(|l| l.starts_with("info depth") && l.contains(" pv "))
+            .collect();
+        assert!(
+            lines.iter().all(|l| !l.contains(" multipv ")),
+            "{fen}: {out:?}"
+        );
+        let Some(last) = lines.last() else {
+            panic!("{fen}: no line in {out:?}");
+        };
+        let main = last
+            .split(" pv ")
+            .nth(1)
+            .and_then(|pv| pv.split_whitespace().next());
+        assert_eq!(main, Some(played(&out).as_str()), "{fen}: {out:?}");
+        assert!(
+            out.iter().any(|l| l.starts_with("info string candidate")),
+            "{fen}: {out:?}"
+        );
     }
 }
 

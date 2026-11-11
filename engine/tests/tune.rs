@@ -28,7 +28,7 @@ fn param(which: Tunable) -> &'static Param {
 }
 
 fn spsa(args: &[&str]) -> (String, Option<i32>) {
-    let out = Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = Command::new(support::binary())
         .arg("spsa")
         .args(args)
         .output()

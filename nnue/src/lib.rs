@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Empty, and holding the workspace's one `unsafe` exception.
+//! Reserved for the network's inference, and empty. It forbids `unsafe`, as every crate here does.
 
 #![no_std]
-#![deny(unsafe_op_in_unsafe_fn)]
+#![forbid(unsafe_code)]

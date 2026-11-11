@@ -272,10 +272,10 @@ fn castle_king_destination(m: Move) -> Square {
 }
 
 /// Matched against the legal list, which settles promotion, en passant, castling and illegality at
-/// once.
+/// once. Input outside ASCII is refused first, so the byte slicing below never splits a character.
 #[must_use]
 pub fn parse_uci(legal: &MoveList, s: &str) -> Option<Move> {
-    if s.len() != 4 && s.len() != 5 {
+    if !s.is_ascii() || (s.len() != 4 && s.len() != 5) {
         return None;
     }
     // The exact king-takes-rook spelling of any legal move wins.
@@ -314,10 +314,13 @@ impl MoveList {
         }
     }
 
+    /// A full list drops the move rather than writing past its end.
     #[inline]
     pub fn push(&mut self, m: Move) {
-        self.moves[self.len as usize] = m;
-        self.len += 1;
+        if let Some(slot) = self.moves.get_mut(self.len as usize) {
+            *slot = m;
+            self.len += 1;
+        }
     }
 
     #[must_use]
@@ -359,3 +362,52 @@ impl Default for MoveList {
 // `len` is `u16`: a `u8` would wrap to zero at 256.
 const _: () = assert!(size_of::<MoveList>() == 514);
 const _: () = assert!(align_of::<MoveList>() == 2);
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn square() -> Square {
+        let index: u8 = kani::any();
+        kani::assume(index < 64);
+        Square::new(index)
+    }
+
+    /// Each constructor's move gives back its squares and kind, and round-trips through its bits.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn a_move_decodes_to_what_built_it() {
+        let (from, to) = (square(), square());
+        let p = PromoPiece::ALL[usize::from(kani::any::<u8>() % 4)];
+        let moves = [
+            Move::new_quiet(from, to),
+            Move::new_double_push(from, to),
+            Move::new_capture(from, to),
+            Move::new_en_passant(from, to),
+            Move::new_castle(from, to),
+            Move::new_promotion(from, to, p),
+            Move::new_promotion_capture(from, to, p),
+        ];
+        for m in moves {
+            assert!(m.from_sq() == from && m.to_sq() == to);
+            assert!(Move::from_bits(m.to_bits()) == m);
+            assert!(from == to || !m.is_null());
+        }
+        let [
+            quiet,
+            double,
+            capture,
+            en_passant,
+            castle,
+            promotion,
+            promotion_capture,
+        ] = moves;
+        assert!(!quiet.is_noisy() && quiet.promotion_piece().is_none());
+        assert!(double.is_double_push() && !double.is_noisy());
+        assert!(capture.is_capture() && !capture.is_promotion() && !capture.is_en_passant());
+        assert!(en_passant.is_en_passant() && en_passant.is_capture());
+        assert!(castle.is_castle() && !castle.is_noisy());
+        assert!(!promotion.is_capture() && promotion.promotion_piece() == Some(p));
+        assert!(promotion_capture.is_capture() && promotion_capture.promotion_piece() == Some(p));
+    }
+}

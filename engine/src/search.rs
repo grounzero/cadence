@@ -4,15 +4,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Instant;
 
 use cadence_core::position::Board;
-use cadence_core::{MAX_MOVES, MAX_PLY, Move, MoveList};
+use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList};
 
 use crate::conthist::{ContinuationHistory, Frame};
 use crate::corrhist::CorrectionHistory;
 use crate::eval::PawnCache;
 use crate::history::History;
+use crate::level;
 use crate::picker::Slot;
 use crate::score::{ABORTED, Score};
-use crate::syzygy::Tables;
+use crate::syzygy::{Rank, Tables};
 use crate::time::{self, Budget};
 use crate::tt::{Bound, Table};
 use crate::tune::Tunables;
@@ -28,10 +29,11 @@ mod quiesce;
 mod report;
 mod root;
 
-use counters::Counter;
+use counters::Stats;
 pub use depth::{
     REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
-    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduction,
+    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduced_depth,
+    reduction,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;
@@ -103,6 +105,8 @@ pub struct Search<'a> {
     tables: Option<&'a Tables>,
     /// `None` where the root's ranking settled the result, so nothing below it probes.
     probing: Option<&'a Tables>,
+    /// What the tables read at the root, which the report prints in place of the search's score.
+    root_rank: Option<Rank>,
     /// Spelling in `info` lines only.
     chess960: bool,
     /// `bench` builds its own searches, so it never sees a setting.
@@ -110,47 +114,21 @@ pub struct Search<'a> {
     /// Zero only where a gate compares against a search with no table, every node of which lacks a
     /// table move.
     iir_plies: u32,
-    nodes: u64,
     /// `None` on the single-thread path, where `bench` runs and node counts are exact.
     shared_nodes: Option<(&'a [AtomicU64], usize)>,
     /// A helper rotates its root list by this much, the group's only explicit divergence: measured
     /// at 8 to 12 percent of time to depth at 4 to 16 threads.
     worker_index: usize,
-    start: Instant,
-    /// `None`: the clock is never read.
-    budget: Option<Budget>,
-    /// What the search is doing now; `limits.ponder` records what the `go` asked.
-    pondering: bool,
-    /// Derived up front: the hit is absorbed where no board is at hand.
-    budget_on_hit: Option<Budget>,
-    /// The iteration's partial result is discarded unless it is the first.
-    aborted: bool,
-    completed_depth: u32,
-    best: Move,
-    score: Score,
-    /// Of the last completed iteration.
-    pv: Vec<Move>,
-    /// Read by nothing that decides anything.
-    seldepth: usize,
+    clock: Clock,
+    run: Run,
     table: PvTable,
-    killers: [[Move; 2]; MAX_PLY],
+    heuristics: Heuristics,
     /// The picker's buffer, one row per ply, allocated once so that no node clears one.
     slots: Box<[[Slot; MAX_MOVES]]>,
-    /// On the heap: `Search` is returned by value.
-    history: History,
-    conthist: ContinuationHistory,
-    /// The move made at each ply of the current path, which the continuation history reads back.
-    frames: [Frame; MAX_PLY],
-    corrhist: CorrectionHistory,
     /// Kept across runs, which its verification makes safe: a stale entry can only miss.
     pawns: PawnCache,
-    /// Read on no decision path.
-    corrhist_updates: Counter,
-    corrhist_applied: Counter,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
-    /// `None` in check: a position under attack has no quiet reading worth comparing.
-    evals: [Option<Score>; MAX_PLY],
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
     /// The move made at each ply of the current path, which each call's entry takes.
@@ -162,62 +140,13 @@ pub struct Search<'a> {
     /// How the next call's kind was derived, which that call's entry takes.
     #[cfg(debug_assertions)]
     asked: Option<(Expected, Via)>,
-    /// These counters are read on no decision path, so a depth-limited search stays a function of
-    /// the code.
-    null_attempts: Counter,
-    null_cutoffs: Counter,
-    /// Lets the zugzwang gate see the refusal decide, not merely no null move.
-    null_refused_material: Counter,
-    lmr_reductions: Counter,
-    lmr_researches: Counter,
-    lmr_pv_lessened: Counter,
-    lmr_cut_reduced_more: Counter,
-    lmr_losing_captures: Counter,
-    /// Two, so a gate can tell a table that only credits from one that also debits.
-    history_reduced_less: Counter,
-    history_reduced_more: Counter,
-    history_debits: Counter,
-    /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
-    /// move skipped.
-    continuation_credits: Counter,
-    continuation_debits: Counter,
-    continuation_absent: Counter,
-    /// The check-exemption count lets a gate see the exemption decide.
-    futility_nodes: Counter,
-    futility_skipped: Counter,
-    futility_kept_check: Counter,
-    /// What this rule adds over the margin, which is asked first.
-    lmp_nodes: Counter,
-    lmp_skipped: Counter,
-    lmp_kept_check: Counter,
-    /// The refusal count lets a gate see the full-window refusal decide.
-    reverse_futility_cutoffs: Counter,
-    reverse_futility_refused_window: Counter,
-    probcut_attempts: Counter,
-    probcut_searches: Counter,
-    probcut_cutoffs: Counter,
-    probcut_refused_window: Counter,
-    iir_nodes: Counter,
-    /// The first shows the in-check horizon is reached, without which the second proves nothing.
-    evasion_lists: Counter,
-    evasion_lists_reordered: Counter,
-    /// With the picker's own count, one for each place an exchange is read, so a gate can account
-    /// for every read.
-    probcut_exchanges: Counter,
-    quiescence_exchanges: Counter,
-    evasion_exchanges: Counter,
-    /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
-    iterations: Vec<u64>,
-    /// Kept under every limit: it costs no clock read and decides nothing.
-    roots: Vec<(Move, Score)>,
+    stats: Stats,
     multipv: usize,
+    /// How many of those lines an iteration prints, since a level searches more than the GUI asked
+    /// to see.
+    shown: usize,
     /// `go searchmoves`: the root searches only these, and every move where it is empty.
     root_filter: Vec<Move>,
-    /// Best first once the iteration is accepted.
-    lines: Vec<RootLine>,
-    /// What a level samples among; separate from `lines`, which an aborted iteration leaves
-    /// partial.
-    accepted: Vec<RootLine>,
 }
 
 /// Owns its pv: a second search of the root overwrites the table's.
@@ -225,6 +154,147 @@ struct RootLine {
     mv: Move,
     score: Score,
     pv: Vec<Move>,
+}
+
+/// What a run learns, and the per-ply stacks it learns from, cleared together in `begin` so a
+/// reused search starts where a fresh one would.
+struct Heuristics {
+    killers: [[Move; 2]; MAX_PLY],
+    /// On the heap: `Search` is returned by value.
+    history: History,
+    conthist: ContinuationHistory,
+    /// The move made at each ply of the current path, which the continuation history reads back.
+    frames: [Frame; MAX_PLY],
+    corrhist: CorrectionHistory,
+    /// `None` in check: a position under attack has no quiet reading worth comparing.
+    evals: [Option<Score>; MAX_PLY],
+}
+
+impl Heuristics {
+    fn new() -> Self {
+        Heuristics {
+            killers: [[Move::NULL; 2]; MAX_PLY],
+            history: History::new(),
+            conthist: ContinuationHistory::new(),
+            frames: [None; MAX_PLY],
+            corrhist: CorrectionHistory::new(),
+            evals: [None; MAX_PLY],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.killers = [[Move::NULL; 2]; MAX_PLY];
+        self.history.clear();
+        self.conthist.clear();
+        self.frames = [None; MAX_PLY];
+        self.evals = [None; MAX_PLY];
+        self.corrhist.clear();
+    }
+}
+
+/// What one run finds and spends, from its node count to the lists it reports from, cleared in
+/// `begin`.
+struct Run {
+    nodes: u64,
+    /// The iteration's partial result is discarded unless it is the first.
+    aborted: bool,
+    completed_depth: u32,
+    best: Move,
+    score: Score,
+    /// Of the last completed iteration.
+    pv: Vec<Move>,
+    /// Read by nothing that decides anything.
+    seldepth: usize,
+    /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
+    iterations: Vec<u64>,
+    /// Kept under every limit: it costs no clock read and decides nothing.
+    roots: Vec<(Move, Score)>,
+    /// Best first once the iteration is accepted.
+    lines: Vec<RootLine>,
+    /// What a level samples among; separate from `lines`, which an aborted iteration leaves
+    /// partial.
+    accepted: Vec<RootLine>,
+}
+
+impl Run {
+    fn new() -> Self {
+        Run {
+            nodes: 0,
+            aborted: false,
+            completed_depth: 0,
+            best: Move::NULL,
+            score: ABORTED,
+            pv: Vec::with_capacity(MAX_PLY),
+            seldepth: 0,
+            iterations: Vec::new(),
+            roots: Vec::new(),
+            lines: Vec::new(),
+            accepted: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.nodes = 0;
+        self.aborted = false;
+        self.completed_depth = 0;
+        self.best = Move::NULL;
+        self.score = ABORTED;
+        self.pv.clear();
+        self.seldepth = 0;
+        self.iterations.clear();
+        self.roots.clear();
+        self.lines.clear();
+        self.accepted.clear();
+    }
+}
+
+/// The run's clock, started in `begin` from the origin a `go` left and budgeted from its limits.
+struct Clock {
+    start: Instant,
+    /// Where the run began, which a `ponderhit` leaves where it is: the reported `time` counts from
+    /// here, as `nodes` does.
+    reported_from: Instant,
+    /// When the `go` was read, so the work before the search starts is spent from the clock too;
+    /// taken by the next run.
+    origin: Option<Instant>,
+    /// `None`: the clock is never read.
+    budget: Option<Budget>,
+    /// What the search is doing now; `limits.ponder` records what the `go` asked.
+    pondering: bool,
+    /// Derived up front: the hit is absorbed where no board is at hand.
+    budget_on_hit: Option<Budget>,
+    /// From a hit absorbed inside an iteration until that or a later one completes: it began with
+    /// no budget and rarely finishes in the one the hit brings, so the soft budget ends it.
+    unbudgeted_iteration: bool,
+}
+
+impl Clock {
+    fn new() -> Self {
+        let now = Instant::now();
+        Clock {
+            start: now,
+            reported_from: now,
+            origin: None,
+            budget: None,
+            pondering: false,
+            budget_on_hit: None,
+            unbudgeted_iteration: false,
+        }
+    }
+
+    /// The origin first, then both budgets, from the limits and the side to move.
+    fn begin(&mut self, limits: &Limits, us: Colour) {
+        self.start = self.origin.take().unwrap_or_else(Instant::now);
+        self.reported_from = self.start;
+        self.pondering = limits.ponder;
+        self.unbudgeted_iteration = false;
+        self.budget = if limits.infinite {
+            None
+        } else {
+            time::budget(limits, us)
+        };
+        self.budget_on_hit = time::hit_budget(limits, us);
+    }
 }
 
 impl<'a> Search<'a> {
@@ -237,34 +307,19 @@ impl<'a> Search<'a> {
             tt,
             tables: None,
             probing: None,
+            root_rank: None,
             chess960: false,
             tunables: Tunables::DEFAULT,
             iir_plies: depth::IIR_REDUCTION,
-            nodes: 0,
             shared_nodes: None,
             worker_index: 0,
-            start: Instant::now(),
-            budget: None,
-            pondering: false,
-            budget_on_hit: None,
-            aborted: false,
-            completed_depth: 0,
-            best: Move::NULL,
-            score: ABORTED,
-            pv: Vec::with_capacity(MAX_PLY),
-            seldepth: 0,
+            clock: Clock::new(),
+            run: Run::new(),
             table: PvTable::new(),
-            killers: [[Move::NULL; 2]; MAX_PLY],
+            heuristics: Heuristics::new(),
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
-            history: History::new(),
-            conthist: ContinuationHistory::new(),
-            frames: [None; MAX_PLY],
-            corrhist: CorrectionHistory::new(),
             pawns: PawnCache::new(),
-            corrhist_updates: Counter::ZERO,
-            corrhist_applied: Counter::ZERO,
             root_depth: 0,
-            evals: [None; MAX_PLY],
             tt_pv: [false; MAX_PLY],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
@@ -272,49 +327,20 @@ impl<'a> Search<'a> {
             calls: None,
             #[cfg(debug_assertions)]
             asked: None,
-            null_attempts: Counter::ZERO,
-            null_cutoffs: Counter::ZERO,
-            null_refused_material: Counter::ZERO,
-            lmr_reductions: Counter::ZERO,
-            lmr_researches: Counter::ZERO,
-            lmr_pv_lessened: Counter::ZERO,
-            lmr_cut_reduced_more: Counter::ZERO,
-            lmr_losing_captures: Counter::ZERO,
-            history_reduced_less: Counter::ZERO,
-            history_reduced_more: Counter::ZERO,
-            history_debits: Counter::ZERO,
-            continuation_credits: Counter::ZERO,
-            continuation_debits: Counter::ZERO,
-            continuation_absent: Counter::ZERO,
-            futility_nodes: Counter::ZERO,
-            futility_skipped: Counter::ZERO,
-            futility_kept_check: Counter::ZERO,
-            lmp_nodes: Counter::ZERO,
-            lmp_skipped: Counter::ZERO,
-            lmp_kept_check: Counter::ZERO,
-            reverse_futility_cutoffs: Counter::ZERO,
-            reverse_futility_refused_window: Counter::ZERO,
-            probcut_attempts: Counter::ZERO,
-            probcut_searches: Counter::ZERO,
-            probcut_cutoffs: Counter::ZERO,
-            probcut_refused_window: Counter::ZERO,
-            iir_nodes: Counter::ZERO,
-            evasion_lists: Counter::ZERO,
-            evasion_lists_reordered: Counter::ZERO,
-            probcut_exchanges: Counter::ZERO,
-            quiescence_exchanges: Counter::ZERO,
-            evasion_exchanges: Counter::ZERO,
-            iterations: Vec::new(),
-            roots: Vec::new(),
+            stats: Stats::default(),
             multipv: 1,
+            shown: 1,
             root_filter: Vec::new(),
-            lines: Vec::new(),
-            accepted: Vec::new(),
         }
     }
 
     pub fn set_limits(&mut self, limits: Limits) {
         self.limits = limits;
+    }
+
+    /// The clock the next run spends from, where it started before the run did.
+    pub fn set_clock_origin(&mut self, origin: Instant) {
+        self.clock.origin = Some(origin);
     }
 
     /// Without one, a `go ponder` still waits for `stop`.
@@ -333,11 +359,20 @@ impl<'a> Search<'a> {
 
     pub fn set_multipv(&mut self, n: usize) {
         self.multipv = n.max(1);
+        self.shown = self.multipv;
     }
 
-    /// For the gates alone: no UCI option and no `bench` path reaches it.
+    /// The GUI's `MultiPV`, which is what an iteration prints, and the level, whose candidates the
+    /// root searches however few the GUI asked to see.
+    pub fn set_lines(&mut self, shown: usize, level: Option<level::Policy>) {
+        self.multipv = level.map_or(shown, |policy| policy.candidates).max(1);
+        self.shown = shown.clamp(1, self.multipv);
+    }
+
+    /// For the gates alone: no UCI option and no `bench` path reaches it. Held below the
+    /// shallowest depth the rule reduces, so a shortened node always keeps a ply.
     pub fn set_iir_reduction(&mut self, plies: u32) {
-        self.iir_plies = plies;
+        self.iir_plies = plies.min(depth::IIR_DEPTH - 1);
     }
 
     /// For the gates alone, in a debug build: every call into the main search from here on is
@@ -360,77 +395,24 @@ impl<'a> Search<'a> {
         self.probing = (!decided).then_some(tables);
     }
 
+    /// Changes what the report prints and nothing the search decides.
+    pub fn set_root_rank(&mut self, rank: Option<Rank>) {
+        self.root_rank = rank;
+    }
+
     /// From the next run on; a move not legal at the root is never searched.
     pub fn set_root_filter(&mut self, moves: &[Move]) {
         self.root_filter = moves.to_vec();
     }
 
-    /// The clock origin is set here and moved only by a `ponderhit`.
+    /// The clock origin is set here and moved only by a `ponderhit`. The settings, the pawn cache
+    /// and the scratch rows outlive a run, and every other field is reset here or written before it
+    /// is read.
     fn begin(&mut self, board: &Board) {
-        self.start = Instant::now();
-        self.nodes = 0;
-        self.aborted = false;
-        self.completed_depth = 0;
-        self.best = Move::NULL;
-        self.pv.clear();
-        self.seldepth = 0;
-        self.killers = [[Move::NULL; 2]; MAX_PLY];
-        self.history.clear();
-        self.conthist.clear();
-        self.frames = [None; MAX_PLY];
-        self.evals = [None; MAX_PLY];
-        self.null_attempts = Counter::ZERO;
-        self.null_cutoffs = Counter::ZERO;
-        self.null_refused_material = Counter::ZERO;
-        self.lmr_reductions = Counter::ZERO;
-        self.lmr_researches = Counter::ZERO;
-        self.lmr_pv_lessened = Counter::ZERO;
-        self.lmr_cut_reduced_more = Counter::ZERO;
-        self.lmr_losing_captures = Counter::ZERO;
-        self.history_reduced_less = Counter::ZERO;
-        self.history_reduced_more = Counter::ZERO;
-        self.history_debits = Counter::ZERO;
-        self.continuation_credits = Counter::ZERO;
-        self.continuation_debits = Counter::ZERO;
-        self.continuation_absent = Counter::ZERO;
-        self.corrhist.clear();
-        self.corrhist_updates = Counter::ZERO;
-        self.corrhist_applied = Counter::ZERO;
-        self.futility_nodes = Counter::ZERO;
-        self.futility_skipped = Counter::ZERO;
-        self.futility_kept_check = Counter::ZERO;
-        self.lmp_nodes = Counter::ZERO;
-        self.lmp_skipped = Counter::ZERO;
-        self.lmp_kept_check = Counter::ZERO;
-        self.reverse_futility_cutoffs = Counter::ZERO;
-        self.reverse_futility_refused_window = Counter::ZERO;
-        self.probcut_attempts = Counter::ZERO;
-        self.probcut_searches = Counter::ZERO;
-        self.probcut_cutoffs = Counter::ZERO;
-        self.probcut_refused_window = Counter::ZERO;
-        self.iir_nodes = Counter::ZERO;
-        self.evasion_lists = Counter::ZERO;
-        self.evasion_lists_reordered = Counter::ZERO;
-        self.probcut_exchanges = Counter::ZERO;
-        self.quiescence_exchanges = Counter::ZERO;
-        self.evasion_exchanges = Counter::ZERO;
-        self.iterations.clear();
-        self.roots.clear();
-        self.lines.clear();
-        self.accepted.clear();
-        self.pondering = self.limits.ponder;
-        self.budget = if self.limits.infinite {
-            None
-        } else {
-            time::budget(&self.limits, board.side_to_move())
-        };
-        self.budget_on_hit = if self.pondering {
-            let mut clocked = self.limits;
-            clocked.ponder = false;
-            time::budget(&clocked, board.side_to_move())
-        } else {
-            None
-        };
+        self.clock.begin(&self.limits, board.side_to_move());
+        self.run.clear();
+        self.heuristics.clear();
+        self.stats = Stats::default();
     }
 
     /// The table, the stop flag and the node slots are all a group shares.

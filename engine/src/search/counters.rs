@@ -17,18 +17,13 @@ use crate::tt::Bound;
 
 /// A count only tests read, kept by the `counters` feature and compiled to nothing without it.
 /// Nothing on a decision path reads one, so a search is the same with the feature as without.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct Counter {
     #[cfg(feature = "counters")]
     n: u64,
 }
 
 impl Counter {
-    pub(super) const ZERO: Counter = Counter {
-        #[cfg(feature = "counters")]
-        n: 0,
-    };
-
     #[inline(always)]
     pub(super) fn add_one(&mut self) {
         self.add(1);
@@ -60,82 +55,132 @@ impl Counter {
     }
 }
 
+/// Every count the search keeps for its gates, each read on no decision path, so a
+/// depth-limited search stays a function of the code.
+#[derive(Default)]
+pub(super) struct Stats {
+    pub(super) corrhist_updates: Counter,
+    pub(super) corrhist_applied: Counter,
+    pub(super) null_attempts: Counter,
+    pub(super) null_cutoffs: Counter,
+    /// Lets the zugzwang gate see the refusal decide, not merely no null move.
+    pub(super) null_refused_material: Counter,
+    pub(super) lmr_reductions: Counter,
+    pub(super) lmr_researches: Counter,
+    pub(super) lmr_pv_lessened: Counter,
+    pub(super) lmr_cut_reduced_more: Counter,
+    pub(super) lmr_losing_captures: Counter,
+    /// Two, so a gate can tell a table that only credits from one that also debits.
+    pub(super) history_reduced_less: Counter,
+    pub(super) history_reduced_more: Counter,
+    pub(super) history_debits: Counter,
+    /// As the butterfly's, and the reads that found no frame, so a gate sees the root and the null
+    /// move skipped.
+    pub(super) continuation_credits: Counter,
+    pub(super) continuation_debits: Counter,
+    pub(super) continuation_absent: Counter,
+    /// The check-exemption count lets a gate see the exemption decide.
+    pub(super) futility_nodes: Counter,
+    pub(super) futility_skipped: Counter,
+    pub(super) futility_kept_check: Counter,
+    /// What this rule adds over the margin, which is asked first.
+    pub(super) lmp_nodes: Counter,
+    pub(super) lmp_skipped: Counter,
+    pub(super) lmp_kept_check: Counter,
+    /// The refusal count lets a gate see the full-window refusal decide.
+    pub(super) reverse_futility_cutoffs: Counter,
+    pub(super) reverse_futility_refused_window: Counter,
+    pub(super) probcut_attempts: Counter,
+    pub(super) probcut_searches: Counter,
+    pub(super) probcut_cutoffs: Counter,
+    pub(super) probcut_refused_window: Counter,
+    pub(super) iir_nodes: Counter,
+    /// The first shows the in-check horizon is reached, without which the second proves nothing.
+    pub(super) evasion_lists: Counter,
+    pub(super) evasion_lists_reordered: Counter,
+    /// With the picker's own count, one for each place an exchange is read, so a gate can account
+    /// for every read.
+    pub(super) probcut_exchanges: Counter,
+    pub(super) quiescence_exchanges: Counter,
+    pub(super) evasion_exchanges: Counter,
+}
+
 impl Search<'_> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
-        self.nodes
+        self.run.nodes
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_attempts(&self) -> u64 {
-        self.null_attempts.get()
+        self.stats.null_attempts.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_cutoffs(&self) -> u64 {
-        self.null_cutoffs.get()
+        self.stats.null_cutoffs.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn null_refused_by_material(&self) -> u64 {
-        self.null_refused_material.get()
+        self.stats.null_refused_material.get()
     }
 
     /// Late moves first searched at reduced depth.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_reductions(&self) -> u64 {
-        self.lmr_reductions.get()
+        self.stats.lmr_reductions.get()
     }
 
     /// Reduced searches that beat alpha and were re-run at full depth.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_researches(&self) -> u64 {
-        self.lmr_researches.get()
+        self.stats.lmr_researches.get()
     }
 
     /// Late moves at PV nodes whose reduction the PV term lowered.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_pv_lessened(&self) -> u64 {
-        self.lmr_pv_lessened.get()
+        self.stats.lmr_pv_lessened.get()
     }
 
     /// Late moves at expected cut nodes whose reduction the cut-node term raised.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_cut_reduced_more(&self) -> u64 {
-        self.lmr_cut_reduced_more.get()
+        self.stats.lmr_cut_reduced_more.get()
     }
 
     /// Losing captures given a reduction before the PV term.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmr_losing_captures(&self) -> u64 {
-        self.lmr_losing_captures.get()
+        self.stats.lmr_losing_captures.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_reduced_less(&self) -> u64 {
-        self.history_reduced_less.get()
+        self.stats.history_reduced_less.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_reduced_more(&self) -> u64 {
-        self.history_reduced_more.get()
+        self.stats.history_reduced_more.get()
     }
 
     /// Quiet moves the cutoffs debited.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn history_debits(&self) -> u64 {
-        self.history_debits.get()
+        self.stats.history_debits.get()
     }
 
     /// Nodes the margin admitted; its siblings count the quiet moves skipped there and the skips
@@ -143,25 +188,25 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_nodes(&self) -> u64 {
-        self.futility_nodes.get()
+        self.stats.futility_nodes.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_skipped(&self) -> u64 {
-        self.futility_skipped.get()
+        self.stats.futility_skipped.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn futility_kept_check(&self) -> u64 {
-        self.futility_kept_check.get()
+        self.stats.futility_kept_check.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
-        self.lmp_nodes.get()
+        self.stats.lmp_nodes.get()
     }
 
     /// Observations folded into the correction table, and nodes that read a non-zero correction
@@ -169,38 +214,38 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn corrhist_updates(&self) -> u64 {
-        self.corrhist_updates.get()
+        self.stats.corrhist_updates.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn corrhist_applied(&self) -> u64 {
-        self.corrhist_applied.get()
+        self.stats.corrhist_applied.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_skipped(&self) -> u64 {
-        self.lmp_skipped.get()
+        self.stats.lmp_skipped.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn lmp_kept_check(&self) -> u64 {
-        self.lmp_kept_check.get()
+        self.stats.lmp_kept_check.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn reverse_futility_cutoffs(&self) -> u64 {
-        self.reverse_futility_cutoffs.get()
+        self.stats.reverse_futility_cutoffs.get()
     }
 
     /// Nodes the margin would have returned but for the full window.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn reverse_futility_refused_by_window(&self) -> u64 {
-        self.reverse_futility_refused_window.get()
+        self.stats.reverse_futility_refused_window.get()
     }
 
     /// Nodes that ran the capture probe, captures it searched at reduced depth, and those that cut
@@ -208,64 +253,64 @@ impl Search<'_> {
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_attempts(&self) -> u64 {
-        self.probcut_attempts.get()
+        self.stats.probcut_attempts.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_searches(&self) -> u64 {
-        self.probcut_searches.get()
+        self.stats.probcut_searches.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_cutoffs(&self) -> u64 {
-        self.probcut_cutoffs.get()
+        self.stats.probcut_cutoffs.get()
     }
 
     /// Probes refused for the full window.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_refused_by_window(&self) -> u64 {
-        self.probcut_refused_window.get()
+        self.stats.probcut_refused_window.get()
     }
 
     /// Nodes searched shallower because their table probe named no move.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn iir_nodes(&self) -> u64 {
-        self.iir_nodes.get()
+        self.stats.iir_nodes.get()
     }
 
     /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_lists(&self) -> u64 {
-        self.evasion_lists.get()
+        self.stats.evasion_lists.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_lists_reordered(&self) -> u64 {
-        self.evasion_lists_reordered.get()
+        self.stats.evasion_lists_reordered.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn probcut_exchanges(&self) -> u64 {
-        self.probcut_exchanges.get()
+        self.stats.probcut_exchanges.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn quiescence_exchanges(&self) -> u64 {
-        self.quiescence_exchanges.get()
+        self.stats.quiescence_exchanges.get()
     }
 
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn evasion_exchanges(&self) -> u64 {
-        self.evasion_exchanges.get()
+        self.stats.evasion_exchanges.get()
     }
 
     /// Since the `Search` was built, not since the run: the cache is kept across runs.
@@ -283,54 +328,55 @@ impl Search<'_> {
 
     #[must_use]
     pub fn history(&self) -> &History {
-        &self.history
+        &self.heuristics.history
     }
 
     #[must_use]
     pub fn continuation(&self) -> &ContinuationHistory {
-        &self.conthist
+        &self.heuristics.conthist
     }
 
     /// Continuation entries the cutoffs credited.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_credits(&self) -> u64 {
-        self.continuation_credits.get()
+        self.stats.continuation_credits.get()
     }
 
     /// Continuation entries the cutoffs debited.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_debits(&self) -> u64 {
-        self.continuation_debits.get()
+        self.stats.continuation_debits.get()
     }
 
     /// Offsets a node found no frame for, above the root or below a null move.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn continuation_absent(&self) -> u64 {
-        self.continuation_absent.get()
+        self.stats.continuation_absent.get()
     }
 
     /// Elapsed milliseconds at the end of each completed iteration.
     #[must_use]
     pub fn iterations_ms(&self) -> &[u64] {
-        &self.iterations
+        &self.run.iterations
     }
 
     #[must_use]
     pub fn iteration_roots(&self) -> &[(Move, Score)] {
-        &self.roots
+        &self.run.roots
     }
 
     /// Completed iterations in a row ending on the last one's move, counting it. Derived from
     /// [`Search::iteration_roots`], so the two cannot disagree.
     #[must_use]
     pub fn stable_iterations(&self) -> usize {
-        let Some(&(last, _)) = self.roots.last() else {
+        let Some(&(last, _)) = self.run.roots.last() else {
             return 0;
         };
-        self.roots
+        self.run
+            .roots
             .iter()
             .rev()
             .take_while(|&&(m, _)| m == last)
@@ -340,18 +386,18 @@ impl Search<'_> {
     /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {
-        self.completed_depth
+        self.run.completed_depth
     }
 
     /// From the side to move's point of view.
     #[must_use]
     pub fn score(&self) -> Score {
-        self.score
+        self.run.score
     }
 
     #[must_use]
     pub fn pv(&self) -> &[Move] {
-        &self.pv
+        &self.run.pv
     }
 
     #[must_use]
@@ -359,16 +405,43 @@ impl Search<'_> {
         &self.limits
     }
 
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn tunables(&self) -> &crate::tune::Tunables {
+        &self.tunables
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn root_filter(&self) -> &[Move] {
+        &self.root_filter
+    }
+
+    /// Whether a node below the root probes the tables.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn probes(&self) -> bool {
+        self.probing.is_some()
+    }
+
     #[must_use]
     pub fn stop_requested(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
 
+    /// Before the PV term changes `base`, so it counts the term deciding and not the ply delivered.
+    #[inline]
+    pub(super) fn count_lmr_losing_capture(&mut self, base: u32, m: Move) {
+        self.stats
+            .lmr_losing_captures
+            .add_if(base > 0 && m.is_noisy());
+    }
+
     #[inline]
     pub(super) fn visit(&mut self, ply: usize) {
-        self.nodes += 1;
-        self.seldepth = self.seldepth.max(ply);
-        if self.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
+        self.run.nodes += 1;
+        self.run.seldepth = self.run.seldepth.max(ply);
+        if self.run.nodes & (NODE_PUBLISH_INTERVAL - 1) == 0 {
             self.publish_nodes();
         }
     }
@@ -385,14 +458,17 @@ impl Search<'_> {
         if in_check {
             return None;
         }
-        let correction = self.corrhist.correction(pawn_key, side);
-        self.corrhist_applied.add_if(correction != 0);
+        let correction = self.heuristics.corrhist.correction(pawn_key, side);
+        self.stats.corrhist_applied.add_if(correction != 0);
         Some(eval::evaluate_cached(board, &mut self.pawns) + correction)
     }
 
     /// Disqualified: no static reading, a decided score, a noisy or absent best move, or a bound
     /// pointing against the difference.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing the pawn key and side measured +0.23% faster than reading them from the board (pull request 231 timing, 2026-11-08)"
+    )]
     pub(super) fn remember_correction(
         &mut self,
         pawn_key: u64,
@@ -403,7 +479,7 @@ impl Search<'_> {
         bound: Bound,
         depth: u32,
     ) {
-        let Some(eval) = self.evals[ply] else {
+        let Some(eval) = self.heuristics.evals[ply] else {
             return;
         };
         if score::is_decisive(best) || best_move == Move::NULL || best_move.is_noisy() {
@@ -415,8 +491,10 @@ impl Search<'_> {
             Bound::Upper => best < eval,
         };
         if usable {
-            self.corrhist.update(pawn_key, side, best - eval, depth);
-            self.corrhist_updates.add_one();
+            self.heuristics
+                .corrhist
+                .update(pawn_key, side, best - eval, depth);
+            self.stats.corrhist_updates.add_one();
         }
     }
 
@@ -437,30 +515,37 @@ impl Search<'_> {
             return;
         }
         let us = board.side_to_move();
-        let contexts = OFFSETS.map(|offset| conthist::context(&self.frames, ply, offset));
+        let contexts =
+            OFFSETS.map(|offset| conthist::context(&self.heuristics.frames, ply, offset));
         let bonus = history::bonus(depth);
-        self.history.update(us, cut, bonus);
+        self.heuristics.history.update(us, cut, bonus);
         let cut_to = conthist::piece_to(board, cut);
         for &context in contexts.iter().flatten() {
-            self.conthist.update(context, cut_to, bonus);
-            self.continuation_credits.add_one();
+            self.heuristics.conthist.update(context, cut_to, bonus);
+            self.stats.continuation_credits.add_one();
         }
         for (i, &beaten) in passed.iter().enumerate() {
             if beaten.is_noisy() || !searched.contains(i) {
                 continue;
             }
-            self.history_debits.add_one();
-            self.history.update(us, beaten, -bonus);
+            self.stats.history_debits.add_one();
+            self.heuristics.history.update(us, beaten, -bonus);
             let beaten_to = conthist::piece_to(board, beaten);
             for &context in contexts.iter().flatten() {
-                self.conthist.update(context, beaten_to, -bonus);
-                self.continuation_debits.add_one();
+                self.heuristics.conthist.update(context, beaten_to, -bonus);
+                self.stats.continuation_debits.add_one();
             }
         }
     }
 
     pub(super) fn elapsed_ms(&self) -> u64 {
-        u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+        u64::try_from(self.clock.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// From the run's start, where a `ponderhit` moves only the budget's origin, so a rate over it
+    /// divides the nodes by the time they took.
+    pub(super) fn reported_ms(&self) -> u64 {
+        u64::try_from(self.clock.reported_from.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     /// The group's where one is watching: the siblings' counts from their slots, this worker's
@@ -468,11 +553,11 @@ impl Search<'_> {
     #[inline]
     pub(super) fn reported_nodes(&self) -> u64 {
         let Some((nodes, worker_index)) = self.shared_nodes else {
-            return self.nodes;
+            return self.run.nodes;
         };
         nodes.iter().enumerate().fold(0, |total, (index, nodes)| {
             total.saturating_add(if index == worker_index {
-                self.nodes
+                self.run.nodes
             } else {
                 nodes.load(Ordering::Relaxed)
             })
@@ -484,7 +569,7 @@ impl Search<'_> {
     #[inline]
     pub(super) fn publish_nodes(&self) {
         if let Some((nodes, worker_index)) = self.shared_nodes {
-            nodes[worker_index].store(self.nodes, Ordering::Relaxed);
+            nodes[worker_index].store(self.run.nodes, Ordering::Relaxed);
         }
     }
 }
@@ -514,7 +599,7 @@ mod tests {
         slots[3].store(3, Ordering::Relaxed);
 
         let mut search = Search::new(&stop, &tt);
-        search.nodes = 7;
+        search.run.nodes = 7;
         assert_eq!(
             search.reported_nodes(),
             7,
@@ -550,19 +635,19 @@ mod tests {
         searched.set(0);
         // Any two rows, as the moves one and two plies above the node.
         let contexts = [200, 100];
-        search.frames[..2].copy_from_slice(&contexts.map(Some));
+        search.heuristics.frames[..2].copy_from_slice(&contexts.map(Some));
         search.remember_history(&board, 2, &[tried, given_up, cutter], 2, &searched, 6);
 
         let bonus = history::bonus(6);
         let side = board.side_to_move();
         for (m, expected) in [(tried, -bonus), (given_up, 0), (cutter, bonus)] {
             assert_eq!(
-                search.history.get(side, m),
+                search.heuristics.history.get(side, m),
                 expected,
                 "the butterfly, {m:?}"
             );
             for context in contexts {
-                let entry = search.conthist.row(context)[conthist::piece_to(&board, m)];
+                let entry = search.heuristics.conthist.row(context)[conthist::piece_to(&board, m)];
                 assert_eq!(i32::from(entry), expected, "row {context}, {m:?}");
             }
         }

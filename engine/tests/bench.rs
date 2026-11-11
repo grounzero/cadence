@@ -131,7 +131,7 @@ fn last_line(out: &str) -> (u64, u64) {
 }
 
 fn run_binary() -> String {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cadence"))
+    let out = std::process::Command::new(support::binary())
         .arg("bench")
         .output()
         .expect("run cadence bench");

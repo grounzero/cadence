@@ -11,7 +11,7 @@ use cadence_core::{
 use super::Call;
 use super::depth::{
     cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
-    null_reduction, pv_reduction, reduction,
+    null_reduction, pv_reduction, reduced_depth, reduction,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -64,7 +64,7 @@ impl Search<'_> {
         // So the extension cap reads this depth, not what the last iteration left, and no frame or
         // flag is read from an earlier run.
         self.root_depth = depth;
-        self.frames.fill(None);
+        self.heuristics.frames.fill(None);
         self.tt_pv.fill(false);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
@@ -113,7 +113,7 @@ impl Search<'_> {
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
         let us_eval = board.side_to_move();
-        self.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
+        self.heuristics.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -150,13 +150,13 @@ impl Search<'_> {
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts.
-        let futile = futile_node(self.evals[ply], depth, alpha);
-        self.futility_nodes.add_if(futile);
+        let futile = futile_node(self.heuristics.evals[ply], depth, alpha);
+        self.stats.futility_nodes.add_if(futile);
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
         // asked first keeps the moves it takes.
         let give_up = lmp_index(&self.tunables, in_check, pv, depth, legal.len());
-        self.lmp_nodes.add_if(give_up.is_some());
+        self.stats.lmp_nodes.add_if(give_up.is_some());
 
         let original_alpha = alpha;
         alpha = alpha.max(tb.0);
@@ -186,17 +186,17 @@ impl Search<'_> {
             } else {
                 // The index decides whether to reduce, the history score by how much.
                 let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
-                self.lmr_losing_captures.add_if(base > 0 && m.is_noisy());
-                let history = move_history(m, self.history.get(us, m));
+                self.count_lmr_losing_capture(base, m);
+                let history = move_history(m, self.heuristics.history.get(us, m));
                 self.late_move(board, child, base, history, ply, alpha, pv, kind)
             };
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
-            if i > 0 && !self.aborted && score > alpha && score < beta {
+            if i > 0 && !self.run.aborted && score > alpha && score < beta {
                 score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
             }
             board.unmake_move(m);
-            if self.aborted {
+            if self.run.aborted {
                 return ABORTED;
             }
             if score > best {
@@ -210,7 +210,7 @@ impl Search<'_> {
                         self.table.update(ply, m);
                     }
                     if alpha >= beta {
-                        remember_killer(&mut self.killers[ply], m);
+                        remember_killer(&mut self.heuristics.killers[ply], m);
                         // A move the margin or the count gave up was never played, so it is
                         // passed over rather than debited.
                         self.remember_history(board, ply, legal.as_slice(), i, &searched, depth);
@@ -236,16 +236,16 @@ impl Search<'_> {
         ply: usize,
     ) -> ([Move; 2], Picker) {
         let ordered = usize::from(order_first(legal, tt_move));
-        let killers = self.killers[ply];
+        let killers = self.heuristics.killers[ply];
         let mut continuation = [None; OFFSETS.len()];
         for (row, &offset) in continuation.iter_mut().zip(OFFSETS.iter()) {
-            match conthist::context(&self.frames, ply, offset) {
-                Some(context) => *row = Some(self.conthist.row(context)),
-                None => self.continuation_absent.add_one(),
+            match conthist::context(&self.heuristics.frames, ply, offset) {
+                Some(context) => *row = Some(self.heuristics.conthist.row(context)),
+                None => self.stats.continuation_absent.add_one(),
             }
         }
         let tables = Tables {
-            butterfly: self.history.side(us),
+            butterfly: self.heuristics.history.side(us),
             continuation,
         };
         let picker = Picker::new(
@@ -261,7 +261,7 @@ impl Search<'_> {
 
     /// Every descent into `negamax` makes its move here, so a child's frames are its path's.
     pub(super) fn make(&mut self, board: &mut Position, ply: usize, m: Move) {
-        self.frames[ply] = conthist::frame(board, m);
+        self.heuristics.frames[ply] = conthist::frame(board, m);
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = m;
@@ -272,7 +272,7 @@ impl Search<'_> {
     /// A method so the counter is written where the rule runs.
     fn iir_depth(&mut self, depth: u32, pv: bool, in_check: bool, tt_move: Move) -> u32 {
         let r = iir_reduction(depth, pv, in_check, tt_move != Move::NULL, self.iir_plies);
-        self.iir_nodes.add_if(r > 0);
+        self.stats.iir_nodes.add_if(r > 0);
         depth - r
     }
 
@@ -349,6 +349,8 @@ impl Search<'_> {
 
     /// The one store, and where a node failing low takes its parent's flag.
     fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
+        // An aborted node's value is `ABORTED` and not a bound, and the draw score besides.
+        debug_assert!(!self.run.aborted, "a store after the stop");
         let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
         let score = score::to_tt(best, ply);
         // Nothing here beat alpha, so the move into it may have been the good one.
@@ -376,12 +378,16 @@ impl Search<'_> {
         self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
         // After the table, so a hit saves the probe, and before the static readings, which an
         // ending the tables decide makes moot.
-        let tb = self.tablebase(board, key, depth, ply, alpha, beta)?;
+        let tb = self.tablebase(board, key, depth, ply, alpha, beta, tt_move)?;
         Ok((tt_move, tb))
     }
 
     /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
     /// every other node and wherever no table answers.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     fn tablebase(
         &mut self,
         board: &Board,
@@ -390,6 +396,7 @@ impl Search<'_> {
         ply: usize,
         alpha: Score,
         beta: Score,
+        tt_move: Move,
     ) -> Result<(Score, Score), Score> {
         let open = (-INFINITE, INFINITE);
         let Some(tables) = self.probing else {
@@ -414,7 +421,8 @@ impl Search<'_> {
             Bound::Upper => score <= alpha,
         };
         if cuts {
-            self.store(key, ply, depth, score, Move::NULL, bound);
+            // The table's move stays, so a later visit that does not cut still tries it first.
+            self.store(key, ply, depth, score, tt_move, bound);
             return Err(score);
         }
         // A mate inside the table's territory is still searched for, and found, under the bound.
@@ -427,7 +435,10 @@ impl Search<'_> {
 
     /// The child searched with the node's own window, as the first move is and a later one that
     /// beat alpha is again.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     fn own_window(
         &mut self,
         board: &mut Position,
@@ -443,7 +454,10 @@ impl Search<'_> {
     }
 
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     fn late_move(
         &mut self,
         board: &mut Position,
@@ -458,22 +472,22 @@ impl Search<'_> {
         // The history term first, then the PV and cut-node terms on what each leaves, each counted
         // where it acted.
         let shifted = history_reduction(base, history);
-        self.history_reduced_less.add_if(shifted < base);
-        self.history_reduced_more.add_if(shifted > base);
+        self.stats.history_reduced_less.add_if(shifted < base);
+        self.stats.history_reduced_more.add_if(shifted > base);
         let lessened = pv_reduction(shifted, pv);
-        self.lmr_pv_lessened.add_if(lessened < shifted);
+        self.stats.lmr_pv_lessened.add_if(lessened < shifted);
         let r = cut_node_reduction(lessened, kind == Expected::Cut);
-        self.lmr_cut_reduced_more.add_if(r > lessened);
+        self.stats.lmr_cut_reduced_more.add_if(r > lessened);
         if r == 0 {
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
         }
-        self.lmr_reductions.add_one();
-        let reduced = child.saturating_sub(r).max(1);
+        self.stats.lmr_reductions.add_one();
+        let reduced = reduced_depth(child, r);
         let cut = self.derive(kind, Via::Reduced);
         let score = -self.negamax(board, reduced, ply + 1, -alpha - 1, -alpha, cut);
-        if score > alpha && !self.aborted {
-            self.lmr_researches.add_one();
+        if score > alpha && !self.run.aborted {
+            self.stats.lmr_researches.add_one();
             let full = self.derive(kind, Via::Null);
             return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
         }
@@ -488,7 +502,7 @@ impl Search<'_> {
         alpha: Score,
         beta: Score,
     ) -> Option<Score> {
-        let admitted = self.evals[ply].is_some_and(|eval| eval >= beta)
+        let admitted = self.heuristics.evals[ply].is_some_and(|eval| eval >= beta)
             && beta == alpha + 1
             && !score::is_decisive(beta)
             && board.plies_from_null() != 0
@@ -497,13 +511,13 @@ impl Search<'_> {
             return None;
         }
         if !has_non_pawn_material(board) {
-            self.null_refused_material.add_one();
+            self.stats.null_refused_material.add_one();
             return None;
         }
-        self.null_attempts.add_one();
+        self.stats.null_attempts.add_one();
         let reduced = depth.saturating_sub(1 + null_reduction(depth));
         // No move, so the child reads none one ply up.
-        self.frames[ply] = None;
+        self.heuristics.frames[ply] = None;
         #[cfg(debug_assertions)]
         {
             self.moved[ply] = Move::NULL;
@@ -512,11 +526,11 @@ impl Search<'_> {
         // The pass hands the move over, and the null move cuts only where that child fails low.
         let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1, Expected::All);
         board.unmake_null_move();
-        if self.aborted {
+        if self.run.aborted {
             return Some(ABORTED);
         }
         if score >= beta {
-            self.null_cutoffs.add_one();
+            self.stats.null_cutoffs.add_one();
             return Some(if score::is_decisive(score) {
                 beta
             } else {
@@ -537,12 +551,12 @@ impl Search<'_> {
         beta: Score,
         kind: Expected,
     ) -> Option<Score> {
-        let eval = self.evals[ply];
+        let eval = self.heuristics.evals[ply];
         let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
             // Asked as though the window were null, so the counter sees only nodes the window
             // alone refused.
             if beta != alpha + 1 && probcut_bound(eval, depth, beta - 1, beta).is_some() {
-                self.probcut_refused_window.add_one();
+                self.stats.probcut_refused_window.add_one();
             }
             return None;
         };
@@ -550,28 +564,28 @@ impl Search<'_> {
             return None;
         }
         let eval = eval?;
-        self.probcut_attempts.add_one();
+        self.stats.probcut_attempts.add_one();
         let mut noisy = generate_noisy(board);
         picker::sort_noisy(board, &mut noisy);
         let child = depth.saturating_sub(PROBCUT_REDUCTION);
         for m in noisy.iter() {
-            self.probcut_exchanges.add_one();
+            self.stats.probcut_exchanges.add_one();
             if !see::see_ge(board, m, raised - eval) {
                 continue;
             }
             self.make(board, ply, m);
             let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
             if score >= raised {
-                self.probcut_searches.add_one();
+                self.stats.probcut_searches.add_one();
                 let flipped = self.derive(kind, Via::Null);
                 score = -self.negamax(board, child, ply + 1, -raised, -raised + 1, flipped);
             }
             board.unmake_move(m);
-            if self.aborted {
+            if self.run.aborted {
                 return Some(ABORTED);
             }
             if score >= raised {
-                self.probcut_cutoffs.add_one();
+                self.stats.probcut_cutoffs.add_one();
                 return Some(if score::is_decisive(score) {
                     raised
                 } else {
@@ -767,9 +781,12 @@ mod tests {
         let mut board = Position::new(root);
         search.root_depth = DEPTH;
         search.make(&mut board, 0, m);
-        search.evals[1] = Some(BETA + 200);
+        search.heuristics.evals[1] = Some(BETA + 200);
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
-        assert!(search.null_attempts.get() > 0, "the null move was refused");
+        assert!(
+            search.stats.null_attempts.get() > 0,
+            "the null move was refused"
+        );
         let read: Vec<_> = at(&search, 2).iter().map(|c| (c.asked, c.kind)).collect();
         assert_eq!(read, [(None, Expected::All)]);
     }
@@ -789,11 +806,11 @@ mod tests {
             let static_eval = eval::evaluate(&root);
             let mut board = Position::new(root);
             search.root_depth = 6;
-            search.evals[0] = Some(static_eval);
+            search.heuristics.evals[0] = Some(static_eval);
             let beta = static_eval;
             let cut = search.probcut(&mut board, 6, 0, beta - 1, beta, parent);
             assert!(cut.is_some(), "the capture did not cut");
-            assert_eq!(search.probcut_searches.get(), 1, "under {parent:?}");
+            assert_eq!(search.stats.probcut_searches.get(), 1, "under {parent:?}");
             let read: Vec<_> = at(&search, 1).iter().map(|c| (c.asked, c.kind)).collect();
             assert_eq!(
                 read,
@@ -848,22 +865,36 @@ mod tests {
         let mut board = Position::new(root);
         search.root_depth = DEPTH;
         search.make(&mut board, 0, m);
-        let root_frame = search.frames[0].expect("the root move's frame");
+        let root_frame = search.heuristics.frames[0].expect("the root move's frame");
         // Black's king onto a1, which no move below the null move can be.
         let stale = 11 * 64;
-        search.frames[1] = Some(stale);
-        search.evals[1] = Some(BETA + 200);
+        search.heuristics.frames[1] = Some(stale);
+        search.heuristics.evals[1] = Some(BETA + 200);
         let _ = search.null_move(&mut board, DEPTH, 1, BETA - 1, BETA);
 
         // Nodes below it try their own, but only after this one was admitted.
-        assert!(search.null_attempts.get() > 0, "the null move was refused");
-        assert_eq!(conthist::context(&search.frames, 2, 1), None, "one ply up");
+        assert!(
+            search.stats.null_attempts.get() > 0,
+            "the null move was refused"
+        );
         assert_eq!(
-            conthist::context(&search.frames, 2, 2),
+            conthist::context(&search.heuristics.frames, 2, 1),
+            None,
+            "one ply up"
+        );
+        assert_eq!(
+            conthist::context(&search.heuristics.frames, 2, 2),
             Some(root_frame),
             "two plies up"
         );
-        let written = |context| search.conthist.row(context).iter().any(|&v| v != 0);
+        let written = |context| {
+            search
+                .heuristics
+                .conthist
+                .row(context)
+                .iter()
+                .any(|&v| v != 0)
+        };
         assert!(
             !written(stale),
             "a node below the null move read its ply's old frame"

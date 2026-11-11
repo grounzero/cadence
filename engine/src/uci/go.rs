@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
@@ -11,17 +12,34 @@ use super::{Running, Session};
 use crate::level;
 use crate::position::Position;
 use crate::search::{Limits, Search};
-use crate::syzygy::Tables;
+use crate::syzygy::{Rank, Tables};
+use crate::time;
 use crate::tt::Table;
 use crate::tune::Tunables;
 
 /// One frame per ply to `MAX_PLY`, each holding a `MoveList`; 16 MiB is far above that in any
-/// profile.
-const SEARCH_STACK_BYTES: usize = 16 << 20;
+/// profile, for every thread that searches, datagen's workers included.
+pub(crate) const SEARCH_STACK_BYTES: usize = 16 << 20;
 
 impl Session {
+    /// After a failed `position` a search still running is stopped and nothing is searched: the
+    /// answer is `bestmove 0000`, saying why.
+    pub(super) fn go_unless_refused<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
+        let Some(why) = self.refused.clone() else {
+            self.go(tokens);
+            return;
+        };
+        self.stop_search();
+        say(format_args!(
+            "info string go: the last position command failed ({why}); searching nothing"
+        ));
+        say(format_args!("bestmove 0000"));
+    }
+
     /// A search still running is stopped first.
     pub(super) fn go<'a>(&mut self, tokens: impl Iterator<Item = &'a str>) {
+        // The GUI's clock for this move started when it sent the line.
+        let received = Instant::now();
         self.stop_search();
         let tokens: Vec<&str> = tokens.collect();
         let mut limits = Limits::parse(tokens.iter().copied());
@@ -42,10 +60,12 @@ impl Session {
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
         let root_filter = search_moves(&tokens, &generate_legal(&board));
+        // Owed whatever happens next, so spelled before anything can fail to start.
+        let fallback = first_answer(&board, &root_filter, self.chess960);
         let tables = self.tables.clone();
         let chess960 = self.chess960;
         let level = self.level();
-        let multipv = level.map_or(self.multipv, |policy| policy.candidates);
+        let multipv = self.multipv;
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
@@ -62,31 +82,37 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
-                    let (root_filter, decided) =
-                        tablebase_root(tables.as_deref(), &mut board, root_filter);
+                    let hard = time::budget(&limits, board.side_to_move())
+                        .map(|b| Duration::from_millis(b.hard));
+                    let go_on = || probing_allowed(&stop, received, hard);
+                    let (root_filter, decided, rank) =
+                        tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
                     let mut pos = Position::new(board);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
                     let (best, pv) = if threads == 1 {
                         let mut out = std::io::stdout();
                         let mut search = Search::new(&stop, &tt);
                         search.set_limits(limits);
+                        search.set_clock_origin(received);
                         search.set_ponder_hit(&ponder_hit);
                         search.set_chess960(chess960);
-                        search.set_multipv(multipv);
+                        search.set_lines(multipv, level);
                         search.set_tunables(tunables);
                         search.set_root_filter(&root_filter);
                         if let Some(tables) = &tables {
                             search.set_tables(tables, decided);
                         }
+                        search.set_root_rank(rank);
                         let mut best = search.run(&mut pos, &mut out);
                         if let Some(policy) = level {
-                            best = search.sample(policy, &pos);
+                            best = search.sample(policy, &mut pos, &mut out);
                         }
                         (best, search.pv().to_vec())
                     } else {
                         parallel_search(ParallelGo {
                             board: &mut pos,
                             limits,
+                            received,
                             stop: &stop,
                             ponder_hit: &ponder_hit,
                             tt: &tt,
@@ -98,6 +124,7 @@ impl Session {
                             root_filter: &root_filter,
                             tables: tables.as_ref(),
                             decided,
+                            rank,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -120,9 +147,7 @@ impl Session {
                     thread,
                 });
             }
-            Err(e) => say(format_args!(
-                "info string go: could not start the search thread: {e}"
-            )),
+            Err(e) => not_started(&e, &fallback),
         }
     }
 
@@ -144,11 +169,30 @@ impl Session {
     }
 }
 
+/// The first `searchmoves` move, else the first legal move, else none, spelled as `bestmove`
+/// spells it.
+fn first_answer(board: &Board, filter: &[Move], chess960: bool) -> String {
+    let legal = generate_legal(board);
+    match filter.first().or(legal.as_slice().first()) {
+        Some(&m) => to_uci(m, &legal, chess960),
+        None => "0000".to_string(),
+    }
+}
+
+/// A GUI waits for `bestmove` after `go`, so a search that cannot start still answers.
+fn not_started(e: &std::io::Error, fallback: &str) {
+    say(format_args!(
+        "info string go: could not start the search thread: {e}"
+    ));
+    say(format_args!("bestmove {fallback}"));
+}
+
 /// Only the primary reports and chooses; helpers start from rotated root orders and reach each
 /// other only through the lockless table.
 struct ParallelGo<'a> {
     board: &'a mut Position,
     limits: Limits,
+    received: Instant,
     stop: &'a Arc<AtomicBool>,
     /// Given to every worker: a helper without it ponders all search long, and a primary without it
     /// never answers a `ponderhit`.
@@ -165,6 +209,8 @@ struct ParallelGo<'a> {
     tables: Option<&'a Arc<Tables>>,
     /// The root's ranking settled the result, so no thread probes below it.
     decided: bool,
+    /// Only the primary reports, so only it is given what the tables read at the root.
+    rank: Option<Rank>,
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
@@ -173,6 +219,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let ParallelGo {
         board,
         limits,
+        received,
         stop,
         ponder_hit,
         tt,
@@ -184,6 +231,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         root_filter,
         tables,
         decided,
+        rank,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -206,15 +254,18 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 let mut sink = std::io::sink();
                 let mut search = Search::new(&helper_stop, &helper_tt);
                 search.set_limits(limits);
+                search.set_clock_origin(received);
                 search.set_ponder_hit(&helper_ponder_hit);
                 search.set_chess960(chess960);
-                search.set_multipv(multipv);
+                search.set_lines(multipv, level);
                 search.set_tunables(tunables);
                 search.set_parallel(worker_index, &helper_nodes);
                 search.set_root_filter(&helper_filter);
                 if let Some(tables) = &helper_tables {
                     search.set_tables(tables, decided);
                 }
+                #[cfg(feature = "counters")]
+                report_given(worker_index, &search);
                 search.run_in_current_generation(&mut helper_board, &mut sink)
             });
         match result {
@@ -228,18 +279,22 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let mut out = std::io::stdout();
     let mut search = Search::new(stop, tt);
     search.set_limits(limits);
+    search.set_clock_origin(received);
     search.set_ponder_hit(ponder_hit);
     search.set_chess960(chess960);
-    search.set_multipv(multipv);
+    search.set_lines(multipv, level);
     search.set_tunables(tunables);
     search.set_parallel(0, &nodes);
     search.set_root_filter(root_filter);
     if let Some(tables) = tables {
         search.set_tables(tables, decided);
     }
+    search.set_root_rank(rank);
+    #[cfg(feature = "counters")]
+    report_given(0, &search);
     let mut best = search.run_in_current_generation(board, &mut out);
     if let Some(policy) = level {
-        best = search.sample(policy, board);
+        best = search.sample(policy, board, &mut out);
     }
     let pv = search.pv().to_vec();
 
@@ -251,20 +306,41 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     (best, pv)
 }
 
+/// Test builds only: what a thread's search holds as it starts, so a gate can hold every helper to
+/// the primary.
+#[cfg(feature = "counters")]
+fn report_given(worker_index: usize, search: &Search<'_>) {
+    say(format_args!(
+        "info string search thread {worker_index} given {:?} {:?} filter {:?} probes {}",
+        search.limits(),
+        search.tunables(),
+        search.root_filter(),
+        search.probes()
+    ));
+}
+
+/// Asked before each of the root's probes, so a stop or a spent budget waits for one probe at most.
+/// A read the operating system has blocked finishes before the next question is asked.
+fn probing_allowed(stop: &AtomicBool, received: Instant, hard: Option<Duration>) -> bool {
+    !stop.load(Ordering::Relaxed) && hard.is_none_or(|hard| received.elapsed() < hard)
+}
+
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says
-/// whether it settled the result. Untouched where no table covers the root.
+/// whether it settled the result and what it reads. Untouched where no table covers the root, or
+/// where `go_on` stops it before it ends.
 fn tablebase_root(
     tables: Option<&Tables>,
     board: &mut Board,
     filter: Vec<Move>,
-) -> (Vec<Move>, bool) {
+    go_on: &dyn Fn() -> bool,
+) -> (Vec<Move>, bool, Option<Rank>) {
     let Some(tables) = tables else {
-        return (filter, false);
+        return (filter, false, None);
     };
     tables.reset_hits();
-    match tables.rank_root(board, &filter) {
-        Some(ranked) => (ranked.moves, ranked.decided),
-        None => (filter, false),
+    match tables.rank_root_while(board, &filter, go_on) {
+        Some(ranked) => (ranked.moves, ranked.decided, Some(ranked.verdict)),
+        None => (filter, false, None),
     }
 }
 
