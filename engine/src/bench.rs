@@ -58,7 +58,7 @@ pub fn positions() -> Vec<&'static str> {
 pub fn bench() -> Report {
     // The search recurses a frame a ply, so it gets the search threads' stack and not the caller's.
     std::thread::scope(|scope| {
-        #[expect(clippy::expect_used, reason = "a bench that cannot start has nothing to report")]
+        #[expect(clippy::expect_used, reason = "no thread, no bench to report")]
         let thread = std::thread::Builder::new()
             .stack_size(SEARCH_STACK_BYTES)
             .spawn_scoped(scope, search_positions)
