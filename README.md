@@ -183,8 +183,8 @@ included.
 - [Ordo](https://github.com/michiguel/Ordo), which fits the ratings on the
   strength page.
 - [shakmaty](https://github.com/niklasf/shakmaty) and
-  [shakmaty-syzygy](https://github.com/niklasf/shakmaty-syzygy), which read
-  the Syzygy endgame tablebases.
+  [shakmaty-syzygy](https://github.com/niklasf/shakmaty/tree/main/shakmaty-syzygy),
+  which read the Syzygy endgame tablebases.
 - The [8moves_v3 and UHO_Lichess_4852_v1](https://github.com/official-stockfish/books)
   opening books, used for testing.
 - The [CCRL](https://computerchess.org.uk/), whose published ratings
