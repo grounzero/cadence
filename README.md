@@ -145,35 +145,45 @@ valid `position` command clears it.
 ## Strength
 
 There are two numbers here. They come from different places and cannot be
-compared with each other. Neither is an official CCRL rating, because CCRL
-has not tested Cadence yet.
+compared with each other. Neither is an official CCRL rating.
 
-### Against rated engines: about 2289
+### Against rated engines: about 2796
 
-This is an estimate of where Cadence 0.4.8 would sit on the CCRL Blitz list,
-measured on 2026-09-28.
+This is an estimate of where Cadence would sit on the CCRL Blitz list: about
+2796, give or take 9 (95% of the time). It was measured on
+[0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3)
+on 2026-11-11 and 2026-11-12. Later versions have not been measured this
+way.
 
-Cadence played 2,000 games at 2 minutes plus 1 second a move. It played 400
-games against each of five engines that are on that list. The program Ordo
-then worked out the rating that best fits those results (2289, give or take 14
-from luck in the games).
+Cadence played 4,000 games against eight engines that are on that list, 500
+against each, on an Apple Silicon Mac. Each engine played the same 250
+openings with both colours, on one thread with 256 MB of hash and, where it
+can read them, the endgame tablebases up to five pieces. The time control
+was that list's 2 minutes plus 1 second, scaled to the Mac by how fast it
+runs a reference benchmark: 50.28 seconds plus 0.419 seconds a move. The
+program Ordo then worked out the rating that best fits the results.
 
-Treat it as rough. Each of the five opponents, taken alone, gives a different
-answer: anywhere from 2241 to 2318. And the games ran on a Mac, which is not
-the computer CCRL uses, so a minute of thinking is not the same amount of
-work.
+The figure comes from seven of the eight engines. Reckless 0.4.0 was played
+and left out, under a rule set before the games: the ratings the engines
+imply for Cadence may spread over at most 80 points. With Reckless they
+spread over 121, and without it over 64, because Reckless alone gives an
+answer far from the other seven's. With all eight engines the estimate is
+2806.
 
-Cadence has improved since 0.4.8, but the newer versions have not been
-measured this way. Gains against its own earlier versions do not translate
-into rating points, so there is no estimate for the current version.
+Treat it as an estimate. The Mac is not the computer CCRL uses, so its time
+control is scaled to give it about the same amount of work, not exactly the
+same.
 
-You can check the figure yourself. The games, the ratings used and Ordo's
-output are in [`docs/calibration/`](docs/calibration). With Ordo 1.2.6:
+You can check the figure yourself. Every game, the engines and how each was
+built, the openings and Ordo's output are in
+[`docs/calibration/gauntlet-0.6.0-rc.3/`](docs/calibration/gauntlet-0.6.0-rc.3),
+and [`method.txt`](docs/calibration/gauntlet-0.6.0-rc.3/method.txt) there
+says how they fit together. With Ordo 1.2.6:
 
 ```sh
-ordo -Q -D -s 2000 \
-  -m docs/calibration/ccrl-blitz-anchors-2026-09-05.csv \
-  -p docs/calibration/ccrl-blitz-gauntlet-2026-09-28.pgn
+ordo -Q -D -s 1000 -F 95 \
+  -m docs/calibration/gauntlet-0.6.0-rc.3/ordo-anchors-seven.csv \
+  -p docs/calibration/gauntlet-0.6.0-rc.3/games.pgn
 ```
 
 The "give or take" figure can change a little between runs, because Ordo

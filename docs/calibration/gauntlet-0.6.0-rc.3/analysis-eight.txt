@@ -1,0 +1,15 @@
+rate: expected 156 games an hour from the declared 50.28s+0.419s at concurrency 6, 138 s a game
+rate: observed 143 an hour, 4000 games over 1673 min, 0.92 of expected; TimeControl tags ['50.28+0.419']
+rate: PASS, tolerance a factor of 1.5
+faults: Cadence 0.6.0-rc.3 lost 0 games to a crash, a disconnect or an illegal move; anchors crashed or disconnected in 0 and moved illegally in 0
+clock: 8000 sides, 0 over the declared budget by more than 0.5 s, worst +0.00 s; 0 time forfeits caused by the host or harness
+clock: PASS
+blunder-8.5.5-macos-arm64 pub 2663 n 500 score 69.3% implied 2804 gap +143 residual -0.2 pp
+supernova-2.4-macos-arm64 pub 2679 n 500 score 66.1% implied 2795 gap +127 residual -1.4 pp
+velvet-1.2.0-macos-arm64 pub 2765 n 500 score 55.1% implied 2801 gap +41 residual -0.8 pp
+mess-0.3.0-macos-arm64 pub 2773 n 500 score 57.0% implied 2822 gap +33 residual +2.3 pp
+halogen-8-macos-arm64 pub 2827 n 500 score 40.2% implied 2758 gap -21 residual -6.8 pp
+clovis-III-macos-arm64 pub 2828 n 500 score 44.8% implied 2792 gap -22 residual -2.1 pp
+weiawaga-5.0-macos-arm64 pub 2872 n 500 score 40.2% implied 2803 gap -66 residual -0.4 pp
+reckless-0.4.0-macos-arm64 pub 2932 n 500 score 42.4% implied 2879 gap -126 residual +9.8 pp
+span 121 Elo, between-anchor sd 34.3, compression 0.78 of the published spread, slope -2.01 pp of residual per 100 Elo of gap
