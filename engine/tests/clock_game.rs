@@ -38,6 +38,7 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
     let mut plies = 0;
     let mut max_overrun_ms = 0u64;
     let mut ended_by_board = false;
+    let tag = start.get(..3).unwrap_or("");
     while plies < 120 {
         let legal = generate_legal(&board);
         if legal.is_empty() || board.halfmove_clock() >= 100 {
@@ -54,6 +55,11 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
         ));
         let lines = e.read_until("bestmove ");
         let spent = u64::try_from(start.elapsed().as_millis()).unwrap();
+        println!(
+            "move {tag} ply {plies} spent {spent} cap {} clock {}",
+            time[us].saturating_sub(MOVE_OVERHEAD_MS) / 2,
+            time[us]
+        );
         let mv = lines
             .last()
             .unwrap()

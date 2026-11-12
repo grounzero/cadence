@@ -1,0 +1,47 @@
+# The clock games' timing on a Windows runner, in their own test binary as CI runs it. Runs on a
+# push to its own branch and nowhere else.
+
+name: clock-trace-2
+
+on:
+  push:
+    branches: [clock-game-trace-2]
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    name: ${{ matrix.name }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: release binary
+            release: true
+          - name: test build
+            release: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: build
+        run: |
+          cargo build --locked --release
+          cargo test --locked -p cadence-engine --test clock_game --no-run
+
+      - name: twenty-four runs
+        run: |
+          if [ "${{ matrix.release }}" = true ]; then
+            CADENCE_BIN=$(cygpath -w "$PWD/target/release/cadence.exe"); export CADENCE_BIN
+          fi
+          for i in $(seq 1 24); do
+            status=0
+            cargo test --locked -p cadence-engine --test clock_game -- --show-output > run.log 2>&1 || status=$?
+            echo "RUN own $i status $status $(grep -h '^test result:' run.log)"
+            grep -h '^move \|playing the game again\|plies, clocks' run.log | sed "s/^/own $i /" || true
+            grep -h -A2 'panicked at' run.log || true
+          done
