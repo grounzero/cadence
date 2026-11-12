@@ -97,7 +97,7 @@ jobs:
           printf '[package]\nname = "planted"\nversion = "0.0.0"\nedition = "2021"\nlicense = "MIT"\npublish = false\n\n[dependencies]\nsmallvec = "=1.6.0"\n' > "$dir/Cargo.toml"
           cargo generate-lockfile --manifest-path "$dir/Cargo.toml"
           status=0
-          cargo deny --manifest-path "$dir/Cargo.toml" check --config deny.toml advisories > planted.log 2>&1 || status=$?
+          cargo deny --manifest-path "$dir/Cargo.toml" --config deny.toml check advisories > planted.log 2>&1 || status=$?
           cat planted.log
           [ "$status" -ne 0 ] || { echo "::error::the advisory check passed a crate RustSec lists"; exit 1; }
           grep -q 'RUSTSEC-2021-0003' planted.log || { echo "::error::the check failed, but not on RUSTSEC-2021-0003"; exit 1; }
