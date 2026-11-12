@@ -1,2 +1,0 @@
-# Each patch is kept byte for byte as applied, Clovis III's with the CRLF endings of the file it changes.
-*.diff -text

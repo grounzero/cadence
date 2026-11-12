@@ -1,9 +1,9 @@
 # Cadence
 
-[![CI](https://github.com/grounzero/cadence/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/grounzero/cadence/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/github/v/tag/grounzero/cadence?sort=semver&label=version)](https://github.com/grounzero/cadence/tags)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Lichess bot](https://img.shields.io/badge/lichess-Mithandros-white?logo=lichess&logoColor=black)](https://lichess.org/@/Mithandros)
+[![CI](https://github.com/grounzero/cadence/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/grounzero/cadence/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/grounzero/cadence?label=latest%20release)](https://github.com/grounzero/cadence/releases/latest)
+[![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
 Cadence is a chess engine written in Rust. It speaks UCI, so it works in any
 chess GUI that supports UCI engines. It plays standard chess and Chess960,
@@ -20,6 +20,17 @@ You can play it on Lichess, where it runs as the bot
 language model running beside it answers messages and remarks on its own
 thinking, such as how deep it searched. The model is separate from the engine
 and has no say in the moves, and which model it uses is configurable.
+
+## Strength
+
+| Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
+| --- | --- | --- | --- | --- |
+| [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-10 |
+| [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
+
+Estimates are from our own gauntlets against rated engines, not official
+ratings. Method, games and caveats:
+[docs/calibration/strength.md](docs/calibration/strength.md).
 
 ## Getting started
 
@@ -141,64 +152,6 @@ its `moves` list may hold an illegal move, or it may name neither `startpos`
 nor `fen`. The engine says why in an `info string` and remembers the failure.
 Every `go` after it answers `bestmove 0000` and searches nothing, until a
 valid `position` command clears it.
-
-## Strength
-
-There are two numbers here. They come from different places and cannot be
-compared with each other. Neither is an official CCRL rating.
-
-### Against rated engines: about 2796
-
-This is an estimate of where Cadence would sit on the CCRL Blitz list: about
-2796, give or take 9 (95% of the time). It was measured on
-[0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3)
-on 2026-11-11 and 2026-11-12. Later versions have not been measured this
-way.
-
-Cadence played 4,000 games against eight engines that are on that list, 500
-against each, on an Apple Silicon Mac. Each engine played the same 250
-openings with both colours, on one thread with 256 MB of hash and, where it
-can read them, the endgame tablebases up to five pieces. The time control
-was that list's 2 minutes plus 1 second, scaled to the Mac by how fast it
-runs a reference benchmark: 50.28 seconds plus 0.419 seconds a move. The
-program Ordo then worked out the rating that best fits the results.
-
-The figure comes from seven of the eight engines. Reckless 0.4.0 was played
-and left out, under a rule set before the games: the ratings the engines
-imply for Cadence may spread over at most 80 points. With Reckless they
-spread over 121, and without it over 64, because Reckless alone gives an
-answer far from the other seven's. With all eight engines the estimate is
-2806.
-
-Treat it as an estimate. The Mac is not the computer CCRL uses, so its time
-control is scaled to give it about the same amount of work, not exactly the
-same.
-
-You can check the figure yourself. Every game, the engines and how each was
-built, the openings and Ordo's output are in
-[`docs/calibration/gauntlet-0.6.0-rc.3/`](docs/calibration/gauntlet-0.6.0-rc.3),
-and [`method.txt`](docs/calibration/gauntlet-0.6.0-rc.3/method.txt) there
-says how they fit together. With Ordo 1.2.6:
-
-```sh
-ordo -Q -D -s 1000 -F 95 \
-  -m docs/calibration/gauntlet-0.6.0-rc.3/ordo-anchors-seven.csv \
-  -p docs/calibration/gauntlet-0.6.0-rc.3/games.pgn
-```
-
-The "give or take" figure can change a little between runs, because Ordo
-estimates it by simulation.
-
-### On Lichess: 2222 blitz
-
-This is the bot's Lichess blitz rating on 2026-10-03, from 1,257 rated games
-(give or take about 90).
-
-Lichess ratings are their own scale, built from games against people and
-other bots. They are not CCRL ratings. The bot has also played several
-versions of Cadence over that time, with settings a rating list would turn
-off: it thinks on the opponent's time and uses an opening book. So this
-number does not belong to any one version.
 
 ## How it is tested
 
