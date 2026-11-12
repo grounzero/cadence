@@ -262,11 +262,13 @@ checksum() {
 
 # A quiet wget says nothing when it fails, so its exit status is put into words for said().
 download() {
-    local rc=0
+    local rc=0 header=""
+    # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
+    case "$1" in https://api.github.com/*) [ -z "${GITHUB_TOKEN:-}" ] || header="Authorization: Bearer $GITHUB_TOKEN" ;; esac
     if command -v curl > /dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        if [ -n "$header" ]; then curl -fsSL --retry 3 -H "$header" -o "$2" "$1"; else curl -fsSL --retry 3 -o "$2" "$1"; fi
     elif command -v wget > /dev/null 2>&1; then
-        wget -q -O "$2" "$1" || rc=$?
+        if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
         case "$rc" in
             0) ;;
             4) echo "wget: network failure" >&2 ;;
@@ -428,6 +430,14 @@ release_name() {
     esac
 }
 
+# GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
+rate_limited() {
+    case "$1" in
+        " (the server answered 403)" | " (the server answered 429)")
+            fail "GitHub refused to name Cadence's releases$1: it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again." ;;
+    esac
+}
+
 # GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
 # pre-release is offered instead, and with neither nothing is built.
 find_release() {
@@ -436,20 +446,25 @@ find_release() {
         say "Release $VERSION, as asked."
         return 0
     fi
-    local tag=""
+    local tag="" trouble=""
     log "\$ download $API_URL/latest"
     if download "$API_URL/latest" "$WORK/latest.json" 2> "$OUT"; then
         tag=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
+    else
+        trouble=$(said)
     fi
     redact < "$OUT" >> "$LOG"
+    rate_limited "$trouble"
     if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
         VERSION=$tag
         say "The latest stable release is $VERSION."
     else
         log "\$ download $API_URL?per_page=30"
         if ! download "$API_URL?per_page=30" "$WORK/releases.json" 2> "$OUT"; then
+            trouble=$(said)
             redact < "$OUT" >> "$LOG"
-            fail "could not read Cadence's releases from GitHub$(said)"
+            rate_limited "$trouble"
+            fail "could not read Cadence's releases from GitHub$trouble"
         fi
         VERSION=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/releases.json" | sed 's/.*"\([^"]*\)"$/\1/' \
             | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+' | head -n 1)
