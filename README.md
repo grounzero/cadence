@@ -101,7 +101,7 @@ engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
 Every change meant to make Cadence stronger is played against the current
 version on [OpenBench](https://github.com/AndyGrant/OpenBench), usually for
 thousands of games, until it is clear whether it helps. It is kept only if it
-wins. Every test, passed or failed, is in
+wins. Every SPRT, passed or failed, is in
 {{SPRT-LOG}}. Each result is
 measured against the version before it, so the gains do not add up to a
 rating; the [strength page](docs/calibration/strength.md) has the ratings.
@@ -113,8 +113,6 @@ You can also check:
   does. CI checks it against `bench.txt`.
 - **Move generation**, against a published set of positions with known
   answers: the [perft corpus](docs/testing/perft.md).
-- **Tuning predictions** are written down before each retune of the
-  evaluation, so they can't be bent to fit the result.
 
 The worker setup is in `openbench/`; run
 `python3 openbench/setup-worker.py --help` for its options.
@@ -174,6 +172,32 @@ Run it once in each clone, since Git does not copy hooks: `pre-commit` runs
 the boundary and punctuation checks, and `commit-msg` checks the message. The
 hooks only find problems sooner, because CI runs every check, the messages
 included.
+
+## Acknowledgements
+
+- The [Chess Programming Wiki](https://www.chessprogramming.org), which
+  explains nearly every technique Cadence uses.
+- [OpenBench](https://github.com/AndyGrant/OpenBench), which runs every
+  strength test, and [fastchess](https://github.com/Disservin/fastchess),
+  which plays the games.
+- [Ordo](https://github.com/michiguel/Ordo), which fits the ratings on the
+  strength page.
+- [shakmaty](https://github.com/niklasf/shakmaty) and
+  [shakmaty-syzygy](https://github.com/niklasf/shakmaty-syzygy), which read
+  the Syzygy endgame tablebases.
+- The [8moves_v3 and UHO_Lichess_4852_v1](https://github.com/official-stockfish/books)
+  opening books, used for testing.
+- The [CCRL](https://computerchess.org.uk/), whose published ratings
+  anchor the gauntlets, and the engines played in them, listed on the
+  [strength page](docs/calibration/strength.md).
+- [Lichess](https://lichess.org) and
+  [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot), where
+  Cadence plays as Mithandros.
+- The authors of [Ethereal](https://github.com/AndyGrant/Ethereal),
+  [Obsidian](https://github.com/gab8192/Obsidian),
+  [Stockfish](https://github.com/official-stockfish/Stockfish) and
+  [Weiss](https://github.com/TerjeKir/weiss), whose open-source engines we
+  studied to understand the techniques Cadence implements in its own code.
 
 ## License
 
