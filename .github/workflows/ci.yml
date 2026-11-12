@@ -460,7 +460,7 @@ jobs:
     steps: *check-steps
 
   # install.sh on every system it names and install.ps1 on Windows, each run with --yes to install the
-  # latest release, and the binary each installed held to that release's bench and id name. Each then
+  # default release, and the binary each installed held to that release's bench and id name. Each then
   # takes that binary from a release folder served on the runner, and builds when its copy is corrupted.
   install:
     name: ${{ matrix.name }}
@@ -546,6 +546,8 @@ jobs:
           log=$(sed -n 's/^The log is at \(.*\)\.$/\1/p' forced.txt | tail -n 1)
           [ -f "$log" ] || { echo "::error::no log at $log"; exit 1; }
           grep -q 'there is no release 0.0.0' "$log" || { echo "::error::the log does not say why"; exit 1; }
+          grep -qF 'publishes no checksum file (not found)' forced.txt \
+            || { echo "::error::the missing release was not described as not found"; exit 1; }
           version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
           [ "$(head -n 1 forced.txt)" = "Cadence installer $version" ] \
             || { echo "::error::the run does not open with Cadence installer $version"; exit 1; }
@@ -565,6 +567,8 @@ jobs:
           $log = [regex]::Match($out, 'The log is at (.+)\.\r?\n').Groups[1].Value
           if (-not $log -or -not (Test-Path $log)) { throw "no log at $log" }
           if (-not (Select-String -Path $log -Pattern 'there is no release 0.0.0' -SimpleMatch -Quiet)) { throw 'the log does not say why' }
+          if ($out -notmatch 'publishes no checksum file \(') { throw 'the missing release was not described' }
+          if ($out -match 'The remote server returned|The request was aborted') { throw 'install.ps1 showed a raw download error' }
           $version = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
           if (-not $version) { throw 'install.ps1 names no $InstallerVersion' }
           if (-not $out.StartsWith("Cadence installer $version")) { throw "the run does not open with Cadence installer $version" }
@@ -604,8 +608,11 @@ jobs:
               ;;
           esac
 
-      # Read here and not from the script, so a script that checked the wrong thing would fail.
+      # Read here and not from the script, so a script that checked the wrong thing would fail: the
+      # latest stable release, or where none is published the newest pre-release, named and offered.
       - name: The installed binary's bench and id name
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             bin="$(cygpath -u "$LOCALAPPDATA")/Cadence/cadence.exe"
@@ -613,9 +620,22 @@ jobs:
             bin="$HOME/.local/bin/cadence"
           fi
           [ -x "$bin" ] || { echo "::error::nothing installed at $bin"; exit 1; }
-          version=$(git ls-remote --tags --refs https://github.com/grounzero/cadence.git \
-            | sed -n 's#.*refs/tags/##p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+          api=https://api.github.com/repos/grounzero/cadence/releases
+          version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api/latest" 2> /dev/null \
+            | sed -n 's/.*"tag_name": *"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' | head -n 1) || version=""
+          if [ -n "$version" ]; then
+            grep -qF "The latest stable release is $version." install.txt \
+              || { echo "::error::the run did not take the latest stable release, $version"; exit 1; }
+          else
+            version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?per_page=30" \
+              | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' \
+              | head -n 1)
+            [ -n "$version" ] || { echo "::error::GitHub lists no release the run could have installed"; exit 1; }
+            grep -qF "No stable release of Cadence exists yet. The newest pre-release is $version." install.txt \
+              || { echo "::error::the run did not name the newest pre-release, $version"; exit 1; }
+            grep -qF "Install pre-release $version? [Y/n]: y (--yes)" install.txt \
+              || { echo "::error::the run did not offer the newest pre-release, $version"; exit 1; }
+          fi
           git fetch --quiet --depth 1 origin "+refs/tags/$version:refs/tags/$version"
           want=$(git show "$version:bench.txt" | tr -d '[:space:]')
           got=$("$bin" bench | tr -d '\r' | tail -n 1 | awk '{print $1}')
@@ -736,6 +756,8 @@ jobs:
             # The PATH and the tablebases are the only questions a checked binary's install asks.
             $asked = ([regex]::Matches($out, '\(--yes\)\r?\n')).Count
             if ($asked -ne 2) { throw "install.ps1 asked $asked questions, not 2" }
+            # install.ps1 names the AVX2 build's features as install.sh does.
+            if ($out.Contains('the AVX2 build runs here') -and -not $out.Contains('with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.')) { throw 'install.ps1 named the AVX2 build features differently from install.sh' }
 
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
             $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version $env:RELEASE_VERSION `
