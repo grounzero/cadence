@@ -13,6 +13,46 @@ other engines' published ratings.
 Each "±" is the range the result stays in 95% of the time from luck in the
 games alone. Versions after each one listed have not been measured this way.
 
+## The engines in each gauntlet
+
+Each engine with its rating on the CCRL Blitz list the gauntlet used,
+Cadence's games and score against it, and the rating that score alone
+implies for Cadence.
+
+**0.6.0-rc.3**, on the list computed 2026-10-17:
+
+| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence |
+| --- | --- | ---: | ---: | ---: | ---: |
+| [Reckless](https://github.com/codedeliveryservice/Reckless/tree/v0.4.0) | 0.4.0 | 2932 | 500 | 42.4% | 2879, left out |
+| [Weiawaga](https://github.com/Heiaha/Weiawaga/tree/v5.0) | 5.0 | 2872 | 500 | 40.2% | 2803 |
+| [Clovis](https://github.com/jonathanmcdermid/Clovis/tree/III) | III | 2828 | 500 | 44.8% | 2792 |
+| [Halogen](https://github.com/KierenP/Halogen/tree/v8) | 8 | 2827 | 500 | 40.2% | 2758 |
+| [Mess](https://github.com/raklaptudirm/mess/tree/v0.3.0) | 0.3.0 | 2773 | 500 | 57.0% | 2822 |
+| [Velvet](https://github.com/mhonert/velvet-chess/tree/v1.2.0) | 1.2.0 | 2765 | 500 | 55.1% | 2801 |
+| [Supernova](https://github.com/MichaeltheCoder7/Supernova/tree/v2.4) | 2.4 | 2679 | 500 | 66.1% | 2795 |
+| [Blunder](https://github.com/algerbrex/blunder/tree/v8.5.5) | 8.5.5 | 2663 | 500 | 69.3% | 2804 |
+
+**0.4.8**, on the list computed 2026-09-05:
+
+| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Loki | 3.0.0 | 2427 | 400 | 33.9% | 2311 |
+| Reckless | 0.2.0 | 2352 | 400 | 45.1% | 2318 |
+| Fatalii | 0.6.0 | 2318 | 400 | 47.4% | 2300 |
+| Tcheran | 2.1 | 2228 | 400 | 51.9% | 2241 |
+| Smallbrain | 1.1 | 2114 | 400 | 71.8% | 2276 |
+
+Reckless played in both. Against each fit it read below its list rating:
+version 0.2.0 by about 29 in 0.4.8's gauntlet, and 0.4.0 by about 82 in
+0.6.0-rc.3's. In 0.4.8's the five engines' implied ratings spanned 77,
+within the 80 limit, so it stayed in the fit; in 0.6.0-rc.3's they span 121
+with it and 64 without, so it was left out.
+
+The two gauntlets used different engines and different time-control
+scaling (0.4.8's played 2 minutes plus 1 second unscaled, 0.6.0-rc.3's a
+control scaled to the Mac), so the gap between their two figures is
+approximate.
+
 ## 0.6.0-rc.3: about 2796
 
 An estimate of where Cadence would sit on the CCRL Blitz list: about 2796,
@@ -55,23 +95,11 @@ below. With all eight the estimate is 2806.
 
 ### The engines
 
-Each engine's rating is its CCRL Blitz rating on that list, with the list's
-own margin and game count. "Implied" is the rating Cadence's score against
-that one engine gives Cadence.
+Its eight engines, their list ratings and Cadence's result against each are
+in [the table above](#the-engines-in-each-gauntlet).
 
-| Engine | CCRL Blitz | Games | Cadence scored | Implied |
-| --- | --- | ---: | ---: | ---: |
-| [Reckless 0.4.0](https://github.com/codedeliveryservice/Reckless/tree/v0.4.0) | 2932 ± 17 (943 games) | 500 | 42.4% | 2879, left out |
-| [Weiawaga 5.0](https://github.com/Heiaha/Weiawaga/tree/v5.0) | 2872 ± 10 (2,845 games) | 500 | 40.2% | 2803 |
-| [Clovis III](https://github.com/jonathanmcdermid/Clovis/tree/III) | 2828 ± 10 (2,928 games) | 500 | 44.8% | 2792 |
-| [Halogen 8](https://github.com/KierenP/Halogen/tree/v8) | 2827 ± 17 (958 games) | 500 | 40.2% | 2758 |
-| [Mess 0.3.0](https://github.com/raklaptudirm/mess/tree/v0.3.0) | 2773 ± 12 (2,329 games) | 500 | 57.0% | 2822 |
-| [Velvet 1.2.0](https://github.com/mhonert/velvet-chess/tree/v1.2.0) | 2765 ± 13 (1,802 games) | 500 | 55.1% | 2801 |
-| [Supernova 2.4](https://github.com/MichaeltheCoder7/Supernova/tree/v2.4) | 2679 ± 10 (3,580 games) | 500 | 66.1% | 2795 |
-| [Blunder 8.5.5](https://github.com/algerbrex/blunder/tree/v8.5.5) | 2663 ± 11 (2,534 games) | 500 | 69.3% | 2804 |
-
-**How each was built**: from source at the tag linked above, for Apple
-Silicon, never run through Rosetta.
+**How each was built**: from source at the tag linked in that table, for
+Apple Silicon, never run through Rosetta.
 
 | Engine | Commit | Built with | SHA-256 of the binary |
 | --- | --- | --- | --- |
