@@ -351,6 +351,7 @@ function Get-DownloadTrouble($Failure) {
     if ($exception.PSObject.Properties['Response'] -and $exception.Response) {
         try { $code = [int]$exception.Response.StatusCode } catch { $code = 0 }
     }
+    if (-not $code -and "$($exception.Message)" -match '\((\d{3})\)') { $code = [int]$Matches[1] }
     if ($code -eq 404) { return ' (not found)' }
     if ($code) { return " (the server answered $code)" }
     $message = "$($exception.Message)"

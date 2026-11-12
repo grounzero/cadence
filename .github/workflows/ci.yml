@@ -546,6 +546,8 @@ jobs:
           log=$(sed -n 's/^The log is at \(.*\)\.$/\1/p' forced.txt | tail -n 1)
           [ -f "$log" ] || { echo "::error::no log at $log"; exit 1; }
           grep -q 'there is no release 0.0.0' "$log" || { echo "::error::the log does not say why"; exit 1; }
+          grep -qF 'publishes no checksum file (not found)' forced.txt \
+            || { echo "::error::the missing release was not described as not found"; exit 1; }
           version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
           [ "$(head -n 1 forced.txt)" = "Cadence installer $version" ] \
             || { echo "::error::the run does not open with Cadence installer $version"; exit 1; }
@@ -565,6 +567,7 @@ jobs:
           $log = [regex]::Match($out, 'The log is at (.+)\.\r?\n').Groups[1].Value
           if (-not $log -or -not (Test-Path $log)) { throw "no log at $log" }
           if (-not (Select-String -Path $log -Pattern 'there is no release 0.0.0' -SimpleMatch -Quiet)) { throw 'the log does not say why' }
+          if (-not $out.Contains('publishes no checksum file (not found)')) { throw 'the missing release was not described as not found' }
           $version = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
           if (-not $version) { throw 'install.ps1 names no $InstallerVersion' }
           if (-not $out.StartsWith("Cadence installer $version")) { throw "the run does not open with Cadence installer $version" }
@@ -705,9 +708,6 @@ jobs:
           # The PATH and the tablebases are the only questions a checked binary's install asks.
           asked=$(grep -c '(--yes)$' good.txt)
           [ "$asked" -eq 2 ] || { grep -F '(--yes)' good.txt; echo "::error::install.sh asked $asked questions, not 2"; exit 1; }
-          # Each installer opens with its banner, before anything else it prints.
-          head -n 1 good.txt | grep -qE '^Cadence installer [0-9]' \
-            || { head -n 1 good.txt; echo "::error::install.sh did not open with its banner"; exit 1; }
 
           rc=0
           CADENCE_RELEASES_URL="$url/corrupt" bash install.sh --yes --version "$RELEASE_VERSION" \
@@ -755,8 +755,7 @@ jobs:
             # The PATH and the tablebases are the only questions a checked binary's install asks.
             $asked = ([regex]::Matches($out, '\(--yes\)\r?\n')).Count
             if ($asked -ne 2) { throw "install.ps1 asked $asked questions, not 2" }
-            # Each installer opens with its banner, and names the AVX2 build's features as install.sh does.
-            if (($out.TrimStart() -split "\r?\n")[0] -notmatch '^Cadence installer \d') { throw 'install.ps1 did not open with its banner' }
+            # install.ps1 names the AVX2 build's features as install.sh does.
             if ($out.Contains('the AVX2 build runs here') -and -not $out.Contains('with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.')) { throw 'install.ps1 named the AVX2 build features differently from install.sh' }
 
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
