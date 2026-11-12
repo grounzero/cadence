@@ -16,37 +16,42 @@ games alone. Versions after each one listed have not been measured this way.
 ## The engines in each gauntlet
 
 Each engine with its rating on the CCRL Blitz list the gauntlet used,
-Cadence's games and score against it, and the rating that score alone
-implies for Cadence.
+Cadence's games and score against it, the rating that score alone implies
+for Cadence, and how far that implied rating sits from the gauntlet's fit.
+An engine that plays weaker than its list rating gives Cadence a higher
+implied rating, so it sits above the fit.
 
-**0.6.0-rc.3**, on the list computed 2026-10-17:
+**0.6.0-rc.3**, on the list computed 2026-10-17. The fit, from the seven
+engines other than Reckless, is 2796:
 
-| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence |
-| --- | --- | ---: | ---: | ---: | ---: |
-| [Reckless](https://github.com/codedeliveryservice/Reckless/tree/v0.4.0) | 0.4.0 | 2932 | 500 | 42.4% | 2879, left out |
-| [Weiawaga](https://github.com/Heiaha/Weiawaga/tree/v5.0) | 5.0 | 2872 | 500 | 40.2% | 2803 |
-| [Clovis](https://github.com/jonathanmcdermid/Clovis/tree/III) | III | 2828 | 500 | 44.8% | 2792 |
-| [Halogen](https://github.com/KierenP/Halogen/tree/v8) | 8 | 2827 | 500 | 40.2% | 2758 |
-| [Mess](https://github.com/raklaptudirm/mess/tree/v0.3.0) | 0.3.0 | 2773 | 500 | 57.0% | 2822 |
-| [Velvet](https://github.com/mhonert/velvet-chess/tree/v1.2.0) | 1.2.0 | 2765 | 500 | 55.1% | 2801 |
-| [Supernova](https://github.com/MichaeltheCoder7/Supernova/tree/v2.4) | 2.4 | 2679 | 500 | 66.1% | 2795 |
-| [Blunder](https://github.com/algerbrex/blunder/tree/v8.5.5) | 8.5.5 | 2663 | 500 | 69.3% | 2804 |
+| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence | Against the fit |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| [Reckless](https://github.com/codedeliveryservice/Reckless/tree/v0.4.0) | 0.4.0 | 2932 | 500 | 42.4% | 2879, left out | +83 |
+| [Weiawaga](https://github.com/Heiaha/Weiawaga/tree/v5.0) | 5.0 | 2872 | 500 | 40.2% | 2803 | +7 |
+| [Clovis](https://github.com/jonathanmcdermid/Clovis/tree/III) | III | 2828 | 500 | 44.8% | 2792 | -4 |
+| [Halogen](https://github.com/KierenP/Halogen/tree/v8) | 8 | 2827 | 500 | 40.2% | 2758 | -38 |
+| [Mess](https://github.com/raklaptudirm/mess/tree/v0.3.0) | 0.3.0 | 2773 | 500 | 57.0% | 2822 | +26 |
+| [Velvet](https://github.com/mhonert/velvet-chess/tree/v1.2.0) | 1.2.0 | 2765 | 500 | 55.1% | 2801 | +5 |
+| [Supernova](https://github.com/MichaeltheCoder7/Supernova/tree/v2.4) | 2.4 | 2679 | 500 | 66.1% | 2795 | -1 |
+| [Blunder](https://github.com/algerbrex/blunder/tree/v8.5.5) | 8.5.5 | 2663 | 500 | 69.3% | 2804 | +8 |
 
-**0.4.8**, on the list computed 2026-09-05:
+**0.4.8**, on the list computed 2026-09-05. The fit, from all five engines,
+is 2289:
 
-| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Loki | 3.0.0 | 2427 | 400 | 33.9% | 2311 |
-| Reckless | 0.2.0 | 2352 | 400 | 45.1% | 2318 |
-| Fatalii | 0.6.0 | 2318 | 400 | 47.4% | 2300 |
-| Tcheran | 2.1 | 2228 | 400 | 51.9% | 2241 |
-| Smallbrain | 1.1 | 2114 | 400 | 71.8% | 2276 |
+| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence | Against the fit |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| [Loki](https://github.com/BimmerBass/Loki/tree/v3.0.0) | 3.0.0 | 2427 | 400 | 33.9% | 2311 | +22 |
+| [Reckless](https://github.com/codedeliveryservice/Reckless/tree/v0.2.0) | 0.2.0 | 2352 | 400 | 45.1% | 2318 | +29 |
+| [Fatalii](https://github.com/FitzOReilly/fatalii/tree/v0.6.0) | 0.6.0 | 2318 | 400 | 47.4% | 2300 | +11 |
+| [Tcheran](https://github.com/tcheran-chess/tcheran/tree/v2.1) | 2.1 | 2228 | 400 | 51.9% | 2241 | -48 |
+| [Smallbrain](https://github.com/Disservin/Smallbrain/tree/1.1.0) | 1.1 | 2114 | 400 | 71.8% | 2276 | -13 |
 
-Reckless played in both. Against each fit it read below its list rating:
-version 0.2.0 by about 29 in 0.4.8's gauntlet, and 0.4.0 by about 82 in
-0.6.0-rc.3's. In 0.4.8's the five engines' implied ratings spanned 77,
-within the 80 limit, so it stayed in the fit; in 0.6.0-rc.3's they span 121
-with it and 64 without, so it was left out.
+Reckless played in both, and in both it sits above the fit: by 29 in
+0.4.8's gauntlet (2318 against 2289) and by 83 in 0.6.0-rc.3's (2879
+against 2796). In 0.4.8's the five implied ratings spanned 77, from 2241 to
+2318, within the 80 limit, so it stayed in the fit. In 0.6.0-rc.3's they
+span 121 with it, from 2758 to 2879, and 64 without, from 2758 to 2822, so
+it was left out.
 
 The two gauntlets used different engines and different time-control
 scaling (0.4.8's played 2 minutes plus 1 second unscaled, 0.6.0-rc.3's a
@@ -133,9 +138,24 @@ Blunder 8.5.5.
 Before the games, a limit was set on how far the engines may disagree: the
 ratings the eight imply for Cadence may span at most 80 points. With
 Reckless 0.4.0 they span 121, from 2758 to 2879, and without it 64, from
-2758 to 2822. Reckless is not one end of a smooth spread: its own range,
-2854 to 2903 (95% of the time), overlaps none of the other seven's. So the
-estimate is fitted to the seven. With all eight it is 2806, give or take 9.
+2758 to 2822. Reckless is not one end of a smooth spread: the range each
+engine's result implies for Cadence 95% of the time, from the pairs of games
+played on each opening, puts Reckless's above every other engine's.
+
+| Engine | Implied for Cadence | 95% range |
+| --- | ---: | --- |
+| Reckless 0.4.0 | 2879 | 2854 to 2903 |
+| Mess 0.3.0 | 2822 | 2796 to 2848 |
+| Blunder 8.5.5 | 2804 | 2778 to 2831 |
+| Weiawaga 5.0 | 2803 | 2778 to 2828 |
+| Velvet 1.2.0 | 2801 | 2775 to 2827 |
+| Supernova 2.4 | 2795 | 2768 to 2822 |
+| Clovis III | 2792 | 2766 to 2817 |
+| Halogen 8 | 2758 | 2732 to 2784 |
+
+Reckless's lowest, 2854, is above the highest of the other seven, Mess's
+2848. So the estimate is fitted to the seven. With all eight it is 2806,
+give or take 9 (`gauntlet-2026-11-12-ordo-with-reckless.txt`).
 
 ### Results
 
