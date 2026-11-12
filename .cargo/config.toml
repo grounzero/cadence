@@ -72,3 +72,12 @@ rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt"]
 
 [alias]
 xtask = "run --locked --quiet --manifest-path xtask/Cargo.toml --"
+
+# --- Thread stacks for cargo's own runs -----------------------------------
+#
+# The search recurses a frame a ply, and the engine gives its search threads
+# 16 MB (`SEARCH_STACK_BYTES`); a test's search runs on the test harness's
+# thread, which takes its size from `RUST_MIN_STACK`, so tests get the same.
+# It sets an environment variable for what cargo runs and changes no build.
+[env]
+RUST_MIN_STACK = "16777216"
