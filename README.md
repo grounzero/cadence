@@ -195,8 +195,9 @@ included.
   Cadence plays as Mithandros.
 - The authors of [Ethereal](https://github.com/AndyGrant/Ethereal),
   [Obsidian](https://github.com/gab8192/Obsidian),
+  [Reckless](https://github.com/codedeliveryservice/Reckless),
   [Stockfish](https://github.com/official-stockfish/Stockfish) and
-  [Weiss](https://github.com/TerjeKir/weiss), whose open-source engines we
+  [Weiss](https://github.com/TerjeKir/weiss), whose open-source engines were
   studied to understand the techniques Cadence implements in its own code.
 
 ## License
