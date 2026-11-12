@@ -67,6 +67,9 @@ is a choice to make.
   gauntlet's games and fit, and how to check them.
 - Tools: the pre-commit hook rebuilds its boundary checker when any file
   the checker is built from is newer than it, not only its main source.
+- The README is shorter and starts with the install scripts. Setting up an
+  OpenBench worker and creating a test are explained by
+  `python3 openbench/setup-worker.py --help` instead.
 - UCI: under `UCI_LimitStrength`, the engine prints only the lines the GUI
   asked for, and reports the move it plays.
 - UCI: `SyzygyPath` is taken exactly as sent, spaces included.
