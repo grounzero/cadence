@@ -44,12 +44,10 @@ Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/insta
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-The script picks the right binary for your machine from the latest release,
-checks its SHA-256, bench count and version, and installs it to
-`~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows). If no binary fits, it
-offers to build from source. It asks before anything large or outside its own
-folder: building, installing Rust, changing your PATH, or downloading the
-3-4-5 piece Syzygy tablebases.
+It downloads the right binary from the latest release, checks its checksum and
+bench, and installs it to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on
+Windows), or offers to build from source if none fits. It asks before anything
+big: building, installing Rust, changing your PATH or downloading tablebases.
 
 Options: `--version X.Y.Z`, `--dir DIR`, `--generic`, `--source`, `--update`,
 `--uninstall` and `--yes`. If a run fails, attach the log it names to a
