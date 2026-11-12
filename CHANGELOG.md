@@ -17,12 +17,13 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
-## [0.6.0-rc.3] - 2026-11-10
+## [0.6.0-rc.4] - 2026-11-12
 
 A release candidate for 0.6.0, published as a pre-release, after
-0.6.0-rc.2 of 2026-11-08. It adds two fixes to pondering, and proofs that
-CI checks on every change. The release checks run on our own machines have
-passed.
+0.6.0-rc.3 of 2026-11-10. It scores a position where neither side has the
+material to mate as a draw, stops a running search before `position` or a
+new `Hash` takes effect, and has the install scripts ask only where there
+is a choice to make.
 
 ### Added
 
@@ -43,6 +44,29 @@ passed.
 
 ### Changed
 
+- Search: a position where neither side has the material to mate is scored
+  as a draw. The bench rises from 24,819,899 to {{BENCH}} nodes.
+- Install scripts: they ask only before building from source, installing a
+  compiler or Rust, replacing an install, changing the PATH or downloading
+  the tablebases, and state the rest: the build they take, the folder and
+  the binary's check. `--generic` and `--dir` are new names for
+  `--build generic` and `--prefix`, which still work. The tablebase download
+  shows its progress in megabytes and prints the folder for `SyzygyPath` on
+  a line of its own, and after adding to the PATH they say how to run
+  `cadence` before a new terminal opens.
+- Install scripts: without `--version` they take the latest stable release,
+  or where none is published they name the newest pre-release, print the
+  command that installs it and ask. A build from source names the tag it
+  builds, and none is offered when nothing is published. A failed download
+  is described in plain words, with the details in the log.
+- Install scripts: a token in `GITHUB_TOKEN` is sent with their requests to
+  GitHub's API, and a refusal for GitHub's hourly limit on unauthenticated
+  requests is named as one, with what to do.
+- The README gives a table of strength estimates from our own gauntlets
+  against rated engines, and `docs/calibration/strength.md` publishes each
+  gauntlet's games and fit, and how to check them.
+- Tools: the pre-commit hook rebuilds its boundary checker when any file
+  the checker is built from is newer than it, not only its main source.
 - UCI: under `UCI_LimitStrength`, the engine prints only the lines the GUI
   asked for, and reports the move it plays.
 - UCI: `SyzygyPath` is taken exactly as sent, spaces included.
@@ -53,6 +77,20 @@ passed.
 
 ### Fixed
 
+- UCI: `position` sent during a search stops and joins that search first.
+  The search could answer `bestmove` for the old position after the new
+  one had been set.
+- UCI: `setoption name Hash` sent during a search stops and joins that
+  search before the table is resized. The search could end without its
+  `bestmove`.
+- Tools: `perft --divide` writes castling as the position does, the king
+  taking its rook only where a castling king or rook stands off its
+  standard square. A standard position listed `e1h1` and `e1a1`.
+- Tools: `datagen extract` publishes its training and holdout files as a
+  pair, so a failure between the two no longer leaves one of them
+  published.
+- Tools: `bench` runs its searches on the 16 MB stack the engine's search
+  threads have, as the tests now do, rather than the system's default.
 - Pondering: after a ponderhit, the iteration the search was running stops
   at the move's planned time until an iteration completes. It could run on
   to the limit of half the remaining clock and then play the ponder's last
@@ -103,6 +141,12 @@ or take 1.63, a self-play estimate against the build before it at the
 short control, both sides given the tables up to five pieces. This was a
 non-regression test, which asks only whether the change costs strength,
 and it passed at 54,626 games. It is not a rating.
+
+Test 80, for scoring a position with no mating material as a draw:
+{{TEST-80-RESULT}}, a self-play estimate against the build before it at the
+short control. This was a non-regression test, which asks only whether the
+change costs strength, and it passed at {{TEST-80-GAMES}} games. It is not
+a rating.
 
 ## [0.5.23] - 2026-11-03
 
@@ -536,8 +580,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.3...main
-[0.6.0-rc.3]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.3
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.4...main
+[0.6.0-rc.4]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.4
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21
