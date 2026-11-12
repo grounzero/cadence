@@ -305,12 +305,15 @@ function Find-Release {
         return
     }
     $tag = ''
+    # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
+    $headers = @{}
+    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
     Write-Log "downloading $ApiUrl/latest"
     try {
-        $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -ErrorAction Stop
+        $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -Headers $headers -ErrorAction Stop
         $tag = "$($latest.tag_name)"
     } catch {
-        Write-Log "$($_.Exception.Message)"
+        Test-RateLimit (Get-DownloadTrouble $_)
     }
     if ($tag -match '^\d+\.\d+\.\d+$') {
         $script:Version = $tag
@@ -318,9 +321,11 @@ function Find-Release {
     } else {
         Write-Log "downloading ${ApiUrl}?per_page=30"
         try {
-            $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=30" -ErrorAction Stop
+            $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=30" -Headers $headers -ErrorAction Stop
         } catch {
-            Fail "could not read Cadence's releases from GitHub$(Get-DownloadTrouble $_)"
+            $trouble = Get-DownloadTrouble $_
+            Test-RateLimit $trouble
+            Fail "could not read Cadence's releases from GitHub$trouble"
         }
         foreach ($release in $releases) {
             if ("$($release.tag_name)" -match '^\d+\.\d+\.\d+-rc\.\d+$') { $script:Version = "$($release.tag_name)"; break }
@@ -340,6 +345,13 @@ function Find-Release {
     }
     if ($script:Version -ne $InstallerVersion) {
         Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
+    }
+}
+
+# GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
+function Test-RateLimit([string]$Trouble) {
+    if ($Trouble -eq ' (the server answered 403)' -or $Trouble -eq ' (the server answered 429)') {
+        Fail "GitHub refused to name Cadence's releases$($Trouble): it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again."
     }
 }
 
