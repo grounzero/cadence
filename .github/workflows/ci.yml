@@ -460,7 +460,7 @@ jobs:
     steps: *check-steps
 
   # install.sh on every system it names and install.ps1 on Windows, each run with --yes to install the
-  # latest release, and the binary each installed held to that release's bench and id name. Each then
+  # default release, and the binary each installed held to that release's bench and id name. Each then
   # takes that binary from a release folder served on the runner, and builds when its copy is corrupted.
   install:
     name: ${{ matrix.name }}
@@ -604,8 +604,11 @@ jobs:
               ;;
           esac
 
-      # Read here and not from the script, so a script that checked the wrong thing would fail.
+      # Read here and not from the script, so a script that checked the wrong thing would fail: the
+      # latest stable release, or where none is published the newest pre-release, named and offered.
       - name: The installed binary's bench and id name
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             bin="$(cygpath -u "$LOCALAPPDATA")/Cadence/cadence.exe"
@@ -613,9 +616,22 @@ jobs:
             bin="$HOME/.local/bin/cadence"
           fi
           [ -x "$bin" ] || { echo "::error::nothing installed at $bin"; exit 1; }
-          version=$(git ls-remote --tags --refs https://github.com/grounzero/cadence.git \
-            | sed -n 's#.*refs/tags/##p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+          api=https://api.github.com/repos/grounzero/cadence/releases
+          version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api/latest" 2> /dev/null \
+            | sed -n 's/.*"tag_name": *"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' | head -n 1) || version=""
+          if [ -n "$version" ]; then
+            grep -qF "The latest stable release is $version." install.txt \
+              || { echo "::error::the run did not take the latest stable release, $version"; exit 1; }
+          else
+            version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?per_page=30" \
+              | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' \
+              | head -n 1)
+            [ -n "$version" ] || { echo "::error::GitHub lists no release the run could have installed"; exit 1; }
+            grep -qF "No stable release of Cadence exists yet. The newest pre-release is $version." install.txt \
+              || { echo "::error::the run did not name the newest pre-release, $version"; exit 1; }
+            grep -qF "Install pre-release $version? [Y/n]: y (--yes)" install.txt \
+              || { echo "::error::the run did not offer the newest pre-release, $version"; exit 1; }
+          fi
           git fetch --quiet --depth 1 origin "+refs/tags/$version:refs/tags/$version"
           want=$(git show "$version:bench.txt" | tr -d '[:space:]')
           got=$("$bin" bench | tr -d '\r' | tail -n 1 | awk '{print $1}')

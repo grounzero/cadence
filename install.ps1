@@ -43,14 +43,16 @@ Usage: install.ps1 [options]
 
 Installs Cadence's release binary for this system once its checksum and bench match the
 release's, or builds it from source where no binary fits. It asks before building, installing a
-compiler or Rust, replacing an install, changing your PATH or downloading tablebases.
+compiler or Rust, replacing an install, changing your PATH or downloading tablebases. Without
+--version it takes the latest stable release, or where none is published the newest pre-release,
+asked first; a build from source names the tag it builds.
 
-  --version V      this release rather than the latest; with --source, also a test base x.y.z+n
+  --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
   --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the latest release over an installed Cadence
+  --update         install the default release, or --version's, over an installed Cadence
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
@@ -294,30 +296,67 @@ function Confirm-System {
 
 # --- The release binary ------------------------------------------------------------------------
 
-# GitHub's latest release is the newest published one that is not a candidate, so its files can be read.
+# GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
+# pre-release is offered instead, and with neither nothing is built.
 function Find-Release {
     Step 'Finding the release'
     if ($script:Version) {
         Say "Release $script:Version, as asked."
-        return $true
+        return
     }
     $tag = ''
-    $detail = ''
     Write-Log "downloading $ApiUrl/latest"
     try {
         $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -ErrorAction Stop
         $tag = "$($latest.tag_name)"
     } catch {
-        $detail = " ($($_.Exception.Message))"
-        Write-Log $detail
+        Write-Log "$($_.Exception.Message)"
     }
-    if ($tag -notmatch '^\d+\.\d+\.\d+$') {
-        $script:Why = "GitHub names no published release$detail, so there is no binary to install."
-        return $false
+    if ($tag -match '^\d+\.\d+\.\d+$') {
+        $script:Version = $tag
+        Say "The latest stable release is $tag."
+    } else {
+        Write-Log "downloading ${ApiUrl}?per_page=30"
+        try {
+            $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=30" -ErrorAction Stop
+        } catch {
+            Fail "could not read Cadence's releases from GitHub$(Get-DownloadTrouble $_)"
+        }
+        foreach ($release in $releases) {
+            if ("$($release.tag_name)" -match '^\d+\.\d+\.\d+-rc\.\d+$') { $script:Version = "$($release.tag_name)"; break }
+        }
+        if (-not $script:Version) {
+            if ($script:Source) { Stop-Install 'With no published release, --source needs --version.' }
+            Say 'Cadence has no published release yet, so there is no binary to install.'
+            Stop-Install '--source --version X.Y.Z builds a tagged version from source.'
+        }
+        Say "No stable release of Cadence exists yet. The newest pre-release is $script:Version."
+        if (-not $script:Source) {
+            Say 'To install it without this question:'
+            $update = if ($script:Mode -eq 'update') { ' --update' } else { '' }
+            Say "powershell -ExecutionPolicy Bypass -File install.ps1$update --version $script:Version"
+            if (-not (Ask "Install pre-release $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
+        }
     }
-    $script:Version = $tag
-    Say "The latest release is $tag."
-    return $true
+    if ($script:Version -ne $InstallerVersion) {
+        Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
+    }
+}
+
+# Why a download failed, in plain words and parentheses; the exception's own text goes to the log.
+function Get-DownloadTrouble($Failure) {
+    $exception = $Failure.Exception
+    Write-Log "$($exception.Message)"
+    $code = 0
+    if ($exception.PSObject.Properties['Response'] -and $exception.Response) {
+        try { $code = [int]$exception.Response.StatusCode } catch { $code = 0 }
+    }
+    if ($code -eq 404) { return ' (not found)' }
+    if ($code) { return " (the server answered $code)" }
+    $message = "$($exception.Message)"
+    if ($message -match 'could not be resolved|Unable to connect|No such host|actively refused|network') { return ' (no connection to the server)' }
+    if ($message -match 'timed out') { return ' (timed out)' }
+    return ' (the log has the details)'
 }
 
 # The empty string once the file is in the work folder, or why it is not, in parentheses.
@@ -328,8 +367,7 @@ function Save-Asset([string]$Name) {
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $Work $Name) -ErrorAction Stop
         return ''
     } catch {
-        Write-Log "$($_.Exception.Message)"
-        return " ($($_.Exception.Message))"
+        return (Get-DownloadTrouble $_)
     }
 }
 
@@ -418,8 +456,7 @@ function Request-Source {
         Say "$DataDir has $free MB free."
         if ($free -lt 2048) { Say 'That may not be enough.' }
     } catch { }
-    $what = if ($script:Version) { "Cadence $script:Version" } else { "Cadence's latest release" }
-    if (-not (Ask "Build $what from source?" $true)) { Stop-Install 'Nothing was installed.' }
+    if (-not (Ask "Build Cadence $($script:Version) from source, at its tag $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
 }
 
 function Test-Git {
@@ -471,7 +508,7 @@ function Install-Rustup {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "https://win.rustup.rs/$rustupArch" -OutFile $init -ErrorAction Stop
     } catch {
-        Fail "could not download rustup-init.exe: $($_.Exception.Message)"
+        Fail "could not download rustup-init.exe$(Get-DownloadTrouble $_)"
     }
     if ((Invoke-Logged $init @('-y', '--default-toolchain', 'none')) -ne 0) { Fail "rustup's install failed" }
     $env:Path = "$CargoBin;$env:Path"
@@ -505,7 +542,7 @@ function Test-Rust {
     }
 }
 
-# The tag the source is fetched at: the version asked for or found, or with neither the highest x.y.z.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's.
 function Resolve-Tag {
     Write-Log "`$ git ls-remote --tags --refs $RepoUrl"
     $listing = git ls-remote --tags --refs $RepoUrl 2>&1
@@ -514,12 +551,7 @@ function Resolve-Tag {
         Fail "could not list the releases at $RepoUrl"
     }
     $tags = @($listing | ForEach-Object { "$_" -replace '^.*refs/tags/', '' })
-    if (-not $script:Version) {
-        $releases = @($tags | Where-Object { $_ -match '^\d+\.\d+\.\d+$' } | Sort-Object { [version]$_ })
-        if ($releases.Count -eq 0) { Fail "there is no release at $RepoUrl" }
-        $script:Version = $releases[-1]
-        Say "The latest release is $script:Version."
-    } elseif ($tags -notcontains $script:Version) {
+    if ($tags -notcontains $script:Version) {
         if ($script:Version.Contains('+')) { Fail "there is no test base $script:Version at $RepoUrl" }
         Fail "there is no release $script:Version at $RepoUrl"
     }
@@ -697,7 +729,7 @@ function Get-Tables {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/sha256" -OutFile $sums -ErrorAction Stop
     } catch {
-        Fail "could not download the tables' published checksums: $($_.Exception.Message)"
+        Fail "could not download the tables' published checksums$(Get-DownloadTrouble $_)"
     }
     $wanted = @(Get-Content -Path $sums | ForEach-Object {
         $parts = $_ -split '\s+'
@@ -723,7 +755,7 @@ function Get-Tables {
             try {
                 Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/$group/$($table.File)" -OutFile $part -ErrorAction Stop
             } catch {
-                Fail "could not download $($table.File)"
+                Fail "could not download $($table.File)$(Get-DownloadTrouble $_)"
             }
             if ((Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower() -ne $table.Sum) {
                 Remove-Item -Force $part
@@ -806,7 +838,8 @@ try {
         Test-Version
         New-Item -ItemType Directory -Force -Path $Work | Out-Null
         Confirm-System
-        if (-not $script:Source -and (Find-Release)) { Test-Binary }
+        if (-not $script:Source -or -not $script:Version) { Find-Release }
+        if (-not $script:Source) { Test-Binary }
         if (-not $script:Built) {
             Request-Source
             Test-Git

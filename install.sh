@@ -40,14 +40,16 @@ Usage: install.sh [options]
 
 Installs Cadence's release binary for this system once its checksum and bench match the
 release's, or builds it from source where no binary fits. It asks before building, installing a
-compiler or Rust, replacing an install, changing your PATH or downloading tablebases.
+compiler or Rust, replacing an install, changing your PATH or downloading tablebases. Without
+--version it takes the latest stable release, or where none is published the newest pre-release,
+asked first; a build from source names the tag it builds.
 
-  --version V      this release rather than the latest; with --source, also a test base x.y.z+n
+  --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
   --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the latest release over an installed Cadence
+  --update         install the default release, or --version's, over an installed Cadence
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
@@ -258,21 +260,45 @@ checksum() {
         | awk '{print $1}'
 }
 
+# A quiet wget says nothing when it fails, so its exit status is put into words for said().
 download() {
+    local rc=0
     if command -v curl > /dev/null 2>&1; then
         curl -fsSL --retry 3 -o "$2" "$1"
     elif command -v wget > /dev/null 2>&1; then
-        wget -q -O "$2" "$1"
+        wget -q -O "$2" "$1" || rc=$?
+        case "$rc" in
+            0) ;;
+            4) echo "wget: network failure" >&2 ;;
+            8) echo "wget: the server answered with an error" >&2 ;;
+            *) echo "wget: exit $rc" >&2 ;;
+        esac
+        return "$rc"
     else
         fail "neither curl nor wget is installed, so nothing can be downloaded"
     fi
 }
 
-# The last line a failed download wrote, in parentheses, or nothing.
+# Why the last download failed, in plain words and parentheses, or nothing; the raw text is logged.
 said() {
-    local last
+    local last code
     last=$(tail -n 1 "$OUT" 2>/dev/null | tr -d '\r')
-    [ -z "$last" ] || printf ' (%s)' "$last"
+    [ -n "$last" ] || return 0
+    code=$(printf '%s' "$last" | grep -oE 'returned error: [0-9]{3}' | grep -oE '[0-9]{3}' | head -n 1)
+    case "$code" in
+        404) printf ' (not found)' ;;
+        ?*) printf ' (the server answered %s)' "$code" ;;
+        *)
+            case "$last" in
+                *"resolve host"* | *"Failed to connect"* | *"connect to server"* | *"Connection refused"* \
+                    | *"network failure"* | *"Network is unreachable"*)
+                    printf ' (no connection to the server)' ;;
+                *"timed out"* | *"Timed out"*) printf ' (timed out)' ;;
+                *"answered with an error"*) printf ' (the server answered with an error)' ;;
+                *) printf ' (the log has the details)' ;;
+            esac
+            ;;
+    esac
 }
 
 system_report() {
@@ -401,7 +427,8 @@ release_name() {
     esac
 }
 
-# GitHub's latest release is the newest published one that is not a candidate, so its files can be read.
+# GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
+# pre-release is offered instead, and with neither nothing is built.
 find_release() {
     step "Finding the release"
     if [ -n "$VERSION" ]; then
@@ -414,12 +441,31 @@ find_release() {
         tag=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
     fi
     redact < "$OUT" >> "$LOG"
-    if ! printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
-        WHY="GitHub names no published release$(said), so there is no binary to install."
-        return 1
+    if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+        VERSION=$tag
+        say "The latest stable release is $VERSION."
+    else
+        log "\$ download $API_URL?per_page=30"
+        if ! download "$API_URL?per_page=30" "$WORK/releases.json" 2> "$OUT"; then
+            redact < "$OUT" >> "$LOG"
+            fail "could not read Cadence's releases from GitHub$(said)"
+        fi
+        VERSION=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/releases.json" | sed 's/.*"\([^"]*\)"$/\1/' \
+            | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+' | head -n 1)
+        if [ -z "$VERSION" ]; then
+            [ "$SOURCE" != 1 ] || stop "With no published release, --source needs --version."
+            say "Cadence has no published release yet, so there is no binary to install."
+            stop "--source --version X.Y.Z builds a tagged version from source."
+        fi
+        say "No stable release of Cadence exists yet. The newest pre-release is $VERSION."
+        if [ "$SOURCE" != 1 ]; then
+            say "To install it without this question:"
+            if [ "$MODE" = update ]; then say "bash install.sh --update --version $VERSION"; else say "bash install.sh --version $VERSION"; fi
+            ask "Install pre-release $VERSION?" y || stop "Nothing was installed."
+        fi
     fi
-    VERSION=$tag
-    say "The latest release is $VERSION."
+    [ "$VERSION" = "$INSTALLER_VERSION" ] \
+        || say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
 }
 
 # The SHA-256 the release's SHA256SUMS gives a file, or nothing.
@@ -500,14 +546,13 @@ offer_source() {
     say "Building takes several minutes and about 2 GB of disk space, for the source, the Rust"
     say "version Cadence pins if it is not installed yet, and the build. Both are estimates."
     mkdir -p "$DATA_DIR" || fail "cannot create $DATA_DIR"
-    local free what="Cadence's latest release"
+    local free
     free=$(df -Pk "$DATA_DIR" 2>/dev/null | awk 'NR == 2 {print int($4 / 1024)}')
     if [ -n "$free" ]; then
         say "$(shown "$DATA_DIR") has $free MB free."
         [ "$free" -ge 2048 ] || say "That may not be enough."
     fi
-    [ -z "$VERSION" ] || what="Cadence $VERSION"
-    ask "Build $what from source?" y || stop "Nothing was installed."
+    ask "Build Cadence $VERSION from source, at its tag $VERSION?" y || stop "Nothing was installed."
 }
 
 check_git() {
@@ -596,7 +641,10 @@ install_rustup() {
     if [ "$OS" = windows ]; then
         local arch=x86_64
         [ "$ARCH" = x86_64 ] || arch=aarch64
-        run download "https://win.rustup.rs/$arch" "$WORK/rustup-init.exe" || fail "could not download rustup-init.exe"
+        if ! download "https://win.rustup.rs/$arch" "$WORK/rustup-init.exe" 2> "$OUT"; then
+            redact < "$OUT" >> "$LOG"
+            fail "could not download rustup-init.exe$(said)"
+        fi
         run "$WORK/rustup-init.exe" -y --default-toolchain none || fail "rustup's install failed"
     else
         command -v curl > /dev/null 2>&1 || fail "curl is needed to install rustup; install curl, or Rust from https://rustup.rs"
@@ -638,7 +686,7 @@ check_rust() {
     esac
 }
 
-# The tag the source is fetched at: the version asked for or found, or with neither the highest x.y.z.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's.
 resolve_tag() {
     local tags
     log "\$ git ls-remote --tags --refs $REPO_URL"
@@ -647,12 +695,7 @@ resolve_tag() {
         fail "could not list the releases at $REPO_URL"
     }
     tags=$(printf '%s\n' "$tags" | sed -n 's#.*refs/tags/##p')
-    if [ -z "$VERSION" ]; then
-        VERSION=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-        [ -n "$VERSION" ] || fail "there is no release at $REPO_URL"
-        say "The latest release is $VERSION."
-    elif ! printf '%s\n' "$tags" | grep -Fqx -- "$VERSION"; then
+    if ! printf '%s\n' "$tags" | grep -Fqx -- "$VERSION"; then
         case "$VERSION" in
             *+*) fail "there is no test base $VERSION at $REPO_URL" ;;
             *) fail "there is no release $VERSION at $REPO_URL" ;;
@@ -838,7 +881,10 @@ offer_tables() {
     ask "Download them now?" n || { say "Skipped."; return 0; }
     local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0 bytes=0
     mkdir -p "$dir" || fail "cannot create $dir"
-    run download "$TABLES_URL/sha256" "$WORK/sha256" || fail "could not download the tables' published checksums"
+    if ! download "$TABLES_URL/sha256" "$WORK/sha256" 2> "$OUT"; then
+        redact < "$OUT" >> "$LOG"
+        fail "could not download the tables' published checksums$(said)"
+    fi
     awk '{n = $2; sub(/\.rtb[wz]$/, "", n); gsub(/v/, "", n); if (length(n) <= 5) print}' \
         "$WORK/sha256" > "$WORK/3-4-5.sha256"
     count=$(wc -l < "$WORK/3-4-5.sha256" | tr -d ' ')
@@ -851,7 +897,8 @@ offer_tables() {
             *) fail "the published checksums name $file, which is not a table" ;;
         esac
         if [ ! -f "$dir/$file" ] || [ "$(checksum "$dir/$file")" != "$sum" ]; then
-            download "$TABLES_URL/$group/$file" "$dir/$file.part" || fail "could not download $file"
+            download "$TABLES_URL/$group/$file" "$dir/$file.part" 2> "$OUT" \
+                || { redact < "$OUT" >> "$LOG"; fail "could not download $file$(said)"; }
             [ "$(checksum "$dir/$file.part")" = "$sum" ] \
                 || { rm -f "$dir/$file.part"; fail "$file does not match its published checksum"; }
             mv -f "$dir/$file.part" "$dir/$file" || fail "could not write $dir/$file"
@@ -931,7 +978,8 @@ say "compiler or Rust, replacing an install, changing your PATH or downloading t
 check_version
 mkdir -p "$WORK" || fail "cannot create $WORK"
 confirm_system
-[ "$SOURCE" = 1 ] || { find_release && try_binary; }
+if [ "$SOURCE" != 1 ] || [ -z "$VERSION" ]; then find_release; fi
+[ "$SOURCE" = 1 ] || try_binary
 if [ -z "$BUILT" ]; then
     offer_source
     check_git
