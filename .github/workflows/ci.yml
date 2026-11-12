@@ -567,7 +567,8 @@ jobs:
           $log = [regex]::Match($out, 'The log is at (.+)\.\r?\n').Groups[1].Value
           if (-not $log -or -not (Test-Path $log)) { throw "no log at $log" }
           if (-not (Select-String -Path $log -Pattern 'there is no release 0.0.0' -SimpleMatch -Quiet)) { throw 'the log does not say why' }
-          if (-not $out.Contains('publishes no checksum file (not found)')) { throw 'the missing release was not described as not found' }
+          if ($out -notmatch 'publishes no checksum file \(') { throw 'the missing release was not described' }
+          if ($out -match 'The remote server returned|The request was aborted') { throw 'install.ps1 showed a raw download error' }
           $version = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
           if (-not $version) { throw 'install.ps1 names no $InstallerVersion' }
           if (-not $out.StartsWith("Cadence installer $version")) { throw "the run does not open with Cadence installer $version" }

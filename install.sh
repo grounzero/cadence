@@ -294,6 +294,7 @@ said() {
                     | *"network failure"* | *"Network is unreachable"*)
                     printf ' (no connection to the server)' ;;
                 *"timed out"* | *"Timed out"*) printf ' (timed out)' ;;
+                *"Connection reset"* | *"Recv failure"* | *"closed"*) printf ' (the server closed the connection)' ;;
                 *"answered with an error"*) printf ' (the server answered with an error)' ;;
                 *) printf ' (the log has the details)' ;;
             esac

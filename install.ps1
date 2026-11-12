@@ -357,6 +357,7 @@ function Get-DownloadTrouble($Failure) {
     $message = "$($exception.Message)"
     if ($message -match 'could not be resolved|Unable to connect|No such host|actively refused|network') { return ' (no connection to the server)' }
     if ($message -match 'timed out') { return ' (timed out)' }
+    if ($message -match 'closed unexpectedly|connection was closed|was aborted') { return ' (the server closed the connection)' }
     return ' (the log has the details)'
 }
 
