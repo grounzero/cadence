@@ -127,13 +127,13 @@ root of the repository, with Ordo 1.2.6:
 
 ```sh
 ordo -Q -D -s 1000 \
-  -m docs/calibration/ccrl-blitz-anchors-2026-10-24-without-reckless.csv \
-  -p docs/calibration/ccrl-blitz-gauntlet-2026-11-11.pgn
+  -m docs/calibration/anchors-2026-11-12.csv \
+  -p docs/calibration/gauntlet-2026-11-12.pgn
 ```
 
-With `ccrl-blitz-anchors-2026-10-24.csv` in place of the first file, the fit
-takes all eight engines. The "give or take" figure can change a little
-between runs, because Ordo estimates it by simulation.
+With `anchors-2026-11-12-with-reckless.csv` in place of the first file,
+the fit takes all eight engines. The "give or take" figure can change a
+little between runs, because Ordo estimates it by simulation.
 
 The games are the PGN the match runner wrote, with one change: four accented
 letters in some opening names are spelled without their accents, because
@@ -142,11 +142,11 @@ other tag are as written.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| [`ccrl-blitz-gauntlet-2026-11-11.pgn`](ccrl-blitz-gauntlet-2026-11-11.pgn) | 16,784,750 | `fbbb30e075af8a1f5157ad4a40e07948e6aa21b88155efc9dae05e2da82555db` |
-| [`ccrl-blitz-anchors-2026-10-24-without-reckless.csv`](ccrl-blitz-anchors-2026-10-24-without-reckless.csv) | 219 | `d51a560f4a6eb815d9b86df238a4d8c055431b92a65510e6b95867688e9d3630` |
-| [`ccrl-blitz-anchors-2026-10-24.csv`](ccrl-blitz-anchors-2026-10-24.csv) | 253 | `83243ae0423f7dba052baa2c9c5a128df166111097354f64e11fdcb7a02b4ba3` |
-| [`ccrl-blitz-gauntlet-2026-11-11-ordo.txt`](ccrl-blitz-gauntlet-2026-11-11-ordo.txt) | 822 | `3d2244476d7f0ac6b5d2ffc521ea60f8a481093c21fa95c75a9670fda3f36473` |
-| [`ccrl-blitz-gauntlet-2026-11-11-ordo-with-reckless.txt`](ccrl-blitz-gauntlet-2026-11-11-ordo-with-reckless.txt) | 822 | `b3d9d5f76202864e5785efcc3d3745ee9d2588c9843280ec2e279075211eec41` |
+| [`gauntlet-2026-11-12.pgn`](gauntlet-2026-11-12.pgn) | 16,784,750 | `fbbb30e075af8a1f5157ad4a40e07948e6aa21b88155efc9dae05e2da82555db` |
+| [`anchors-2026-11-12.csv`](anchors-2026-11-12.csv) | 219 | `d51a560f4a6eb815d9b86df238a4d8c055431b92a65510e6b95867688e9d3630` |
+| [`anchors-2026-11-12-with-reckless.csv`](anchors-2026-11-12-with-reckless.csv) | 253 | `83243ae0423f7dba052baa2c9c5a128df166111097354f64e11fdcb7a02b4ba3` |
+| [`gauntlet-2026-11-12-ordo.txt`](gauntlet-2026-11-12-ordo.txt) | 822 | `3d2244476d7f0ac6b5d2ffc521ea60f8a481093c21fa95c75a9670fda3f36473` |
+| [`gauntlet-2026-11-12-ordo-with-reckless.txt`](gauntlet-2026-11-12-ordo-with-reckless.txt) | 822 | `b3d9d5f76202864e5785efcc3d3745ee9d2588c9843280ec2e279075211eec41` |
 
 ## 0.4.8: about 2289
 
@@ -167,15 +167,15 @@ root of the repository, with Ordo 1.2.6:
 
 ```sh
 ordo -Q -D -s 2000 \
-  -m docs/calibration/ccrl-blitz-anchors-2026-09-05.csv \
-  -p docs/calibration/ccrl-blitz-gauntlet-2026-09-28.pgn
+  -m docs/calibration/anchors-2026-09-05.csv \
+  -p docs/calibration/gauntlet-2026-09-28.pgn
 ```
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| [`ccrl-blitz-gauntlet-2026-09-28.pgn`](ccrl-blitz-gauntlet-2026-09-28.pgn) | 7,306,342 | `e02d73679026e2b9185f9f6b36745fd3bbb960d0ef86cf30b228965b2d78ee25` |
-| [`ccrl-blitz-anchors-2026-09-05.csv`](ccrl-blitz-anchors-2026-09-05.csv) | 102 | `62ae77e079fe7fe235f43316114a448bdc1d91397b3536c779b5598acc1c3146` |
-| [`ccrl-blitz-gauntlet-2026-09-28-ordo.txt`](ccrl-blitz-gauntlet-2026-09-28-ordo.txt) | 516 | `2c429fe6b8bb0d4d5d82aaa5712f355ed9903101b9da25743339a6686c010c63` |
+| [`gauntlet-2026-09-28.pgn`](gauntlet-2026-09-28.pgn) | 7,306,342 | `e02d73679026e2b9185f9f6b36745fd3bbb960d0ef86cf30b228965b2d78ee25` |
+| [`anchors-2026-09-05.csv`](anchors-2026-09-05.csv) | 102 | `62ae77e079fe7fe235f43316114a448bdc1d91397b3536c779b5598acc1c3146` |
+| [`gauntlet-2026-09-28-ordo.txt`](gauntlet-2026-09-28-ordo.txt) | 516 | `2c429fe6b8bb0d4d5d82aaa5712f355ed9903101b9da25743339a6686c010c63` |
 
 ## On Lichess: 2222 blitz
 
