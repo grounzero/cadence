@@ -2,8 +2,9 @@
 #
 # Installs the release binary for this system once its checksum and bench match the release's, or
 # builds Cadence from source at the release's tag where no binary fits or the check fails, on Windows
-# with PowerShell alone; install.sh does the same in Git Bash, WSL, Linux and macOS. Every step asks
-# first unless --yes is given.
+# with PowerShell alone; install.sh does the same in Git Bash, WSL, Linux and macOS. It asks before
+# building, installing a compiler or Rust, replacing an install, changing the PATH or downloading
+# tablebases, unless --yes is given.
 
 Set-StrictMode -Version 2.0
 # Native programs report through their exit codes, which are read one by one, so their error output
@@ -17,6 +18,8 @@ $ApiUrl = 'https://api.github.com/repos/grounzero/cadence/releases'
 # Each release's files, by version; a test points it at a folder it serves itself.
 $AssetsUrl = if ($env:CADENCE_RELEASES_URL) { $env:CADENCE_RELEASES_URL } else { 'https://github.com/grounzero/cadence/releases/download' }
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
+# The 290 tables of five pieces or fewer, in bytes, so their progress has a total before any arrives.
+$TablesBytes = 983957920
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
 $InstallerVersion = '0.6.0-rc.3'
@@ -39,10 +42,12 @@ function Show-Usage {
 Usage: install.ps1 [options]
 
 Installs Cadence's release binary for this system once its checksum and bench match the
-release's, or builds it from source where no binary fits. Every step asks first.
+release's, or builds it from source where no binary fits. It asks before building, installing a
+compiler or Rust, replacing an install, changing your PATH or downloading tablebases.
 
   --version V      this release rather than the latest; with --source, also a test base x.y.z+n
-  --prefix DIR     install into DIR rather than the default folder
+  --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
+  --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
   --update         install the latest release over an installed Cadence
@@ -65,13 +70,14 @@ while ($i -lt $args.Count) {
         '^-{1,2}update$' { $script:Mode = 'update' }
         '^-{1,2}uninstall$' { $script:Mode = 'uninstall' }
         '^-{1,2}source$' { $script:Source = $true }
-        '^-{1,2}(version|prefix|build)$' {
+        '^-{1,2}generic$' { $script:Build = 'generic' }
+        '^-{1,2}(version|dir|prefix|build)$' {
             if ($i + 1 -ge $args.Count) { Write-Host "$arg needs a value"; exit 2 }
             $i++
             $value = [string]$args[$i]
             switch -Regex ($arg) {
                 'version' { $script:Version = $value }
-                'prefix' { $script:Prefix = $value }
+                '(dir|prefix)$' { $script:Prefix = $value }
                 'build' { $script:Build = $value }
             }
         }
@@ -91,7 +97,7 @@ switch ($machine) {
     'ARM64' { $Arch = 'aarch64' }
     default { Write-Host "This processor, $machine, is not one Cadence is built for."; exit 1 }
 }
-if (-not $env:LOCALAPPDATA) { Write-Host 'LOCALAPPDATA is not set, so give --prefix.'; exit 1 }
+if (-not $env:LOCALAPPDATA) { Write-Host 'LOCALAPPDATA is not set, so give --dir.'; exit 1 }
 $AppDir = Join-Path $env:LOCALAPPDATA 'Cadence'
 $DefaultPrefix = $AppDir
 $DataDir = $AppDir
@@ -263,7 +269,6 @@ function Confirm-System {
     if ($Arch -ne 'x86_64') {
         $script:Build = 'native'
         Say 'Windows on arm64, which Cadence has one build for.'
-        if (-not (Ask 'Is that right?' $true)) { Stop-Install 'Nothing was installed.' }
         return
     }
     # PF_AVX2_INSTRUCTIONS_AVAILABLE. Windows names no flag for BMI1, LZCNT or POPCNT, which every
@@ -278,16 +283,12 @@ function Confirm-System {
     if ($script:Build -eq 'avx2' -and -not $avx2) {
         Fail '--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks AVX2'
     } elseif ($script:Build) {
-        Say "The $script:Build build, as --build asks."
+        Say "The $script:Build build, as asked."
     } elseif ($avx2) {
-        if (Ask 'Use the AVX2 build? No takes the generic build, for any x86-64 with POPCNT.' $true) {
-            $script:Build = 'avx2'
-        } else {
-            $script:Build = 'generic'
-        }
+        $script:Build = 'avx2'
+        Say '--generic takes the generic build instead, for any x86-64 with POPCNT.'
     } else {
         $script:Build = 'generic'
-        if (-not (Ask 'Is that right?' $true)) { Stop-Install 'Nothing was installed.' }
     }
 }
 
@@ -361,9 +362,6 @@ function Test-Binary {
         return
     }
     Say "Release $script:Version has a binary for this system: $file."
-    if (-not (Ask 'Download it and check it?' $true)) {
-        Stop-Install 'Nothing was installed; --source builds Cadence from source instead.'
-    }
 
     Step "Checking $file"
     $failed = Save-Asset $file
@@ -641,19 +639,13 @@ function Install-Binary {
     $previous = Get-StateValue 'binary'
     if ($script:Prefix) {
         $dest = $script:Prefix
-        Say "Installing into $dest, as --prefix asks."
+        Say "Installing into $dest, as --dir asks."
     } elseif ($script:Mode -eq 'update' -and $previous) {
         $dest = Split-Path -Parent $previous
         Say "Installing into $dest, where Cadence was installed before."
     } else {
-        Say "The default folder is $DefaultPrefix."
-        if (Ask 'Install Cadence there?' $true) {
-            $dest = $DefaultPrefix
-        } else {
-            $dest = Read-Host 'Folder to install in'
-            Write-Log "Folder to install in: $dest"
-            if (-not $dest) { Stop-Install 'No folder was given; nothing was installed.' }
-        }
+        $dest = $DefaultPrefix
+        Say "Installing into $dest, the default folder; --dir DIR installs into DIR instead."
     }
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     $script:Target = Join-Path $dest 'cadence.exe'
@@ -672,7 +664,7 @@ function Install-Binary {
     Say "Installed $script:Target."
 }
 
-# A folder named with --prefix is the caller's to manage, so the offer defaults to no there.
+# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
 function Add-ToPath {
     $dest = Split-Path -Parent $script:Target
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -685,7 +677,13 @@ function Add-ToPath {
     if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" (-not $script:Prefix))) { return }
     [Environment]::SetEnvironmentVariable('Path', (($entries + $dest) -join ';'), 'User')
     Set-StateValue 'path_windows' $dest
-    Say 'Added. Terminals opened from now on find cadence.'
+    # Each command on a line of its own, so it can be copied whole; a path with a space or a quote runs
+    # through &.
+    Say 'Added. This window will not find cadence until you open a new one. To run it here now:'
+    Say $(if ($script:Target -match "[ ']") { "& '" + $script:Target.Replace("'", "''") + "'" } else { $script:Target })
+    Say "or put it on this window's PATH with:"
+    Say ("`$env:Path = '" + $dest.Replace("'", "''") + ";' + `$env:Path")
+    Say 'If a new Windows Terminal tab still does not find cadence, close all of its windows and start it again.'
 }
 
 function Get-Tables {
@@ -711,6 +709,7 @@ function Get-Tables {
     if ($wanted.Count -ne 290) { Fail "the published checksums list $($wanted.Count) tables of five pieces or fewer, not 290" }
     Set-StateValue 'tables' $dir
     $checked = 0
+    $bytes = 0
     foreach ($table in $wanted) {
         $group = switch -Regex ($table.File) {
             '\.rtbw$' { '3-4-5-wdl' }
@@ -733,10 +732,14 @@ function Get-Tables {
             Move-Item -Force -Path $part -Destination $path
         }
         $checked++
-        if ($checked % 29 -eq 0) { Say "  $checked of 290 checked" }
+        $bytes += (Get-Item -LiteralPath $path).Length
+        if ($checked % 29 -eq 0) {
+            Say ("  $checked of 290 downloaded and checked, {0} of {1} MB" -f [math]::Floor($bytes / 1MB), [math]::Floor($TablesBytes / 1MB))
+        }
     }
     Say "All 290 tables are in $dir, each matching its published checksum."
-    Say 'To use them, set the engine option SyzygyPath to that folder in your chess program.'
+    Say 'To use them, set the engine option SyzygyPath in your chess program to this folder:'
+    Say $dir
 }
 
 function Show-Done {
@@ -798,7 +801,8 @@ try {
     } else {
         Step "Cadence's installer"
         Say "This installs Cadence's release binary for this system once its checksum and bench match the"
-        Say "release's, or builds it from source where no binary fits. Each step asks first."
+        Say "release's, or builds it from source where no binary fits. It asks before building, installing a"
+        Say 'compiler or Rust, replacing an install, changing your PATH or downloading tablebases.'
         Test-Version
         New-Item -ItemType Directory -Force -Path $Work | Out-Null
         Confirm-System

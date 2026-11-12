@@ -3,7 +3,8 @@
 #
 # Installs the release binary for this system once its checksum and bench match the release's, or
 # builds Cadence from source at the release's tag where no binary fits or the check fails, on Linux,
-# macOS, and Windows under Git Bash or WSL. Every step asks first unless --yes is given.
+# macOS, and Windows under Git Bash or WSL. It asks before building, installing a compiler or Rust,
+# replacing an install, changing the PATH or downloading tablebases, unless --yes is given.
 
 set -u
 
@@ -13,6 +14,8 @@ API_URL="https://api.github.com/repos/grounzero/cadence/releases"
 # Each release's files, by version; a test points it at a folder it serves itself.
 ASSETS_URL="${CADENCE_RELEASES_URL:-https://github.com/grounzero/cadence/releases/download}"
 TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
+# The 290 tables of five pieces or fewer, in bytes, so their progress has a total before any arrives.
+TABLES_BYTES=983957920
 MARK="# Added by the Cadence installer"
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
@@ -36,10 +39,12 @@ usage() {
 Usage: install.sh [options]
 
 Installs Cadence's release binary for this system once its checksum and bench match the
-release's, or builds it from source where no binary fits. Every step asks first.
+release's, or builds it from source where no binary fits. It asks before building, installing a
+compiler or Rust, replacing an install, changing your PATH or downloading tablebases.
 
   --version V      this release rather than the latest; with --source, also a test base x.y.z+n
-  --prefix DIR     install into DIR rather than the default folder
+  --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
+  --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
   --update         install the latest release over an installed Cadence
@@ -60,11 +65,12 @@ while [ $# -gt 0 ]; do
         --update) MODE=update ;;
         --uninstall) MODE=uninstall ;;
         --source) SOURCE=1 ;;
-        --version | --prefix | --build)
+        --generic) BUILD=generic ;;
+        --version | --dir | --prefix | --build)
             [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
             case "$1" in
                 --version) VERSION=$2 ;;
-                --prefix) PREFIX=$2 ;;
+                --dir | --prefix) PREFIX=$2 ;;
                 --build) BUILD=$2 ;;
             esac
             shift
@@ -105,7 +111,7 @@ esac
 if [ "$OS" = macos ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then ARCH=aarch64; fi
 
 if [ "$OS" = windows ]; then
-    [ -n "${LOCALAPPDATA:-}" ] || { echo "LOCALAPPDATA is not set, so give --prefix." >&2; exit 1; }
+    [ -n "${LOCALAPPDATA:-}" ] || { echo "LOCALAPPDATA is not set, so give --dir." >&2; exit 1; }
     APP_DIR="$(cygpath -u "$LOCALAPPDATA")/Cadence"
     DEFAULT_PREFIX=$APP_DIR
     DATA_DIR=$APP_DIR
@@ -355,7 +361,6 @@ confirm_system() {
     if [ "$ARCH" != x86_64 ]; then
         BUILD=native
         say "$(describe_system), which Cadence has one build for."
-        ask "Is that right?" y || stop "Nothing was installed."
         return
     fi
     x86_level
@@ -372,16 +377,12 @@ confirm_system() {
         [ -n "$LACKS" ] || fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor's features could not be read"
         fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $LACKS"
     elif [ -n "$BUILD" ]; then
-        say "The $BUILD build, as --build asks."
+        say "The $BUILD build, as asked."
     elif [ "$LEVEL" = avx2 ]; then
-        if ask "Use the AVX2 build? No takes the generic build, for any x86-64 with POPCNT." y; then
-            BUILD=avx2
-        else
-            BUILD=generic
-        fi
+        BUILD=avx2
+        say "--generic takes the generic build instead, for any x86-64 with POPCNT."
     else
         BUILD=generic
-        ask "Is that right?" y || stop "Nothing was installed."
     fi
 }
 
@@ -449,7 +450,6 @@ try_binary() {
         return 1
     fi
     say "Release $VERSION has a binary for this system: $file."
-    ask "Download it and check it?" y || stop "Nothing was installed; --source builds Cadence from source instead."
 
     step "Checking $file"
     log "\$ download $ASSETS_URL/$VERSION/$file"
@@ -759,22 +759,13 @@ install_binary() {
     previous=$(state_get binary)
     if [ -n "$PREFIX" ]; then
         dest=$PREFIX
-        say "Installing into $dest, as --prefix asks."
+        say "Installing into $dest, as --dir asks."
     elif [ "$MODE" = update ] && [ -n "$previous" ]; then
         dest=$(dirname "$previous")
         say "Installing into $(shown "$dest"), where Cadence was installed before."
     else
-        say "The default folder is $(shown "$DEFAULT_PREFIX")."
-        if ask "Install Cadence there?" y; then
-            dest=$DEFAULT_PREFIX
-        else
-            printf 'Folder to install in: '
-            IFS= read -r dest < /dev/tty || fail "there is no terminal to answer on"
-            log "Folder to install in: $dest"
-            case "$dest" in \~/*) dest="$HOME/${dest#\~/}" ;; esac
-            [ -z "$dest" ] || [ "$OS" != windows ] || dest=$(cygpath -u "$dest")
-            [ -n "$dest" ] || stop "No folder was given; nothing was installed."
-        fi
+        dest=$DEFAULT_PREFIX
+        say "Installing into $(shown "$dest"), the default folder; --dir DIR installs into DIR instead."
     fi
     mkdir -p "$dest" || fail "cannot create $dest"
     TARGET="$dest/cadence$EXE"
@@ -799,7 +790,7 @@ shell_rc() {
     esac
 }
 
-# A folder named with --prefix is the caller's to manage, so the offer defaults to no there.
+# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
 offer_path() {
     local dest default=y
     dest=$(dirname "$TARGET")
@@ -818,7 +809,8 @@ offer_path() {
         run powershell.exe -NoProfile -Command "\$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not \$p) { \$p = '' }; if ((\$p -split ';') -notcontains '$quoted') { [Environment]::SetEnvironmentVariable('Path', (\$p.TrimEnd(';') + ';$quoted').TrimStart(';'), 'User') }" \
             || fail "could not add $win to your PATH"
         state_set path_windows "$win"
-        say "Added. Terminals opened from now on find cadence."
+        added_to_path "export PATH=\"$dest:\$PATH\""
+        say "If a new Windows Terminal tab still does not find cadence, close all of its windows and start it again."
     else
         local rc line
         rc=$(shell_rc)
@@ -827,8 +819,16 @@ offer_path() {
         printf '\n%s\n%s\n' "$MARK" "$line" >> "$rc" || fail "could not write $rc"
         state_set path_rc "$rc"
         state_set path_line "$line"
-        say "Added. Open a new terminal, or run: $line"
+        added_to_path "$line"
     fi
+}
+
+# Each command on a line of its own, so it can be copied whole.
+added_to_path() {
+    say "Added. This terminal will not find cadence until you open a new one. To run it here now:"
+    case "$TARGET" in *" "*) say "\"$TARGET\"" ;; *) say "$TARGET" ;; esac
+    say "or put it on this terminal's PATH with:"
+    say "$1"
 }
 
 offer_tables() {
@@ -836,7 +836,7 @@ offer_tables() {
     say "Cadence can read the 3-4-5 piece Syzygy tablebases, 290 files and about 1 GB, to play every"
     say "ending of five pieces or fewer perfectly. They are downloaded from $TABLES_URL."
     ask "Download them now?" n || { say "Skipped."; return 0; }
-    local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0
+    local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0 bytes=0
     mkdir -p "$dir" || fail "cannot create $dir"
     run download "$TABLES_URL/sha256" "$WORK/sha256" || fail "could not download the tables' published checksums"
     awk '{n = $2; sub(/\.rtb[wz]$/, "", n); gsub(/v/, "", n); if (length(n) <= 5) print}' \
@@ -857,10 +857,13 @@ offer_tables() {
             mv -f "$dir/$file.part" "$dir/$file" || fail "could not write $dir/$file"
         fi
         checked=$((checked + 1))
-        [ $((checked % 29)) -ne 0 ] || say "  $checked of 290 checked"
+        bytes=$((bytes + $(wc -c < "$dir/$file")))
+        [ $((checked % 29)) -ne 0 ] \
+            || say "  $checked of 290 downloaded and checked, $((bytes / 1048576)) of $((TABLES_BYTES / 1048576)) MB"
     done < "$WORK/3-4-5.sha256"
     say "All 290 tables are in $(shown "$dir"), each matching its published checksum."
-    say "To use them, set the engine option SyzygyPath to that folder in your chess program."
+    say "To use them, set the engine option SyzygyPath in your chess program to this folder:"
+    say "$(shown "$dir")"
     [ "$OS" != macos ] \
         || say "Cadence keeps each table open, and macOS allows a program 256 open files: start your chess program from a terminal after 'ulimit -n 1024'."
 }
@@ -923,7 +926,8 @@ if [ "$MODE" = uninstall ]; then
 fi
 step "Cadence's installer"
 say "This installs Cadence's release binary for this system once its checksum and bench match the"
-say "release's, or builds it from source where no binary fits. Each step asks first."
+say "release's, or builds it from source where no binary fits. It asks before building, installing a"
+say "compiler or Rust, replacing an install, changing your PATH or downloading tablebases."
 check_version
 mkdir -p "$WORK" || fail "cannot create $WORK"
 confirm_system

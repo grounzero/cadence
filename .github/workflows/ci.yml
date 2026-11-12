@@ -673,7 +673,7 @@ jobs:
 
           rc=0
           CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --version "$RELEASE_VERSION" \
-            --prefix "$tmp/from-binary" 2>&1 | tee good.txt || rc=$?
+            --dir "$tmp/from-binary" 2>&1 | tee good.txt || rc=$?
           [ "$rc" -eq 0 ] || { echo "::error::install.sh exited $rc on a release whose binary checks"; exit 1; }
           grep -qF "Release $RELEASE_VERSION has a binary for this system: $RELEASE_FILE." good.txt \
             || { echo "::error::install.sh did not find $RELEASE_FILE"; exit 1; }
@@ -685,7 +685,10 @@ jobs:
             exit 1
           fi
           grep -qE 'to your PATH.*\[y/N\]: n \(--yes\)' good.txt \
-            || { echo "::error::the PATH offer did not default to no under --prefix"; exit 1; }
+            || { echo "::error::the PATH offer did not default to no under --dir"; exit 1; }
+          # The PATH and the tablebases are the only questions a checked binary's install asks.
+          asked=$(grep -c '(--yes)$' good.txt)
+          [ "$asked" -eq 2 ] || { grep -F '(--yes)' good.txt; echo "::error::install.sh asked $asked questions, not 2"; exit 1; }
 
           rc=0
           CADENCE_RELEASES_URL="$url/corrupt" bash install.sh --yes --version "$RELEASE_VERSION" \
@@ -721,7 +724,7 @@ jobs:
 
             $env:CADENCE_RELEASES_URL = "$url/good"
             $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version $env:RELEASE_VERSION `
-              --prefix (Join-Path $env:RUNNER_TEMP 'from-binary') 2>&1 | Out-String
+              --dir (Join-Path $env:RUNNER_TEMP 'from-binary') 2>&1 | Out-String
             $code = $LASTEXITCODE
             Write-Host $out
             if ($code -ne 0) { throw "install.ps1 exited $code on a release whose binary checks" }
@@ -729,7 +732,10 @@ jobs:
             if (-not $out.Contains("Its SHA-256 matches the release's SHA256SUMS.")) { throw 'install.ps1 did not check the SHA-256' }
             if (-not $out.Contains('as bench.txt says')) { throw 'install.ps1 did not check the bench' }
             if ($out.Contains('Building from source')) { throw 'install.ps1 built from source though the binary checked' }
-            if ($out -notmatch 'to your PATH.*\[y/N\]: n \(--yes\)') { throw 'the PATH offer did not default to no under --prefix' }
+            if ($out -notmatch 'to your PATH.*\[y/N\]: n \(--yes\)') { throw 'the PATH offer did not default to no under --dir' }
+            # The PATH and the tablebases are the only questions a checked binary's install asks.
+            $asked = ([regex]::Matches($out, '\(--yes\)\r?\n')).Count
+            if ($asked -ne 2) { throw "install.ps1 asked $asked questions, not 2" }
 
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
             $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version $env:RELEASE_VERSION `
