@@ -705,6 +705,9 @@ jobs:
           # The PATH and the tablebases are the only questions a checked binary's install asks.
           asked=$(grep -c '(--yes)$' good.txt)
           [ "$asked" -eq 2 ] || { grep -F '(--yes)' good.txt; echo "::error::install.sh asked $asked questions, not 2"; exit 1; }
+          # Each installer opens with its banner, before anything else it prints.
+          head -n 1 good.txt | grep -qE '^Cadence installer [0-9]' \
+            || { head -n 1 good.txt; echo "::error::install.sh did not open with its banner"; exit 1; }
 
           rc=0
           CADENCE_RELEASES_URL="$url/corrupt" bash install.sh --yes --version "$RELEASE_VERSION" \
@@ -752,6 +755,9 @@ jobs:
             # The PATH and the tablebases are the only questions a checked binary's install asks.
             $asked = ([regex]::Matches($out, '\(--yes\)\r?\n')).Count
             if ($asked -ne 2) { throw "install.ps1 asked $asked questions, not 2" }
+            # Each installer opens with its banner, and names the AVX2 build's features as install.sh does.
+            if (($out.TrimStart() -split "\r?\n")[0] -notmatch '^Cadence installer \d') { throw 'install.ps1 did not open with its banner' }
+            if ($out.Contains('the AVX2 build runs here') -and -not $out.Contains('with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.')) { throw 'install.ps1 named the AVX2 build features differently from install.sh' }
 
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
             $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version $env:RELEASE_VERSION `

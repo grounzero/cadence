@@ -278,7 +278,7 @@ function Confirm-System {
     $avx2 = Test-ProcessorFeature 40
     Write-Log "AVX2: $avx2"
     if ($avx2) {
-        Say 'Windows on x86-64, with AVX2: the AVX2 build runs here.'
+        Say 'Windows on x86-64, with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.'
     } else {
         Say 'Windows on x86-64, without AVX2: the generic build runs here, for any x86-64 with POPCNT.'
     }
