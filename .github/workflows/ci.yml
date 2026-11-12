@@ -493,6 +493,10 @@ jobs:
             os: windows-latest
             script: install.ps1
             asset: windows-x86-64-avx2
+    # The installers send it to GitHub's API, whose unauthenticated limit runners sharing an address
+    # can exhaust.
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     defaults:
       run:
         shell: bash
