@@ -12,6 +12,8 @@
 # differ in when they run and not in what they assert. What the by-hand run
 # adds is a date, a machine and a wall clock, none of which this repository
 # records. This job is the recurring half: it catches a later regression.
+#
+# The dependency audit at the end shares the schedule and nothing else.
 
 name: nightly
 
@@ -70,3 +72,18 @@ jobs:
           [ "$status" -eq 0 ] || exit "$status"
           [ "$listed" -gt 0 ] && [ "$passed" -eq "$listed" ] \
             || { echo "::error::$passed of $listed ignored tests passed"; exit 1; }
+
+  # RustSec's advisories against Cargo.lock, and every licence and source in the dependency tree,
+  # held to deny.toml. Nightly because an advisory arrives without any change here.
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cargo-deny 0.20.2
+        run: cargo install --locked cargo-deny --version 0.20.2
+
+      - name: Advisories, licences, bans and sources
+        run: cargo deny --locked check
