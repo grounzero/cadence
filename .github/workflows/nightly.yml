@@ -88,16 +88,16 @@ jobs:
       - name: Advisories, licences, bans and sources
         run: cargo deny --locked check
 
-      # A package outside the workspace holding a smallvec that RustSec lists: the same check must fail
-      # on it and name that advisory, or the clean read above could be a database never fetched.
+      # A package outside the workspace holding a smallvec that RustSec lists and crates.io has not
+      # yanked: the check must fail on it by that advisory, or the clean read above proves nothing.
       - name: The check fails on a crate RustSec lists
         run: |
           dir="$RUNNER_TEMP/planted"
           mkdir -p "$dir/src" && touch "$dir/src/lib.rs"
-          printf '[package]\nname = "planted"\nversion = "0.0.0"\nedition = "2021"\nlicense = "MIT"\npublish = false\n\n[dependencies]\nsmallvec = "=0.6.9"\n' > "$dir/Cargo.toml"
+          printf '[package]\nname = "planted"\nversion = "0.0.0"\nedition = "2021"\nlicense = "MIT"\npublish = false\n\n[dependencies]\nsmallvec = "=1.6.0"\n' > "$dir/Cargo.toml"
           cargo generate-lockfile --manifest-path "$dir/Cargo.toml"
           status=0
           cargo deny --manifest-path "$dir/Cargo.toml" check --config deny.toml advisories > planted.log 2>&1 || status=$?
           cat planted.log
           [ "$status" -ne 0 ] || { echo "::error::the advisory check passed a crate RustSec lists"; exit 1; }
-          grep -q 'RUSTSEC-2019-0009' planted.log || { echo "::error::the check failed, but not on RUSTSEC-2019-0009"; exit 1; }
+          grep -q 'RUSTSEC-2021-0003' planted.log || { echo "::error::the check failed, but not on RUSTSEC-2021-0003"; exit 1; }
