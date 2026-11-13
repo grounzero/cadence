@@ -43,7 +43,9 @@ the tablebases and ponders.
 - Releases: each release builds seven binaries, Windows and Linux x86-64
   each in an AVX2 build and a generic one, Linux aarch64, macOS arm64 and
   macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
-  install scripts and a provenance attestation for each binary.
+  install scripts and a provenance attestation for each binary, made by the
+  release workflow run at the release's tag; a manual run drafts and attests
+  a release only when run at its tag.
 - The test log: `docs/testing/sprt-log.csv` gives every SPRT, passed or
   failed, with its games and result.
 
@@ -69,11 +71,11 @@ the tablebases and ponders.
 - Install scripts: a token in `GITHUB_TOKEN` is sent with their requests to
   GitHub's API, and a refusal for GitHub's hourly limit on unauthenticated
   requests is named as one, with what to do.
-- Install scripts: where `gh` is installed and signed in, they check each
-  binary's build attestation, made by the release workflow at the version's
-  tag or, re-running a failed release, from `main`, and do not use a binary
-  whose attestation fails; where `gh` cannot check it, they say so and go
-  on with the checksum and the bench. A build from source first checks that
+- Install scripts: where `gh` is installed and signed in, they check that
+  each binary's build attestation was made by the release workflow run at
+  the version's tag, and do not use a binary whose attestation fails; where
+  `gh` cannot check it, they say so and go on with the checksum and the
+  bench. A build from source first checks that
   the release's tag is the commit the release names, before any compiler or
   Rust is installed; where GitHub's API does not answer, they say so and
   build without that check. The end of a run names the checks the binary
@@ -84,8 +86,9 @@ the tablebases and ponders.
   downgrade is asked for, as `--yes` with `--version` asks for one. A plain
   run installs into the folder the last install went to, `--dir`'s included.
   An install by an earlier installer, which recorded only its path, is known
-  by its SHA-256 among the release's binaries, and is otherwise upgraded
-  unless that is declined. Another build, or a build from source, asked for
+  by its SHA-256 among the release's binaries; otherwise they ask to replace
+  it, yes by default only on a run taking the newest release over another
+  release's binary. Another build, or a build from source, asked for
   at the same version replaces the one installed. A file at the install path
   that they did not install is never run, and a second run changes nothing.
 - Install scripts: a binary the system refuses to start, as on a managed
@@ -166,7 +169,8 @@ the tablebases and ponders.
   the user PATH is edited as the registry holds it, so a `%VARIABLE%` in it
   stays unexpanded. After a `--dir` install, a plain run no longer installs
   a second copy in the default folder, and the uninstall removes the binary
-  wherever the install put it.
+  wherever the install put it. The uninstall says it removed a PATH entry
+  only when there was one, and removes a user PATH it leaves empty.
 - Install scripts: `install.ps1` finds its folder on the session PATH as
   `install.sh` does, and says the tablebases are removed only once they are.
 - Search: when the tablebases cut a node, the transposition table keeps

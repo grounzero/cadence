@@ -52,6 +52,7 @@ HELD=""
 EARLIER=0
 NAMED=""
 UNREAD=""
+UNREAD_LIMIT=0
 ID=""
 WHERE=default
 DEST=""
@@ -244,7 +245,7 @@ limited() {
 
 finish() {
     local rc=$?
-    rm -f "$OUT"
+    rm -f "$OUT" "$OUT.headers"
     rm -rf "$WORK"
     if [ "$rc" -eq 0 ] || [ "$STOPPED" = 1 ]; then
         if [ "$KEEP_LOG" = 1 ]; then echo "The log is at $LOG."; else rm -f "$LOG"; fi
@@ -355,13 +356,19 @@ checksum() {
         | awk '{print $1}'
 }
 
-# A quiet wget says nothing when it fails, so its exit status is put into words for said().
+# A quiet wget says nothing when it fails, so its exit status is put into words for said(). curl keeps
+# the answer's headers for github_limit().
 download() {
     local rc=0 header=""
+    rm -f "$OUT.headers"
     # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
     case "$1" in https://api.github.com/*) [ -z "${GITHUB_TOKEN:-}" ] || header="Authorization: Bearer $GITHUB_TOKEN" ;; esac
     if command -v curl > /dev/null 2>&1; then
-        if [ -n "$header" ]; then curl -fsSL --retry 3 -H "$header" -o "$2" "$1"; else curl -fsSL --retry 3 -o "$2" "$1"; fi
+        if [ -n "$header" ]; then
+            curl -fsSL --retry 3 -D "$OUT.headers" -H "$header" -o "$2" "$1"
+        else
+            curl -fsSL --retry 3 -D "$OUT.headers" -o "$2" "$1"
+        fi
     elif command -v wget > /dev/null 2>&1; then
         if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
         case "$rc" in
@@ -549,10 +556,17 @@ release_name() {
     esac
 }
 
+# Whether the last download's answer says it is GitHub's rate limit, as its headers do; a refusal
+# for any other reason, or one through wget, is not explained as one.
+github_limit() {
+    [ -f "$OUT.headers" ] && tr -d '\r' < "$OUT.headers" | grep -qiE '^(x-ratelimit-remaining: *0|retry-after:)'
+}
+
 # GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
 rate_limited() {
     case "$1" in
         " (the server answered 403)" | " (the server answered 429)")
+            github_limit || return 0
             fail "GitHub refused to name Cadence's releases$1: it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again." ;;
     esac
 }
@@ -639,36 +653,26 @@ listed_as() {
     awk -v s="$1" '$1 == s {f = $2; sub(/^\*/, "", f); print f; exit}' "$WORK/SHA256SUMS"
 }
 
-# The release workflow attests every binary it builds, at the version's tag or, re-running a failed
-# release, from main, and gh checks that attestation where it is installed and signed in. Where gh
-# cannot check, that is said and the install goes on; an attestation that fails leaves WHY.
+# The release workflow attests every binary it builds, run at the version's tag, and gh checks that
+# attestation where it is installed and signed in. Where gh cannot check, that is said and the install
+# goes on; an attestation that fails leaves WHY.
 attested() {
-    local file=$1 rc last
+    local file=$1 rc last identity="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VERSION"
     ATTESTED=no
     if ! command -v gh > /dev/null 2>&1; then
         say "Its build attestation was not verified: gh, GitHub's command line tool, is not installed."
         return 0
     fi
-    log "\$ gh attestation verify $file --repo $REPO --signer-workflow $REPO/.github/workflows/release.yml --format json"
-    gh attestation verify "$WORK/$file" --repo "$REPO" --signer-workflow "$REPO/.github/workflows/release.yml" \
-        --format json --jq '.[].verificationResult.signature.certificate.sourceRepositoryRef' > "$OUT" 2>&1
+    log "\$ gh attestation verify $file --repo $REPO --cert-identity $identity"
+    gh attestation verify "$WORK/$file" --repo "$REPO" --cert-identity "$identity" > "$OUT" 2>&1
     rc=$?
     redact < "$OUT" >> "$LOG"
     log "(exit $rc)"
     last=$(grep -v '^[[:space:]]*$' "$OUT" | tail -n 1 | tr -d '\r')
     if [ "$rc" -eq 0 ]; then
-        if grep -qxF "refs/tags/$VERSION" "$OUT"; then
-            ATTESTED=yes
-            say "Its build attestation verifies: GitHub's release workflow built it at the tag $VERSION."
-            return 0
-        fi
-        if grep -qxF refs/heads/main "$OUT"; then
-            ATTESTED=yes
-            say "Its build attestation verifies: GitHub's release workflow built it from main, re-running the release of $VERSION."
-            return 0
-        fi
-        WHY="$file's build attestation names ${last:-no ref}, not the tag $VERSION, so it is not used."
-        return 1
+        ATTESTED=yes
+        say "Its build attestation verifies: GitHub's release workflow built it at the tag $VERSION."
+        return 0
     fi
     # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
     if [ "$rc" -eq 4 ]; then
@@ -679,8 +683,13 @@ attested() {
         say "Its build attestation was not verified: this gh is too old to check one."
         return 0
     fi
-    # gh's verdicts: no attestation for this file, a signature that is not the release workflow's, or
-    # a certificate naming something else. Anything else is gh failing to check.
+    # A verifier that never loaded its trust root reports a failed verification too, so it is read
+    # first, as gh failing to check. Otherwise a verdict is no attestation for this file, a signature
+    # that is not the release workflow's at the tag, or a certificate naming something else.
+    if grep -qE 'failed to choose verifier|initialization may have failed' "$OUT"; then
+        say "Its build attestation was not verified: gh could not check it ($last)."
+        return 0
+    fi
     if grep -qE 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed' "$OUT"; then
         WHY="$file's build attestation does not verify ($last), so it is not used."
         return 1
@@ -936,12 +945,14 @@ release_commit() {
     local trouble
     NAMED=""
     UNREAD=""
+    UNREAD_LIMIT=0
     case "$VERSION" in *+*) return 0 ;; esac
     log "\$ download $API_URL/tags/$VERSION"
     if ! download "$API_URL/tags/$VERSION" "$WORK/release.json" 2> "$OUT"; then
         trouble=$(said)
         redact < "$OUT" >> "$LOG"
         [ "$trouble" = " (not found)" ] || UNREAD=${trouble:- (no answer)}
+        ! github_limit || UNREAD_LIMIT=1
         return 0
     fi
     NAMED=$(grep -oE "built from [0-9a-f]{40} at the tag" "$WORK/release.json" | head -n 1 | awk '{print $3}')
@@ -955,9 +966,8 @@ check_commit() {
     log "fetched commit: $got; the release names: ${NAMED:-none}"
     if [ -n "$UNREAD" ]; then
         say "GitHub's API did not answer$UNREAD, so the commit release $VERSION names could not be read. It is built at its tag, commit $got, without that check."
-        case "$UNREAD" in
-            *" 403)" | *" 429)") say "GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time." ;;
-        esac
+        [ "$UNREAD_LIMIT" = 0 ] \
+            || say "GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time."
         return
     fi
     if [ -z "$NAMED" ]; then
@@ -1047,7 +1057,11 @@ bench_and_name() {
         case "$answer" in
             *": Permission denied"* | *": Operation not permitted"*) refused "$bin" ;;
             *"required file not found"* | *"No such file or directory"*)
-                WHY="it cannot start on this system, which lacks the loader it needs, as a Linux without glibc does"
+                if [ "$OS" = linux ]; then
+                    WHY="it cannot start on this system, which lacks the loader it needs, as a Linux without glibc does"
+                else
+                    WHY="it cannot start on this system, which could not find it or a file it needs"
+                fi
                 return 1
                 ;;
             *"Exec format error"* | *"cannot execute binary file"*)
@@ -1164,10 +1178,23 @@ installed_version() {
     HELD="$(state_get build) $(state_get from)"
 }
 
+# The published release binary with this SHA-256, by the digests GitHub's API lists for every
+# release's files, or nothing; the list is not read where it cannot be.
+released_as() {
+    log "\$ download $API_URL?per_page=100"
+    if ! download "$API_URL?per_page=100" "$WORK/every-release.json" 2> "$OUT"; then
+        redact < "$OUT" >> "$LOG"
+        return 0
+    fi
+    tr ',{}[]' '\n\n\n\n\n' < "$WORK/every-release.json" | awk -v d="\"sha256:$1\"" '
+        /^[[:space:]]*"name":[[:space:]]*"/ {n = $0}
+        index($0, d) && n != "" {sub(/^[[:space:]]*"name":[[:space:]]*"/, "", n); sub(/".*/, "", n); print n; exit}'
+}
+
 # The installers before this one recorded the path alone, so their install is known by its SHA-256
-# among the release's binaries, and recorded as this script records it; otherwise it is upgraded.
+# among the release's binaries, and recorded as this script records it; otherwise it may be replaced.
 earlier_install() {
-    local sum name
+    local sum name default=n
     step "The installed Cadence"
     sum=$(checksum "$TARGET")
     case "$VERSION" in *+*) name="" ;; *) release_sums && name=$(listed_as "$sum") ;; esac
@@ -1187,7 +1214,18 @@ earlier_install() {
             else
                 say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version."
             fi
-            ask "Upgrade it to $VERSION?" y || stop "Kept the one there; nothing was installed."
+            # Its version unknown, it is replaced by default only with the newest release, and only
+            # where it is some other release's binary rather than a file put there by hand.
+            if [ -z "$ASKED_VERSION" ]; then
+                name=$(released_as "$sum")
+                if [ -n "$name" ]; then
+                    say "Its SHA-256 is that of $name, another release's binary."
+                    default=y
+                else
+                    say "Its SHA-256 is that of no published release's binary."
+                fi
+            fi
+            ask "Replace it with Cadence $VERSION?" "$default" || stop "Kept the one there; nothing was installed."
             REPLACE=1
             ;;
     esac
@@ -1268,15 +1306,15 @@ shell_rc() {
 }
 
 # The user PATH edited as the registry holds it, so a %VARIABLE% in it stays unexpanded and the value
-# keeps its kind; CADENCE_ADD adds a folder and CADENCE_REMOVE removes one. Clearing a variable never
-# set then tells running programs the environment changed, as .NET does when it sets one.
+# keeps its kind, or goes once empty; CADENCE_ADD adds a folder and CADENCE_REMOVE removes one. Clearing
+# a variable never set then tells running programs the environment changed, as .NET does on setting one.
 USER_PATH_EDIT=$(cat <<'EOF'
 $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
 $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
 if ($k.GetValueNames() -contains 'Path') { $kind = $k.GetValueKind('Path') }
 $entries = @([string]$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ -and $_ -ne $env:CADENCE_REMOVE })
 if ($env:CADENCE_ADD -and $entries -notcontains $env:CADENCE_ADD) { $entries += $env:CADENCE_ADD }
-$k.SetValue('Path', ($entries -join ';'), $kind)
+if ($entries.Count -gt 0) { $k.SetValue('Path', ($entries -join ';'), $kind) } else { $k.DeleteValue('Path', $false) }
 $k.Close()
 [Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
 EOF
@@ -1428,7 +1466,7 @@ afterwards() {
 
 uninstall() {
     step "Uninstalling Cadence"
-    local bin rc line win tables
+    local bin rc line win held tables
     bin=$(state_path binary)
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
     if [ -e "$bin" ]; then
@@ -1441,7 +1479,7 @@ uninstall() {
     fi
     rc=$(state_get path_rc)
     line=$(state_get path_line)
-    if [ -n "$rc" ] && [ -f "$rc" ] && ask "Remove the PATH line this script added to $rc?" y; then
+    if [ -n "$rc" ] && [ -f "$rc" ]; then
         # Only the line under the marker goes, with the marker, so the same line written by hand stays.
         CADENCE_LINE=$line CADENCE_MARK=$MARK awk '
             held != "" && $0 == ENVIRON["CADENCE_LINE"] {held = ""; next}
@@ -1449,14 +1487,25 @@ uninstall() {
             $0 == ENVIRON["CADENCE_MARK"] {held = $0; next}
             {print}
             END {if (held != "") print held}' \
-            "$rc" > "$rc.cadence" && cat "$rc.cadence" > "$rc" && rm -f "$rc.cadence" || fail "could not rewrite $rc"
-        say "Removed it."
+            "$rc" > "$rc.cadence" || fail "could not read $rc"
+        if cmp -s "$rc" "$rc.cadence"; then
+            say "$rc holds no PATH line under this script's marker, so there is none to remove."
+        elif ask "Remove the PATH line this script added to $rc?" y; then
+            cat "$rc.cadence" > "$rc" || fail "could not rewrite $rc"
+            say "Removed it."
+        fi
+        rm -f "$rc.cadence"
     fi
     win=$(state_get path_windows)
-    if [ -n "$win" ] && ask "Remove $win from your PATH, which this script added?" y; then
-        CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
-            || fail "could not remove $win from your PATH"
-        say "Removed it."
+    if [ -n "$win" ]; then
+        held=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" 2> /dev/null | tr -d '\r')
+        if ! printf '%s\n' "$held" | tr ';' '\n' | grep -qixF -- "$win"; then
+            say "$win is not on your user PATH, so there is nothing to remove there."
+        elif ask "Remove $win from your PATH, which this script added?" y; then
+            CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
+                || fail "could not remove $win from your PATH"
+            say "Removed it."
+        fi
     fi
     tables=$(state_path tables)
     if [ -n "$tables" ] && [ -d "$tables" ] && ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then

@@ -56,6 +56,7 @@ $script:HeldFrom = ''
 $script:Earlier = $false
 $script:Named = ''
 $script:Unread = ''
+$script:UnreadLimit = $false
 $script:Where = 'default'
 $script:Dest = ''
 $script:Target = ''
@@ -441,7 +442,7 @@ function Find-Release {
         $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -Headers $headers -ErrorAction Stop
         $tag = "$($latest.tag_name)"
     } catch {
-        Test-RateLimit (Get-DownloadTrouble $_)
+        Test-RateLimit (Get-DownloadTrouble $_) $_
     }
     if ($tag -match '^\d+\.\d+\.\d+$') {
         $script:Version = $tag
@@ -452,7 +453,7 @@ function Find-Release {
             $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=100" -Headers $headers -ErrorAction Stop
         } catch {
             $trouble = Get-DownloadTrouble $_
-            Test-RateLimit $trouble
+            Test-RateLimit $trouble $_
             Fail "could not read Cadence's releases from GitHub$trouble"
         }
         foreach ($release in @($releases)) {
@@ -485,9 +486,25 @@ function Find-Release {
     }
 }
 
+# Whether a failed request's answer says it is GitHub's rate limit, as its headers do; a refusal for
+# any other reason is not explained as one.
+function Test-GitHubLimit($Failure) {
+    try {
+        $answer = $Failure.Exception.Response.Headers
+        if ($answer -is [System.Net.WebHeaderCollection]) {
+            return ($answer['X-RateLimit-Remaining'] -eq '0' -or [bool]$answer['Retry-After'])
+        }
+        $values = $null
+        if ($answer.TryGetValues('X-RateLimit-Remaining', [ref]$values) -and @($values) -contains '0') { return $true }
+        return [bool]$answer.Contains('Retry-After')
+    } catch {
+        return $false
+    }
+}
+
 # GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
-function Test-RateLimit([string]$Trouble) {
-    if ($Trouble -eq ' (the server answered 403)' -or $Trouble -eq ' (the server answered 429)') {
+function Test-RateLimit([string]$Trouble, $Failure) {
+    if (($Trouble -eq ' (the server answered 403)' -or $Trouble -eq ' (the server answered 429)') -and (Test-GitHubLimit $Failure)) {
         Fail "GitHub refused to name Cadence's releases$($Trouble): it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again."
     }
 }
@@ -555,9 +572,9 @@ function Get-Listed([string]$Name) {
 
 function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower() }
 
-# The release workflow attests every binary it builds, at the version's tag or, re-running a failed
-# release, from main, and gh checks that attestation where it is installed and signed in. Where gh
-# cannot check, that is said and the install goes on; an attestation that fails leaves Why.
+# The release workflow attests every binary it builds, run at the version's tag, and gh checks that
+# attestation where it is installed and signed in. Where gh cannot check, that is said and the install
+# goes on; an attestation that fails leaves Why.
 function Test-Attestation([string]$File) {
     $script:Attested = 'no'
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -565,8 +582,7 @@ function Test-Attestation([string]$File) {
         return $true
     }
     $ghArgs = @('attestation', 'verify', (Join-Path $Work $File), '--repo', $Repo,
-        '--signer-workflow', "$Repo/.github/workflows/release.yml", '--format', 'json',
-        '--jq', '.[].verificationResult.signature.certificate.sourceRepositoryRef')
+        '--cert-identity', "https://github.com/$Repo/.github/workflows/release.yml@refs/tags/$($script:Version)")
     Write-Log ('$ gh ' + ($ghArgs -join ' '))
     $said = @(& gh @ghArgs 2>&1 | ForEach-Object { "$_".Trim() })
     $code = $LASTEXITCODE
@@ -574,18 +590,9 @@ function Test-Attestation([string]$File) {
     Write-Log "(exit $code)"
     $last = "$(@($said | Where-Object { $_ }) | Select-Object -Last 1)"
     if ($code -eq 0) {
-        if ($said -ccontains "refs/tags/$($script:Version)") {
-            $script:Attested = 'yes'
-            Say "Its build attestation verifies: GitHub's release workflow built it at the tag $($script:Version)."
-            return $true
-        }
-        if ($said -ccontains 'refs/heads/main') {
-            $script:Attested = 'yes'
-            Say "Its build attestation verifies: GitHub's release workflow built it from main, re-running the release of $($script:Version)."
-            return $true
-        }
-        $script:Why = "$File's build attestation names $(if ($last) { $last } else { 'no ref' }), not the tag $($script:Version), so it is not used."
-        return $false
+        $script:Attested = 'yes'
+        Say "Its build attestation verifies: GitHub's release workflow built it at the tag $($script:Version)."
+        return $true
     }
     # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
     if ($code -eq 4) {
@@ -596,8 +603,13 @@ function Test-Attestation([string]$File) {
         Say 'Its build attestation was not verified: this gh is too old to check one.'
         return $true
     }
-    # gh's verdicts: no attestation for this file, a signature that is not the release workflow's, or
-    # a certificate naming something else. Anything else is gh failing to check.
+    # A verifier that never loaded its trust root reports a failed verification too, so it is read
+    # first, as gh failing to check. Otherwise a verdict is no attestation for this file, a signature
+    # that is not the release workflow's at the tag, or a certificate naming something else.
+    if (($said -join "`n") -cmatch 'failed to choose verifier|initialization may have failed') {
+        Say "Its build attestation was not verified: gh could not check it ($last)."
+        return $true
+    }
     if (($said -join "`n") -cmatch 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed') {
         $script:Why = "$File's build attestation does not verify ($last), so it is not used."
         return $false
@@ -802,6 +814,7 @@ function Get-Source {
 function Get-ReleaseCommit {
     $script:Named = ''
     $script:Unread = ''
+    $script:UnreadLimit = $false
     if ($script:Version.Contains('+')) { return }
     $headers = @{}
     if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
@@ -811,6 +824,7 @@ function Get-ReleaseCommit {
     } catch {
         $trouble = Get-DownloadTrouble $_
         if ($trouble -ne ' (not found)') { $script:Unread = $trouble }
+        $script:UnreadLimit = Test-GitHubLimit $_
         return
     }
     if ("$($release.body)" -match 'built from ([0-9a-f]{40}) at the tag') { $script:Named = $Matches[1] }
@@ -824,7 +838,7 @@ function Test-Commit {
     Write-Log "fetched commit: $got; the release names: $(if ($script:Named) { $script:Named } else { 'none' })"
     if ($script:Unread) {
         Say "GitHub's API did not answer$($script:Unread), so the commit release $($script:Version) names could not be read. It is built at its tag, commit $got, without that check."
-        if ($script:Unread -match ' (403|429)\)$') { Say 'GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time.' }
+        if ($script:UnreadLimit) { Say 'GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time.' }
         return
     }
     if (-not $script:Named) {
@@ -988,8 +1002,28 @@ function Get-InstalledVersion {
     $script:HeldFrom = Get-StateValue 'from'
 }
 
+# The published release binary with this SHA-256, by the digests GitHub's API lists for every
+# release's files, or the empty string; the list is not read where it cannot be.
+function Get-ReleasedAs([string]$Sum) {
+    $headers = @{}
+    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+    Write-Log "downloading ${ApiUrl}?per_page=100"
+    try {
+        $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=100" -Headers $headers -ErrorAction Stop
+    } catch {
+        Write-Log "the releases were not read$(Get-DownloadTrouble $_)"
+        return ''
+    }
+    foreach ($release in @($releases)) {
+        foreach ($asset in @($release.assets)) {
+            if ($asset -and $asset.PSObject.Properties['digest'] -and "$($asset.digest)" -eq "sha256:$Sum") { return "$($asset.name)" }
+        }
+    }
+    return ''
+}
+
 # The installers before this one recorded the path alone, so their install is known by its SHA-256
-# among the release's binaries, and recorded as this script records it; otherwise it is upgraded.
+# among the release's binaries, and recorded as this script records it; otherwise it may be replaced.
 function Find-EarlierInstall {
     Step 'The installed Cadence'
     $sum = Get-Sha256 $script:Target
@@ -1015,7 +1049,19 @@ function Find-EarlierInstall {
     } else {
         Say "An earlier installer put Cadence at $($script:Target) without recording its version."
     }
-    if (-not (Ask "Upgrade it to $($script:Version)?" $true)) { Stop-Install 'Kept the one there; nothing was installed.' }
+    # Its version unknown, it is replaced by default only with the newest release, and only where it
+    # is some other release's binary rather than a file put there by hand.
+    $default = $false
+    if (-not $script:AskedVersion) {
+        $other = Get-ReleasedAs $sum
+        if ($other) {
+            Say "Its SHA-256 is that of $other, another release's binary."
+            $default = $true
+        } else {
+            Say "Its SHA-256 is that of no published release's binary."
+        }
+    }
+    if (-not (Ask "Replace it with Cadence $($script:Version)?" $default)) { Stop-Install 'Kept the one there; nothing was installed.' }
     $script:Replace = $true
 }
 
@@ -1094,14 +1140,15 @@ function Get-UserPath {
     }
 }
 
-# Writes the user PATH back as the kind of value it was, so a %VARIABLE% in it stays one. Clearing a
-# variable never set then tells running programs the environment changed, as .NET does when it sets one.
+# Writes the user PATH back as the kind of value it was, so a %VARIABLE% in it stays one, or removes it
+# once empty. Clearing a variable never set then tells running programs the environment changed.
 function Set-UserPath([string[]]$Entries) {
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     try {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
         if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }
-        $key.SetValue('Path', ($Entries -join ';'), $kind)
+        $kept = @($Entries | Where-Object { $_ })
+        if ($kept.Count -gt 0) { $key.SetValue('Path', ($kept -join ';'), $kind) } else { $key.DeleteValue('Path', $false) }
     } finally {
         $key.Close()
     }
@@ -1252,9 +1299,14 @@ function Uninstall-Cadence {
         Say "There is no Cadence at $bin."
     }
     $added = Get-StateValue 'path_windows'
-    if ($added -and (Ask "Remove $added from your PATH, which this script added?" $true)) {
-        Set-UserPath @(Get-UserPath | Where-Object { $_ -ne $added })
-        Say 'Removed it.'
+    if ($added) {
+        $entries = @(Get-UserPath)
+        if ($entries -notcontains $added) {
+            Say "$added is not on your user PATH, so there is nothing to remove there."
+        } elseif (Ask "Remove $added from your PATH, which this script added?" $true) {
+            Set-UserPath @($entries | Where-Object { $_ -ne $added })
+            Say 'Removed it.'
+        }
     }
     $tables = Get-StatePath 'tables'
     if ($tables -and (Test-Path -LiteralPath $tables) -and (Ask "Remove the tablebases at $tables, about 1 GB?" $true)) {
