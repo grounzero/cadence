@@ -472,11 +472,46 @@ jobs:
     defaults: *check-defaults
     steps: *check-steps
 
+  # Whether a pull request changes an installer or a workflow, read from its merge commit against the
+  # base; any other event runs the install jobs, and so does a failure here, which never skips them.
+  changes:
+    name: the files a pull request changes
+    runs-on: ubuntu-latest
+    outputs:
+      install: ${{ steps.diff.outputs.install }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+
+      - id: diff
+        shell: bash
+        run: |
+          set -eu
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "a $GITHUB_EVENT_NAME run: the install jobs run"
+            echo "install=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The merge commit's first parent is the base, so the diff is what the pull request brings.
+          git rev-parse --verify --quiet HEAD^2 > /dev/null || { echo "::error::HEAD is not a merge commit"; exit 1; }
+          files=$(git diff --name-only HEAD^1 HEAD)
+          printf '%s\n' "$files"
+          install=false
+          if printf '%s\n' "$files" | grep -qE '^(install\.sh|install\.ps1|\.github/workflows/.+)$'; then install=true; fi
+          echo "the install jobs run: $install"
+          echo "install=$install" >> "$GITHUB_OUTPUT"
+
   # install.sh on every system it names and install.ps1 on Windows, each run with --yes to install the
   # default release, and the binary each installed held to that release's bench and id name. Each then
   # takes that binary from a release folder served on the runner, and builds when its copy is corrupted.
-  install:
-    name: ${{ matrix.name }}
+  install-linux-x86-64:
+    # Each leg is a job named outright, since a skipped job reports its required check by name only
+    # where the name is written out; one matrix would leave every leg's check waiting.
+    name: install.sh, Linux x86-64
+    needs: changes
+    if: &install-when ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.install == 'true') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -486,35 +521,15 @@ jobs:
             os: ubuntu-latest
             script: install.sh
             asset: linux-x86-64-avx2
-          - name: install.sh, Linux aarch64
-            os: ubuntu-24.04-arm
-            script: install.sh
-            asset: linux-aarch64
-          - name: install.sh, macOS arm64
-            os: macos-latest
-            script: install.sh
-            asset: macos-arm64
-          - name: install.sh, macOS x86-64
-            os: macos-26-intel
-            script: install.sh
-            asset: macos-x86-64
-          - name: install.sh, Windows Git Bash
-            os: windows-latest
-            script: install.sh
-            asset: windows-x86-64-avx2
-          - name: install.ps1, Windows PowerShell
-            os: windows-latest
-            script: install.ps1
-            asset: windows-x86-64-avx2
     # The installers send it to GitHub's API, whose unauthenticated limit runners sharing an address
     # can exhaust.
-    env:
+    env: &install-env
       GITHUB_TOKEN: ${{ github.token }}
-    defaults:
+    defaults: &install-defaults
       run:
         shell: bash
 
-    steps:
+    steps: &install-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint install.sh
@@ -2196,10 +2211,97 @@ jobs:
           done
           true
 
+  install-linux-aarch64:
+    name: install.sh, Linux aarch64
+    needs: changes
+    if: *install-when
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install.sh, Linux aarch64
+            os: ubuntu-24.04-arm
+            script: install.sh
+            asset: linux-aarch64
+    env: *install-env
+    defaults: *install-defaults
+    steps: *install-steps
+
+  install-macos-arm64:
+    name: install.sh, macOS arm64
+    needs: changes
+    if: *install-when
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install.sh, macOS arm64
+            os: macos-latest
+            script: install.sh
+            asset: macos-arm64
+    env: *install-env
+    defaults: *install-defaults
+    steps: *install-steps
+
+  install-macos-x86-64:
+    name: install.sh, macOS x86-64
+    needs: changes
+    if: *install-when
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install.sh, macOS x86-64
+            os: macos-26-intel
+            script: install.sh
+            asset: macos-x86-64
+    env: *install-env
+    defaults: *install-defaults
+    steps: *install-steps
+
+  install-git-bash:
+    name: install.sh, Windows Git Bash
+    needs: changes
+    if: *install-when
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install.sh, Windows Git Bash
+            os: windows-latest
+            script: install.sh
+            asset: windows-x86-64-avx2
+    env: *install-env
+    defaults: *install-defaults
+    steps: *install-steps
+
+  install-powershell:
+    name: install.ps1, Windows PowerShell
+    needs: changes
+    if: *install-when
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install.ps1, Windows PowerShell
+            os: windows-latest
+            script: install.ps1
+            asset: windows-x86-64-avx2
+    env: *install-env
+    defaults: *install-defaults
+    steps: *install-steps
+
   # install.sh --source at the newest +n base, which must install under the base's -dev- name. Then
   # the same base built under the release's name, which the script must refuse.
   install-source:
     name: install.sh --source, Linux x86-64
+    needs: changes
+    if: *install-when
     runs-on: ubuntu-latest
     defaults:
       run:
