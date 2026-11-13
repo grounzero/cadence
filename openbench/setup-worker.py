@@ -139,9 +139,57 @@ def positive(value: str) -> int:
     return parsed
 
 
+SETUP_EPILOG = """\
+before installing:
+  You need an account on an OpenBench server set up for Cadence. Use HTTPS if
+  the server is on the internet; plain HTTP is only safe on a private network.
+  The client runs unmodified, at the exact versions in openbench/pins.json.
+  Workers build Cadence with the repository's Makefile, so Git, Python 3, Rust
+  from rustup, make and a C++ compiler must stay installed:
+    Debian or Ubuntu:
+      sudo apt-get install -y --no-install-recommends \\
+        ca-certificates curl git build-essential python3 python3-venv
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+        sh -s -- -y --profile minimal
+    macOS: the Xcode command-line tools, and Rust.
+    Windows: Git, Python, Rust and MSYS2, with make and MinGW g++ on PATH, and
+      py -3 for python3. Cadence tests stay switched off on Windows until the
+      Windows build has been checked.
+
+finding --threads, the number of games the machine plays at once:
+  Run several copies of one Cadence binary and raise the number until the
+  speed of each copy starts to vary a lot:
+    cargo xtask nps --binary PATH_TO_CADENCE --concurrency CANDIDATE_GAMES
+
+installing:
+    python3 openbench/setup-worker.py --server OPENBENCH_URL \\
+      --username WORKER_ACCOUNT --threads MEASURED_GAMES
+  It asks for the OpenBench password without showing it, and for a read-only
+  GitHub token if the engine repository is private, and keeps both outside
+  the repository. It installs the pinned client and fastchess and runs the
+  worker in the background. Add --dry-run to see what it would do, or
+  --no-start to set it up without starting it.
+
+creating a test:
+  1. Push the change on its own branch. Name the base by tag or full commit
+     ID, never by a branch such as main, because a branch moves.
+  2. Run cadence bench on both versions. Each count must match the bench
+     value given to OpenBench.
+  3. On the reference worker, measure the base at the number of games that
+     worker plays at once, and use the steady figure from the later rounds,
+     not an average that includes the first, slower ones:
+       cargo xtask nps --binary PATH_TO_BASE_CADENCE --concurrency MEASURED_GAMES
+  4. Create the test with the branch as dev, the tag or commit as base, the
+     measured speed as scale_nps, and the short or long time control preset.
+     Check that dev and base are different commits before the workers start.
+"""
+
+
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Install the pinned official OpenBench client as a Cadence worker."
+        description="Install the pinned official OpenBench client as a Cadence worker.",
+        epilog=SETUP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--server", help="OpenBench server URL; or OPENBENCH_SERVER")
     parser.add_argument("--username", help="OpenBench username; or OPENBENCH_USERNAME")
