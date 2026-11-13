@@ -6,7 +6,7 @@
 [![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
 Cadence is a UCI chess engine written in Rust, for standard chess, Chess960
-and double Chess960 (DFRC). It uses a classical alpha-beta search and a
+and double Chess960 (DFRC). Using a classical alpha-beta search and a
 hand-written evaluation tuned on its own games, with no neural network. It
 reads Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
 crates, which with the crates they use are its only outside dependencies.
@@ -23,7 +23,7 @@ say in the moves.
 | [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-10 |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
-Estimates are from our own gauntlets against rated engines, not official
+Estimates are from gauntlets against rated engines, not official
 ratings. Method, games and caveats:
 [docs/calibration/strength.md](docs/calibration/strength.md).
 
@@ -44,7 +44,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/insta
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-It downloads the right binary from the latest release, checks its checksum and
+It downloads the latest release binary, checks its checksum and
 bench, and installs it to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on
 Windows), or offers to build from source if none fits. It asks before anything
 big: building, installing Rust, changing your PATH or downloading tablebases.
@@ -96,12 +96,12 @@ engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
 
 ## How it is tested
 
-Every change meant to make Cadence stronger is played against the current
+Every strength change is played against the current
 version on [OpenBench](https://github.com/AndyGrant/OpenBench), usually for
 thousands of games, until it is clear whether it helps. It is kept only if it
 wins. Every SPRT, passed or failed, is in
 [docs/testing/sprt-log.csv](docs/testing/sprt-log.csv). Each result is
-measured against the version before it, so the gains do not add up to a
+measured against the previous version, so the gains do not add up to a
 rating; the [strength page](docs/calibration/strength.md) has the ratings.
 
 You can also check:
