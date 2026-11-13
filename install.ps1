@@ -585,30 +585,45 @@ function Get-Listed([string]$Name) {
     return ''
 }
 
-# A path with each symbolic link and junction along it followed, so two spellings of one file or folder
-# compare equal; the file itself need not exist.
-function Get-RealPath([string]$Path, [int]$Depth = 0) {
-    $full = [System.IO.Path]::GetFullPath($Path)
-    if ($Depth -gt 16 -or $full.StartsWith('\\')) { return $full.TrimEnd('\') }
-    $parts = @($full.TrimEnd('\').Split('\'))
-    $real = $parts[0]
-    for ($n = 1; $n -lt $parts.Count; $n++) {
-        $next = $real + '\' + $parts[$n]
-        $item = Get-Item -LiteralPath $next -Force -ErrorAction SilentlyContinue
-        if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and $item.PSObject.Properties['Target'] -and @($item.Target).Count -gt 0) {
-            $target = "$(@($item.Target)[0])"
-            if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $real $target }
-            $next = Get-RealPath $target ($Depth + 1)
-        }
-        $real = $next
+# A file's or folder's identity as Windows keeps it, its volume's serial number and its file index,
+# or the empty string where it cannot be opened; links, junctions, subst drives and UNC names share it.
+function Get-FileIdentity([string]$Path) {
+    try {
+        if (-not ('CadenceInstall.FileId' -as [type])) {
+            Add-Type -Namespace CadenceInstall -Name FileId -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)]
+public struct Info {
+    public uint Attributes, CreatedLow, CreatedHigh, AccessedLow, AccessedHigh, WrittenLow, WrittenHigh;
+    public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+}
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle handle, out Info info);
+public static string Of(string path) {
+    using (var handle = CreateFile(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+        Info info;
+        if (handle.IsInvalid || !GetFileInformationByHandle(handle, out info)) { return ""; }
+        return info.Volume.ToString("x8") + ":" + info.IndexHigh.ToString("x8") + info.IndexLow.ToString("x8");
     }
-    return $real
+}
+'@
+        }
+        return [CadenceInstall.FileId]::Of($Path)
+    } catch {
+        Write-Log "the identity of $Path was not read: $_"
+        return ''
+    }
 }
 
-# Whether two paths are one file or folder, whatever links, junctions or trailing separators spell them.
+# Whether two paths are one file or folder, by the identity Windows keeps where both can be opened,
+# and otherwise by their full spelling.
 function Test-SameFile([string]$First, [string]$Second) {
     if (-not $First -or -not $Second) { return $false }
-    return (Get-RealPath $First) -eq (Get-RealPath $Second)
+    $one = Get-FileIdentity $First
+    $two = Get-FileIdentity $Second
+    if ($one -and $two) { return $one -eq $two }
+    return [System.IO.Path]::GetFullPath($First).TrimEnd('\') -eq [System.IO.Path]::GetFullPath($Second).TrimEnd('\')
 }
 
 function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower() }
@@ -913,23 +928,40 @@ function Initialize-Toolchain {
     Write-Log "target: $script:Triple"
 }
 
-# The rustflags a config file of the repository gives the target.
+# The rustflags a config file of the repository gives the target, from an array of strings or a string
+# of words, with Unreadable set where a rustflags key has any other form.
 function Get-RepoFlags([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return @() }
-    $flags = @()
+    $result = @{ Flags = @(); Unreadable = $false }
+    if (-not (Test-Path -LiteralPath $Path)) { return $result }
     $on = $false
     $grab = $false
+    $key = $false
+    $raw = ''
     foreach ($line in Get-Content -LiteralPath $Path) {
         if ($line -match '^\s*#') { continue }
+        $line = $line -replace '\s*#[^"]*$', ''
         if ($line -eq "[target.$($script:Triple)]") { $on = $true; continue }
         if ($line -match '^\[') { $on = $false }
-        if ($on -and $line -match '^\s*rustflags\s*=') { $grab = $true }
+        if ($on -and $line -match '^\s*rustflags\s*=') {
+            $key = $true
+            $grab = $true
+            $line = $line.Substring($line.IndexOf('=') + 1)
+        }
         if ($grab) {
-            foreach ($match in [regex]::Matches($line, '"([^"]*)"')) { $flags += $match.Groups[1].Value }
-            if ($line.Contains(']')) { $grab = $false }
+            $raw += ' ' + $line
+            if ($raw -match '^\s*"' -or $line.Contains(']')) { $grab = $false }
         }
     }
-    return $flags
+    if (-not $key) { return $result }
+    if ($raw -match '^\s*\[') {
+        foreach ($match in [regex]::Matches($raw, '"([^"]*)"')) { $result.Flags += $match.Groups[1].Value }
+        if ([regex]::Replace($raw, '"[^"]*"', '') -match '[^\[\]\s,]') { $result.Unreadable = $true }
+    } elseif ($raw -match '^\s*"([^"]*)"\s*$') {
+        $result.Flags = @($Matches[1] -split '\s+' | Where-Object { $_ })
+    } else {
+        $result.Unreadable = $true
+    }
+    return $result
 }
 
 # Sets a variable for this process and the programs it starts, an empty value included: .NET deletes a
@@ -977,12 +1009,10 @@ function Invoke-Build {
     # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
     $flags = @()
     foreach ($file in $files) {
-        $read = @(Get-RepoFlags (Join-Path $script:Src $file))
-        # A table for the target with no flags read from it is a file this script misreads, not one to build by.
-        if ($read.Count -eq 0 -and (Select-String -Path (Join-Path $script:Src $file) -Pattern $section -Quiet)) {
-            Fail "$file has settings for $($script:Triple), but no rustflags could be read from them, so nothing is built"
-        }
-        $flags += $read
+        $read = Get-RepoFlags (Join-Path $script:Src $file)
+        # A rustflags key this script cannot read would build by flags it never saw, so nothing is built.
+        if ($read.Unreadable) { Fail "$file sets rustflags for $($script:Triple) in a form this script cannot read, so nothing is built" }
+        $flags += $read.Flags
     }
     $encoded = $flags -join [char]0x1f
     Write-Log ('rustflags: ' + ($flags -join ' '))
@@ -1184,7 +1214,9 @@ function Compare-Installed {
     if (-not $script:Earlier) { Step 'The installed Cadence' }
     $order = Compare-Version $script:Installed $script:Version
     if ($order -eq 0) {
-        if ($Arch -eq 'x86_64' -and $script:Asked -and $script:HeldBuild -ne $script:Build) {
+        # A baseline build was made where the target has no AVX2 or generic settings, so every build
+        # asked for there is that one.
+        if ($Arch -eq 'x86_64' -and $script:Asked -and $script:HeldBuild -ne $script:Build -and $script:HeldBuild -ne 'baseline') {
             $held = if ($script:HeldBuild) { " in the $($script:HeldBuild) build" } else { '' }
             Say "Cadence $($script:Version) is installed at $($script:Target)$held, and the $($script:Build) build is asked for, so it is replaced."
             $script:Replace = $true
@@ -1231,6 +1263,17 @@ function Install-Binary {
     }
     $previous = Get-StatePath 'binary'
     if ($previous -and (Test-Path -LiteralPath $previous) -and -not (Test-SameFile $previous $script:Target)) { Remove-Previous $previous }
+    # Whatever the steps above did, the install ends with the checked binary at the target.
+    $want = Get-Sha256 $script:Built
+    if (-not (Test-Path -LiteralPath $script:Target -PathType Leaf) -or (Get-Sha256 $script:Target) -ne $want) {
+        Say "The binary at $($script:Target) was missing or changed after the install, so it is copied again."
+        try {
+            Copy-Item -Force -Path $script:Built -Destination $script:Target -ErrorAction Stop
+        } catch {
+            Fail "could not write $($script:Target)"
+        }
+        if ((Get-Sha256 $script:Target) -ne $want) { Fail "the binary at $($script:Target) does not match the one checked" }
+    }
     Set-StateValue 'binary' $script:Target
     Set-StateValue 'version' $script:Version
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)

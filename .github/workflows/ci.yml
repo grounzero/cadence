@@ -509,6 +509,35 @@ jobs:
       - name: The worker setup's tests
         run: python3 -m unittest discover -s openbench/tests -v
 
+      # Both installers' readers of a release's rustflags, on every form a config file can give them:
+      # each readable one gives its flags, and a form neither can read is refused.
+      - name: The installers read a release's rustflags
+        run: |
+          set -u
+          dir=$RUNNER_TEMP/flags
+          mkdir -p "$dir"
+          printf '[target.T]\nrustflags = ["-C", "target-feature=+avx2,+bmi1"]\n' > "$dir/array.toml"
+          printf '[target.T] # the AVX2 build\nrustflags = [\n    "-C", # codegen\n    "target-feature=+neon",\n]\n[alias]\nx = "y"\n' > "$dir/multiline.toml"
+          printf '[target.T]\nrustflags = "-C target-cpu=x86-64-v2"\n' > "$dir/string.toml"
+          printf '[target.T]\nlinker = "cc"\n' > "$dir/linker.toml"
+          printf '[target.U]\nrustflags = ["-C", "x"]\n' > "$dir/other.toml"
+          printf "[target.T]\nrustflags = ['-C', 'x']\n" > "$dir/single.toml"
+          expect="array:0:-C|target-feature=+avx2,+bmi1 multiline:0:-C|target-feature=+neon string:0:-C|target-cpu=x86-64-v2 linker:0: other:0: single:2:"
+          sed -n '/^repo_flags() {/,/^}/p' install.sh > "$dir/repo_flags.sh"
+          awk '/^function Get-RepoFlags/ {on = 1} on {print} on && /^}/ {exit}' install.ps1 > "$dir/Get-RepoFlags.ps1"
+          sh_got=""
+          ps_got=""
+          for name in array multiline string linker other single; do
+            out=$(TRIPLE=T bash -c ". '$dir/repo_flags.sh'; repo_flags '$dir/$name.toml'") && rc=0 || rc=$?
+            sh_got="$sh_got $name:$rc:$(printf '%s' "$out" | paste -sd '|' -)"
+            out=$(pwsh -NoProfile -Command ". '$dir/Get-RepoFlags.ps1'; \$script:Triple = 'T'; \$r = Get-RepoFlags '$dir/$name.toml'; '{0}:{1}' -f \$(if (\$r.Unreadable) { 2 } else { 0 }), (\$r.Flags -join '|')")
+            ps_got="$ps_got $name:$out"
+          done
+          echo "install.sh read:$sh_got"
+          echo "install.ps1 read:$ps_got"
+          [ "${sh_got# }" = "$expect" ] || { echo "::error::install.sh read the rustflags as$sh_got, not $expect"; exit 1; }
+          [ "${ps_got# }" = "$expect" ] || { echo "::error::install.ps1 read the rustflags as$ps_got, not $expect"; exit 1; }
+
   # Whether a pull request changes an installer or a workflow, read from its merge commit against the
   # base; any other event runs the install jobs, and so does a failure here, which never skips them.
   changes:
@@ -1879,11 +1908,27 @@ jobs:
             grep -qxF "binary=$home/real/cadence" "$st" || { cat "$st"; bad "the state did not record the folder without its trailing slash"; }
             ln -s "$home/real" "$home/link"
           fi
-          for dir in "$home/real" "$home/link" "$home/link/"; do
+          spellings=("$home/real" "$home/link" "$home/link/")
+          # On Windows a subst drive spells the same folder with another letter.
+          if [ "$RUNNER_OS" = Windows ]; then
+            drive=$(powershell.exe -NoProfile -Command "@('Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z' | Where-Object { -not (Test-Path (\$_ + ':\\')) })[0]" | tr -d '\r')
+            subst "$drive:" "$(cygpath -w "$home")"
+            spellings+=("$drive:\\real")
+          fi
+          for dir in "${spellings[@]}"; do
             spelled --dir "$dir" > spelled.txt 2>&1 || { cat spelled.txt; bad "the run with --dir $dir failed"; }
             said spelled.txt ", so it is up to date." "--dir $dir was not taken for the folder installed in"
             if grep -qF 'An earlier run installed Cadence at' spelled.txt; then cat spelled.txt; bad "--dir $dir offered to remove the install in its own folder"; fi
             [ -f "$home/real/cadence$exe" ] || bad "--dir $dir removed the install"
+          done
+          [ "$RUNNER_OS" != Windows ] || MSYS_NO_PATHCONV=1 subst "$drive:" /D
+
+          # A build recorded as baseline was made where the target has no AVX2 or generic settings, so
+          # any build asked for there is that one, and nothing is rebuilt.
+          sed -i.bak 's/^build=.*/build=baseline/' "$st"
+          for build in --generic "--build avx2"; do
+            spelled --dir "$home/real" $build > baseline.txt 2>&1 || { cat baseline.txt; bad "the run with $build over a baseline build failed"; }
+            said baseline.txt ", so it is up to date." "$build was not taken for the baseline build installed"
           done
 
           # A tablebase download that stopped is offered again by a plain run, yes by default, and keeps
@@ -2210,12 +2255,29 @@ jobs:
             if (@(Get-Content (Join-Path $env:LOCALAPPDATA 'Cadence\install-state')) -notcontains "binary=$realDir\cadence.exe") { throw 'the state did not record the folder without its trailing separator' }
             $link = Join-Path $env:LOCALAPPDATA 'link'
             New-Item -ItemType Junction -Path $link -Target $realDir | Out-Null
-            foreach ($dir in @($realDir, $link, ($link + '\'))) {
-              $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', $dir)
-              if ($run.Code -ne 0) { Write-Host $run.Out; throw "the run with --dir $dir failed" }
-              Said $run ', so it is up to date.' "--dir $dir was not taken for the folder installed in"
-              if ($run.Out.Contains('An earlier run installed Cadence at')) { Write-Host $run.Out; throw "--dir $dir offered to remove the install in its own folder" }
-              if (-not (Test-Path (Join-Path $realDir 'cadence.exe'))) { throw "--dir $dir removed the install" }
+            # A subst drive spells the same folder with another letter.
+            $drive = @('Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z' | Where-Object { -not (Test-Path ($_ + ':\')) })[0]
+            & subst.exe "$($drive):" $env:LOCALAPPDATA
+            try {
+              foreach ($dir in @($realDir, $link, ($link + '\'), "$($drive):\real")) {
+                $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', $dir)
+                if ($run.Code -ne 0) { Write-Host $run.Out; throw "the run with --dir $dir failed" }
+                Said $run ', so it is up to date.' "--dir $dir was not taken for the folder installed in"
+                if ($run.Out.Contains('An earlier run installed Cadence at')) { Write-Host $run.Out; throw "--dir $dir offered to remove the install in its own folder" }
+                if (-not (Test-Path (Join-Path $realDir 'cadence.exe'))) { throw "--dir $dir removed the install" }
+              }
+            } finally {
+              & subst.exe "$($drive):" /D
+            }
+
+            # A build recorded as baseline was made where the target has no AVX2 or generic settings, so
+            # any build asked for there is that one, and nothing is rebuilt.
+            $stateFile = Join-Path $env:LOCALAPPDATA 'Cadence\install-state'
+            Set-Content -Encoding ascii -Path $stateFile -Value (@(Get-Content $stateFile) -replace '^build=.*$', 'build=baseline')
+            foreach ($build in @(@('--generic'), @('--build', 'avx2'))) {
+              $run = Install (@('--yes', '--test-urls', '--version', $v, '--dir', $realDir) + $build)
+              if ($run.Code -ne 0) { Write-Host $run.Out; throw "the run with $build over a baseline build failed" }
+              Said $run ', so it is up to date.' "$build was not taken for the baseline build installed"
             }
 
             # A tablebase download that stopped is offered again by a plain run, yes by default, and keeps

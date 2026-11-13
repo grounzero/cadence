@@ -1013,18 +1013,34 @@ prepare_toolchain() {
     log "target: $TRIPLE"
 }
 
-# The rustflags a config file of the repository gives the target, one to a line.
+# The rustflags a config file of the repository gives the target, one to a line, from an array of
+# strings or a string of words; a rustflags key in any other form fails, with status 2.
 repo_flags() {
     [ -f "$1" ] || return 0
     awk -v t="[target.$TRIPLE]" '
         /^[[:space:]]*#/ {next}
+        {sub(/[[:space:]]*#[^"]*$/, "")}
         $0 == t {on = 1; next}
         /^\[/ {on = 0}
-        on && /^[[:space:]]*rustflags[[:space:]]*=/ {grab = 1}
+        on && /^[[:space:]]*rustflags[[:space:]]*=/ {key = 1; grab = 1; sub(/^[^=]*=/, "")}
         grab {
-            s = $0
-            while (match(s, /"[^"]*"/)) {print substr(s, RSTART + 1, RLENGTH - 2); s = substr(s, RSTART + RLENGTH)}
-            if (index($0, "]")) grab = 0
+            raw = raw " " $0
+            if (raw ~ /^[[:space:]]*"/ || index($0, "]")) grab = 0
+        }
+        END {
+            if (!key) exit 0
+            rest = raw
+            if (raw ~ /^[[:space:]]*\[/) {
+                while (match(rest, /"[^"]*"/)) {flags[++n] = substr(rest, RSTART + 1, RLENGTH - 2); rest = substr(rest, 1, RSTART - 1) substr(rest, RSTART + RLENGTH)}
+                gsub(/[][[:space:],]/, "", rest)
+            } else if (match(raw, /^[[:space:]]*"[^"]*"[[:space:]]*$/)) {
+                n = split(substr(raw, index(raw, "\"") + 1, length(raw)), words, /[[:space:]"]+/)
+                rest = ""
+                for (i = 1; i <= n; i++) if (words[i] != "") flags[++m] = words[i]
+                n = m
+            }
+            if (rest != "") exit 2
+            for (i = 1; i <= n; i++) print flags[i]
         }' "$1"
 }
 
@@ -1053,11 +1069,10 @@ build() {
     # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
     local flags encoded file
     flags="CARGO_TARGET_$(printf '%s' "$TRIPLE" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
-    # A table for the target with no flags read from it is a file this script misreads, not one to build by.
+    # A rustflags key this script cannot read would build by flags it never saw, so nothing is built.
     for file in $files; do
-        if grep -q "^\[target\.$TRIPLE\]" "$SRC/$file" 2>/dev/null && [ -z "$(repo_flags "$SRC/$file")" ]; then
-            fail "$file has settings for $TRIPLE, but no rustflags could be read from them, so nothing is built"
-        fi
+        repo_flags "$SRC/$file" > /dev/null \
+            || fail "$file sets rustflags for $TRIPLE in a form this script cannot read, so nothing is built"
     done
     encoded=$(for file in $files; do repo_flags "$SRC/$file"; done | awk '{printf "%s%s", (NR > 1 ? "\037" : ""), $0}')
     log "rustflags: $(printf '%s' "$encoded" | tr '\037' ' ')"
@@ -1300,7 +1315,9 @@ compare_installed() {
     case "$(version_order "$INSTALLED" "$VERSION")" in
         0)
             local build=${HELD% *}
-            if [ "$ARCH" = x86_64 ] && [ -n "$ASKED" ] && [ "$build" != "$BUILD" ]; then
+            # A baseline build was made where the target has no AVX2 or generic settings, so every build
+            # asked for there is that one.
+            if [ "$ARCH" = x86_64 ] && [ -n "$ASKED" ] && [ "$build" != "$BUILD" ] && [ "$build" != baseline ]; then
                 say "Cadence $VERSION is installed at $(shown "$TARGET")${build:+ in the $build build}, and the $BUILD build is asked for, so it is replaced."
                 REPLACE=1
             elif [ "$SOURCE" = 1 ] && [ "${HELD#* }" != source ]; then
@@ -1330,7 +1347,7 @@ compare_installed() {
 }
 
 install_binary() {
-    local previous
+    local previous want
     step "Installing"
     case "$WHERE" in
         dir) say "Installing into $DEST, as --dir asks." ;;
@@ -1350,6 +1367,14 @@ install_binary() {
     previous=$(state_path binary)
     if [ -n "$previous" ] && [ -e "$previous" ] && ! same_file "$previous" "$TARGET"; then
         retire_previous "$previous"
+    fi
+    # Whatever the steps above did, the install ends with the checked binary at the target.
+    want=$(checksum "$BUILT")
+    if [ ! -f "$TARGET" ] || [ "$(checksum "$TARGET")" != "$want" ]; then
+        say "The binary at $(shown "$TARGET") was missing or changed after the install, so it is copied again."
+        { cp "$BUILT" "$TARGET.new" && chmod 755 "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"; } \
+            || { rm -f "$TARGET.new"; fail "could not write $TARGET"; }
+        [ "$(checksum "$TARGET")" = "$want" ] || fail "the binary at $TARGET does not match the one checked"
     fi
     state_set binary "$(shown "$TARGET")"
     state_set version "$VERSION"
