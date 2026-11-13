@@ -13,7 +13,8 @@ REPO_URL="https://github.com/$REPO.git"
 ISSUES_URL="https://github.com/$REPO/issues"
 # The servers below are replaced only as check_urls allows, so a test can serve its own.
 API_URL="https://api.github.com/repos/$REPO/releases"
-ASSETS_URL="https://github.com/$REPO/releases/download"
+RELEASES_URL="https://github.com/$REPO/releases/download"
+ASSETS_URL=$RELEASES_URL
 TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
 # How long a binary's bench, and its answer to uci, may take before it is stopped, in seconds.
 BENCH_SECONDS=600
@@ -31,6 +32,7 @@ MODE=install
 VERSION=""
 PREFIX=""
 BUILD=""
+ASKED=""
 SOURCE=0
 TABLES=0
 TEST_URLS=0
@@ -40,11 +42,15 @@ OUT=""
 WHY=""
 BUILT=""
 ATTESTED=""
+FROM=""
 LIMITED=0
 UP_TO_DATE=0
 REPLACE=0
 INSTALLED=""
+HELD=""
+EARLIER=0
 NAMED=""
+UNREAD=""
 ID=""
 WHERE=default
 DEST=""
@@ -71,8 +77,8 @@ asked first; a build from source names the tag it builds.
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
   --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_API_URL and CADENCE_TABLES_URL
-                   name servers of their own; without it, CADENCE_RELEASES_URL must be HTTPS on
-                   github.com and the other two are refused
+                   name servers of their own; without it, CADENCE_RELEASES_URL must be this
+                   repository's releases on github.com and the other two are refused
   --help           show this and stop
 EOF
 }
@@ -108,6 +114,8 @@ case "$BUILD" in
     "" | avx2 | generic) ;;
     *) echo "--build takes avx2 or generic" >&2; exit 2 ;;
 esac
+# The build named on the command line, which an install of another build at the same version yields to.
+ASKED=$BUILD
 
 # --- The system --------------------------------------------------------------------------------
 
@@ -388,18 +396,18 @@ system_report() {
     log "cpu: ${cpu:-unknown}, $(uname -m)"
 }
 
-# CADENCE_RELEASES_URL may name HTTPS on github.com, and the other two servers stay as they are,
-# unless --test-urls lets a test name its own; whichever is in use is said.
+# CADENCE_RELEASES_URL may name only this repository's releases, and the other two servers stay as
+# they are, unless --test-urls lets a test name its own; whichever is in use is said.
 check_urls() {
     if [ -n "${CADENCE_RELEASES_URL:-}" ]; then
         case "$CADENCE_RELEASES_URL" in
-            https://github.com/*) ;;
+            "$RELEASES_URL" | "$RELEASES_URL/") ;;
             *)
                 [ "$TEST_URLS" = 1 ] \
-                    || fail "CADENCE_RELEASES_URL is $CADENCE_RELEASES_URL, which is not HTTPS on github.com; only a test may name another server, with --test-urls"
+                    || fail "CADENCE_RELEASES_URL is $CADENCE_RELEASES_URL, which is not $RELEASES_URL; only a test may name another server, with --test-urls"
                 ;;
         esac
-        ASSETS_URL=$CADENCE_RELEASES_URL
+        ASSETS_URL=${CADENCE_RELEASES_URL%/}
     fi
     if [ -n "${CADENCE_API_URL:-}" ]; then
         [ "$TEST_URLS" = 1 ] || fail "CADENCE_API_URL is set, which only a test may do, with --test-urls"
@@ -582,30 +590,58 @@ find_release() {
     fi
 }
 
+# The release's SHA256SUMS in the work folder, downloaded once, or the reason it is not in WHY.
+release_sums() {
+    [ ! -s "$WORK/SHA256SUMS" ] || return 0
+    log "\$ download $ASSETS_URL/$VERSION/SHA256SUMS"
+    if ! download "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" 2> "$OUT"; then
+        redact < "$OUT" >> "$LOG"
+        rm -f "$WORK/SHA256SUMS"
+        WHY="Release $VERSION publishes no checksum file$(said), so none of its binaries is used."
+        return 1
+    fi
+}
+
 # The SHA-256 the release's SHA256SUMS gives a file, or nothing.
 listed() {
     awk -v f="$1" '$2 == f || $2 == "*" f {print $1; exit}' "$WORK/SHA256SUMS"
 }
 
-# The release workflow attests every binary it builds, and gh checks that attestation where it is
-# installed and signed in. Where it cannot, that is said, and an attestation that fails leaves WHY.
+# The file the release's SHA256SUMS gives a SHA-256 to, or nothing.
+listed_as() {
+    awk -v s="$1" '$1 == s {f = $2; sub(/^\*/, "", f); print f; exit}' "$WORK/SHA256SUMS"
+}
+
+# The release workflow attests every binary it builds, at the version's tag or, re-running a failed
+# release, from main, and gh checks that attestation where it is installed and signed in. Where gh
+# cannot check, that is said and the install goes on; an attestation that fails leaves WHY.
 attested() {
-    local file=$1 rc
+    local file=$1 rc last
     ATTESTED=no
     if ! command -v gh > /dev/null 2>&1; then
         say "Its build attestation was not verified: gh, GitHub's command line tool, is not installed."
         return 0
     fi
-    log "\$ gh attestation verify $file --repo $REPO --signer-workflow $REPO/.github/workflows/release.yml --source-ref refs/tags/$VERSION"
+    log "\$ gh attestation verify $file --repo $REPO --signer-workflow $REPO/.github/workflows/release.yml --format json"
     gh attestation verify "$WORK/$file" --repo "$REPO" --signer-workflow "$REPO/.github/workflows/release.yml" \
-        --source-ref "refs/tags/$VERSION" > "$OUT" 2>&1
+        --format json --jq '.[].verificationResult.signature.certificate.sourceRepositoryRef' > "$OUT" 2>&1
     rc=$?
     redact < "$OUT" >> "$LOG"
     log "(exit $rc)"
+    last=$(grep -v '^[[:space:]]*$' "$OUT" | tail -n 1 | tr -d '\r')
     if [ "$rc" -eq 0 ]; then
-        ATTESTED=yes
-        say "Its build attestation verifies: GitHub's release workflow built it at the tag $VERSION."
-        return 0
+        if grep -qxF "refs/tags/$VERSION" "$OUT"; then
+            ATTESTED=yes
+            say "Its build attestation verifies: GitHub's release workflow built it at the tag $VERSION."
+            return 0
+        fi
+        if grep -qxF refs/heads/main "$OUT"; then
+            ATTESTED=yes
+            say "Its build attestation verifies: GitHub's release workflow built it from main, re-running the release of $VERSION."
+            return 0
+        fi
+        WHY="$file's build attestation names ${last:-no ref}, not the tag $VERSION, so it is not used."
+        return 1
     fi
     # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
     if [ "$rc" -eq 4 ]; then
@@ -616,8 +652,14 @@ attested() {
         say "Its build attestation was not verified: this gh is too old to check one."
         return 0
     fi
-    WHY="$file's build attestation does not verify ($(grep -v '^[[:space:]]*$' "$OUT" | tail -n 1 | tr -d '\r')), so it is not used."
-    return 1
+    # gh's verdicts: no attestation for this file, a signature that is not the release workflow's, or
+    # a certificate naming something else. Anything else is gh failing to check.
+    if grep -qE 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed' "$OUT"; then
+        WHY="$file's build attestation does not verify ($last), so it is not used."
+        return 1
+    fi
+    say "Its build attestation was not verified: gh could not check it ($last)."
+    return 0
 }
 
 # Leaves the checked binary in BUILT, or the reason none is used in WHY.
@@ -631,12 +673,7 @@ try_binary() {
         return 1
     fi
     file="cadence-$VERSION-$name$EXE"
-    log "\$ download $ASSETS_URL/$VERSION/SHA256SUMS"
-    if ! download "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" 2> "$OUT"; then
-        redact < "$OUT" >> "$LOG"
-        WHY="Release $VERSION publishes no checksum file$(said), so none of its binaries is used."
-        return 1
-    fi
+    release_sums || return 1
     want=$(listed "$file")
     if [ -z "$want" ]; then
         WHY="Release $VERSION's SHA256SUMS lists no $file, so there is no binary for this system."
@@ -680,6 +717,7 @@ try_binary() {
         return 1
     fi
     BUILT="$WORK/$file"
+    FROM=release
 }
 
 # --- The build ---------------------------------------------------------------------------------
@@ -865,17 +903,18 @@ fetch_source() {
 }
 
 # The commit the release's notes say it was built from, in NAMED, or nothing where no release names
-# one: a test base, or a version from before releases had pages.
+# one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
+# UNREAD says why, and the build goes on without the check.
 release_commit() {
     local trouble
     NAMED=""
+    UNREAD=""
     case "$VERSION" in *+*) return 0 ;; esac
     log "\$ download $API_URL/tags/$VERSION"
     if ! download "$API_URL/tags/$VERSION" "$WORK/release.json" 2> "$OUT"; then
         trouble=$(said)
         redact < "$OUT" >> "$LOG"
-        rate_limited "$trouble"
-        [ "$trouble" = " (not found)" ] || fail "could not read release $VERSION from GitHub$trouble"
+        [ "$trouble" = " (not found)" ] || UNREAD=${trouble:- (no answer)}
         return 0
     fi
     NAMED=$(grep -oE "built from [0-9a-f]{40} at the tag" "$WORK/release.json" | head -n 1 | awk '{print $3}')
@@ -887,6 +926,13 @@ check_commit() {
     local got
     got=$(git -C "$SRC" rev-parse HEAD 2> /dev/null) || fail "could not read the commit Cadence $VERSION was fetched at"
     log "fetched commit: $got; the release names: ${NAMED:-none}"
+    if [ -n "$UNREAD" ]; then
+        say "GitHub's API did not answer$UNREAD, so the commit release $VERSION names could not be read. It is built at its tag, commit $got, without that check."
+        case "$UNREAD" in
+            *" 403)" | *" 429)") say "GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time." ;;
+        esac
+        return
+    fi
     if [ -z "$NAMED" ]; then
         case "$VERSION" in
             *+*) say "Test base $VERSION is commit $got; a test base has no release to name one." ;;
@@ -930,6 +976,7 @@ build() {
     (cd "$SRC" && run env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS cargo $args) || fail "the build failed"
     BUILT="$SRC/target/release/cadence$EXE"
     [ -f "$BUILT" ] || fail "the build left no binary at $BUILT"
+    FROM=source
 }
 
 # Leaves in ID the name a binary gives in answer to uci, or nothing; LIMITED is 1 where no answer came
@@ -942,10 +989,11 @@ id_name() {
 }
 
 # A program the system will not start, said in plain words, which stops the run; what the system
-# answered is in the log.
+# answered is in the log, which is kept.
 refused() {
     local name
     name=$(basename "$1")
+    KEEP_LOG=1
     if [ "$OS" = windows ]; then
         say "Windows blocked $name from running. This is most likely application control or antivirus software, which managed machines often have."
     else
@@ -956,17 +1004,31 @@ refused() {
 
 # Runs a binary's bench and asks its name, leaving the reason in WHY if either is not the one wanted.
 bench_and_name() {
-    local bin=$1 want=$2 name=$3 rc got first
+    local bin=$1 want=$2 name=$3 rc got first answer
     say "Running its bench."
     log "\$ cadence bench"
     limited "$BENCH_SECONDS" /dev/null "$WORK/bench.out" "$bin" bench
     rc=$?
     redact < "$OUT" >> "$LOG"
-    # A program the system would not start leaves only the shell's own line naming it, whose exit
-    # status differs between versions of bash.
-    if [ "$rc" -ne 0 ] && grep -F "$(basename "$bin"): " "$OUT" \
-        | grep -qE ': (cannot execute|Permission denied|Operation not permitted)'; then
-        refused "$bin"
+    # A program the system would not start leaves only the shell's own lines naming it, whose exit
+    # status differs between versions of bash. Only a denial is a policy; any other is the binary's.
+    if [ "$rc" -ne 0 ]; then
+        answer=$(grep -F "$(basename "$bin"): " "$OUT")
+        case "$answer" in
+            *": Permission denied"* | *": Operation not permitted"*) refused "$bin" ;;
+            *"required file not found"* | *"No such file or directory"*)
+                WHY="it cannot start on this system, which lacks the loader it needs, as a Linux without glibc does"
+                return 1
+                ;;
+            *"Exec format error"* | *"cannot execute binary file"*)
+                WHY="it cannot start on this system, which does not take it for a program"
+                return 1
+                ;;
+            *"cannot execute"*)
+                WHY="it cannot start on this system"
+                return 1
+                ;;
+        esac
     fi
     if [ "$LIMITED" = 1 ]; then
         WHY="its bench did not finish within $BENCH_SECONDS seconds, so it was stopped"
@@ -1044,28 +1106,85 @@ version_order() {
         {for (i = 1; i <= 5; i++) if (a[i] != $i + 0) {print (a[i] < $i + 0) ? -1 : 1; exit}; print 0}'
 }
 
-# The version this script recorded installing at TARGET, in INSTALLED, trusted only while the file
-# there has the SHA-256 recorded with it. The file itself is never run.
+# The build a release binary is, from its name.
+build_of() {
+    case "$1" in
+        *-avx2 | *-avx2.exe | *-macos-x86-64) printf avx2 ;;
+        *-generic | *-generic.exe) printf generic ;;
+        *) printf native ;;
+    esac
+}
+
+# The version this script recorded installing at TARGET, in INSTALLED, and its build and whether it
+# came from a release binary or source in HELD, trusted only while the file there has the SHA-256
+# recorded with it. The file itself is never run.
 installed_version() {
     local sum
     INSTALLED=""
+    HELD=""
+    EARLIER=0
     [ -f "$TARGET" ] && [ "$(state_get binary)" = "$TARGET" ] || return 0
     sum=$(state_get sha256)
-    [ -n "$sum" ] && [ "$(checksum "$TARGET")" = "$sum" ] || return 0
+    if [ -z "$sum" ]; then
+        EARLIER=1
+        return 0
+    fi
+    [ "$(checksum "$TARGET")" = "$sum" ] || return 0
     INSTALLED=$(state_get version)
+    HELD="$(state_get build) $(state_get from)"
 }
 
-# The same version installed stops the run as up to date, an older one is upgraded unless declined,
-# and a newer one is kept unless a downgrade is asked for.
+# The installers before this one recorded the path alone, so their install is known by its SHA-256
+# among the release's binaries, and recorded as this script records it; otherwise it is upgraded.
+earlier_install() {
+    local sum name
+    step "The installed Cadence"
+    sum=$(checksum "$TARGET")
+    case "$VERSION" in *+*) name="" ;; *) release_sums && name=$(listed_as "$sum") ;; esac
+    case "$name" in
+        "cadence-$VERSION-"*)
+            say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version; its SHA-256 is release $VERSION's $name."
+            INSTALLED=$VERSION
+            HELD="$(build_of "$name") release"
+            state_set version "$INSTALLED"
+            state_set sha256 "$sum"
+            state_set build "${HELD% *}"
+            state_set from release
+            ;;
+        *)
+            if [ -s "$WORK/SHA256SUMS" ]; then
+                say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version, and its SHA-256 is none of release $VERSION's."
+            else
+                say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version."
+            fi
+            ask "Upgrade it to $VERSION?" y || stop "Kept the one there; nothing was installed."
+            REPLACE=1
+            ;;
+    esac
+}
+
+# The same version installed stops the run as up to date, unless another build or a build from source
+# is asked for; an older one is upgraded unless declined, and a newer one is kept unless a downgrade
+# is asked for.
 compare_installed() {
     target_path
     installed_version
+    [ "$EARLIER" = 0 ] || earlier_install
     [ -n "$INSTALLED" ] || return 0
-    step "The installed Cadence"
+    [ "$EARLIER" = 1 ] || step "The installed Cadence"
     case "$(version_order "$INSTALLED" "$VERSION")" in
         0)
-            say "Cadence $VERSION is already installed at $(shown "$TARGET"), so it is up to date."
-            UP_TO_DATE=1
+            local build=${HELD% *}
+            if [ "$ARCH" = x86_64 ] && [ -n "$ASKED" ] && [ "$build" != "$BUILD" ]; then
+                say "Cadence $VERSION is installed at $(shown "$TARGET")${build:+ in the $build build}, and the $BUILD build is asked for, so it is replaced."
+                REPLACE=1
+            elif [ "$SOURCE" = 1 ] && [ "${HELD#* }" != source ]; then
+                say "Cadence $VERSION is installed at $(shown "$TARGET"), and --source asks for it built from source, so it is replaced."
+                REPLACE=1
+            else
+                say "Cadence $VERSION is already installed at $(shown "$TARGET"), so it is up to date."
+                UP_TO_DATE=1
+            fi
             ;;
         -1)
             say "Cadence $INSTALLED is installed at $(shown "$TARGET"), and $VERSION is available."
@@ -1100,6 +1219,8 @@ install_binary() {
     state_set binary "$TARGET"
     state_set version "$VERSION"
     state_set sha256 "$(checksum "$TARGET")"
+    state_set build "$BUILD"
+    state_set from "$FROM"
     say "Installed $(shown "$TARGET")."
 }
 
@@ -1110,6 +1231,21 @@ shell_rc() {
         *) printf '%s' "$HOME/.profile" ;;
     esac
 }
+
+# The user PATH edited as the registry holds it, so a %VARIABLE% in it stays unexpanded and the value
+# keeps its kind; CADENCE_ADD adds a folder and CADENCE_REMOVE removes one. Clearing a variable never
+# set then tells running programs the environment changed, as .NET does when it sets one.
+USER_PATH_EDIT=$(cat <<'EOF'
+$k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+$kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+if ($k.GetValueNames() -contains 'Path') { $kind = $k.GetValueKind('Path') }
+$entries = @([string]$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ -and $_ -ne $env:CADENCE_REMOVE })
+if ($env:CADENCE_ADD -and $entries -notcontains $env:CADENCE_ADD) { $entries += $env:CADENCE_ADD }
+$k.SetValue('Path', ($entries -join ';'), $kind)
+$k.Close()
+[Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
+EOF
+)
 
 # A folder named with --dir is the caller's to manage, so the offer defaults to no there.
 offer_path() {
@@ -1123,7 +1259,7 @@ offer_path() {
             ;;
     esac
     if [ "$OS" = windows ]; then
-        local win quoted held
+        local win held
         win=$(cygpath -w "$dest")
         # The user PATH a new terminal reads, which this one does not see until it is opened again.
         held=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" 2> /dev/null | tr -d '\r')
@@ -1132,8 +1268,7 @@ offer_path() {
             return
         fi
         ask "Add $win to your PATH, so a terminal finds cadence?" "$default" || return 0
-        quoted=${win//\'/\'\'}
-        run powershell.exe -NoProfile -Command "\$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not \$p) { \$p = '' }; if ((\$p -split ';') -notcontains '$quoted') { [Environment]::SetEnvironmentVariable('Path', (\$p.TrimEnd(';') + ';$quoted').TrimStart(';'), 'User') }" \
+        CADENCE_ADD=$win CADENCE_REMOVE="" run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
             || fail "could not add $win to your PATH"
         state_set path_windows "$win"
         added_to_path "export PATH=\"$dest:\$PATH\""
@@ -1218,8 +1353,11 @@ offer_tables() {
 afterwards() {
     step "Done"
     say "Cadence is at $(shown "$TARGET") and calls itself $ID."
-    [ "$ATTESTED" != no ] \
-        || say "Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed."
+    if [ "$FROM" = source ]; then
+        say "It was built here from source at the tag $VERSION, so its bench is the check it passed."
+    elif [ "$ATTESTED" = no ]; then
+        say "Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed."
+    fi
     say ""
     say "To play it in a chess program, add it as a UCI engine and choose that file:"
     say "  Arena: Engines, Install New Engine, choose the file, then UCI when asked."
@@ -1246,14 +1384,19 @@ uninstall() {
     rc=$(state_get path_rc)
     line=$(state_get path_line)
     if [ -n "$rc" ] && [ -f "$rc" ] && ask "Remove the PATH line this script added to $rc?" y; then
-        CADENCE_LINE=$line CADENCE_MARK=$MARK awk '$0 != ENVIRON["CADENCE_LINE"] && $0 != ENVIRON["CADENCE_MARK"]' \
+        # Only the line under the marker goes, with the marker, so the same line written by hand stays.
+        CADENCE_LINE=$line CADENCE_MARK=$MARK awk '
+            held != "" && $0 == ENVIRON["CADENCE_LINE"] {held = ""; next}
+            held != "" {print held; held = ""}
+            $0 == ENVIRON["CADENCE_MARK"] {held = $0; next}
+            {print}
+            END {if (held != "") print held}' \
             "$rc" > "$rc.cadence" && cat "$rc.cadence" > "$rc" && rm -f "$rc.cadence" || fail "could not rewrite $rc"
         say "Removed it."
     fi
     win=$(state_get path_windows)
     if [ -n "$win" ] && ask "Remove $win from your PATH, which this script added?" y; then
-        local quoted=${win//\'/\'\'}
-        run powershell.exe -NoProfile -Command "\$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (\$p) { [Environment]::SetEnvironmentVariable('Path', ((\$p -split ';') | Where-Object { \$_ -and \$_ -ne '$quoted' }) -join ';', 'User') }" \
+        CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
             || fail "could not remove $win from your PATH"
         say "Removed it."
     fi
@@ -1295,10 +1438,10 @@ if [ -z "$BUILT" ]; then
     check_git
     resolve_tag
     release_commit
-    check_linker
-    check_rust
     fetch_source
     check_commit
+    check_linker
+    check_rust
     prepare_toolchain
     build
     verify

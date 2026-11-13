@@ -68,21 +68,32 @@ the tablebases and ponders.
   GitHub's API, and a refusal for GitHub's hourly limit on unauthenticated
   requests is named as one, with what to do.
 - Install scripts: where `gh` is installed and signed in, they check each
-  binary's build attestation and do not use a binary whose attestation
-  fails; where it cannot be checked, they say so. A build from source first
-  checks that the release's tag is the commit the release names.
+  binary's build attestation, made by the release workflow at the version's
+  tag or, re-running a failed release, from `main`, and do not use a binary
+  whose attestation fails; where `gh` cannot check it, they say so and go
+  on with the checksum and the bench. A build from source first checks that
+  the release's tag is the commit the release names, before any compiler or
+  Rust is installed; where GitHub's API does not answer, they say so and
+  build without that check. The end of a run names the checks the binary
+  passed, with no SHA-256 for a build from source.
 - Install scripts: they compare the installed version with the release. The
   same version is reported as up to date and the run stops, an older one is
   upgraded unless that is declined, and a newer one is kept unless a
-  downgrade is asked for. A file at the install path that they did not
-  install is never run, and a second run changes nothing.
-- Install scripts: a binary the system will not start, as on a managed
+  downgrade is asked for. An install by an earlier installer, which
+  recorded only its path, is known by its SHA-256 among the release's
+  binaries, and is otherwise upgraded unless that is declined. Another
+  build, or a build from source, asked for at the same version replaces the
+  one installed. A file at the install path that they did not install is
+  never run, and a second run changes nothing.
+- Install scripts: a binary the system refuses to start, as on a managed
   machine whose policy blocks it, is reported in plain words with what
-  installing needs, and the installer offers its own version only where
-  that release is published.
-- Install scripts: `CADENCE_RELEASES_URL` must be HTTPS on github.com
-  unless `--test-urls` is given, and every run prints where the release
-  files come from. A binary's bench and its answer to `uci` are stopped,
+  installing needs, and the log is kept. One the system cannot start for
+  another reason, such as a missing loader, is built from source instead.
+  The installer offers its own version only where that release is
+  published.
+- Install scripts: `CADENCE_RELEASES_URL` must name this repository's
+  releases unless `--test-urls` is given, and every run prints where the
+  release files come from. A binary's bench and its answer to `uci` are stopped,
   with every process they started, after ten minutes and thirty seconds.
 - Install scripts: `--tables` downloads the tablebases without asking. The
   table names published with their checksums are checked before any becomes
@@ -139,6 +150,10 @@ the tablebases and ponders.
 - Install scripts: the newest pre-release is the highest version, where it
   was the first one GitHub listed, and a second run no longer adds the PATH
   line to a shell profile that already holds it.
+- Install scripts: the uninstall removes only the PATH line under the
+  installer's marker, leaving the same line written by hand, and on Windows
+  the user PATH is edited as the registry holds it, so a `%VARIABLE%` in it
+  stays unexpanded.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its

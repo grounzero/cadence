@@ -17,7 +17,8 @@ $RepoUrl = "https://github.com/$Repo.git"
 $IssuesUrl = "https://github.com/$Repo/issues"
 # The servers below are replaced only as Test-Urls allows, so a test can serve its own.
 $ApiUrl = "https://api.github.com/repos/$Repo/releases"
-$AssetsUrl = "https://github.com/$Repo/releases/download"
+$ReleasesUrl = "https://github.com/$Repo/releases/download"
+$AssetsUrl = $ReleasesUrl
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
 # How long a binary's bench, and its answer to uci, may take before it is stopped, in seconds.
 $BenchSeconds = 600
@@ -34,6 +35,7 @@ $script:Mode = 'install'
 $script:Version = ''
 $script:Prefix = ''
 $script:Build = ''
+$script:Asked = ''
 $script:Source = $false
 $script:Tables = $false
 $script:TestUrls = $false
@@ -43,11 +45,16 @@ $script:Why = ''
 $script:Built = ''
 $script:Id = ''
 $script:Attested = ''
+$script:From = ''
 $script:Limited = $false
 $script:UpToDate = $false
 $script:Replace = $false
 $script:Installed = ''
+$script:HeldBuild = ''
+$script:HeldFrom = ''
+$script:Earlier = $false
 $script:Named = ''
+$script:Unread = ''
 $script:Where = 'default'
 $script:Dest = ''
 $script:Target = ''
@@ -73,8 +80,8 @@ asked first; a build from source names the tag it builds.
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
   --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_API_URL and CADENCE_TABLES_URL
-                   name servers of their own; without it, CADENCE_RELEASES_URL must be HTTPS on
-                   github.com and the other two are refused
+                   name servers of their own; without it, CADENCE_RELEASES_URL must be this
+                   repository's releases on github.com and the other two are refused
   --help           show this and stop
 '@
 }
@@ -110,6 +117,8 @@ while ($i -lt $args.Count) {
     $i++
 }
 if ($script:Build -notin @('', 'avx2', 'generic')) { Write-Host '--build takes avx2 or generic'; exit 2 }
+# The build named on the command line, which an install of another build at the same version yields to.
+$script:Asked = $script:Build
 
 # --- The system --------------------------------------------------------------------------------
 
@@ -230,7 +239,8 @@ function Set-StateValue([string]$Key, [string]$Value) {
 }
 
 # Runs a program in the work folder for at most Seconds, with Feed as its input, and returns its exit
-# code and output. On expiry taskkill ends it and every process it started, and Limited is set.
+# code and output, or in Failed why Windows would not start it. On expiry taskkill ends it and every
+# process it started, and Limited is set.
 function Invoke-Limited([string]$Binary, [string]$Arguments, [string]$Feed, [int]$Seconds) {
     $script:Limited = $false
     $info = New-Object System.Diagnostics.ProcessStartInfo
@@ -249,12 +259,17 @@ function Invoke-Limited([string]$Binary, [string]$Arguments, [string]$Feed, [int
         while ($cause.InnerException) { $cause = $cause.InnerException }
         Write-Log "starting $Binary failed: $($cause.Message)"
         $name = Split-Path -Leaf $Binary
-        # Access denied, a virus, or a block by group policy or by application control.
-        if ($cause -is [System.ComponentModel.Win32Exception] -and $cause.NativeErrorCode -in @(5, 225, 1260, 4551)) {
+        $number = if ($cause -is [System.ComponentModel.Win32Exception]) { $cause.NativeErrorCode } else { 0 }
+        # Access denied, a virus, or a block by group policy or by application control, which stops the
+        # run with the log kept; any other failure is the binary's.
+        if ($number -in @(5, 225, 1260, 4551)) {
+            $script:KeepLog = $true
             Say "Windows blocked $name from running. This is most likely application control or antivirus software, which managed machines often have."
             Stop-Install "Installing Cadence here needs this machine's administrator, or a machine without that policy."
         }
-        Fail "Windows could not start $($name): $($cause.Message)"
+        # Not a valid program, or one for another processor.
+        if ($number -in @(193, 216)) { return @{ Code = -1; Out = ''; Failed = 'which does not take it for a program' } }
+        return @{ Code = -1; Out = ''; Failed = "which answered: $($cause.Message)" }
     }
     $out = $process.StandardOutput.ReadToEndAsync()
     $err = $process.StandardError.ReadToEndAsync()
@@ -271,7 +286,7 @@ function Invoke-Limited([string]$Binary, [string]$Arguments, [string]$Feed, [int
     $code = if ($process.HasExited) { $process.ExitCode } else { -1 }
     $text = if ($out.Wait(10000)) { $out.Result } else { '' }
     if ($err.Wait(10000) -and $err.Result) { Write-Log $err.Result.TrimEnd() }
-    return @{ Code = $code; Out = $text }
+    return @{ Code = $code; Out = $text; Failed = '' }
 }
 
 function Get-IdName([string]$Binary) {
@@ -296,14 +311,14 @@ function Write-SystemReport {
     Write-Log ('powershell: ' + $PSVersionTable.PSVersion)
 }
 
-# CADENCE_RELEASES_URL may name HTTPS on github.com, and the other two servers stay as they are,
-# unless --test-urls lets a test name its own; whichever is in use is said.
+# CADENCE_RELEASES_URL may name only this repository's releases, and the other two servers stay as
+# they are, unless --test-urls lets a test name its own; whichever is in use is said.
 function Test-Urls {
     if ($env:CADENCE_RELEASES_URL) {
-        if (-not $env:CADENCE_RELEASES_URL.StartsWith('https://github.com/', [StringComparison]::Ordinal) -and -not $script:TestUrls) {
-            Fail "CADENCE_RELEASES_URL is $env:CADENCE_RELEASES_URL, which is not HTTPS on github.com; only a test may name another server, with --test-urls"
+        if ($env:CADENCE_RELEASES_URL -cnotin @($ReleasesUrl, "$ReleasesUrl/") -and -not $script:TestUrls) {
+            Fail "CADENCE_RELEASES_URL is $env:CADENCE_RELEASES_URL, which is not $ReleasesUrl; only a test may name another server, with --test-urls"
         }
-        $script:AssetsUrl = $env:CADENCE_RELEASES_URL
+        $script:AssetsUrl = $env:CADENCE_RELEASES_URL.TrimEnd('/')
     }
     if ($env:CADENCE_API_URL) {
         if (-not $script:TestUrls) { Fail 'CADENCE_API_URL is set, which only a test may do, with --test-urls' }
@@ -491,6 +506,28 @@ function Save-Asset([string]$Name) {
     }
 }
 
+# The release's SHA256SUMS in the work folder, downloaded once, or false with the reason in Why.
+function Get-ReleaseSums {
+    $sums = Join-Path $Work 'SHA256SUMS'
+    if ((Test-Path -LiteralPath $sums) -and (Get-Item -LiteralPath $sums).Length -gt 0) { return $true }
+    $failed = Save-Asset 'SHA256SUMS'
+    if ($failed) {
+        Remove-Item -Force -LiteralPath $sums -ErrorAction SilentlyContinue
+        $script:Why = "Release $script:Version publishes no checksum file$failed, so none of its binaries is used."
+        return $false
+    }
+    return $true
+}
+
+# The file the release's SHA256SUMS gives a SHA-256 to, or the empty string.
+function Get-ListedAs([string]$Sum) {
+    foreach ($line in Get-Content -Path (Join-Path $Work 'SHA256SUMS')) {
+        $parts = @("$line".Trim() -split '\s+')
+        if ($parts.Count -ge 2 -and $parts[0] -eq $Sum) { return $parts[1].TrimStart('*') }
+    }
+    return ''
+}
+
 # The SHA-256 the release's SHA256SUMS gives a file, or the empty string.
 function Get-Listed([string]$Name) {
     foreach ($line in Get-Content -Path (Join-Path $Work 'SHA256SUMS')) {
@@ -502,8 +539,9 @@ function Get-Listed([string]$Name) {
 
 function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower() }
 
-# The release workflow attests every binary it builds, and gh checks that attestation where it is
-# installed and signed in. Where it cannot, that is said, and an attestation that fails leaves Why.
+# The release workflow attests every binary it builds, at the version's tag or, re-running a failed
+# release, from main, and gh checks that attestation where it is installed and signed in. Where gh
+# cannot check, that is said and the install goes on; an attestation that fails leaves Why.
 function Test-Attestation([string]$File) {
     $script:Attested = 'no'
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -511,16 +549,27 @@ function Test-Attestation([string]$File) {
         return $true
     }
     $ghArgs = @('attestation', 'verify', (Join-Path $Work $File), '--repo', $Repo,
-        '--signer-workflow', "$Repo/.github/workflows/release.yml", '--source-ref', "refs/tags/$($script:Version)")
+        '--signer-workflow', "$Repo/.github/workflows/release.yml", '--format', 'json',
+        '--jq', '.[].verificationResult.signature.certificate.sourceRepositoryRef')
     Write-Log ('$ gh ' + ($ghArgs -join ' '))
-    $said = @(& gh @ghArgs 2>&1 | ForEach-Object { "$_" })
+    $said = @(& gh @ghArgs 2>&1 | ForEach-Object { "$_".Trim() })
     $code = $LASTEXITCODE
     foreach ($line in $said) { Write-Log $line }
     Write-Log "(exit $code)"
+    $last = "$(@($said | Where-Object { $_ }) | Select-Object -Last 1)"
     if ($code -eq 0) {
-        $script:Attested = 'yes'
-        Say "Its build attestation verifies: GitHub's release workflow built it at the tag $($script:Version)."
-        return $true
+        if ($said -ccontains "refs/tags/$($script:Version)") {
+            $script:Attested = 'yes'
+            Say "Its build attestation verifies: GitHub's release workflow built it at the tag $($script:Version)."
+            return $true
+        }
+        if ($said -ccontains 'refs/heads/main') {
+            $script:Attested = 'yes'
+            Say "Its build attestation verifies: GitHub's release workflow built it from main, re-running the release of $($script:Version)."
+            return $true
+        }
+        $script:Why = "$File's build attestation names $(if ($last) { $last } else { 'no ref' }), not the tag $($script:Version), so it is not used."
+        return $false
     }
     # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
     if ($code -eq 4) {
@@ -531,9 +580,14 @@ function Test-Attestation([string]$File) {
         Say 'Its build attestation was not verified: this gh is too old to check one.'
         return $true
     }
-    $last = @($said | Where-Object { "$_".Trim() }) | Select-Object -Last 1
-    $script:Why = "$File's build attestation does not verify ($("$last".Trim())), so it is not used."
-    return $false
+    # gh's verdicts: no attestation for this file, a signature that is not the release workflow's, or
+    # a certificate naming something else. Anything else is gh failing to check.
+    if (($said -join "`n") -cmatch 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed') {
+        $script:Why = "$File's build attestation does not verify ($last), so it is not used."
+        return $false
+    }
+    Say "Its build attestation was not verified: gh could not check it ($last)."
+    return $true
 }
 
 # Leaves the checked binary in Built, or the reason none is used in Why.
@@ -543,11 +597,7 @@ function Test-Binary {
         return
     }
     $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
-    $failed = Save-Asset 'SHA256SUMS'
-    if ($failed) {
-        $script:Why = "Release $script:Version publishes no checksum file$failed, so none of its binaries is used."
-        return
-    }
+    if (-not (Get-ReleaseSums)) { return }
     $want = Get-Listed $file
     if (-not $want) {
         $script:Why = "Release $script:Version's SHA256SUMS lists no $file, so there is no binary for this system."
@@ -591,6 +641,7 @@ function Test-Binary {
         return
     }
     $script:Built = $path
+    $script:From = 'release'
 }
 
 # --- The build ---------------------------------------------------------------------------------
@@ -730,9 +781,11 @@ function Get-Source {
 }
 
 # The commit the release's notes say it was built from, in Named, or nothing where no release names
-# one: a test base, or a version from before releases had pages.
+# one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
+# Unread says why, and the build goes on without the check.
 function Get-ReleaseCommit {
     $script:Named = ''
+    $script:Unread = ''
     if ($script:Version.Contains('+')) { return }
     $headers = @{}
     if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
@@ -741,8 +794,7 @@ function Get-ReleaseCommit {
         $release = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/tags/$($script:Version)" -Headers $headers -ErrorAction Stop
     } catch {
         $trouble = Get-DownloadTrouble $_
-        Test-RateLimit $trouble
-        if ($trouble -ne ' (not found)') { Fail "could not read release $($script:Version) from GitHub$trouble" }
+        if ($trouble -ne ' (not found)') { $script:Unread = $trouble }
         return
     }
     if ("$($release.body)" -match 'built from ([0-9a-f]{40}) at the tag') { $script:Named = $Matches[1] }
@@ -754,6 +806,11 @@ function Test-Commit {
     $got = "$(git -C $script:Src rev-parse HEAD 2>$null)".Trim()
     if ($LASTEXITCODE -ne 0 -or -not $got) { Fail "could not read the commit Cadence $($script:Version) was fetched at" }
     Write-Log "fetched commit: $got; the release names: $(if ($script:Named) { $script:Named } else { 'none' })"
+    if ($script:Unread) {
+        Say "GitHub's API did not answer$($script:Unread), so the commit release $($script:Version) names could not be read. It is built at its tag, commit $got, without that check."
+        if ($script:Unread -match ' (403|429)\)$') { Say 'GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time.' }
+        return
+    }
     if (-not $script:Named) {
         if ($script:Version.Contains('+')) {
             Say "Test base $($script:Version) is commit $got; a test base has no release to name one."
@@ -815,6 +872,7 @@ function Invoke-Build {
     if ($code -ne 0) { Fail 'the build failed' }
     $script:Built = Join-Path $script:Src 'target\release\cadence.exe'
     if (-not (Test-Path $script:Built)) { Fail "the build left no binary at $script:Built" }
+    $script:From = 'source'
 }
 
 # Runs a binary's bench and asks its name, leaving the reason in Why if either is not the one wanted.
@@ -822,6 +880,10 @@ function Test-BenchAndName([string]$Binary, [string]$Want, [string]$Name) {
     Say 'Running its bench.'
     Write-Log '$ cadence bench'
     $run = Invoke-Limited $Binary 'bench' '' $BenchSeconds
+    if ($run.Failed) {
+        $script:Why = "it cannot start on this system, $($run.Failed)"
+        return $false
+    }
     if ($script:Limited) {
         $script:Why = "its bench did not finish within $BenchSeconds seconds, so it was stopped"
         return $false
@@ -885,28 +947,80 @@ function Get-TargetPath {
     $script:Target = Join-Path $script:Dest 'cadence.exe'
 }
 
-# The version this script recorded installing at Target, in Installed, trusted only while the file
-# there has the SHA-256 recorded with it. The file itself is never run.
+# The version this script recorded installing at Target, in Installed, and its build and whether it
+# came from a release binary or source in HeldBuild and HeldFrom, trusted only while the file there
+# has the SHA-256 recorded with it. The file itself is never run.
 function Get-InstalledVersion {
     $script:Installed = ''
+    $script:HeldBuild = ''
+    $script:HeldFrom = ''
+    $script:Earlier = $false
     if (-not (Test-Path -LiteralPath $script:Target -PathType Leaf)) { return }
     if ((Get-StateValue 'binary') -ne $script:Target) { return }
     $sum = Get-StateValue 'sha256'
-    if (-not $sum -or (Get-Sha256 $script:Target) -ne $sum) { return }
+    if (-not $sum) {
+        $script:Earlier = $true
+        return
+    }
+    if ((Get-Sha256 $script:Target) -ne $sum) { return }
     $script:Installed = Get-StateValue 'version'
+    $script:HeldBuild = Get-StateValue 'build'
+    $script:HeldFrom = Get-StateValue 'from'
 }
 
-# The same version installed stops the run as up to date, an older one is upgraded unless declined,
-# and a newer one is kept unless a downgrade is asked for.
+# The installers before this one recorded the path alone, so their install is known by its SHA-256
+# among the release's binaries, and recorded as this script records it; otherwise it is upgraded.
+function Find-EarlierInstall {
+    Step 'The installed Cadence'
+    $sum = Get-Sha256 $script:Target
+    $name = ''
+    $sums = $false
+    if (-not $script:Version.Contains('+') -and (Get-ReleaseSums)) {
+        $sums = $true
+        $name = Get-ListedAs $sum
+    }
+    if ($name.StartsWith("cadence-$($script:Version)-")) {
+        Say "An earlier installer put Cadence at $($script:Target) without recording its version; its SHA-256 is release $($script:Version)'s $name."
+        $script:Installed = $script:Version
+        $script:HeldBuild = if ($name -match '-generic(\.exe)?$') { 'generic' } elseif ($name -match '-avx2(\.exe)?$') { 'avx2' } else { 'native' }
+        $script:HeldFrom = 'release'
+        Set-StateValue 'version' $script:Installed
+        Set-StateValue 'sha256' $sum
+        Set-StateValue 'build' $script:HeldBuild
+        Set-StateValue 'from' 'release'
+        return
+    }
+    if ($sums) {
+        Say "An earlier installer put Cadence at $($script:Target) without recording its version, and its SHA-256 is none of release $($script:Version)'s."
+    } else {
+        Say "An earlier installer put Cadence at $($script:Target) without recording its version."
+    }
+    if (-not (Ask "Upgrade it to $($script:Version)?" $true)) { Stop-Install 'Kept the one there; nothing was installed.' }
+    $script:Replace = $true
+}
+
+# The same version installed stops the run as up to date, unless another build or a build from source
+# is asked for; an older one is upgraded unless declined, and a newer one is kept unless a downgrade
+# is asked for.
 function Compare-Installed {
     Get-TargetPath
     Get-InstalledVersion
+    if ($script:Earlier) { Find-EarlierInstall }
     if (-not $script:Installed) { return }
-    Step 'The installed Cadence'
+    if (-not $script:Earlier) { Step 'The installed Cadence' }
     $order = Compare-Version $script:Installed $script:Version
     if ($order -eq 0) {
-        Say "Cadence $($script:Version) is already installed at $($script:Target), so it is up to date."
-        $script:UpToDate = $true
+        if ($Arch -eq 'x86_64' -and $script:Asked -and $script:HeldBuild -ne $script:Build) {
+            $held = if ($script:HeldBuild) { " in the $($script:HeldBuild) build" } else { '' }
+            Say "Cadence $($script:Version) is installed at $($script:Target)$held, and the $($script:Build) build is asked for, so it is replaced."
+            $script:Replace = $true
+        } elseif ($script:Source -and $script:HeldFrom -ne 'source') {
+            Say "Cadence $($script:Version) is installed at $($script:Target), and --source asks for it built from source, so it is replaced."
+            $script:Replace = $true
+        } else {
+            Say "Cadence $($script:Version) is already installed at $($script:Target), so it is up to date."
+            $script:UpToDate = $true
+        }
     } elseif ($order -lt 0) {
         Say "Cadence $($script:Installed) is installed at $($script:Target), and $($script:Version) is available."
         if (-not (Ask "Upgrade it to $($script:Version)?" $true)) { Stop-Install "Kept Cadence $($script:Installed); nothing was installed." }
@@ -939,21 +1053,46 @@ function Install-Binary {
     Set-StateValue 'binary' $script:Target
     Set-StateValue 'version' $script:Version
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)
+    Set-StateValue 'build' $script:Build
+    Set-StateValue 'from' $script:From
     Say "Installed $script:Target."
+}
+
+# The user PATH's entries as the registry holds them, with any %VARIABLE% unexpanded.
+function Get-UserPath {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    if (-not $key) { return @() }
+    try {
+        return @([string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ })
+    } finally {
+        $key.Close()
+    }
+}
+
+# Writes the user PATH back as the kind of value it was, so a %VARIABLE% in it stays one. Clearing a
+# variable never set then tells running programs the environment changed, as .NET does when it sets one.
+function Set-UserPath([string[]]$Entries) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }
+        $key.SetValue('Path', ($Entries -join ';'), $kind)
+    } finally {
+        $key.Close()
+    }
+    [Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
 }
 
 # A folder named with --dir is the caller's to manage, so the offer defaults to no there.
 function Add-ToPath {
     $dest = Split-Path -Parent $script:Target
-    $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $user) { $user = '' }
-    $entries = @($user -split ';' | Where-Object { $_ })
-    if ($entries -contains $dest) {
+    $entries = @(Get-UserPath)
+    if (@($entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_) -eq $dest }).Count -gt 0) {
         Say "$dest is already on your PATH."
         return
     }
     if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" (-not $script:Prefix))) { return }
-    [Environment]::SetEnvironmentVariable('Path', (($entries + $dest) -join ';'), 'User')
+    Set-UserPath ($entries + $dest)
     Set-StateValue 'path_windows' $dest
     # Each command on a line of its own, so it can be copied whole; a path with a space or a quote runs
     # through &.
@@ -1033,7 +1172,9 @@ function Get-Tables {
 function Show-Done {
     Step 'Done'
     Say "Cadence is at $script:Target and calls itself $script:Id."
-    if ($script:Attested -eq 'no') {
+    if ($script:From -eq 'source') {
+        Say "It was built here from source at the tag $($script:Version), so its bench is the check it passed."
+    } elseif ($script:Attested -eq 'no') {
         Say 'Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed.'
     }
     Say ''
@@ -1066,11 +1207,7 @@ function Uninstall-Cadence {
     }
     $added = Get-StateValue 'path_windows'
     if ($added -and (Ask "Remove $added from your PATH, which this script added?" $true)) {
-        $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if ($user) {
-            $kept = @($user -split ';' | Where-Object { $_ -and $_ -ne $added })
-            [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
-        }
+        Set-UserPath @(Get-UserPath | Where-Object { $_ -ne $added })
         Say 'Removed it.'
     }
     $tables = Get-StateValue 'tables'
@@ -1111,10 +1248,10 @@ try {
                 Test-Git
                 Resolve-Tag
                 Get-ReleaseCommit
-                Test-Linker
-                Test-Rust
                 Get-Source
                 Test-Commit
+                Test-Linker
+                Test-Rust
                 Initialize-Toolchain
                 Invoke-Build
                 Test-Build
