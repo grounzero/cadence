@@ -962,8 +962,12 @@ bench_and_name() {
     limited "$BENCH_SECONDS" /dev/null "$WORK/bench.out" "$bin" bench
     rc=$?
     redact < "$OUT" >> "$LOG"
-    # The shell's status for a program the system would not start at all.
-    [ "$rc" -ne 126 ] || refused "$bin"
+    # A program the system would not start leaves only the shell's own line naming it, whose exit
+    # status differs between versions of bash.
+    if [ "$rc" -ne 0 ] && grep -F "$(basename "$bin"): " "$OUT" \
+        | grep -qE ': (cannot execute|Permission denied|Operation not permitted)'; then
+        refused "$bin"
+    fi
     if [ "$LIMITED" = 1 ]; then
         WHY="its bench did not finish within $BENCH_SECONDS seconds, so it was stopped"
         return 1
