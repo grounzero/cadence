@@ -12,8 +12,10 @@ Each test played the new version against the one before it, at 8 seconds
 plus 0.08 a move unless a longer time control is named. The test result
 is how much stronger the new version scored, in Elo, give or take the
 figure shown (95% of the time). These are gains against Cadence's own
-previous version. They do not add up to a rating. The test records are
-private, so the results are reported here rather than linked.
+previous version. They do not add up to a rating. Each test named here is
+listed under its number in
+[docs/testing/sprt-log.csv](docs/testing/sprt-log.csv), with its games and
+result.
 
 ## [Unreleased]
 

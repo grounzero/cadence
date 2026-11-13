@@ -100,7 +100,7 @@ Every change meant to make Cadence stronger is played against the current
 version on [OpenBench](https://github.com/AndyGrant/OpenBench), usually for
 thousands of games, until it is clear whether it helps. It is kept only if it
 wins. Every SPRT, passed or failed, is in
-{{SPRT-LOG}}. Each result is
+[docs/testing/sprt-log.csv](docs/testing/sprt-log.csv). Each result is
 measured against the version before it, so the gains do not add up to a
 rating; the [strength page](docs/calibration/strength.md) has the ratings.
 
