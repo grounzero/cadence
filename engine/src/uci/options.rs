@@ -231,6 +231,9 @@ impl Session {
             return;
         };
         let mb = asked.clamp(tt::MIN_HASH_MB, tt::MAX_HASH_MB);
+        // The running search holds the old table, so it is stopped before the new one is zeroed:
+        // `bestmove` comes at once, and two tables are never resident.
+        self.stop_search();
         match Table::new(mb) {
             Some(table) => self.tt = Arc::new(table),
             None => say(format_args!(

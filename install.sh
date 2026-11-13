@@ -3,7 +3,8 @@
 #
 # Installs the release binary for this system once its checksum and bench match the release's, or
 # builds Cadence from source at the release's tag where no binary fits or the check fails, on Linux,
-# macOS, and Windows under Git Bash or WSL. Every step asks first unless --yes is given.
+# macOS, and Windows under Git Bash or WSL. It asks before building, installing a compiler or Rust,
+# replacing an install, changing the PATH or downloading tablebases, unless --yes is given.
 
 set -u
 
@@ -13,6 +14,8 @@ API_URL="https://api.github.com/repos/grounzero/cadence/releases"
 # Each release's files, by version; a test points it at a folder it serves itself.
 ASSETS_URL="${CADENCE_RELEASES_URL:-https://github.com/grounzero/cadence/releases/download}"
 TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
+# The 290 tables of five pieces or fewer, in bytes, so their progress has a total before any arrives.
+TABLES_BYTES=983957920
 MARK="# Added by the Cadence installer"
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
@@ -36,13 +39,17 @@ usage() {
 Usage: install.sh [options]
 
 Installs Cadence's release binary for this system once its checksum and bench match the
-release's, or builds it from source where no binary fits. Every step asks first.
+release's, or builds it from source where no binary fits. It asks before building, installing a
+compiler or Rust, replacing an install, changing your PATH or downloading tablebases. Without
+--version it takes the latest stable release, or where none is published the newest pre-release,
+asked first; a build from source names the tag it builds.
 
-  --version V      this release rather than the latest; with --source, also a test base x.y.z+n
-  --prefix DIR     install into DIR rather than the default folder
+  --version V      this release rather than the default; with --source, also a test base x.y.z+n
+  --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
+  --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the latest release over an installed Cadence
+  --update         install the default release, or --version's, over an installed Cadence
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
@@ -60,11 +67,12 @@ while [ $# -gt 0 ]; do
         --update) MODE=update ;;
         --uninstall) MODE=uninstall ;;
         --source) SOURCE=1 ;;
-        --version | --prefix | --build)
+        --generic) BUILD=generic ;;
+        --version | --dir | --prefix | --build)
             [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
             case "$1" in
                 --version) VERSION=$2 ;;
-                --prefix) PREFIX=$2 ;;
+                --dir | --prefix) PREFIX=$2 ;;
                 --build) BUILD=$2 ;;
             esac
             shift
@@ -105,7 +113,7 @@ esac
 if [ "$OS" = macos ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then ARCH=aarch64; fi
 
 if [ "$OS" = windows ]; then
-    [ -n "${LOCALAPPDATA:-}" ] || { echo "LOCALAPPDATA is not set, so give --prefix." >&2; exit 1; }
+    [ -n "${LOCALAPPDATA:-}" ] || { echo "LOCALAPPDATA is not set, so give --dir." >&2; exit 1; }
     APP_DIR="$(cygpath -u "$LOCALAPPDATA")/Cadence"
     DEFAULT_PREFIX=$APP_DIR
     DATA_DIR=$APP_DIR
@@ -252,21 +260,48 @@ checksum() {
         | awk '{print $1}'
 }
 
+# A quiet wget says nothing when it fails, so its exit status is put into words for said().
 download() {
+    local rc=0 header=""
+    # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
+    case "$1" in https://api.github.com/*) [ -z "${GITHUB_TOKEN:-}" ] || header="Authorization: Bearer $GITHUB_TOKEN" ;; esac
     if command -v curl > /dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        if [ -n "$header" ]; then curl -fsSL --retry 3 -H "$header" -o "$2" "$1"; else curl -fsSL --retry 3 -o "$2" "$1"; fi
     elif command -v wget > /dev/null 2>&1; then
-        wget -q -O "$2" "$1"
+        if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
+        case "$rc" in
+            0) ;;
+            4) echo "wget: network failure" >&2 ;;
+            8) echo "wget: the server answered with an error" >&2 ;;
+            *) echo "wget: exit $rc" >&2 ;;
+        esac
+        return "$rc"
     else
         fail "neither curl nor wget is installed, so nothing can be downloaded"
     fi
 }
 
-# The last line a failed download wrote, in parentheses, or nothing.
+# Why the last download failed, in plain words and parentheses, or nothing; the raw text is logged.
 said() {
-    local last
+    local last code
     last=$(tail -n 1 "$OUT" 2>/dev/null | tr -d '\r')
-    [ -z "$last" ] || printf ' (%s)' "$last"
+    [ -n "$last" ] || return 0
+    code=$(printf '%s' "$last" | grep -oE 'returned error: [0-9]{3}' | grep -oE '[0-9]{3}' | head -n 1)
+    case "$code" in
+        404) printf ' (not found)' ;;
+        ?*) printf ' (the server answered %s)' "$code" ;;
+        *)
+            case "$last" in
+                *"resolve host"* | *"Failed to connect"* | *"connect to server"* | *"Connection refused"* \
+                    | *"network failure"* | *"Network is unreachable"*)
+                    printf ' (no connection to the server)' ;;
+                *"timed out"* | *"Timed out"*) printf ' (timed out)' ;;
+                *"Connection reset"* | *"Recv failure"* | *"closed"*) printf ' (the server closed the connection)' ;;
+                *"answered with an error"*) printf ' (the server answered with an error)' ;;
+                *) printf ' (the log has the details)' ;;
+            esac
+            ;;
+    esac
 }
 
 system_report() {
@@ -355,7 +390,6 @@ confirm_system() {
     if [ "$ARCH" != x86_64 ]; then
         BUILD=native
         say "$(describe_system), which Cadence has one build for."
-        ask "Is that right?" y || stop "Nothing was installed."
         return
     fi
     x86_level
@@ -372,16 +406,12 @@ confirm_system() {
         [ -n "$LACKS" ] || fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor's features could not be read"
         fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $LACKS"
     elif [ -n "$BUILD" ]; then
-        say "The $BUILD build, as --build asks."
+        say "The $BUILD build, as asked."
     elif [ "$LEVEL" = avx2 ]; then
-        if ask "Use the AVX2 build? No takes the generic build, for any x86-64 with POPCNT." y; then
-            BUILD=avx2
-        else
-            BUILD=generic
-        fi
+        BUILD=avx2
+        say "--generic takes the generic build instead, for any x86-64 with POPCNT."
     else
         BUILD=generic
-        ask "Is that right?" y || stop "Nothing was installed."
     fi
 }
 
@@ -400,25 +430,58 @@ release_name() {
     esac
 }
 
-# GitHub's latest release is the newest published one that is not a candidate, so its files can be read.
+# GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
+rate_limited() {
+    case "$1" in
+        " (the server answered 403)" | " (the server answered 429)")
+            fail "GitHub refused to name Cadence's releases$1: it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again." ;;
+    esac
+}
+
+# GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
+# pre-release is offered instead, and with neither nothing is built.
 find_release() {
     step "Finding the release"
     if [ -n "$VERSION" ]; then
         say "Release $VERSION, as asked."
         return 0
     fi
-    local tag=""
+    local tag="" trouble=""
     log "\$ download $API_URL/latest"
     if download "$API_URL/latest" "$WORK/latest.json" 2> "$OUT"; then
         tag=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
+    else
+        trouble=$(said)
     fi
     redact < "$OUT" >> "$LOG"
-    if ! printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
-        WHY="GitHub names no published release$(said), so there is no binary to install."
-        return 1
+    rate_limited "$trouble"
+    if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+        VERSION=$tag
+        say "The latest stable release is $VERSION."
+    else
+        log "\$ download $API_URL?per_page=30"
+        if ! download "$API_URL?per_page=30" "$WORK/releases.json" 2> "$OUT"; then
+            trouble=$(said)
+            redact < "$OUT" >> "$LOG"
+            rate_limited "$trouble"
+            fail "could not read Cadence's releases from GitHub$trouble"
+        fi
+        VERSION=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/releases.json" | sed 's/.*"\([^"]*\)"$/\1/' \
+            | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+' | head -n 1)
+        if [ -z "$VERSION" ]; then
+            [ "$SOURCE" != 1 ] || stop "With no published release, --source needs --version."
+            say "Cadence has no published release yet, so there is no binary to install."
+            stop "--source --version X.Y.Z builds a tagged version from source."
+        fi
+        say "No stable release of Cadence exists yet. The newest pre-release is $VERSION."
+        if [ "$SOURCE" != 1 ]; then
+            say "To install it without this question:"
+            if [ "$MODE" = update ]; then say "bash install.sh --update --version $VERSION"; else say "bash install.sh --version $VERSION"; fi
+            ask "Install pre-release $VERSION?" y || stop "Nothing was installed."
+        fi
     fi
-    VERSION=$tag
-    say "The latest release is $VERSION."
+    [ "$VERSION" = "$INSTALLER_VERSION" ] \
+        || say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
 }
 
 # The SHA-256 the release's SHA256SUMS gives a file, or nothing.
@@ -449,7 +512,6 @@ try_binary() {
         return 1
     fi
     say "Release $VERSION has a binary for this system: $file."
-    ask "Download it and check it?" y || stop "Nothing was installed; --source builds Cadence from source instead."
 
     step "Checking $file"
     log "\$ download $ASSETS_URL/$VERSION/$file"
@@ -500,14 +562,13 @@ offer_source() {
     say "Building takes several minutes and about 2 GB of disk space, for the source, the Rust"
     say "version Cadence pins if it is not installed yet, and the build. Both are estimates."
     mkdir -p "$DATA_DIR" || fail "cannot create $DATA_DIR"
-    local free what="Cadence's latest release"
+    local free
     free=$(df -Pk "$DATA_DIR" 2>/dev/null | awk 'NR == 2 {print int($4 / 1024)}')
     if [ -n "$free" ]; then
         say "$(shown "$DATA_DIR") has $free MB free."
         [ "$free" -ge 2048 ] || say "That may not be enough."
     fi
-    [ -z "$VERSION" ] || what="Cadence $VERSION"
-    ask "Build $what from source?" y || stop "Nothing was installed."
+    ask "Build Cadence $VERSION from source, at its tag $VERSION?" y || stop "Nothing was installed."
 }
 
 check_git() {
@@ -596,7 +657,10 @@ install_rustup() {
     if [ "$OS" = windows ]; then
         local arch=x86_64
         [ "$ARCH" = x86_64 ] || arch=aarch64
-        run download "https://win.rustup.rs/$arch" "$WORK/rustup-init.exe" || fail "could not download rustup-init.exe"
+        if ! download "https://win.rustup.rs/$arch" "$WORK/rustup-init.exe" 2> "$OUT"; then
+            redact < "$OUT" >> "$LOG"
+            fail "could not download rustup-init.exe$(said)"
+        fi
         run "$WORK/rustup-init.exe" -y --default-toolchain none || fail "rustup's install failed"
     else
         command -v curl > /dev/null 2>&1 || fail "curl is needed to install rustup; install curl, or Rust from https://rustup.rs"
@@ -638,7 +702,7 @@ check_rust() {
     esac
 }
 
-# The tag the source is fetched at: the version asked for or found, or with neither the highest x.y.z.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's.
 resolve_tag() {
     local tags
     log "\$ git ls-remote --tags --refs $REPO_URL"
@@ -647,12 +711,7 @@ resolve_tag() {
         fail "could not list the releases at $REPO_URL"
     }
     tags=$(printf '%s\n' "$tags" | sed -n 's#.*refs/tags/##p')
-    if [ -z "$VERSION" ]; then
-        VERSION=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-        [ -n "$VERSION" ] || fail "there is no release at $REPO_URL"
-        say "The latest release is $VERSION."
-    elif ! printf '%s\n' "$tags" | grep -Fqx -- "$VERSION"; then
+    if ! printf '%s\n' "$tags" | grep -Fqx -- "$VERSION"; then
         case "$VERSION" in
             *+*) fail "there is no test base $VERSION at $REPO_URL" ;;
             *) fail "there is no release $VERSION at $REPO_URL" ;;
@@ -759,22 +818,13 @@ install_binary() {
     previous=$(state_get binary)
     if [ -n "$PREFIX" ]; then
         dest=$PREFIX
-        say "Installing into $dest, as --prefix asks."
+        say "Installing into $dest, as --dir asks."
     elif [ "$MODE" = update ] && [ -n "$previous" ]; then
         dest=$(dirname "$previous")
         say "Installing into $(shown "$dest"), where Cadence was installed before."
     else
-        say "The default folder is $(shown "$DEFAULT_PREFIX")."
-        if ask "Install Cadence there?" y; then
-            dest=$DEFAULT_PREFIX
-        else
-            printf 'Folder to install in: '
-            IFS= read -r dest < /dev/tty || fail "there is no terminal to answer on"
-            log "Folder to install in: $dest"
-            case "$dest" in \~/*) dest="$HOME/${dest#\~/}" ;; esac
-            [ -z "$dest" ] || [ "$OS" != windows ] || dest=$(cygpath -u "$dest")
-            [ -n "$dest" ] || stop "No folder was given; nothing was installed."
-        fi
+        dest=$DEFAULT_PREFIX
+        say "Installing into $(shown "$dest"), the default folder; --dir DIR installs into DIR instead."
     fi
     mkdir -p "$dest" || fail "cannot create $dest"
     TARGET="$dest/cadence$EXE"
@@ -799,7 +849,7 @@ shell_rc() {
     esac
 }
 
-# A folder named with --prefix is the caller's to manage, so the offer defaults to no there.
+# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
 offer_path() {
     local dest default=y
     dest=$(dirname "$TARGET")
@@ -818,7 +868,8 @@ offer_path() {
         run powershell.exe -NoProfile -Command "\$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not \$p) { \$p = '' }; if ((\$p -split ';') -notcontains '$quoted') { [Environment]::SetEnvironmentVariable('Path', (\$p.TrimEnd(';') + ';$quoted').TrimStart(';'), 'User') }" \
             || fail "could not add $win to your PATH"
         state_set path_windows "$win"
-        say "Added. Terminals opened from now on find cadence."
+        added_to_path "export PATH=\"$dest:\$PATH\""
+        say "If a new Windows Terminal tab still does not find cadence, close all of its windows and start it again."
     else
         local rc line
         rc=$(shell_rc)
@@ -827,8 +878,16 @@ offer_path() {
         printf '\n%s\n%s\n' "$MARK" "$line" >> "$rc" || fail "could not write $rc"
         state_set path_rc "$rc"
         state_set path_line "$line"
-        say "Added. Open a new terminal, or run: $line"
+        added_to_path "$line"
     fi
+}
+
+# Each command on a line of its own, so it can be copied whole.
+added_to_path() {
+    say "Added. This terminal will not find cadence until you open a new one. To run it here now:"
+    case "$TARGET" in *" "*) say "\"$TARGET\"" ;; *) say "$TARGET" ;; esac
+    say "or put it on this terminal's PATH with:"
+    say "$1"
 }
 
 offer_tables() {
@@ -836,9 +895,12 @@ offer_tables() {
     say "Cadence can read the 3-4-5 piece Syzygy tablebases, 290 files and about 1 GB, to play every"
     say "ending of five pieces or fewer perfectly. They are downloaded from $TABLES_URL."
     ask "Download them now?" n || { say "Skipped."; return 0; }
-    local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0
+    local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0 bytes=0
     mkdir -p "$dir" || fail "cannot create $dir"
-    run download "$TABLES_URL/sha256" "$WORK/sha256" || fail "could not download the tables' published checksums"
+    if ! download "$TABLES_URL/sha256" "$WORK/sha256" 2> "$OUT"; then
+        redact < "$OUT" >> "$LOG"
+        fail "could not download the tables' published checksums$(said)"
+    fi
     awk '{n = $2; sub(/\.rtb[wz]$/, "", n); gsub(/v/, "", n); if (length(n) <= 5) print}' \
         "$WORK/sha256" > "$WORK/3-4-5.sha256"
     count=$(wc -l < "$WORK/3-4-5.sha256" | tr -d ' ')
@@ -851,16 +913,20 @@ offer_tables() {
             *) fail "the published checksums name $file, which is not a table" ;;
         esac
         if [ ! -f "$dir/$file" ] || [ "$(checksum "$dir/$file")" != "$sum" ]; then
-            download "$TABLES_URL/$group/$file" "$dir/$file.part" || fail "could not download $file"
+            download "$TABLES_URL/$group/$file" "$dir/$file.part" 2> "$OUT" \
+                || { redact < "$OUT" >> "$LOG"; fail "could not download $file$(said)"; }
             [ "$(checksum "$dir/$file.part")" = "$sum" ] \
                 || { rm -f "$dir/$file.part"; fail "$file does not match its published checksum"; }
             mv -f "$dir/$file.part" "$dir/$file" || fail "could not write $dir/$file"
         fi
         checked=$((checked + 1))
-        [ $((checked % 29)) -ne 0 ] || say "  $checked of 290 checked"
+        bytes=$((bytes + $(wc -c < "$dir/$file")))
+        [ $((checked % 29)) -ne 0 ] \
+            || say "  $checked of 290 downloaded and checked, $((bytes / 1048576)) of $((TABLES_BYTES / 1048576)) MB"
     done < "$WORK/3-4-5.sha256"
     say "All 290 tables are in $(shown "$dir"), each matching its published checksum."
-    say "To use them, set the engine option SyzygyPath to that folder in your chess program."
+    say "To use them, set the engine option SyzygyPath in your chess program to this folder:"
+    say "$(shown "$dir")"
     [ "$OS" != macos ] \
         || say "Cadence keeps each table open, and macOS allows a program 256 open files: start your chess program from a terminal after 'ulimit -n 1024'."
 }
@@ -923,11 +989,13 @@ if [ "$MODE" = uninstall ]; then
 fi
 step "Cadence's installer"
 say "This installs Cadence's release binary for this system once its checksum and bench match the"
-say "release's, or builds it from source where no binary fits. Each step asks first."
+say "release's, or builds it from source where no binary fits. It asks before building, installing a"
+say "compiler or Rust, replacing an install, changing your PATH or downloading tablebases."
 check_version
 mkdir -p "$WORK" || fail "cannot create $WORK"
 confirm_system
-[ "$SOURCE" = 1 ] || { find_release && try_binary; }
+if [ "$SOURCE" != 1 ] || [ -z "$VERSION" ]; then find_release; fi
+[ "$SOURCE" = 1 ] || try_binary
 if [ -z "$BUILT" ]; then
     offer_source
     check_git

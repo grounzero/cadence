@@ -1,9 +1,9 @@
 # Cadence
 
-[![CI](https://github.com/grounzero/cadence/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/grounzero/cadence/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/github/v/tag/grounzero/cadence?sort=semver&label=version)](https://github.com/grounzero/cadence/tags)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Lichess bot](https://img.shields.io/badge/lichess-Mithandros-white?logo=lichess&logoColor=black)](https://lichess.org/@/Mithandros)
+[![CI](https://github.com/grounzero/cadence/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/grounzero/cadence/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/grounzero/cadence?label=latest%20release)](https://github.com/grounzero/cadence/releases/latest)
+[![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
 Cadence is a chess engine written in Rust. It speaks UCI, so it works in any
 chess GUI that supports UCI engines. It plays standard chess and Chess960,
@@ -20,6 +20,17 @@ You can play it on Lichess, where it runs as the bot
 language model running beside it answers messages and remarks on its own
 thinking, such as how deep it searched. The model is separate from the engine
 and has no say in the moves, and which model it uses is configurable.
+
+## Strength
+
+| Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
+| --- | --- | --- | --- | --- |
+| [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-10 |
+| [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
+
+Estimates are from our own gauntlets against rated engines, not official
+ratings. Method, games and caveats:
+[docs/calibration/strength.md](docs/calibration/strength.md).
 
 ## Getting started
 
@@ -65,16 +76,21 @@ quit
 
 `install.sh` installs Cadence on Linux, macOS, and Windows under Git Bash or
 WSL. `install.ps1` does the same on Windows with PowerShell alone. Each asks
-before every step. It reads the system, and on x86-64 which of the two builds
-the processor runs, then takes the latest release's binary for it. The binary
-is used only once its SHA-256 matches the release's `SHA256SUMS`, its bench
-count matches the release's `bench.txt` and it names the release's version.
-Where no binary fits or one fails that check, the script says why and offers
-to build the release from source: it checks for Git, a C linker and Rust
-installed through rustup, offers to install whichever is missing, and holds
-the build to the same bench and version. The default folder is
-`~/.local/bin`, or `%LOCALAPPDATA%\Cadence` on Windows. It can also download
-the 3-4-5 piece Syzygy tablebases, held to their published checksums.
+before building from source, installing a compiler or Rust, replacing an
+install, changing the PATH or downloading tablebases, and says what it does
+otherwise. It reads the system, and on x86-64 which of the two builds the
+processor runs, then takes the binary for it from the latest stable release,
+or where none is published from the newest pre-release, which it names and
+asks about first. The binary is used only once its SHA-256 matches the
+release's `SHA256SUMS`, its bench count matches the release's `bench.txt` and
+it names the release's version. Where no binary fits or one fails that check,
+the script says why and offers to build that release from source at its tag,
+which it names: it checks for Git, a C linker and Rust installed through
+rustup, offers to install whichever is missing, and holds the build to the
+same bench and version. The default folder is `~/.local/bin`, or
+`%LOCALAPPDATA%\Cadence` on Windows, and `--dir` names another. It can also
+download the 3-4-5 piece Syzygy tablebases, held to their published checksums,
+and prints their folder on a line of its own for the `SyzygyPath` option.
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/grounzero/cadence/main/install.sh
@@ -88,12 +104,13 @@ Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/insta
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Both take `--version X.Y.Z`, `--prefix DIR`, `--source` to build from source
-even where a binary fits, `--update`, `--uninstall`, `--yes` to take every
-default without asking, `--keep-log`, and on x86-64 `--build avx2` or `--build
-generic`. The release workflow publishes both scripts and `bench.txt` with
-each release and lists their SHA-256s beside the binaries'. A run that fails
-keeps its log and says where it is: attach that file to a GitHub issue.
+Both take `--version X.Y.Z`, `--dir DIR` (or `--prefix DIR`), `--source` to
+build from source even where a binary fits, `--update`, `--uninstall`, `--yes`
+to take every default without asking, `--keep-log`, and on x86-64 `--generic`
+for the generic build, or `--build avx2` or `--build generic`. The release
+workflow publishes both scripts and `bench.txt` with each release and lists
+their SHA-256s beside the binaries'. A run that fails keeps its log and says
+where it is: attach that file to a GitHub issue.
 
 ### Options
 
@@ -128,59 +145,14 @@ not legal in the position is named in an `info string` and left out. If no
 listed move is legal, the engine searches every legal move, as a plain `go`
 would.
 
+`setoption name Hash` sent while a search runs stops that search first, so
+its `bestmove` comes at once and the new table is allocated after it.
+
 A `position` command can fail: its FEN may be one the engine cannot accept,
 its `moves` list may hold an illegal move, or it may name neither `startpos`
 nor `fen`. The engine says why in an `info string` and remembers the failure.
 Every `go` after it answers `bestmove 0000` and searches nothing, until a
 valid `position` command clears it.
-
-## Strength
-
-There are two numbers here. They come from different places and cannot be
-compared with each other. Neither is an official CCRL rating, because CCRL
-has not tested Cadence yet.
-
-### Against rated engines: about 2289
-
-This is an estimate of where Cadence 0.4.8 would sit on the CCRL Blitz list,
-measured on 2026-09-28.
-
-Cadence played 2,000 games at 2 minutes plus 1 second a move. It played 400
-games against each of five engines that are on that list. The program Ordo
-then worked out the rating that best fits those results (2289, give or take 14
-from luck in the games).
-
-Treat it as rough. Each of the five opponents, taken alone, gives a different
-answer: anywhere from 2241 to 2318. And the games ran on a Mac, which is not
-the computer CCRL uses, so a minute of thinking is not the same amount of
-work.
-
-Cadence has improved since 0.4.8, but the newer versions have not been
-measured this way. Gains against its own earlier versions do not translate
-into rating points, so there is no estimate for the current version.
-
-You can check the figure yourself. The games, the ratings used and Ordo's
-output are in [`docs/calibration/`](docs/calibration). With Ordo 1.2.6:
-
-```sh
-ordo -Q -D -s 2000 \
-  -m docs/calibration/ccrl-blitz-anchors-2026-09-05.csv \
-  -p docs/calibration/ccrl-blitz-gauntlet-2026-09-28.pgn
-```
-
-The "give or take" figure can change a little between runs, because Ordo
-estimates it by simulation.
-
-### On Lichess: 2222 blitz
-
-This is the bot's Lichess blitz rating on 2026-10-03, from 1,257 rated games
-(give or take about 90).
-
-Lichess ratings are their own scale, built from games against people and
-other bots. They are not CCRL ratings. The bot has also played several
-versions of Cadence over that time, with settings a rating list would turn
-off: it thinks on the opponent's time and uses an opening book. So this
-number does not belong to any one version.
 
 ## How it is tested
 

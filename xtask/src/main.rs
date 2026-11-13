@@ -2203,6 +2203,67 @@ mod tests {
         assert!(said.contains("cargo xtask"), "a silent fallback: {said:?}");
     }
 
+    /// A built checker older than any of `xtask`'s sources is rebuilt, not only one older than
+    /// `main.rs`; one newer than all of them is used as it is.
+    #[cfg(unix)]
+    #[test]
+    fn the_pre_commit_hook_rebuilds_a_checker_older_than_any_xtask_source() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::now();
+        let cases = [
+            (None, false),
+            (Some("xtask/src/checks.rs"), true),
+            (Some("xtask/Cargo.toml"), true),
+            (Some("xtask/Cargo.lock"), true),
+        ];
+        for (index, (newer, rebuilt)) in cases.into_iter().enumerate() {
+            let name = format!("xtask-stale-{}-{index}", std::process::id());
+            let root = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_dir_all(&root);
+            for dir in ["bin", "xtask/src", "xtask/target/debug"] {
+                std::fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            git(&root, &["init", "-q"]).unwrap();
+            let script = "#!/bin/sh\nexit 0\n";
+            let checker = root.join("xtask/target/debug/xtask");
+            for exe in [root.join("bin/cargo"), checker.clone()] {
+                std::fs::write(&exe, script).unwrap();
+                let mode = std::fs::Permissions::from_mode(0o755);
+                std::fs::set_permissions(&exe, mode).unwrap();
+            }
+            let sources = [
+                "xtask/src/main.rs",
+                "xtask/src/checks.rs",
+                "xtask/Cargo.toml",
+                "xtask/Cargo.lock",
+            ];
+            for source in sources {
+                std::fs::write(root.join(source), "").unwrap();
+                let age = if Some(source) == newer { 0 } else { 200 };
+                set_mtime(&root.join(source), now - Duration::from_secs(age));
+            }
+            set_mtime(&checker, now - Duration::from_secs(100));
+            let inherited = std::env::var("PATH").unwrap_or_default();
+            let path = format!("{}:{inherited}", root.join("bin").display());
+            let out = Command::new("sh")
+                .arg(repo_root().join(".githooks").join("pre-commit"))
+                .current_dir(&root)
+                .env("PATH", path)
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&root);
+            let said = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(said.contains("cargo xtask"), rebuilt, "{newer:?}: {said:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_mtime(path: &Path, when: std::time::SystemTime) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
+    }
+
     /// A fixup is exempt only where it is written, before the rebase that folds it, so a merge
     /// without autosquash cannot land one that CI did not read.
     #[cfg(unix)]

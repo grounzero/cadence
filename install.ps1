@@ -2,8 +2,9 @@
 #
 # Installs the release binary for this system once its checksum and bench match the release's, or
 # builds Cadence from source at the release's tag where no binary fits or the check fails, on Windows
-# with PowerShell alone; install.sh does the same in Git Bash, WSL, Linux and macOS. Every step asks
-# first unless --yes is given.
+# with PowerShell alone; install.sh does the same in Git Bash, WSL, Linux and macOS. It asks before
+# building, installing a compiler or Rust, replacing an install, changing the PATH or downloading
+# tablebases, unless --yes is given.
 
 Set-StrictMode -Version 2.0
 # Native programs report through their exit codes, which are read one by one, so their error output
@@ -17,6 +18,8 @@ $ApiUrl = 'https://api.github.com/repos/grounzero/cadence/releases'
 # Each release's files, by version; a test points it at a folder it serves itself.
 $AssetsUrl = if ($env:CADENCE_RELEASES_URL) { $env:CADENCE_RELEASES_URL } else { 'https://github.com/grounzero/cadence/releases/download' }
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
+# The 290 tables of five pieces or fewer, in bytes, so their progress has a total before any arrives.
+$TablesBytes = 983957920
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
 $InstallerVersion = '0.6.0-rc.3'
@@ -39,13 +42,17 @@ function Show-Usage {
 Usage: install.ps1 [options]
 
 Installs Cadence's release binary for this system once its checksum and bench match the
-release's, or builds it from source where no binary fits. Every step asks first.
+release's, or builds it from source where no binary fits. It asks before building, installing a
+compiler or Rust, replacing an install, changing your PATH or downloading tablebases. Without
+--version it takes the latest stable release, or where none is published the newest pre-release,
+asked first; a build from source names the tag it builds.
 
-  --version V      this release rather than the latest; with --source, also a test base x.y.z+n
-  --prefix DIR     install into DIR rather than the default folder
+  --version V      this release rather than the default; with --source, also a test base x.y.z+n
+  --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
+  --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the latest release over an installed Cadence
+  --update         install the default release, or --version's, over an installed Cadence
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
@@ -65,13 +72,14 @@ while ($i -lt $args.Count) {
         '^-{1,2}update$' { $script:Mode = 'update' }
         '^-{1,2}uninstall$' { $script:Mode = 'uninstall' }
         '^-{1,2}source$' { $script:Source = $true }
-        '^-{1,2}(version|prefix|build)$' {
+        '^-{1,2}generic$' { $script:Build = 'generic' }
+        '^-{1,2}(version|dir|prefix|build)$' {
             if ($i + 1 -ge $args.Count) { Write-Host "$arg needs a value"; exit 2 }
             $i++
             $value = [string]$args[$i]
             switch -Regex ($arg) {
                 'version' { $script:Version = $value }
-                'prefix' { $script:Prefix = $value }
+                '(dir|prefix)$' { $script:Prefix = $value }
                 'build' { $script:Build = $value }
             }
         }
@@ -91,7 +99,7 @@ switch ($machine) {
     'ARM64' { $Arch = 'aarch64' }
     default { Write-Host "This processor, $machine, is not one Cadence is built for."; exit 1 }
 }
-if (-not $env:LOCALAPPDATA) { Write-Host 'LOCALAPPDATA is not set, so give --prefix.'; exit 1 }
+if (-not $env:LOCALAPPDATA) { Write-Host 'LOCALAPPDATA is not set, so give --dir.'; exit 1 }
 $AppDir = Join-Path $env:LOCALAPPDATA 'Cadence'
 $DefaultPrefix = $AppDir
 $DataDir = $AppDir
@@ -263,7 +271,6 @@ function Confirm-System {
     if ($Arch -ne 'x86_64') {
         $script:Build = 'native'
         Say 'Windows on arm64, which Cadence has one build for.'
-        if (-not (Ask 'Is that right?' $true)) { Stop-Install 'Nothing was installed.' }
         return
     }
     # PF_AVX2_INSTRUCTIONS_AVAILABLE. Windows names no flag for BMI1, LZCNT or POPCNT, which every
@@ -271,52 +278,99 @@ function Confirm-System {
     $avx2 = Test-ProcessorFeature 40
     Write-Log "AVX2: $avx2"
     if ($avx2) {
-        Say 'Windows on x86-64, with AVX2: the AVX2 build runs here.'
+        Say 'Windows on x86-64, with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.'
     } else {
         Say 'Windows on x86-64, without AVX2: the generic build runs here, for any x86-64 with POPCNT.'
     }
     if ($script:Build -eq 'avx2' -and -not $avx2) {
         Fail '--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks AVX2'
     } elseif ($script:Build) {
-        Say "The $script:Build build, as --build asks."
+        Say "The $script:Build build, as asked."
     } elseif ($avx2) {
-        if (Ask 'Use the AVX2 build? No takes the generic build, for any x86-64 with POPCNT.' $true) {
-            $script:Build = 'avx2'
-        } else {
-            $script:Build = 'generic'
-        }
+        $script:Build = 'avx2'
+        Say '--generic takes the generic build instead, for any x86-64 with POPCNT.'
     } else {
         $script:Build = 'generic'
-        if (-not (Ask 'Is that right?' $true)) { Stop-Install 'Nothing was installed.' }
     }
 }
 
 # --- The release binary ------------------------------------------------------------------------
 
-# GitHub's latest release is the newest published one that is not a candidate, so its files can be read.
+# GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
+# pre-release is offered instead, and with neither nothing is built.
 function Find-Release {
     Step 'Finding the release'
     if ($script:Version) {
         Say "Release $script:Version, as asked."
-        return $true
+        return
     }
     $tag = ''
-    $detail = ''
+    # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
+    $headers = @{}
+    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
     Write-Log "downloading $ApiUrl/latest"
     try {
-        $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -ErrorAction Stop
+        $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -Headers $headers -ErrorAction Stop
         $tag = "$($latest.tag_name)"
     } catch {
-        $detail = " ($($_.Exception.Message))"
-        Write-Log $detail
+        Test-RateLimit (Get-DownloadTrouble $_)
     }
-    if ($tag -notmatch '^\d+\.\d+\.\d+$') {
-        $script:Why = "GitHub names no published release$detail, so there is no binary to install."
-        return $false
+    if ($tag -match '^\d+\.\d+\.\d+$') {
+        $script:Version = $tag
+        Say "The latest stable release is $tag."
+    } else {
+        Write-Log "downloading ${ApiUrl}?per_page=30"
+        try {
+            $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=30" -Headers $headers -ErrorAction Stop
+        } catch {
+            $trouble = Get-DownloadTrouble $_
+            Test-RateLimit $trouble
+            Fail "could not read Cadence's releases from GitHub$trouble"
+        }
+        foreach ($release in $releases) {
+            if ("$($release.tag_name)" -match '^\d+\.\d+\.\d+-rc\.\d+$') { $script:Version = "$($release.tag_name)"; break }
+        }
+        if (-not $script:Version) {
+            if ($script:Source) { Stop-Install 'With no published release, --source needs --version.' }
+            Say 'Cadence has no published release yet, so there is no binary to install.'
+            Stop-Install '--source --version X.Y.Z builds a tagged version from source.'
+        }
+        Say "No stable release of Cadence exists yet. The newest pre-release is $script:Version."
+        if (-not $script:Source) {
+            Say 'To install it without this question:'
+            $update = if ($script:Mode -eq 'update') { ' --update' } else { '' }
+            Say "powershell -ExecutionPolicy Bypass -File install.ps1$update --version $script:Version"
+            if (-not (Ask "Install pre-release $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
+        }
     }
-    $script:Version = $tag
-    Say "The latest release is $tag."
-    return $true
+    if ($script:Version -ne $InstallerVersion) {
+        Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
+    }
+}
+
+# GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
+function Test-RateLimit([string]$Trouble) {
+    if ($Trouble -eq ' (the server answered 403)' -or $Trouble -eq ' (the server answered 429)') {
+        Fail "GitHub refused to name Cadence's releases$($Trouble): it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again."
+    }
+}
+
+# Why a download failed, in plain words and parentheses; the exception's own text goes to the log.
+function Get-DownloadTrouble($Failure) {
+    $exception = $Failure.Exception
+    Write-Log "$($exception.Message)"
+    $code = 0
+    if ($exception.PSObject.Properties['Response'] -and $exception.Response) {
+        try { $code = [int]$exception.Response.StatusCode } catch { $code = 0 }
+    }
+    if (-not $code -and "$($exception.Message)" -match '\((\d{3})\)') { $code = [int]$Matches[1] }
+    if ($code -eq 404) { return ' (not found)' }
+    if ($code) { return " (the server answered $code)" }
+    $message = "$($exception.Message)"
+    if ($message -match 'could not be resolved|Unable to connect|No such host|actively refused|network') { return ' (no connection to the server)' }
+    if ($message -match 'timed out') { return ' (timed out)' }
+    if ($message -match 'closed unexpectedly|connection was closed|was aborted') { return ' (the server closed the connection)' }
+    return ' (the log has the details)'
 }
 
 # The empty string once the file is in the work folder, or why it is not, in parentheses.
@@ -327,8 +381,7 @@ function Save-Asset([string]$Name) {
         Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $Work $Name) -ErrorAction Stop
         return ''
     } catch {
-        Write-Log "$($_.Exception.Message)"
-        return " ($($_.Exception.Message))"
+        return (Get-DownloadTrouble $_)
     }
 }
 
@@ -361,9 +414,6 @@ function Test-Binary {
         return
     }
     Say "Release $script:Version has a binary for this system: $file."
-    if (-not (Ask 'Download it and check it?' $true)) {
-        Stop-Install 'Nothing was installed; --source builds Cadence from source instead.'
-    }
 
     Step "Checking $file"
     $failed = Save-Asset $file
@@ -420,8 +470,7 @@ function Request-Source {
         Say "$DataDir has $free MB free."
         if ($free -lt 2048) { Say 'That may not be enough.' }
     } catch { }
-    $what = if ($script:Version) { "Cadence $script:Version" } else { "Cadence's latest release" }
-    if (-not (Ask "Build $what from source?" $true)) { Stop-Install 'Nothing was installed.' }
+    if (-not (Ask "Build Cadence $($script:Version) from source, at its tag $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
 }
 
 function Test-Git {
@@ -473,7 +522,7 @@ function Install-Rustup {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "https://win.rustup.rs/$rustupArch" -OutFile $init -ErrorAction Stop
     } catch {
-        Fail "could not download rustup-init.exe: $($_.Exception.Message)"
+        Fail "could not download rustup-init.exe$(Get-DownloadTrouble $_)"
     }
     if ((Invoke-Logged $init @('-y', '--default-toolchain', 'none')) -ne 0) { Fail "rustup's install failed" }
     $env:Path = "$CargoBin;$env:Path"
@@ -507,7 +556,7 @@ function Test-Rust {
     }
 }
 
-# The tag the source is fetched at: the version asked for or found, or with neither the highest x.y.z.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's.
 function Resolve-Tag {
     Write-Log "`$ git ls-remote --tags --refs $RepoUrl"
     $listing = git ls-remote --tags --refs $RepoUrl 2>&1
@@ -516,12 +565,7 @@ function Resolve-Tag {
         Fail "could not list the releases at $RepoUrl"
     }
     $tags = @($listing | ForEach-Object { "$_" -replace '^.*refs/tags/', '' })
-    if (-not $script:Version) {
-        $releases = @($tags | Where-Object { $_ -match '^\d+\.\d+\.\d+$' } | Sort-Object { [version]$_ })
-        if ($releases.Count -eq 0) { Fail "there is no release at $RepoUrl" }
-        $script:Version = $releases[-1]
-        Say "The latest release is $script:Version."
-    } elseif ($tags -notcontains $script:Version) {
+    if ($tags -notcontains $script:Version) {
         if ($script:Version.Contains('+')) { Fail "there is no test base $script:Version at $RepoUrl" }
         Fail "there is no release $script:Version at $RepoUrl"
     }
@@ -641,19 +685,13 @@ function Install-Binary {
     $previous = Get-StateValue 'binary'
     if ($script:Prefix) {
         $dest = $script:Prefix
-        Say "Installing into $dest, as --prefix asks."
+        Say "Installing into $dest, as --dir asks."
     } elseif ($script:Mode -eq 'update' -and $previous) {
         $dest = Split-Path -Parent $previous
         Say "Installing into $dest, where Cadence was installed before."
     } else {
-        Say "The default folder is $DefaultPrefix."
-        if (Ask 'Install Cadence there?' $true) {
-            $dest = $DefaultPrefix
-        } else {
-            $dest = Read-Host 'Folder to install in'
-            Write-Log "Folder to install in: $dest"
-            if (-not $dest) { Stop-Install 'No folder was given; nothing was installed.' }
-        }
+        $dest = $DefaultPrefix
+        Say "Installing into $dest, the default folder; --dir DIR installs into DIR instead."
     }
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     $script:Target = Join-Path $dest 'cadence.exe'
@@ -672,7 +710,7 @@ function Install-Binary {
     Say "Installed $script:Target."
 }
 
-# A folder named with --prefix is the caller's to manage, so the offer defaults to no there.
+# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
 function Add-ToPath {
     $dest = Split-Path -Parent $script:Target
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -685,7 +723,13 @@ function Add-ToPath {
     if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" (-not $script:Prefix))) { return }
     [Environment]::SetEnvironmentVariable('Path', (($entries + $dest) -join ';'), 'User')
     Set-StateValue 'path_windows' $dest
-    Say 'Added. Terminals opened from now on find cadence.'
+    # Each command on a line of its own, so it can be copied whole; a path with a space or a quote runs
+    # through &.
+    Say 'Added. This window will not find cadence until you open a new one. To run it here now:'
+    Say $(if ($script:Target -match "[ ']") { "& '" + $script:Target.Replace("'", "''") + "'" } else { $script:Target })
+    Say "or put it on this window's PATH with:"
+    Say ("`$env:Path = '" + $dest.Replace("'", "''") + ";' + `$env:Path")
+    Say 'If a new Windows Terminal tab still does not find cadence, close all of its windows and start it again.'
 }
 
 function Get-Tables {
@@ -699,7 +743,7 @@ function Get-Tables {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/sha256" -OutFile $sums -ErrorAction Stop
     } catch {
-        Fail "could not download the tables' published checksums: $($_.Exception.Message)"
+        Fail "could not download the tables' published checksums$(Get-DownloadTrouble $_)"
     }
     $wanted = @(Get-Content -Path $sums | ForEach-Object {
         $parts = $_ -split '\s+'
@@ -711,6 +755,7 @@ function Get-Tables {
     if ($wanted.Count -ne 290) { Fail "the published checksums list $($wanted.Count) tables of five pieces or fewer, not 290" }
     Set-StateValue 'tables' $dir
     $checked = 0
+    $bytes = 0
     foreach ($table in $wanted) {
         $group = switch -Regex ($table.File) {
             '\.rtbw$' { '3-4-5-wdl' }
@@ -724,7 +769,7 @@ function Get-Tables {
             try {
                 Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/$group/$($table.File)" -OutFile $part -ErrorAction Stop
             } catch {
-                Fail "could not download $($table.File)"
+                Fail "could not download $($table.File)$(Get-DownloadTrouble $_)"
             }
             if ((Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower() -ne $table.Sum) {
                 Remove-Item -Force $part
@@ -733,10 +778,14 @@ function Get-Tables {
             Move-Item -Force -Path $part -Destination $path
         }
         $checked++
-        if ($checked % 29 -eq 0) { Say "  $checked of 290 checked" }
+        $bytes += (Get-Item -LiteralPath $path).Length
+        if ($checked % 29 -eq 0) {
+            Say ("  $checked of 290 downloaded and checked, {0} of {1} MB" -f [math]::Floor($bytes / 1MB), [math]::Floor($TablesBytes / 1MB))
+        }
     }
     Say "All 290 tables are in $dir, each matching its published checksum."
-    Say 'To use them, set the engine option SyzygyPath to that folder in your chess program.'
+    Say 'To use them, set the engine option SyzygyPath in your chess program to this folder:'
+    Say $dir
 }
 
 function Show-Done {
@@ -798,11 +847,13 @@ try {
     } else {
         Step "Cadence's installer"
         Say "This installs Cadence's release binary for this system once its checksum and bench match the"
-        Say "release's, or builds it from source where no binary fits. Each step asks first."
+        Say "release's, or builds it from source where no binary fits. It asks before building, installing a"
+        Say 'compiler or Rust, replacing an install, changing your PATH or downloading tablebases.'
         Test-Version
         New-Item -ItemType Directory -Force -Path $Work | Out-Null
         Confirm-System
-        if (-not $script:Source -and (Find-Release)) { Test-Binary }
+        if (-not $script:Source -or -not $script:Version) { Find-Release }
+        if (-not $script:Source) { Test-Binary }
         if (-not $script:Built) {
             Request-Source
             Test-Git
