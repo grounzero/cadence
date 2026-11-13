@@ -63,8 +63,8 @@ cargo build --release
 
 You need Git and Rust from [rustup](https://rustup.rs), which fetches the
 pinned toolchain. Add `target/release/cadence` to your GUI as a UCI engine. On
-x86-64 Linux and Windows it needs AVX2; for an older processor, add
-`--config .cargo/x86-64-generic.toml` (POPCNT only). Build from the
+x86-64 Linux, Windows and Intel Macs it needs AVX2; for an older processor,
+add `--config .cargo/x86-64-generic.toml` (POPCNT only). Build from the
 repository's root, where Cargo finds `.cargo/config.toml`.
 
 ### Options

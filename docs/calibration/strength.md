@@ -21,12 +21,12 @@ for Cadence, and how far that implied rating sits from the gauntlet's fit.
 An engine that plays weaker than its list rating gives Cadence a higher
 implied rating, so it sits above the fit.
 
-**0.6.0-rc.3**, on the list computed 2026-10-17. The fit, from the seven
-engines other than Reckless, is 2796:
+**0.6.0-rc.3**, on the list computed 2026-10-17. The fit, anchored on the
+seven engines other than Reckless, is 2796:
 
 | Engine | Version | List rating | Games | Cadence scored | Implied for Cadence | Against the fit |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| [Reckless](https://github.com/codedeliveryservice/Reckless/tree/v0.4.0) | 0.4.0 | 2932 | 500 | 42.4% | 2879, left out | +83 |
+| [Reckless](https://github.com/codedeliveryservice/Reckless/tree/v0.4.0) | 0.4.0 | 2932 | 500 | 42.4% | 2879, not an anchor | +83 |
 | [Weiawaga](https://github.com/Heiaha/Weiawaga/tree/v5.0) | 5.0 | 2872 | 500 | 40.2% | 2803 | +7 |
 | [Clovis](https://github.com/jonathanmcdermid/Clovis/tree/III) | III | 2828 | 500 | 44.8% | 2792 | -4 |
 | [Halogen](https://github.com/KierenP/Halogen/tree/v8) | 8 | 2827 | 500 | 40.2% | 2758 | -38 |
@@ -49,9 +49,9 @@ is 2289:
 Reckless played in both, and in both it sits above the fit: by 29 in
 0.4.8's gauntlet (2318 against 2289) and by 83 in 0.6.0-rc.3's (2879
 against 2796). In 0.4.8's the five implied ratings spanned 77, from 2241 to
-2318, within the 80 limit, so it stayed in the fit. In 0.6.0-rc.3's they
+2318, within the 80 limit, so it stayed an anchor. In 0.6.0-rc.3's they
 span 121 with it, from 2758 to 2879, and 64 without, from 2758 to 2822, so
-it was left out.
+it was dropped as an anchor. Its games stay in the fit, unanchored.
 
 The two gauntlets used different engines and different time-control
 scaling (0.4.8's played 2 minutes plus 1 second unscaled, 0.6.0-rc.3's a
@@ -61,11 +61,12 @@ approximate.
 ## 0.6.0-rc.3: about 2796
 
 An estimate of where Cadence would sit on the CCRL Blitz list: about 2796,
-give or take 9 (95% of the time), from 4,000 games against seven engines on
+give or take 9 (95% of the time), from 4,000 games against eight engines on
 that list, measured on
 [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3).
-An eighth engine, Reckless 0.4.0, was played and left out for the reason
-below. With all eight the estimate is 2806.
+Seven are anchored at their list ratings. The eighth, Reckless 0.4.0, was
+dropped as an anchor for the reason below, and its games stay in the fit,
+unanchored. With all eight anchored the estimate is 2806.
 
 ### Conditions
 
@@ -133,7 +134,7 @@ project. Each played ten games first, to check it ran cleanly at this time
 control. One, Donna 4.1, lost three of its ten on time and was replaced by
 Blunder 8.5.5.
 
-### Why Reckless 0.4.0 is left out
+### Why Reckless 0.4.0 is not an anchor
 
 Before the games, a limit was set on how far the engines may disagree: the
 ratings the eight imply for Cadence may span at most 80 points. With
@@ -154,7 +155,9 @@ played on each opening, puts Reckless's above every other engine's.
 | Halogen 8 | 2758 | 2732 to 2784 |
 
 Reckless's lowest, 2854, is above the highest of the other seven, Mess's
-2848. So the estimate is fitted to the seven. With all eight it is 2806,
+2848. So the estimate is anchored on the seven, with Reckless's games in
+the fit and its rating left free; Ordo puts it at 2850. With all eight
+anchored it is 2806,
 give or take 9 (`gauntlet-2026-11-12-ordo-with-reckless.txt`).
 
 ### Results
@@ -180,7 +183,7 @@ ordo -Q -D -s 1000 \
 ```
 
 With `anchors-2026-11-12-with-reckless.csv` in place of the first file,
-the fit takes all eight engines. The "give or take" figure can change a
+the fit anchors all eight engines. The "give or take" figure can change a
 little between runs, because Ordo estimates it by simulation.
 
 The games are the PGN the match runner wrote, with one change: four accented
@@ -219,9 +222,12 @@ ordo -Q -D -s 2000 \
   -p docs/calibration/gauntlet-2026-09-28.pgn
 ```
 
+Cadence's author tags in the PGN were normalised to the engine's current
+author; the games are unchanged.
+
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| [`gauntlet-2026-09-28.pgn`](gauntlet-2026-09-28.pgn) | 7,306,342 | `e02d73679026e2b9185f9f6b36745fd3bbb960d0ef86cf30b228965b2d78ee25` |
+| [`gauntlet-2026-09-28.pgn`](gauntlet-2026-09-28.pgn) | 7,294,342 | `2b9ce5a0d825b8a4d64cce9f5831ba9112849528856fb8e4a55b67d7c1ef3273` |
 | [`anchors-2026-09-05.csv`](anchors-2026-09-05.csv) | 102 | `62ae77e079fe7fe235f43316114a448bdc1d91397b3536c779b5598acc1c3146` |
 | [`gauntlet-2026-09-28-ordo.txt`](gauntlet-2026-09-28-ordo.txt) | 516 | `2c429fe6b8bb0d4d5d82aaa5712f355ed9903101b9da25743339a6686c010c63` |
 
