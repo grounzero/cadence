@@ -63,8 +63,9 @@ the tablebases and ponders.
   gauntlet's games and fit, and how to check them.
 - Tools: the pre-commit hook rebuilds its boundary checker when any file
   the checker is built from is newer than it, not only its main source.
-- The README is shorter, starts with the install scripts and ends with
-  acknowledgements. Setting up an OpenBench worker and creating a test are
+- The README is shorter. Getting started offers a release's binaries first,
+  then the install scripts, and the README ends with acknowledgements and
+  the license. Setting up an OpenBench worker and creating a test are
   explained by `python3 openbench/setup-worker.py --help` instead.
 - UCI: under `UCI_LimitStrength`, the engine prints only the lines the GUI
   asked for, and reports the move it plays.
