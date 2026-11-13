@@ -17,7 +17,7 @@ private, so the results are reported here rather than linked.
 
 ## [Unreleased]
 
-## [0.6.0-rc.4] - 2026-11-12
+## [0.6.0-rc.4] - 2026-11-13
 
 A release candidate for 0.6.0, published as a pre-release, after
 0.6.0-rc.3 of 2026-11-10. It scores a position where neither side has the
@@ -45,7 +45,7 @@ is a choice to make.
 ### Changed
 
 - Search: a position where neither side has the material to mate is scored
-  as a draw. The bench rises from 24,819,899 to {{BENCH}} nodes.
+  as a draw. The bench rises from 24,819,899 to 34,686,410 nodes.
 - Install scripts: they ask only before building from source, installing a
   compiler or Rust, replacing an install, changing the PATH or downloading
   the tablebases, and state the rest: the build they take, the folder and
@@ -145,10 +145,10 @@ short control, both sides given the tables up to five pieces. This was a
 non-regression test, which asks only whether the change costs strength,
 and it passed at 54,626 games. It is not a rating.
 
-Test 80, for scoring a position with no mating material as a draw:
-{{TEST-80-RESULT}}, a self-play estimate against the build before it at the
-short control. This was a non-regression test, which asks only whether the
-change costs strength, and it passed at {{TEST-80-GAMES}} games. It is not
+Test 80, for scoring a position with no mating material as a draw: +2.73
+(between -0.46 and +5.93), a self-play estimate against the build before it
+at the short control. This was a non-regression test, which asks only
+whether the change costs strength, and it passed at 15,760 games. It is not
 a rating.
 
 ## [0.5.23] - 2026-11-03
