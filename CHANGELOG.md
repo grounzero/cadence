@@ -67,6 +67,28 @@ the tablebases and ponders.
 - Install scripts: a token in `GITHUB_TOKEN` is sent with their requests to
   GitHub's API, and a refusal for GitHub's hourly limit on unauthenticated
   requests is named as one, with what to do.
+- Install scripts: where `gh` is installed and signed in, they check each
+  binary's build attestation and do not use a binary whose attestation
+  fails; where it cannot be checked, they say so. A build from source first
+  checks that the release's tag is the commit the release names.
+- Install scripts: they compare the installed version with the release. The
+  same version is reported as up to date and the run stops, an older one is
+  upgraded unless that is declined, and a newer one is kept unless a
+  downgrade is asked for. A file at the install path that they did not
+  install is never run, and a second run changes nothing.
+- Install scripts: `CADENCE_RELEASES_URL` must be HTTPS on github.com
+  unless `--test-urls` is given, and every run prints where the release
+  files come from. A binary's bench and its answer to `uci` are stopped,
+  with every process they started, after ten minutes and thirty seconds.
+- Install scripts: `--tables` downloads the tablebases without asking. The
+  table names published with their checksums are checked before any becomes
+  a path, and a table already there and matching its checksum is kept.
+- The README fetches the install scripts from the latest release rather
+  than from `main`, and says a release's binaries can be downloaded
+  directly.
+- Tools: `setup-worker.py` refuses a configuration inside the repository,
+  and git ignores `worker.json` and `credentials.cadence`. The Makefile
+  clears an inherited `RUSTFLAGS`.
 - The README gives a table of strength estimates from our own gauntlets
   against rated engines, and `docs/calibration/strength.md` publishes each
   gauntlet's games and fit, and how to check them.
@@ -110,6 +132,9 @@ the tablebases and ponders.
 - Install scripts: under Git Bash on an Intel processor, `install.sh`
   chose the generic build where the AVX2 build runs. It now chooses as
   `install.ps1` does.
+- Install scripts: the newest pre-release is the highest version, where it
+  was the first one GitHub listed, and a second run no longer adds the PATH
+  line to a shell profile that already holds it.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its

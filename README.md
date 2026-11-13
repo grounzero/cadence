@@ -29,18 +29,23 @@ ratings. Method, games and caveats:
 
 ## Getting started
 
+Or download a binary from the
+[latest release](https://github.com/grounzero/cadence/releases/latest): the
+AVX2 build for x86-64 machines from about 2015 on, the generic build if it
+won't start.
+
 ### With an install script
 
 `install.sh` works on Linux, macOS, and Windows under Git Bash or WSL.
 `install.ps1` works in Windows PowerShell.
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/grounzero/cadence/main/install.sh
+curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
 bash install.sh
 ```
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/grounzero/cadence/main/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
