@@ -34,16 +34,19 @@ the tablebases and ponders.
   the score encoding, the transposition table's entries and buckets, the
   history and correction updates, the pruning margins and reductions, and
   the time budget stay within their bounds. A failed proof fails the build.
-- Install scripts: `install.sh` for Linux, macOS, and Windows under Git
-  Bash or WSL, and `install.ps1` for Windows PowerShell. Each installs a
-  release's binary for the system it runs on once the binary's SHA-256 and
-  bench match the release's, or builds the release from source where no
-  binary fits, and can download the 3-4-5 piece Syzygy tables. The README
-  says how to run them.
+- The README installs from the latest release's own scripts.
+- The installers verify each binary (checksum, bench and, with gh, its build
+  attestation) and say which checks ran.
+- They upgrade older installs, report when you're up to date, and ask before
+  a downgrade or replacing a different build.
+- Clearer errors when a system blocks the binary, and uninstall removes only
+  what the installer added.
 - Releases: each release builds seven binaries, Windows and Linux x86-64
   each in an AVX2 build and a generic one, Linux aarch64, macOS arm64 and
   macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
-  install scripts and a provenance attestation for each binary.
+  install scripts and a provenance attestation for each binary, made by the
+  release workflow run at the release's tag; a manual run drafts and attests
+  a release only when run at its tag, and never once it is published.
 - The test log: `docs/testing/sprt-log.csv` gives every SPRT, passed or
   failed, with its games and result.
 
@@ -51,29 +54,18 @@ the tablebases and ponders.
 
 - Search: a position where neither side has the material to mate is scored
   as a draw. The bench rises from 24,819,899 to 34,686,410 nodes.
-- Install scripts: they ask only before building from source, installing a
-  compiler or Rust, replacing an install, changing the PATH or downloading
-  the tablebases, and state the rest: the build they take, the folder and
-  the binary's check. `--generic` and `--dir` are new names for
-  `--build generic` and `--prefix`, which still work. The tablebase download
-  shows its progress in megabytes and prints the folder for `SyzygyPath` on
-  a line of its own, and after adding to the PATH they say how to run
-  `cadence` before a new terminal opens.
-- Install scripts: without `--version` they take the latest stable release,
-  or where none is published they name the newest pre-release, print the
-  command that installs it and ask. A build from source names the tag it
-  builds, and none is offered when nothing is published. A failed download
-  is described in plain words, with the details in the log.
-- Install scripts: a token in `GITHUB_TOKEN` is sent with their requests to
-  GitHub's API, and a refusal for GitHub's hourly limit on unauthenticated
-  requests is named as one, with what to do.
+- Tools: `setup-worker.py` refuses a configuration inside the repository,
+  and git ignores `worker.json` and `credentials.cadence`. The Makefile
+  clears an inherited `RUSTFLAGS`, and with it `CARGO_ENCODED_RUSTFLAGS`
+  and every `CARGO_TARGET_<triple>_RUSTFLAGS`.
 - The README gives a table of strength estimates from our own gauntlets
   against rated engines, and `docs/calibration/strength.md` publishes each
   gauntlet's games and fit, and how to check them.
 - Tools: the pre-commit hook rebuilds its boundary checker when any file
   the checker is built from is newer than it, not only its main source.
-- The README is shorter, starts with the install scripts and ends with
-  acknowledgements. Setting up an OpenBench worker and creating a test are
+- The README is shorter. Getting started offers a release's binaries first,
+  then the install scripts, and the README ends with acknowledgements and
+  the license. Setting up an OpenBench worker and creating a test are
   explained by `python3 openbench/setup-worker.py --help` instead.
 - UCI: under `UCI_LimitStrength`, the engine prints only the lines the GUI
   asked for, and reports the move it plays.
@@ -107,9 +99,6 @@ the tablebases and ponders.
   `go`, as `nodes` does. `nps` was overstated.
 - Tablebases: at a won root, only the winning moves that reach a capture
   or a pawn move soonest are searched. The losing side is unchanged.
-- Install scripts: under Git Bash on an Intel processor, `install.sh`
-  chose the generic build where the AVX2 build runs. It now chooses as
-  `install.ps1` does.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its

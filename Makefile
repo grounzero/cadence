@@ -30,6 +30,10 @@
 
 EXE ?= cadence
 
+# A RUSTFLAGS from the environment would replace the per-target flags in .cargo/config.toml, and a
+# target's own CARGO_TARGET_<triple>_RUSTFLAGS would add to them, so none of these reaches Cargo.
+unexport RUSTFLAGS CARGO_ENCODED_RUSTFLAGS $(filter CARGO_TARGET_%_RUSTFLAGS,$(.VARIABLES))
+
 ifeq ($(OS),Windows_NT)
     EXT := .exe
 else

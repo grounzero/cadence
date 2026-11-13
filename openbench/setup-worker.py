@@ -112,6 +112,19 @@ def default_config_path(system: str) -> Path:
     return config_directory(system) / "worker.json"
 
 
+def refuse_inside_repository(path: Path) -> None:
+    """Refuse a configuration inside the checkout this script runs from, where a commit could take it.
+
+    The configuration holds the OpenBench password, and the GitHub token is written beside it.
+    """
+    root = SCRIPT.parent.parent
+    if (root / ".git").exists() and (path == root or root in path.parents):
+        raise SetupError(
+            f"the configuration path {path} is inside the repository at {root}, where a commit "
+            "could publish its password and token; choose a --config outside it"
+        )
+
+
 def pinned_checkout(system: str) -> Path:
     commit = str(pin("client")["commit"])
     return data_directory(system) / "checkouts" / f"OpenBench-{commit}"
@@ -1159,6 +1172,7 @@ def show_plan(
 def configure_worker(args: argparse.Namespace) -> None:
     system = host_system()
     path = (args.config or default_config_path(system)).expanduser().resolve()
+    refuse_inside_repository(path)
     config, token = resolve_configuration(args, system, path)
     check_prerequisites(system)
 

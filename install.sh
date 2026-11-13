@@ -8,12 +8,17 @@
 
 set -u
 
-REPO_URL="https://github.com/grounzero/cadence.git"
-ISSUES_URL="https://github.com/grounzero/cadence/issues"
-API_URL="https://api.github.com/repos/grounzero/cadence/releases"
-# Each release's files, by version; a test points it at a folder it serves itself.
-ASSETS_URL="${CADENCE_RELEASES_URL:-https://github.com/grounzero/cadence/releases/download}"
+REPO=grounzero/cadence
+REPO_URL="https://github.com/$REPO.git"
+ISSUES_URL="https://github.com/$REPO/issues"
+# The servers below are replaced only as check_urls allows, so a test can serve its own.
+API_URL="https://api.github.com/repos/$REPO/releases"
+RELEASES_URL="https://github.com/$REPO/releases/download"
+ASSETS_URL=$RELEASES_URL
 TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
+# How long a binary's bench, and its answer to uci, may take before it is stopped, in seconds.
+BENCH_SECONDS=600
+UCI_SECONDS=30
 # The 290 tables of five pieces or fewer, in bytes, so their progress has a total before any arrives.
 TABLES_BYTES=983957920
 MARK="# Added by the Cadence installer"
@@ -25,14 +30,36 @@ YES=0
 KEEP_LOG=0
 MODE=install
 VERSION=""
+ASKED_VERSION=""
 PREFIX=""
 BUILD=""
+ASKED=""
 SOURCE=0
+TABLES=0
+TEST_URLS=0
 STOPPED=0
 LOG=""
 OUT=""
 WHY=""
 BUILT=""
+ATTESTED=""
+FROM=""
+MADE=""
+LIMITED=0
+UP_TO_DATE=0
+REPLACE=0
+INSTALLED=""
+HELD=""
+EARLIER=0
+RELEASED=""
+UNLISTED=""
+NAMED=""
+UNREAD=""
+UNREAD_LIMIT=0
+ID=""
+WHERE=default
+DEST=""
+TARGET=""
 
 usage() {
     cat <<'EOF'
@@ -49,10 +76,15 @@ asked first; a build from source names the tag it builds.
   --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the default release, or --version's, over an installed Cadence
+  --update         as a plain run, which upgrades an older install, but also replace a file at
+                   the install path that this script did not install, unless declined
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
+  --tables         download the 3-4-5 piece tablebases without asking
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
+  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_API_URL and CADENCE_TABLES_URL
+                   name servers of their own; without it, CADENCE_RELEASES_URL must be this
+                   repository's releases on github.com and the other two are refused
   --help           show this and stop
 EOF
 }
@@ -67,6 +99,8 @@ while [ $# -gt 0 ]; do
         --update) MODE=update ;;
         --uninstall) MODE=uninstall ;;
         --source) SOURCE=1 ;;
+        --tables) TABLES=1 ;;
+        --test-urls) TEST_URLS=1 ;;
         --generic) BUILD=generic ;;
         --version | --dir | --prefix | --build)
             [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
@@ -86,6 +120,9 @@ case "$BUILD" in
     "" | avx2 | generic) ;;
     *) echo "--build takes avx2 or generic" >&2; exit 2 ;;
 esac
+# The build named on the command line, which an install of another build at the same version yields to.
+ASKED=$BUILD
+ASKED_VERSION=$VERSION
 
 # --- The system --------------------------------------------------------------------------------
 
@@ -127,6 +164,12 @@ else
 fi
 STATE="$DATA_DIR/install-state"
 WORK="$DATA_DIR/build.$$"
+# --dir as one absolute spelling without trailing slashes, so the state records one name for a folder.
+if [ -n "$PREFIX" ]; then
+    [ "$OS" != windows ] || PREFIX=$(cygpath -u "$PREFIX")
+    case "$PREFIX" in /*) ;; *) PREFIX="$PWD/$PREFIX" ;; esac
+    while [ "$PREFIX" != / ] && [ "${PREFIX%/}" != "$PREFIX" ]; do PREFIX=${PREFIX%/}; done
+fi
 
 # --- The log -----------------------------------------------------------------------------------
 
@@ -173,9 +216,45 @@ run() {
     return "$rc"
 }
 
+# A process and every process it started: each is stopped before its children are read, so none
+# escapes by starting another, and Windows ends its native processes' tree itself.
+kill_tree() {
+    local child
+    if [ "$OS" = windows ]; then
+        [ ! -r "/proc/$1/winpid" ] || taskkill //F //T //PID "$(cat "/proc/$1/winpid")" > /dev/null 2>&1
+    else
+        kill -STOP "$1" 2> /dev/null
+        for child in $(ps -A -o pid= -o ppid= 2> /dev/null | awk -v p="$1" '$2 == p {print $1}'); do
+            kill_tree "$child"
+        done
+    fi
+    kill -KILL "$1" 2> /dev/null
+}
+
+# Runs a command in the work folder for at most SECONDS, its input from one file, its output to
+# another and its errors to OUT. On expiry its process tree is killed and LIMITED is 1.
+limited() {
+    local seconds=$1 input=$2 output=$3 pid ticks=0
+    shift 3
+    LIMITED=0
+    (cd "$WORK" && exec "$@") < "$input" > "$output" 2> "$OUT" &
+    pid=$!
+    while kill -0 "$pid" 2> /dev/null; do
+        if [ "$ticks" -ge $((seconds * 5)) ]; then
+            kill_tree "$pid"
+            wait "$pid" 2> /dev/null
+            LIMITED=1
+            return 124
+        fi
+        sleep 0.2
+        ticks=$((ticks + 1))
+    done
+    wait "$pid"
+}
+
 finish() {
     local rc=$?
-    rm -f "$OUT"
+    rm -f "$OUT" "$OUT.headers"
     rm -rf "$WORK"
     if [ "$rc" -eq 0 ] || [ "$STOPPED" = 1 ]; then
         if [ "$KEEP_LOG" = 1 ]; then echo "The log is at $LOG."; else rm -f "$LOG"; fi
@@ -240,15 +319,52 @@ choose() {
     done
 }
 
-state_get() {
-    [ -f "$STATE" ] || return 0
-    sed -n "s/^$1=//p" "$STATE" | head -n 1
+# The state's lines without the byte order mark and carriage returns install.ps1 wrote before the two
+# scripts shared one format.
+state_lines() {
+    tr -d '\r' < "$STATE" | LC_ALL=C sed "1s/^$(printf '\357\273\277')//"
 }
 
+state_get() {
+    [ -f "$STATE" ] || return 0
+    state_lines | sed -n "s/^$1=//p" | head -n 1
+}
+
+# A value already held is not written again, so a second run leaves the file as it was. The file is
+# UTF-8 without a byte order mark, its paths Windows ones on Windows, as install.ps1 writes it.
 state_set() {
+    [ ! -f "$STATE" ] || [ "$(state_get "$1")" != "$2" ] || return 0
     mkdir -p "$DATA_DIR" || fail "cannot create $DATA_DIR"
-    { [ -f "$STATE" ] && grep -v "^$1=" "$STATE"; printf '%s=%s\n' "$1" "$2"; } > "$STATE.new" \
+    { [ -f "$STATE" ] && state_lines | grep -v "^$1="; printf '%s=%s\n' "$1" "$2"; } > "$STATE.new" \
         && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
+}
+
+state_unset() {
+    [ -n "$(state_get "$1")" ] || return 0
+    { state_lines | grep -v "^$1="; true; } > "$STATE.new" && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
+}
+
+# A path from the state as this shell names it; on Windows either script's form, and the /c/ form
+# earlier versions of this one wrote, reads as the same file.
+state_path() {
+    local value
+    value=$(state_get "$1")
+    if [ "$OS" = windows ] && [ -n "$value" ]; then cygpath -u "$value"; else printf '%s' "$value"; fi
+}
+
+# Whether two paths are one file or folder, by the file itself where both exist, so a link, a
+# trailing slash or a second spelling of a folder is still that folder.
+same_file() {
+    [ "$1" -ef "$2" ] || same_path "$1" "$2"
+}
+
+# Windows names a file the same in any case.
+same_path() {
+    if [ "$OS" = windows ]; then
+        [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
+    else
+        [ "$1" = "$2" ]
+    fi
 }
 
 shown() {
@@ -260,13 +376,19 @@ checksum() {
         | awk '{print $1}'
 }
 
-# A quiet wget says nothing when it fails, so its exit status is put into words for said().
+# A quiet wget says nothing when it fails, so its exit status is put into words for said(). curl keeps
+# the answer's headers for github_limit().
 download() {
     local rc=0 header=""
+    rm -f "$OUT.headers"
     # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
     case "$1" in https://api.github.com/*) [ -z "${GITHUB_TOKEN:-}" ] || header="Authorization: Bearer $GITHUB_TOKEN" ;; esac
     if command -v curl > /dev/null 2>&1; then
-        if [ -n "$header" ]; then curl -fsSL --retry 3 -H "$header" -o "$2" "$1"; else curl -fsSL --retry 3 -o "$2" "$1"; fi
+        if [ -n "$header" ]; then
+            curl -fsSL --retry 3 -D "$OUT.headers" -H "$header" -o "$2" "$1"
+        else
+            curl -fsSL --retry 3 -D "$OUT.headers" -o "$2" "$1"
+        fi
     elif command -v wget > /dev/null 2>&1; then
         if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
         case "$rc" in
@@ -326,6 +448,30 @@ system_report() {
         cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
     fi
     log "cpu: ${cpu:-unknown}, $(uname -m)"
+}
+
+# CADENCE_RELEASES_URL may name only this repository's releases, and the other two servers stay as
+# they are, unless --test-urls lets a test name its own; whichever is in use is said.
+check_urls() {
+    if [ -n "${CADENCE_RELEASES_URL:-}" ]; then
+        case "$CADENCE_RELEASES_URL" in
+            "$RELEASES_URL" | "$RELEASES_URL/") ;;
+            *)
+                [ "$TEST_URLS" = 1 ] \
+                    || fail "CADENCE_RELEASES_URL is $CADENCE_RELEASES_URL, which is not $RELEASES_URL; only a test may name another server, with --test-urls"
+                ;;
+        esac
+        ASSETS_URL=${CADENCE_RELEASES_URL%/}
+    fi
+    if [ -n "${CADENCE_API_URL:-}" ]; then
+        [ "$TEST_URLS" = 1 ] || fail "CADENCE_API_URL is set, which only a test may do, with --test-urls"
+        API_URL=$CADENCE_API_URL
+        say "GitHub's API is replaced by $API_URL, as CADENCE_API_URL and --test-urls ask."
+    fi
+    if [ -n "${CADENCE_TABLES_URL:-}" ]; then
+        [ "$TEST_URLS" = 1 ] || fail "CADENCE_TABLES_URL is set, which only a test may do, with --test-urls"
+        TABLES_URL=$CADENCE_TABLES_URL
+    fi
 }
 
 # A release's x.y.z or x.y.z-rc.n, or with --source a test base's x.y.z+n, which has no release.
@@ -430,16 +576,29 @@ release_name() {
     esac
 }
 
+# Whether the last download's answer says it is GitHub's rate limit, as its headers do; a refusal
+# for any other reason, or one through wget, is not explained as one.
+github_limit() {
+    [ -f "$OUT.headers" ] && tr -d '\r' < "$OUT.headers" | grep -qiE '^(x-ratelimit-remaining: *0|retry-after:)'
+}
+
 # GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
 rate_limited() {
     case "$1" in
         " (the server answered 403)" | " (the server answered 429)")
+            github_limit || return 0
             fail "GitHub refused to name Cadence's releases$1: it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again." ;;
     esac
 }
 
+# The highest of the x.y.z-rc.n versions named on standard input, compared number by number.
+newest_candidate() {
+    grep -Ex '[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+' | awk -F '[.-]' '{print $1, $2, $3, $5, $0}' \
+        | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1 | awk '{print $5}'
+}
+
 # GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
-# pre-release is offered instead, and with neither nothing is built.
+# pre-release by version is offered instead, and with neither nothing is built.
 find_release() {
     step "Finding the release"
     if [ -n "$VERSION" ]; then
@@ -459,15 +618,15 @@ find_release() {
         VERSION=$tag
         say "The latest stable release is $VERSION."
     else
-        log "\$ download $API_URL?per_page=30"
-        if ! download "$API_URL?per_page=30" "$WORK/releases.json" 2> "$OUT"; then
+        log "\$ download $API_URL?per_page=100"
+        if ! download "$API_URL?per_page=100" "$WORK/releases.json" 2> "$OUT"; then
             trouble=$(said)
             redact < "$OUT" >> "$LOG"
             rate_limited "$trouble"
             fail "could not read Cadence's releases from GitHub$trouble"
         fi
         VERSION=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/releases.json" | sed 's/.*"\([^"]*\)"$/\1/' \
-            | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+' | head -n 1)
+            | newest_candidate)
         if [ -z "$VERSION" ]; then
             [ "$SOURCE" != 1 ] || stop "With no published release, --source needs --version."
             say "Cadence has no published release yet, so there is no binary to install."
@@ -480,13 +639,83 @@ find_release() {
             ask "Install pre-release $VERSION?" y || stop "Nothing was installed."
         fi
     fi
-    [ "$VERSION" = "$INSTALLER_VERSION" ] \
-        || say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
+    # The installer's own version is offered only where a release of it is published.
+    if [ "$VERSION" != "$INSTALLER_VERSION" ]; then
+        log "\$ download $API_URL/tags/$INSTALLER_VERSION"
+        if download "$API_URL/tags/$INSTALLER_VERSION" "$WORK/installer-release.json" 2> "$OUT"; then
+            say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
+        else
+            log "release $INSTALLER_VERSION is not offered$(said)"
+            redact < "$OUT" >> "$LOG"
+        fi
+    fi
+}
+
+# The release's SHA256SUMS in the work folder, downloaded once, or the reason it is not in WHY.
+release_sums() {
+    [ ! -s "$WORK/SHA256SUMS" ] || return 0
+    log "\$ download $ASSETS_URL/$VERSION/SHA256SUMS"
+    if ! download "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" 2> "$OUT"; then
+        redact < "$OUT" >> "$LOG"
+        rm -f "$WORK/SHA256SUMS"
+        WHY="Release $VERSION publishes no checksum file$(said), so none of its binaries is used."
+        return 1
+    fi
 }
 
 # The SHA-256 the release's SHA256SUMS gives a file, or nothing.
 listed() {
     awk -v f="$1" '$2 == f || $2 == "*" f {print $1; exit}' "$WORK/SHA256SUMS"
+}
+
+# The file the release's SHA256SUMS gives a SHA-256 to, or nothing.
+listed_as() {
+    awk -v s="$1" '$1 == s {f = $2; sub(/^\*/, "", f); print f; exit}' "$WORK/SHA256SUMS"
+}
+
+# The release workflow attests every binary it builds, run at the version's tag, and gh checks that
+# attestation where it is installed and signed in. Where gh cannot check, that is said and the install
+# goes on; an attestation that fails leaves WHY.
+attested() {
+    local file=$1 rc last identity="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VERSION"
+    ATTESTED=no
+    if ! command -v gh > /dev/null 2>&1; then
+        say "Its build attestation was not verified: gh, GitHub's command line tool, is not installed."
+        return 0
+    fi
+    log "\$ gh attestation verify $file --repo $REPO --cert-identity $identity"
+    gh attestation verify "$WORK/$file" --repo "$REPO" --cert-identity "$identity" > "$OUT" 2>&1
+    rc=$?
+    redact < "$OUT" >> "$LOG"
+    log "(exit $rc)"
+    last=$(grep -v '^[[:space:]]*$' "$OUT" | tail -n 1 | tr -d '\r')
+    if [ "$rc" -eq 0 ]; then
+        ATTESTED=yes
+        say "Its build attestation verifies: GitHub's release workflow built it at the tag $VERSION."
+        return 0
+    fi
+    # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
+    if [ "$rc" -eq 4 ]; then
+        say "Its build attestation was not verified: gh is installed but not signed in (gh auth login)."
+        return 0
+    fi
+    if grep -qE 'unknown (command|flag|shorthand flag)' "$OUT"; then
+        say "Its build attestation was not verified: this gh is too old to check one."
+        return 0
+    fi
+    # A verifier that never loaded its trust root reports a failed verification too, so it is read
+    # first, as gh failing to check. Otherwise a verdict is no attestation for this file, a signature
+    # that is not the release workflow's at the tag, or a certificate naming something else.
+    if grep -qE 'failed to choose verifier|initialization may have failed' "$OUT"; then
+        say "Its build attestation was not verified: gh could not check it ($last)."
+        return 0
+    fi
+    if grep -qE 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed' "$OUT"; then
+        WHY="$file's build attestation does not verify ($last), so it is not used."
+        return 1
+    fi
+    say "Its build attestation was not verified: gh could not check it ($last)."
+    return 0
 }
 
 # Leaves the checked binary in BUILT, or the reason none is used in WHY.
@@ -500,12 +729,7 @@ try_binary() {
         return 1
     fi
     file="cadence-$VERSION-$name$EXE"
-    log "\$ download $ASSETS_URL/$VERSION/SHA256SUMS"
-    if ! download "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" 2> "$OUT"; then
-        redact < "$OUT" >> "$LOG"
-        WHY="Release $VERSION publishes no checksum file$(said), so none of its binaries is used."
-        return 1
-    fi
+    release_sums || return 1
     want=$(listed "$file")
     if [ -z "$want" ]; then
         WHY="Release $VERSION's SHA256SUMS lists no $file, so there is no binary for this system."
@@ -527,6 +751,7 @@ try_binary() {
         return 1
     fi
     say "Its SHA-256 matches the release's SHA256SUMS."
+    attested "$file" || return 1
     want=$(listed bench.txt)
     if [ -z "$want" ]; then
         WHY="Release $VERSION's SHA256SUMS lists no bench.txt to check $file against, so it is not used."
@@ -548,6 +773,7 @@ try_binary() {
         return 1
     fi
     BUILT="$WORK/$file"
+    FROM=release
 }
 
 # --- The build ---------------------------------------------------------------------------------
@@ -732,6 +958,50 @@ fetch_source() {
         || fail "could not check out Cadence $VERSION"
 }
 
+# The commit the release's notes say it was built from, in NAMED, or nothing where no release names
+# one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
+# UNREAD says why, and the build goes on without the check.
+release_commit() {
+    local trouble
+    NAMED=""
+    UNREAD=""
+    UNREAD_LIMIT=0
+    case "$VERSION" in *+*) return 0 ;; esac
+    log "\$ download $API_URL/tags/$VERSION"
+    if ! download "$API_URL/tags/$VERSION" "$WORK/release.json" 2> "$OUT"; then
+        trouble=$(said)
+        redact < "$OUT" >> "$LOG"
+        [ "$trouble" = " (not found)" ] || UNREAD=${trouble:- (no answer)}
+        ! github_limit || UNREAD_LIMIT=1
+        return 0
+    fi
+    NAMED=$(grep -oE "built from [0-9a-f]{40} at the tag" "$WORK/release.json" | head -n 1 | awk '{print $3}')
+    [ -n "$NAMED" ] || fail "release $VERSION's notes name no commit, so its source cannot be checked against them"
+}
+
+# The fetched tag must be the commit the release names before anything is built from it.
+check_commit() {
+    local got
+    got=$(git -C "$SRC" rev-parse HEAD 2> /dev/null) || fail "could not read the commit Cadence $VERSION was fetched at"
+    log "fetched commit: $got; the release names: ${NAMED:-none}"
+    if [ -n "$UNREAD" ]; then
+        say "GitHub's API did not answer$UNREAD, so the commit release $VERSION names could not be read. It is built at its tag, commit $got, without that check."
+        [ "$UNREAD_LIMIT" = 0 ] \
+            || say "GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time."
+        return
+    fi
+    if [ -z "$NAMED" ]; then
+        case "$VERSION" in
+            *+*) say "Test base $VERSION is commit $got; a test base has no release to name one." ;;
+            *) say "Version $VERSION has no release page naming its commit, so it is built at its tag, commit $got." ;;
+        esac
+        return
+    fi
+    [ "$got" = "$NAMED" ] \
+        || fail "the tag $VERSION is commit $got, and the release names $NAMED, so it is not built"
+    say "The tag $VERSION is commit $got, the one the release names."
+}
+
 prepare_toolchain() {
     step "The Rust toolchain"
     (cd "$SRC" && run rustup toolchain install) \
@@ -743,40 +1013,134 @@ prepare_toolchain() {
     log "target: $TRIPLE"
 }
 
+# The rustflags a config file of the repository gives the target, one to a line, from an array of
+# strings or a string of words; a rustflags key in any other form fails, with status 2.
+repo_flags() {
+    [ -f "$1" ] || return 0
+    awk -v t="[target.$TRIPLE]" '
+        /^[[:space:]]*#/ {next}
+        {sub(/[[:space:]]*#[^"]*$/, "")}
+        $0 == t {on = 1; next}
+        /^\[/ {on = 0}
+        on && /^[[:space:]]*rustflags[[:space:]]*=/ {key = 1; grab = 1; sub(/^[^=]*=/, "")}
+        grab {
+            raw = raw " " $0
+            if (raw ~ /^[[:space:]]*"/ || index($0, "]")) grab = 0
+        }
+        END {
+            if (!key) exit 0
+            rest = raw
+            if (raw ~ /^[[:space:]]*\[/) {
+                while (match(rest, /"[^"]*"/)) {flags[++n] = substr(rest, RSTART + 1, RLENGTH - 2); rest = substr(rest, 1, RSTART - 1) substr(rest, RSTART + RLENGTH)}
+                gsub(/[][[:space:],]/, "", rest)
+            } else if (match(raw, /^[[:space:]]*"[^"]*"[[:space:]]*$/)) {
+                n = split(substr(raw, index(raw, "\"") + 1, length(raw)), words, /[[:space:]"]+/)
+                rest = ""
+                for (i = 1; i <= n; i++) if (words[i] != "") flags[++m] = words[i]
+                n = m
+            }
+            if (rest != "") exit 2
+            for (i = 1; i <= n; i++) print flags[i]
+        }' "$1"
+}
+
 build() {
     step "Building Cadence $VERSION"
-    local args="build --release --locked -p cadence-engine --bin cadence"
+    local args="build --release --locked -p cadence-engine --bin cadence" files=".cargo/config.toml"
+    MADE=$BUILD
     case "$BUILD" in
         generic)
             if grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/x86-64-generic.toml" 2>/dev/null; then
                 args="$args --config .cargo/x86-64-generic.toml"
+                files="$files .cargo/x86-64-generic.toml"
             else
                 say "Cadence $VERSION has no generic settings for $TRIPLE, so it is built for that system's baseline."
+                MADE=baseline
             fi
             ;;
         avx2)
-            grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/config.toml" \
-                || say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
+            if ! grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/config.toml"; then
+                say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
+                MADE=baseline
+            fi
             ;;
     esac
-    # RUSTFLAGS would replace the repository's own per-target flags, so it is left out of the build.
-    (cd "$SRC" && run env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS cargo $args) || fail "the build failed"
+    # The repository's own flags, in the order Cargo would join them, given as CARGO_ENCODED_RUSTFLAGS,
+    # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
+    local flags encoded file
+    flags="CARGO_TARGET_$(printf '%s' "$TRIPLE" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+    # A rustflags key this script cannot read would build by flags it never saw, so nothing is built.
+    for file in $files; do
+        repo_flags "$SRC/$file" > /dev/null \
+            || fail "$file sets rustflags for $TRIPLE in a form this script cannot read, so nothing is built"
+    done
+    encoded=$(for file in $files; do repo_flags "$SRC/$file"; done | awk '{printf "%s%s", (NR > 1 ? "\037" : ""), $0}')
+    log "rustflags: $(printf '%s' "$encoded" | tr '\037' ' ')"
+    (cd "$SRC" && run env -u RUSTFLAGS -u "$flags" CARGO_ENCODED_RUSTFLAGS="$encoded" cargo $args) || fail "the build failed"
     BUILT="$SRC/target/release/cadence$EXE"
     [ -f "$BUILT" ] || fail "the build left no binary at $BUILT"
+    FROM=source
 }
 
+# Leaves in ID the name a binary gives in answer to uci, or nothing; LIMITED is 1 where no answer came
+# in time.
 id_name() {
-    printf 'uci\nquit\n' | "$1" 2>/dev/null | tr -d '\r' | sed -n 's/^id name //p' | head -n 1
+    printf 'uci\nquit\n' > "$WORK/uci.in"
+    limited "$UCI_SECONDS" "$WORK/uci.in" "$WORK/uci.out" "$1"
+    redact < "$OUT" >> "$LOG"
+    ID=$(tr -d '\r' < "$WORK/uci.out" | sed -n 's/^id name //p' | head -n 1)
+}
+
+# A program the system will not start, said in plain words, which stops the run; what the system
+# answered is in the log, which is kept.
+refused() {
+    local name
+    name=$(basename "$1")
+    KEEP_LOG=1
+    if [ "$OS" = windows ]; then
+        say "Windows blocked $name from running. This is most likely application control or antivirus software, which managed machines often have."
+    else
+        say "This system refused to run $name. A security policy, or a folder where programs may not run, most likely stops it."
+    fi
+    stop "Installing Cadence here needs this machine's administrator, or a machine without that policy."
 }
 
 # Runs a binary's bench and asks its name, leaving the reason in WHY if either is not the one wanted.
 bench_and_name() {
-    local bin=$1 want=$2 name=$3 rc got first
+    local bin=$1 want=$2 name=$3 rc got first answer
     say "Running its bench."
     log "\$ cadence bench"
-    (cd "$WORK" && "$bin" bench) > "$WORK/bench.out" 2> "$OUT"
+    limited "$BENCH_SECONDS" /dev/null "$WORK/bench.out" "$bin" bench
     rc=$?
     redact < "$OUT" >> "$LOG"
+    # A program the system would not start leaves only the shell's own lines naming it, whose exit
+    # status differs between versions of bash. Only a denial is a policy; any other is the binary's.
+    if [ "$rc" -ne 0 ]; then
+        answer=$(grep -F "$(basename "$bin"): " "$OUT")
+        case "$answer" in
+            *": Permission denied"* | *": Operation not permitted"*) refused "$bin" ;;
+            *"required file not found"* | *"No such file or directory"*)
+                if [ "$OS" = linux ]; then
+                    WHY="it cannot start on this system, which lacks the loader it needs, as a Linux without glibc does"
+                else
+                    WHY="it cannot start on this system, which could not find it or a file it needs"
+                fi
+                return 1
+                ;;
+            *"Exec format error"* | *"cannot execute binary file"*)
+                WHY="it cannot start on this system, which does not take it for a program"
+                return 1
+                ;;
+            *"cannot execute"*)
+                WHY="it cannot start on this system"
+                return 1
+                ;;
+        esac
+    fi
+    if [ "$LIMITED" = 1 ]; then
+        WHY="its bench did not finish within $BENCH_SECONDS seconds, so it was stopped"
+        return 1
+    fi
     got=$(tr -d '\r' < "$WORK/bench.out" | tail -n 1 | awk '{print $1}')
     log "bench: exit $rc, ${got:-nothing}; bench.txt: $want"
     if [ "$rc" -ne 0 ]; then
@@ -790,8 +1154,12 @@ bench_and_name() {
         WHY="its bench counts ${got:-nothing} and bench.txt says $want"
         return 1
     fi
-    ID=$(id_name "$bin")
+    id_name "$bin"
     log "id name: ${ID:-nothing}"
+    if [ "$LIMITED" = 1 ]; then
+        WHY="it did not answer uci within $UCI_SECONDS seconds, so it was stopped"
+        return 1
+    fi
     if [ "$ID" != "$name" ]; then
         WHY="it calls itself '${ID:-nothing}' and not '$name'"
         return 1
@@ -812,32 +1180,207 @@ verify() {
 
 # --- The install -------------------------------------------------------------------------------
 
-install_binary() {
-    step "Installing"
-    local dest="" old previous
-    previous=$(state_get binary)
+# Where the binary goes, in DEST and TARGET: --dir's folder, the folder the state records the binary
+# in while it is still there, or the default.
+target_path() {
+    local previous
+    previous=$(state_path binary)
+    WHERE=default
+    DEST=$DEFAULT_PREFIX
     if [ -n "$PREFIX" ]; then
-        dest=$PREFIX
-        say "Installing into $dest, as --dir asks."
-    elif [ "$MODE" = update ] && [ -n "$previous" ]; then
-        dest=$(dirname "$previous")
-        say "Installing into $(shown "$dest"), where Cadence was installed before."
-    else
-        dest=$DEFAULT_PREFIX
-        say "Installing into $(shown "$dest"), the default folder; --dir DIR installs into DIR instead."
+        WHERE=dir
+        DEST=$PREFIX
+    elif [ -n "$previous" ] && [ -e "$previous" ]; then
+        WHERE=before
+        DEST=$(dirname "$previous")
     fi
-    mkdir -p "$dest" || fail "cannot create $dest"
-    TARGET="$dest/cadence$EXE"
-    if [ -e "$TARGET" ]; then
-        old=$(id_name "$TARGET")
-        say "There is already a Cadence at $(shown "$TARGET")${old:+, calling itself $old}."
+    TARGET="$DEST/cadence$EXE"
+}
+
+# A version as five numbers that sort in release order: a candidate before its release, and a test
+# base after the release it follows.
+version_key() {
+    printf '%s\n' "$1" | awk -F '[.+-]' '
+        /-rc\./ {print $1, $2, $3, 0, $5; next}
+        /\+/ {print $1, $2, $3, 2, $4; next}
+        {print $1, $2, $3, 1, 0}'
+}
+
+# -1, 0 or 1 as the first version is older than, the same as or newer than the second.
+version_order() {
+    { version_key "$1"; version_key "$2"; } | awk '
+        NR == 1 {for (i = 1; i <= 5; i++) a[i] = $i + 0; next}
+        {for (i = 1; i <= 5; i++) if (a[i] != $i + 0) {print (a[i] < $i + 0) ? -1 : 1; exit}; print 0}'
+}
+
+# The build a release binary is, from its name.
+build_of() {
+    case "$1" in
+        *-avx2 | *-avx2.exe | *-macos-x86-64) printf avx2 ;;
+        *-generic | *-generic.exe) printf generic ;;
+        *) printf native ;;
+    esac
+}
+
+# The version this script recorded installing at TARGET, in INSTALLED, and its build and whether it
+# came from a release binary or source in HELD, trusted only while the file there has the SHA-256
+# recorded with it. The file itself is never run.
+installed_version() {
+    local sum
+    INSTALLED=""
+    HELD=""
+    EARLIER=0
+    [ -f "$TARGET" ] && same_file "$(state_path binary)" "$TARGET" || return 0
+    sum=$(state_get sha256)
+    if [ -z "$sum" ]; then
+        EARLIER=1
+        return 0
+    fi
+    [ "$(checksum "$TARGET")" = "$sum" ] || return 0
+    INSTALLED=$(state_get version)
+    HELD="$(state_get build) $(state_get from)"
+}
+
+# The published release binary with this SHA-256 in RELEASED, by the digests GitHub's API lists for
+# every release's files; where that list cannot be read it fails, with the reason in UNLISTED.
+released_as() {
+    RELEASED=""
+    UNLISTED=""
+    log "\$ download $API_URL?per_page=100"
+    if ! download "$API_URL?per_page=100" "$WORK/every-release.json" 2> "$OUT"; then
+        UNLISTED=$(said)
+        redact < "$OUT" >> "$LOG"
+        return 1
+    fi
+    RELEASED=$(tr ',{}[]' '\n\n\n\n\n' < "$WORK/every-release.json" | awk -v d="\"sha256:$1\"" '
+        /^[[:space:]]*"name":[[:space:]]*"/ {n = $0}
+        index($0, d) && n != "" {sub(/^[[:space:]]*"name":[[:space:]]*"/, "", n); sub(/".*/, "", n); print n; exit}')
+}
+
+# The installers before this one recorded the path alone, so their install is known by its SHA-256
+# among the release's binaries, and recorded as this script records it; otherwise it may be replaced.
+earlier_install() {
+    local sum name="" default=n
+    step "The installed Cadence"
+    sum=$(checksum "$TARGET")
+    case "$VERSION" in *+*) name="" ;; *) release_sums && name=$(listed_as "$sum") ;; esac
+    case "$name" in
+        "cadence-$VERSION-"*)
+            say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version; its SHA-256 is release $VERSION's $name."
+            INSTALLED=$VERSION
+            HELD="$(build_of "$name") release"
+            state_set version "$INSTALLED"
+            state_set sha256 "$sum"
+            state_set build "${HELD% *}"
+            state_set from release
+            ;;
+        *)
+            if [ -s "$WORK/SHA256SUMS" ]; then
+                say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version, and its SHA-256 is none of release $VERSION's."
+            else
+                say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version."
+            fi
+            # Its version unknown, it is replaced by default only with the newest release, and only
+            # where it is some other release's binary rather than a file put there by hand.
+            if [ -z "$ASKED_VERSION" ]; then
+                if ! released_as "$sum"; then
+                    say "The list of published releases could not be read$UNLISTED, so whether it is a release's binary is not known."
+                elif [ -n "$RELEASED" ]; then
+                    say "Its SHA-256 is that of $RELEASED, another release's binary."
+                    default=y
+                else
+                    say "Its SHA-256 is that of no published release's binary."
+                fi
+            fi
+            # --yes with --version installs that version over whatever is there.
+            if [ "$YES" = 1 ] && [ -n "$ASKED_VERSION" ]; then
+                say "Replacing it with Cadence $VERSION, as --yes and --version $VERSION ask."
+            else
+                ask "Replace it with Cadence $VERSION?" "$default" || stop "Kept the one there; nothing was installed."
+            fi
+            REPLACE=1
+            ;;
+    esac
+}
+
+# The same version installed stops the run as up to date, unless another build or a build from source
+# is asked for; an older one is upgraded unless declined, and a newer one is kept unless a downgrade
+# is asked for.
+compare_installed() {
+    target_path
+    installed_version
+    [ "$EARLIER" = 0 ] || earlier_install
+    [ -n "$INSTALLED" ] || return 0
+    [ "$EARLIER" = 1 ] || step "The installed Cadence"
+    case "$(version_order "$INSTALLED" "$VERSION")" in
+        0)
+            local build=${HELD% *}
+            # A baseline build was made where the target has no AVX2 or generic settings, so every build
+            # asked for there is that one.
+            if [ "$ARCH" = x86_64 ] && [ -n "$ASKED" ] && [ "$build" != "$BUILD" ] && [ "$build" != baseline ]; then
+                say "Cadence $VERSION is installed at $(shown "$TARGET")${build:+ in the $build build}, and the $BUILD build is asked for, so it is replaced."
+                REPLACE=1
+            elif [ "$SOURCE" = 1 ] && [ "${HELD#* }" != source ]; then
+                say "Cadence $VERSION is installed at $(shown "$TARGET"), and --source asks for it built from source, so it is replaced."
+                REPLACE=1
+            else
+                say "Cadence $VERSION is already installed at $(shown "$TARGET"), so it is up to date."
+                UP_TO_DATE=1
+            fi
+            ;;
+        -1)
+            say "Cadence $INSTALLED is installed at $(shown "$TARGET"), and $VERSION is available."
+            ask "Upgrade it to $VERSION?" y || stop "Kept Cadence $INSTALLED; nothing was installed."
+            REPLACE=1
+            ;;
+        *)
+            say "Cadence $INSTALLED is installed at $(shown "$TARGET"). It is newer than $VERSION, so installing $VERSION would be a downgrade."
+            # --yes takes a downgrade only where --version names the release.
+            if [ "$YES" = 1 ] && [ -n "$ASKED_VERSION" ]; then
+                say "Downgrading it to $VERSION, as --yes and --version $VERSION ask."
+            else
+                ask "Downgrade it to $VERSION?" n || stop "Kept Cadence $INSTALLED; nothing was installed."
+            fi
+            REPLACE=1
+            ;;
+    esac
+}
+
+install_binary() {
+    local previous want
+    step "Installing"
+    case "$WHERE" in
+        dir) say "Installing into $DEST, as --dir asks." ;;
+        before) say "Installing into $(shown "$DEST"), where Cadence was installed before." ;;
+        *) say "Installing into $(shown "$DEST"), the default folder; --dir DIR installs into DIR instead." ;;
+    esac
+    mkdir -p "$DEST" || fail "cannot create $DEST"
+    # A file this script has no record of is never run to ask its name, since it may not be Cadence.
+    if [ -e "$TARGET" ] && [ "$REPLACE" != 1 ]; then
+        say "There is already a file at $(shown "$TARGET"), whose version this script has no record of."
         local default=n
         [ "$MODE" != update ] || default=y
         ask "Replace it?" "$default" || stop "Kept the one there; nothing was installed."
     fi
     { cp "$BUILT" "$TARGET.new" && chmod 755 "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"; } \
         || { rm -f "$TARGET.new"; fail "could not write $TARGET; if Cadence is running, close it and run this again"; }
-    state_set binary "$TARGET"
+    previous=$(state_path binary)
+    if [ -n "$previous" ] && [ -e "$previous" ] && ! same_file "$previous" "$TARGET"; then
+        retire_previous "$previous"
+    fi
+    # Whatever the steps above did, the install ends with the checked binary at the target.
+    want=$(checksum "$BUILT")
+    if [ ! -f "$TARGET" ] || [ "$(checksum "$TARGET")" != "$want" ]; then
+        say "The binary at $(shown "$TARGET") was missing or changed after the install, so it is copied again."
+        { cp "$BUILT" "$TARGET.new" && chmod 755 "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"; } \
+            || { rm -f "$TARGET.new"; fail "could not write $TARGET"; }
+        [ "$(checksum "$TARGET")" = "$want" ] || fail "the binary at $TARGET does not match the one checked"
+    fi
+    state_set binary "$(shown "$TARGET")"
+    state_set version "$VERSION"
+    state_set sha256 "$(checksum "$TARGET")"
+    state_set build "${MADE:-$BUILD}"
+    state_set from "$FROM"
     say "Installed $(shown "$TARGET")."
 }
 
@@ -849,11 +1392,26 @@ shell_rc() {
     esac
 }
 
-# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
+# The user PATH edited as the registry holds it, so a %VARIABLE% in it stays unexpanded and the value
+# keeps its kind, or goes once empty; CADENCE_ADD adds a folder and CADENCE_REMOVE removes one. Clearing
+# a variable never set then tells running programs the environment changed, as .NET does on setting one.
+USER_PATH_EDIT=$(cat <<'EOF'
+$k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+$kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+if ($k.GetValueNames() -contains 'Path') { $kind = $k.GetValueKind('Path') }
+$entries = @([string]$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames') -split ';' | Where-Object { $_ -and $_ -ne $env:CADENCE_REMOVE })
+if ($env:CADENCE_ADD -and $entries -notcontains $env:CADENCE_ADD) { $entries += $env:CADENCE_ADD }
+if ($entries.Count -gt 0) { $k.SetValue('Path', ($entries -join ';'), $kind) } else { $k.DeleteValue('Path', $false) }
+$k.Close()
+[Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
+EOF
+)
+
+# A folder other than the default is the caller's to manage, so the offer defaults to no there.
 offer_path() {
     local dest default=y
     dest=$(dirname "$TARGET")
-    [ -z "$PREFIX" ] || default=n
+    same_file "$dest" "$DEFAULT_PREFIX" || default=n
     case ":$PATH:" in
         *":$dest:"*)
             say "$(shown "$dest") is already on your PATH."
@@ -861,11 +1419,16 @@ offer_path() {
             ;;
     esac
     if [ "$OS" = windows ]; then
-        local win quoted
+        local win held
         win=$(cygpath -w "$dest")
+        # The user PATH a new terminal reads, which this one does not see until it is opened again.
+        held=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" 2> /dev/null | tr -d '\r')
+        if printf '%s\n' "$held" | tr ';' '\n' | grep -qixF -- "$win"; then
+            say "$win is already on your user PATH, for each new terminal."
+            return
+        fi
         ask "Add $win to your PATH, so a terminal finds cadence?" "$default" || return 0
-        quoted=${win//\'/\'\'}
-        run powershell.exe -NoProfile -Command "\$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not \$p) { \$p = '' }; if ((\$p -split ';') -notcontains '$quoted') { [Environment]::SetEnvironmentVariable('Path', (\$p.TrimEnd(';') + ';$quoted').TrimStart(';'), 'User') }" \
+        CADENCE_ADD=$win CADENCE_REMOVE="" run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
             || fail "could not add $win to your PATH"
         state_set path_windows "$win"
         added_to_path "export PATH=\"$dest:\$PATH\""
@@ -874,11 +1437,86 @@ offer_path() {
         local rc line
         rc=$(shell_rc)
         line="export PATH=\"$dest:\$PATH\""
+        # An earlier run's line, under its marker, is not added twice.
+        if [ -f "$rc" ] && grep -qxF -- "$MARK" "$rc" && grep -qxF -- "$line" "$rc"; then
+            say "$rc already adds $dest to your PATH, for each new terminal."
+            state_set path_rc "$rc"
+            state_set path_line "$line"
+            return
+        fi
         ask "Add $dest to your PATH in $rc, so a terminal finds cadence?" "$default" || return 0
         printf '\n%s\n%s\n' "$MARK" "$line" >> "$rc" || fail "could not write $rc"
         state_set path_rc "$rc"
         state_set path_line "$line"
         added_to_path "$line"
+    fi
+}
+
+# Removes the PATH line under this script's marker from a profile, asking first unless told "now";
+# only the marked line goes, so the same line written by hand stays.
+remove_path_line() {
+    local rc=$1 line=$2 how=$3
+    [ -n "$rc" ] && [ -f "$rc" ] || return 0
+    CADENCE_LINE=$line CADENCE_MARK=$MARK awk '
+        held != "" && $0 == ENVIRON["CADENCE_LINE"] {held = ""; next}
+        held != "" {print held; held = ""}
+        $0 == ENVIRON["CADENCE_MARK"] {held = $0; next}
+        {print}
+        END {if (held != "") print held}' \
+        "$rc" > "$rc.cadence" || fail "could not read $rc"
+    if cmp -s "$rc" "$rc.cadence"; then
+        say "$rc holds no PATH line under this script's marker, so there is none to remove."
+    elif [ "$how" = now ] || ask "Remove the PATH line this script added to $rc?" y; then
+        cat "$rc.cadence" > "$rc" || fail "could not rewrite $rc"
+        say "Removed the PATH line from $rc."
+    fi
+    rm -f "$rc.cadence"
+}
+
+# Removes a folder this script added to the Windows user PATH, asking first unless told "now".
+remove_path_windows() {
+    local win=$1 how=$2 held
+    held=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" 2> /dev/null | tr -d '\r')
+    if ! printf '%s\n' "$held" | tr ';' '\n' | grep -qixF -- "$win"; then
+        say "$win is not on your user PATH, so there is nothing to remove there."
+    elif [ "$how" = now ] || ask "Remove $win from your PATH, which this script added?" y; then
+        CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
+            || fail "could not remove $win from your PATH"
+        say "Removed $win from your PATH."
+    fi
+}
+
+# A copy an earlier run installed in another folder, offered for removal with the PATH entry this
+# script added for it, so the state names one install and the uninstall leaves nothing behind.
+retire_previous() {
+    local previous=$1 folder win sum default=y
+    [ ! "$previous" -ef "$TARGET" ] || return 0
+    folder=$(dirname "$previous")
+    sum=$(state_get sha256)
+    say "An earlier run installed Cadence at $(shown "$previous")."
+    # A copy that is no longer the file recorded there may be the user's own, so it is kept by default.
+    if [ -z "$sum" ]; then
+        say "No SHA-256 was recorded for it, so it may not be the file installed there."
+        default=n
+    elif [ "$(checksum "$previous")" != "$sum" ]; then
+        say "It has changed since it was installed: its SHA-256 is not the one recorded."
+        default=n
+    fi
+    if ! ask "Remove that copy, and the PATH entry this script added for it?" "$default"; then
+        say "Kept it. This script now records only the new install, so its uninstall will not remove that copy."
+        return 0
+    fi
+    rm -f "$previous" || fail "could not remove $previous; if Cadence is running, close it and run this again"
+    say "Removed $(shown "$previous")."
+    if [ "$(state_get path_line)" = "export PATH=\"$folder:\$PATH\"" ]; then
+        remove_path_line "$(state_get path_rc)" "$(state_get path_line)" now
+        state_unset path_rc
+        state_unset path_line
+    fi
+    win=$(state_get path_windows)
+    if [ -n "$win" ] && same_file "$(cygpath -u "$win")" "$folder"; then
+        remove_path_windows "$win" now
+        state_unset path_windows
     fi
 }
 
@@ -890,41 +1528,82 @@ added_to_path() {
     say "$1"
 }
 
+# How many tables a download left in the folder the state records; all 290 is a finished one.
+tables_held() {
+    local dir file n=0
+    dir=$(state_path tables)
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+        for file in "$dir"/K*v*.rtb[wz]; do
+            [ ! -f "$file" ] || n=$((n + 1))
+        done
+    fi
+    printf '%s\n' "$n"
+}
+
+# A download the state records that stopped part way: some tables, or a table half fetched, in its
+# folder. A folder emptied or removed since is not offered again.
+tables_unfinished() {
+    local held file
+    [ -n "$(state_get tables)" ] || return 1
+    held=$(tables_held)
+    [ "$held" -lt 290 ] || return 1
+    [ "$held" -eq 0 ] || return 0
+    for file in "$(state_path tables)"/*.part; do
+        [ ! -f "$file" ] || return 0
+    done
+    return 1
+}
+
 offer_tables() {
+    local default=n
     step "Syzygy tablebases, if you want them"
     say "Cadence can read the 3-4-5 piece Syzygy tablebases, 290 files and about 1 GB, to play every"
     say "ending of five pieces or fewer perfectly. They are downloaded from $TABLES_URL."
-    ask "Download them now?" n || { say "Skipped."; return 0; }
-    local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0 bytes=0
+    if tables_unfinished; then
+        say "An earlier download stopped with $(tables_held) of the 290 tables in $(shown "$(state_path tables)")."
+        default=y
+    fi
+    if [ "$TABLES" = 1 ]; then
+        say "Downloading them, as --tables asks."
+    else
+        ask "Download them now?" "$default" || { say "Skipped."; return 0; }
+    fi
+    local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0 fetched=0 bytes=0
+    # Recorded before anything is fetched, so a download that stops is offered again.
     mkdir -p "$dir" || fail "cannot create $dir"
+    state_set tables "$(shown "$dir")"
     if ! download "$TABLES_URL/sha256" "$WORK/sha256" 2> "$OUT"; then
         redact < "$OUT" >> "$LOG"
         fail "could not download the tables' published checksums$(said)"
     fi
+    # Every name becomes a path below, so each must be a table's name and each sum a SHA-256.
     awk '{n = $2; sub(/\.rtb[wz]$/, "", n); gsub(/v/, "", n); if (length(n) <= 5) print}' \
         "$WORK/sha256" > "$WORK/3-4-5.sha256"
     count=$(wc -l < "$WORK/3-4-5.sha256" | tr -d ' ')
     [ "$count" = 290 ] || fail "the published checksums list $count tables of five pieces or fewer, not 290"
-    state_set tables "$dir"
+    file=$(awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ || $2 !~ /^K[QRBNP]*vK[QRBNP]*\.rtb[wz]$/ {
+        print $2; exit}' "$WORK/3-4-5.sha256")
+    [ -z "$file" ] || fail "the published checksums name '$file', which is not a table's file name, so nothing was downloaded"
     while read -r sum file; do
         case "$file" in
             *.rtbw) group=3-4-5-wdl ;;
-            *.rtbz) group=3-4-5-dtz ;;
-            *) fail "the published checksums name $file, which is not a table" ;;
+            *) group=3-4-5-dtz ;;
         esac
+        # A table already here and matching its checksum is kept as it is.
         if [ ! -f "$dir/$file" ] || [ "$(checksum "$dir/$file")" != "$sum" ]; then
             download "$TABLES_URL/$group/$file" "$dir/$file.part" 2> "$OUT" \
                 || { redact < "$OUT" >> "$LOG"; fail "could not download $file$(said)"; }
             [ "$(checksum "$dir/$file.part")" = "$sum" ] \
                 || { rm -f "$dir/$file.part"; fail "$file does not match its published checksum"; }
             mv -f "$dir/$file.part" "$dir/$file" || fail "could not write $dir/$file"
+            fetched=$((fetched + 1))
         fi
         checked=$((checked + 1))
         bytes=$((bytes + $(wc -c < "$dir/$file")))
         [ $((checked % 29)) -ne 0 ] \
             || say "  $checked of 290 downloaded and checked, $((bytes / 1048576)) of $((TABLES_BYTES / 1048576)) MB"
     done < "$WORK/3-4-5.sha256"
-    say "All 290 tables are in $(shown "$dir"), each matching its published checksum."
+    say "All 290 tables are in $(shown "$dir"), each matching its published checksum: $fetched downloaded now, $((290 - fetched)) already there."
     say "To use them, set the engine option SyzygyPath in your chess program to this folder:"
     say "$(shown "$dir")"
     [ "$OS" != macos ] \
@@ -934,11 +1613,22 @@ offer_tables() {
 afterwards() {
     step "Done"
     say "Cadence is at $(shown "$TARGET") and calls itself $ID."
+    if [ "$FROM" = source ]; then
+        say "It was built here from source at the tag $VERSION, so its bench is the check it passed."
+    elif [ "$ATTESTED" = no ]; then
+        say "Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed."
+    fi
     say ""
     say "To play it in a chess program, add it as a UCI engine and choose that file:"
     say "  Arena: Engines, Install New Engine, choose the file, then UCI when asked."
     say "  Cute Chess: Tools, Settings, Engines, the + button, the file as the command, UCI as the protocol."
     say "  Banksia: add an engine in its engine manager and choose the file."
+    if [ "$OS" = windows ] && same_file "$(dirname "$TARGET")" "$DEFAULT_PREFIX"; then
+        say "AppData is hidden, so paste the path above into the GUI's file dialog, or type %LOCALAPPDATA%\\Cadence into its address bar."
+    fi
+    if [ "$OS" = macos ] && same_file "$(dirname "$TARGET")" "$DEFAULT_PREFIX"; then
+        say ".local is hidden in file dialogs; use Cmd+Shift+G and type ~/.local/bin, or Cmd+Shift+. to show hidden files."
+    fi
     [ "$WSL" = 0 ] || say "This is a Linux build in WSL, for chess programs in WSL; a Windows one needs install.ps1."
     say ""
     say "Report bugs as GitHub issues: $ISSUES_URL"
@@ -946,8 +1636,8 @@ afterwards() {
 
 uninstall() {
     step "Uninstalling Cadence"
-    local bin rc line win tables
-    bin=$(state_get binary)
+    local bin win tables
+    bin=$(state_path binary)
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
     if [ -e "$bin" ]; then
         if ask "Remove $(shown "$bin")?" y; then
@@ -957,23 +1647,12 @@ uninstall() {
     else
         say "There is no Cadence at $(shown "$bin")."
     fi
-    rc=$(state_get path_rc)
-    line=$(state_get path_line)
-    if [ -n "$rc" ] && [ -f "$rc" ] && ask "Remove the PATH line this script added to $rc?" y; then
-        CADENCE_LINE=$line CADENCE_MARK=$MARK awk '$0 != ENVIRON["CADENCE_LINE"] && $0 != ENVIRON["CADENCE_MARK"]' \
-            "$rc" > "$rc.cadence" && cat "$rc.cadence" > "$rc" && rm -f "$rc.cadence" || fail "could not rewrite $rc"
-        say "Removed it."
-    fi
+    remove_path_line "$(state_get path_rc)" "$(state_get path_line)" ask
     win=$(state_get path_windows)
-    if [ -n "$win" ] && ask "Remove $win from your PATH, which this script added?" y; then
-        local quoted=${win//\'/\'\'}
-        run powershell.exe -NoProfile -Command "\$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if (\$p) { [Environment]::SetEnvironmentVariable('Path', ((\$p -split ';') | Where-Object { \$_ -and \$_ -ne '$quoted' }) -join ';', 'User') }" \
-            || fail "could not remove $win from your PATH"
-        say "Removed it."
-    fi
-    tables=$(state_get tables)
+    [ -z "$win" ] || remove_path_windows "$win" ask
+    tables=$(state_path tables)
     if [ -n "$tables" ] && [ -d "$tables" ] && ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
-        rm -rf "$tables" || fail "could not remove $tables"
+        rm -rf "$tables" || fail "could not remove $tables; if a chess program has them open, close it and run this again"
         say "Removed them."
     fi
     rm -f "$STATE"
@@ -983,6 +1662,7 @@ uninstall() {
 # --- The run -----------------------------------------------------------------------------------
 
 system_report
+check_urls
 if [ "$MODE" = uninstall ]; then
     uninstall
     exit 0
@@ -991,18 +1671,28 @@ step "Cadence's installer"
 say "This installs Cadence's release binary for this system once its checksum and bench match the"
 say "release's, or builds it from source where no binary fits. It asks before building, installing a"
 say "compiler or Rust, replacing an install, changing your PATH or downloading tablebases."
+say "Release files come from $ASSETS_URL."
 check_version
 mkdir -p "$WORK" || fail "cannot create $WORK"
 confirm_system
 if [ "$SOURCE" != 1 ] || [ -z "$VERSION" ]; then find_release; fi
+compare_installed
+if [ "$UP_TO_DATE" = 1 ]; then
+    # Up to date, the run stops, and only tablebases asked for by name or a download that stopped are
+    # still fetched.
+    if [ "$TABLES" = 1 ] || tables_unfinished; then offer_tables; fi
+    exit 0
+fi
 [ "$SOURCE" = 1 ] || try_binary
 if [ -z "$BUILT" ]; then
     offer_source
     check_git
     resolve_tag
+    release_commit
+    fetch_source
+    check_commit
     check_linker
     check_rust
-    fetch_source
     prepare_toolchain
     build
     verify

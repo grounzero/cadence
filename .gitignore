@@ -4,3 +4,6 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+# An OpenBench worker's configuration and its GitHub token, wherever --config put them.
+worker.json
+credentials.cadence
