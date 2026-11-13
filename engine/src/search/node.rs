@@ -92,7 +92,7 @@ impl Search<'_> {
             return ABORTED;
         }
 
-        if board.is_repetition() {
+        if board.is_repetition() || board.is_insufficient_material() {
             return DRAW;
         }
 

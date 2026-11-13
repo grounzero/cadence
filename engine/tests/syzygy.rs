@@ -230,7 +230,7 @@ fn a_table_cutoff_keeps_the_move_the_transposition_table_held() {
     let only = fixture_set("tt-move");
     let tables = loaded(&only.display().to_string());
     for (fen, mv) in [
-        ("8/8/8/4k3/8/8/2B5/4K3 w - - 0 1", "c2h7"),
+        ("k7/8/8/8/8/8/P7/K7 w - - 0 1", "a1b1"),
         ("8/8/8/3k4/8/8/8/R3K3 w - - 0 1", "a1a4"),
     ] {
         let b = board(fen);
