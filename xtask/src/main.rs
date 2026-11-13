@@ -102,7 +102,7 @@ fn usage() {
     eprintln!("  check-headers   verify every .rs file carries the GPL notice");
     eprintln!("  check-boundary  verify references resolve here, and punctuation and vocabulary");
     eprintln!("                  --staged: read the index rather than the working tree");
-    eprintln!("  check-changelog verify every version tag has a CHANGELOG.md entry");
+    eprintln!("  check-changelog verify every release tag has a CHANGELOG.md entry");
     eprintln!("  install-hooks   point git at .githooks/ for this clone");
     eprintln!("  nps             measure the bench's speed the way the SPRT harness measures it");
     eprintln!();
@@ -995,7 +995,10 @@ fn check_changelog() -> ExitCode {
     })();
     match problems {
         Ok(p) if p.is_empty() => {
-            println!("check-changelog: every version tag and the workspace version have an entry");
+            println!(
+                "check-changelog: every release tag and the workspace version have an entry; \
+                 a pre-release tag is covered by its release's entry"
+            );
             ExitCode::SUCCESS
         }
         Ok(p) => {
