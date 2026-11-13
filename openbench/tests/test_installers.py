@@ -127,6 +127,26 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(worker.SetupError):
                 worker.fastchess_server_configuration({})
 
+    def test_a_configuration_inside_the_repository_is_refused_before_any_prompt(self) -> None:
+        worker = load("cadence_setup_worker_inside", "setup-worker.py")
+        for inside in (ROOT / "worker.json", ROOT.parent / "credentials" / "worker.json"):
+            args = worker.setup_parser().parse_args(
+                ["--config", str(inside), "--threads", "1", "--non-interactive"]
+            )
+            with self.subTest(path=str(inside)):
+                with mock.patch.object(worker, "resolve_configuration") as resolve:
+                    with self.assertRaisesRegex(worker.SetupError, "inside the repository"):
+                        worker.configure_worker(args)
+                resolve.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as outside:
+            args = worker.setup_parser().parse_args(
+                ["--config", str(Path(outside) / "worker.json"), "--threads", "1", "--non-interactive"]
+            )
+            with mock.patch.object(worker, "resolve_configuration", side_effect=RuntimeError("reached")):
+                with self.assertRaisesRegex(RuntimeError, "reached"):
+                    worker.configure_worker(args)
+
     def test_disabling_the_engine_token_removes_the_runtime_copy(self) -> None:
         worker = load("cadence_setup_worker_token", "setup-worker.py")
         with tempfile.TemporaryDirectory() as temporary_name:

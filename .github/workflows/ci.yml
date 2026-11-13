@@ -377,6 +377,17 @@ jobs:
           echo "$out" | grep -q 'target-cpu' \
             || { echo "::error::the feature check refused the build, but not for its target-cpu"; exit 1; }
 
+      # The build shim must not pass on an inherited RUSTFLAGS, which would replace the config's flags
+      # for the worker's build. A target added beside it prints what the shim's recipes would see.
+      - name: The Makefile clears an inherited RUSTFLAGS
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          printf 'cadence-env:\n\t@env | grep -E "^(CARGO_ENCODED_)?RUSTFLAGS=" || echo none\n' > "$RUNNER_TEMP/env.mk"
+          seen=$(RUSTFLAGS='-C target-cpu=native' CARGO_ENCODED_RUSTFLAGS=x make -s -f Makefile -f "$RUNNER_TEMP/env.mk" cadence-env)
+          echo "the Makefile's recipes see: $seen"
+          [ "$seen" = none ] || { echo "::error::the Makefile passes an inherited RUSTFLAGS to Cargo"; exit 1; }
+
       - name: Smoke-test the binary
         shell: bash
         run: |
@@ -631,14 +642,26 @@ jobs:
             grep -qF "The latest stable release is $version." install.txt \
               || { echo "::error::the run did not take the latest stable release, $version"; exit 1; }
           else
-            version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?per_page=30" \
-              | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' \
-              | head -n 1)
+            # The highest candidate by version, whatever order GitHub lists them in.
+            version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?per_page=100" \
+              | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' | awk -F '[.-]' '{print $1, $2, $3, $5, $0}' \
+              | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1 | awk '{print $5}')
             [ -n "$version" ] || { echo "::error::GitHub lists no release the run could have installed"; exit 1; }
             grep -qF "No stable release of Cadence exists yet. The newest pre-release is $version." install.txt \
               || { echo "::error::the run did not name the newest pre-release, $version"; exit 1; }
             grep -qF "Install pre-release $version? [Y/n]: y (--yes)" install.txt \
               || { echo "::error::the run did not offer the newest pre-release, $version"; exit 1; }
+          fi
+          grep -qF "Release files come from https://github.com/grounzero/cadence/releases/download." install.txt \
+            || { echo "::error::the run did not say where the release files come from"; exit 1; }
+          # The job's token signs gh in, so wherever the runner has gh the attestation is checked.
+          if command -v gh > /dev/null; then
+            grep -qF "Its build attestation verifies: GitHub's release workflow built it at the tag $version." install.txt \
+              || { echo "::error::the run did not verify the binary's build attestation"; exit 1; }
+          else
+            grep -qF "Its build attestation was not verified: gh, GitHub's command line tool, is not installed." install.txt \
+              || { echo "::error::the run did not say the attestation was not verified"; exit 1; }
           fi
           git fetch --quiet --depth 1 origin "+refs/tags/$version:refs/tags/$version"
           want=$(git show "$version:bench.txt" | tr -d '[:space:]')
@@ -696,9 +719,11 @@ jobs:
             || { cat "$tmp/server.log"; echo "::error::the release folder is not served"; exit 1; }
 
           rc=0
-          CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --version "$RELEASE_VERSION" \
+          CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --test-urls --version "$RELEASE_VERSION" \
             --dir "$tmp/from-binary" 2>&1 | tee good.txt || rc=$?
           [ "$rc" -eq 0 ] || { echo "::error::install.sh exited $rc on a release whose binary checks"; exit 1; }
+          grep -qF "Release files come from $url/good." good.txt \
+            || { echo "::error::install.sh did not say where the release files come from"; exit 1; }
           grep -qF "Release $RELEASE_VERSION has a binary for this system: $RELEASE_FILE." good.txt \
             || { echo "::error::install.sh did not find $RELEASE_FILE"; exit 1; }
           grep -qF "Its SHA-256 matches the release's SHA256SUMS." good.txt \
@@ -715,7 +740,7 @@ jobs:
           [ "$asked" -eq 2 ] || { grep -F '(--yes)' good.txt; echo "::error::install.sh asked $asked questions, not 2"; exit 1; }
 
           rc=0
-          CADENCE_RELEASES_URL="$url/corrupt" bash install.sh --yes --version "$RELEASE_VERSION" \
+          CADENCE_RELEASES_URL="$url/corrupt" bash install.sh --yes --test-urls --version "$RELEASE_VERSION" \
             --prefix "$tmp/from-source" 2>&1 | tee corrupt.txt || rc=$?
           [ "$rc" -eq 0 ] || { echo "::error::install.sh exited $rc and did not fall back to the build"; exit 1; }
           grep -qF "$RELEASE_FILE's SHA-256 is" corrupt.txt \
@@ -726,6 +751,9 @@ jobs:
           fi
           grep -qF '== Building from source instead' corrupt.txt \
             || { echo "::error::install.sh did not fall back to the build"; exit 1; }
+          commit=$(git rev-parse "$RELEASE_VERSION^{commit}")
+          grep -qF "The tag $RELEASE_VERSION is commit $commit, the one the release names." corrupt.txt \
+            || { echo "::error::install.sh did not check the tag against the commit the release names"; exit 1; }
 
       - name: install.ps1 takes the release binary, and builds when it is corrupt
         if: matrix.script == 'install.ps1'
@@ -747,11 +775,12 @@ jobs:
             if (-not $up) { throw 'the release folder is not served' }
 
             $env:CADENCE_RELEASES_URL = "$url/good"
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version $env:RELEASE_VERSION `
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --test-urls --version $env:RELEASE_VERSION `
               --dir (Join-Path $env:RUNNER_TEMP 'from-binary') 2>&1 | Out-String
             $code = $LASTEXITCODE
             Write-Host $out
             if ($code -ne 0) { throw "install.ps1 exited $code on a release whose binary checks" }
+            if (-not $out.Contains("Release files come from $url/good.")) { throw 'install.ps1 did not say where the release files come from' }
             if (-not $out.Contains("Release $env:RELEASE_VERSION has a binary for this system: $env:RELEASE_FILE.")) { throw "install.ps1 did not find $env:RELEASE_FILE" }
             if (-not $out.Contains("Its SHA-256 matches the release's SHA256SUMS.")) { throw 'install.ps1 did not check the SHA-256' }
             if (-not $out.Contains('as bench.txt says')) { throw 'install.ps1 did not check the bench' }
@@ -764,7 +793,7 @@ jobs:
             if ($out.Contains('the AVX2 build runs here') -and -not $out.Contains('with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.')) { throw 'install.ps1 named the AVX2 build features differently from install.sh' }
 
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version $env:RELEASE_VERSION `
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --test-urls --version $env:RELEASE_VERSION `
               --prefix (Join-Path $env:RUNNER_TEMP 'from-source') 2>&1 | Out-String
             $code = $LASTEXITCODE
             Write-Host $out
@@ -772,6 +801,8 @@ jobs:
             if (-not $out.Contains("$env:RELEASE_FILE's SHA-256 is")) { throw 'install.ps1 did not say why the binary is not used' }
             if ($out.Contains('Its SHA-256 matches')) { throw 'install.ps1 passed a corrupt binary' }
             if (-not $out.Contains('== Building from source instead')) { throw 'install.ps1 did not fall back to the build' }
+            $commit = "$(git rev-parse "$($env:RELEASE_VERSION)^{commit}")".Trim()
+            if (-not $out.Contains("The tag $env:RELEASE_VERSION is commit $commit, the one the release names.")) { throw 'install.ps1 did not check the tag against the commit the release names' }
           } finally {
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
@@ -800,6 +831,535 @@ jobs:
             || { echo "::error::the build calls itself $id and not Cadence $RELEASE_VERSION"; exit 1; }
           printf 'The release binary installed as served; the build in place of the corrupt one, bench %s\n' "$got" \
             >> "$GITHUB_STEP_SUMMARY"
+
+      # What the refusals below are served: a binary whose checksum matches but whose attestation cannot,
+      # an API whose release names another commit, one listing candidates out of version order, a
+      # binary that never answers uci, 290 small tables, and a table list naming a path outside.
+      - name: Fixtures for the installers' refusals
+        run: |
+          tmp=$RUNNER_TEMP
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); py=python; fi
+          r=$tmp/releases
+          v=$RELEASE_VERSION
+          if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
+          mkdir -p "$r/tampered/$v" "$r/hang/$v" "$r/api-list" "$r/moved/releases/tags"
+          cp "$r/good/$v/$RELEASE_FILE" "$r/good/$v/bench.txt" "$r/tampered/$v/"
+          printf 'x' >> "$r/tampered/$v/$RELEASE_FILE"
+          (cd "$r/tampered/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
+          printf '[{"tag_name": "0.6.0-rc.3"}, {"tag_name": "0.6.0-rc.10"}, {"tag_name": "0.6.0-rc.9"}, {"tag_name": "0.5.23"}]\n' \
+            > "$r/api-list/releases"
+          printf '{"tag_name": "%s", "body": "Cadence %s, built from %s at the tag %s."}\n' \
+            "$v" "$v" 0000000000000000000000000000000000000000 "$v" > "$r/moved/releases/tags/$v"
+          cp "$r/good/$v/bench.txt" "$r/hang/$v/"
+          if [ "$RUNNER_OS" != Windows ]; then
+            # Benches with the release's count at once; asked anything else, it starts a child that
+            # holds the output open, names it, and never answers.
+            {
+              echo '#!/bin/sh'
+              echo "if [ \"\$1\" = bench ]; then echo '$(tr -d '[:space:]' < "$r/good/$v/bench.txt") nodes 1 nps'; exit 0; fi"
+              echo 'sleep 1000 &'
+              echo 'echo $! > "$HANG_CHILD"'
+              echo 'sleep 1000'
+            } > "$r/hang/$v/$RELEASE_FILE"
+            chmod 755 "$r/hang/$v/$RELEASE_FILE"
+            (cd "$r/hang/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
+          fi
+          cat > "$tmp/serve.py" <<'EOF'
+          import http.server
+          import sys
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def guess_type(self, path):
+                  # The API's answers are JSON, as GitHub serves them, whatever their names look like.
+                  if any(part in path.replace("\\", "/") for part in ("/api-list/", "/moved/")):
+                      return "application/json"
+                  return super().guess_type(path)
+          http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+          EOF
+          $py - "$r" <<'EOF'
+          import hashlib, itertools, os, sys
+          root = sys.argv[1]
+          sides = [""] + ["".join(c) for n in (1, 2, 3) for c in itertools.combinations_with_replacement("QRBNP", n)]
+          names = [f"K{w}vK{b}" for w in sides for b in sides if 1 <= len(w) + len(b) <= 3][:145]
+          lines = []
+          for name in names:
+              for ext, group in ((".rtbw", "3-4-5-wdl"), (".rtbz", "3-4-5-dtz")):
+                  data = f"{name}{ext}\n".encode()
+                  os.makedirs(os.path.join(root, "tables", group), exist_ok=True)
+                  open(os.path.join(root, "tables", group, name + ext), "wb").write(data)
+                  lines.append(f"{hashlib.sha256(data).hexdigest()}  {name}{ext}")
+          lines.append(f"{'0' * 64}  KQRvKQR.rtbw")
+          open(os.path.join(root, "tables", "sha256"), "w").write("\n".join(lines) + "\n")
+          bad = [line.replace(f"  {names[0]}.rtbw", "  ../K.rtbw") for line in lines]
+          os.makedirs(os.path.join(root, "badtables"), exist_ok=True)
+          open(os.path.join(root, "badtables", "sha256"), "w").write("\n".join(bad) + "\n")
+          print(f"{len(names) * 2} tables, and a list naming ../K.rtbw")
+          EOF
+
+      # Windows runs a native program only, so the binary that never answers is built here, with one
+      # that leaves a mark if it is ever run.
+      - name: Fixtures that must be Windows programs
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $r = Join-Path $env:RUNNER_TEMP 'releases'
+          $v = $env:RELEASE_VERSION
+          $hang = Join-Path $r "hang\$v"
+          $count = (Get-Content -Raw (Join-Path $hang 'bench.txt')).Trim()
+          $source = @"
+          using System;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Threading;
+          public static class Hang {
+              public static int Main(string[] args) {
+                  if (args.Length > 0 && args[0] == "bench") { Console.WriteLine("$count nodes 1 nps"); return 0; }
+                  var start = new ProcessStartInfo("ping.exe", "-n 1000 127.0.0.1");
+                  start.UseShellExecute = false;
+                  var child = Process.Start(start);
+                  string named = Environment.GetEnvironmentVariable("HANG_CHILD");
+                  if (named != null) { File.WriteAllText(named, child.Id.ToString()); }
+                  Thread.Sleep(Timeout.Infinite);
+                  return 0;
+              }
+          }
+          "@
+          Add-Type -TypeDefinition $source -OutputAssembly (Join-Path $hang $env:RELEASE_FILE) -OutputType ConsoleApplication -IgnoreWarnings
+          $lines = foreach ($name in @($env:RELEASE_FILE, 'bench.txt')) {
+            '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 (Join-Path $hang $name)).Hash.ToLower(), $name
+          }
+          Set-Content -Path (Join-Path $hang 'SHA256SUMS') -Value $lines -Encoding ascii
+          Get-Content (Join-Path $hang 'SHA256SUMS')
+          $mark = (Join-Path $env:RUNNER_TEMP 'ran.txt').Replace('\', '\\')
+          $marker = "public static class Mark { public static int Main() { System.IO.File.WriteAllText(`"$mark`", `"ran`"); return 0; } }"
+          Add-Type -TypeDefinition $marker -OutputAssembly (Join-Path $env:RUNNER_TEMP 'marker.exe') -OutputType ConsoleApplication -IgnoreWarnings
+
+      # Each refusal read from what the script said: a test server named without --test-urls, an
+      # attestation that fails, a tag that is not the commit its release names, a binary that never
+      # answers, and a table name that would leave the folder. The newest candidate is the highest.
+      - name: install.sh refuses what it must
+        if: matrix.script == 'install.sh'
+        run: |
+          tmp=$RUNNER_TEMP
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); py=python; fi
+          (cd "$tmp/releases" && exec $py "$tmp/serve.py" 8712) > "$tmp/serve.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2> /dev/null || true' EXIT
+          url=http://127.0.0.1:8712
+          for i in $(seq 30); do curl -fs -o /dev/null "$url/good/$RELEASE_VERSION/SHA256SUMS" && break; sleep 1; done
+          v=$RELEASE_VERSION
+          bad() { echo "::error::$*"; exit 1; }
+          said() { grep -qF -- "$2" "$1" || { cat "$1"; bad "$3"; }; }
+
+          rc=0
+          CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --version "$v" --dir "$tmp/plain" > plain.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat plain.txt; bad "install.sh took release files over plain HTTP without --test-urls"; }
+          said plain.txt "CADENCE_RELEASES_URL is $url/good, which is not HTTPS on github.com" "the refusal of the URL does not say why"
+          [ ! -e "$tmp/plain" ] || bad "install.sh installed from a server it refused"
+          rc=0
+          CADENCE_API_URL="$url/api-list/releases" bash install.sh --yes --version "$v" --dir "$tmp/plain" > api.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || bad "install.sh took CADENCE_API_URL without --test-urls"
+          said api.txt "CADENCE_API_URL is set, which only a test may do, with --test-urls" "the refusal of the API does not say why"
+
+          # The list puts rc.3 first and rc.10 after rc.9; nothing is served for rc.10, so the run then fails.
+          CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/api-list/releases" bash install.sh --yes --test-urls \
+            --dir "$tmp/newest" > newest.txt 2>&1 || true
+          said newest.txt "The newest pre-release is 0.6.0-rc.10." "install.sh did not take the highest candidate"
+
+          if command -v gh > /dev/null; then
+            rc=0
+            CADENCE_RELEASES_URL="$url/tampered" CADENCE_API_URL="$url/moved/releases" bash install.sh --yes --test-urls \
+              --version "$v" --dir "$tmp/tampered" > tampered.txt 2>&1 || rc=$?
+            cat tampered.txt
+            [ "$rc" -ne 0 ] || bad "install.sh installed a binary whose attestation fails"
+            said tampered.txt "Its SHA-256 matches the release's SHA256SUMS." "the tampered binary's checksum was not the one listed"
+            said tampered.txt "$RELEASE_FILE's build attestation does not verify (" "install.sh did not refuse the attestation"
+          else
+            echo "::notice::no gh here, so the moved tag is reached through a corrupt binary instead"
+            rc=0
+            CADENCE_RELEASES_URL="$url/corrupt" CADENCE_API_URL="$url/moved/releases" bash install.sh --yes --test-urls \
+              --version "$v" --dir "$tmp/tampered" > tampered.txt 2>&1 || rc=$?
+            cat tampered.txt
+            [ "$rc" -ne 0 ] || bad "install.sh built a tag that is not the commit its release names"
+          fi
+          commit=$(git rev-parse "$v^{commit}")
+          said tampered.txt "the tag $v is commit $commit, and the release names 0000000000000000000000000000000000000000, so it is not built" \
+            "install.sh did not refuse a tag that is not the commit its release names"
+          [ ! -e "$tmp/tampered/cadence" ] && [ ! -e "$tmp/tampered/cadence.exe" ] || bad "a binary was installed"
+
+          # gh signed out, by a configuration folder of its own and no token.
+          nogh=$tmp/no-gh
+          [ "$RUNNER_OS" != Windows ] || nogh=$(cygpath -w "$tmp/no-gh")
+          rc=0
+          env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" CADENCE_RELEASES_URL="$url/good" bash install.sh --yes \
+            --test-urls --version "$v" --dir "$tmp/signed-out" > signed-out.txt 2>&1 || rc=$?
+          [ "$rc" -eq 0 ] || { cat signed-out.txt; bad "install.sh exited $rc with gh signed out"; }
+          if command -v gh > /dev/null; then
+            said signed-out.txt "Its build attestation was not verified: gh is installed but not signed in (gh auth login)." \
+              "install.sh did not say the attestation was not verified"
+          fi
+          said signed-out.txt "Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed." \
+            "install.sh did not repeat at the end that the attestation was not verified"
+
+          rc=0
+          start=$(date +%s)
+          env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" HANG_CHILD="$tmp/hang-child" CADENCE_RELEASES_URL="$url/hang" \
+            CADENCE_API_URL="$url/moved/releases" bash install.sh --yes --test-urls --version "$v" --dir "$tmp/hang" \
+            > hang.txt 2>&1 || rc=$?
+          echo "the run took $(( $(date +%s) - start )) s"
+          [ "$rc" -ne 0 ] || { cat hang.txt; bad "install.sh installed a binary that never answers"; }
+          said hang.txt "It did not answer uci within 30 seconds, so it was stopped, so it is not used." \
+            "install.sh did not stop the binary at its deadline"
+          child=$(tr -d '\r' < "$tmp/hang-child")
+          if [ "$RUNNER_OS" = Windows ]; then
+            if tasklist //FI "PID eq $child" | grep -q ping; then bad "the hanging binary's child $child outlived it"; fi
+          else
+            if kill -0 "$child" 2> /dev/null; then kill "$child"; bad "the hanging binary's child $child outlived it"; fi
+          fi
+
+          rc=0
+          CADENCE_RELEASES_URL="$url/good" CADENCE_TABLES_URL="$url/badtables" bash install.sh --yes --test-urls --tables \
+            --version "$v" --dir "$tmp/bad-tables" > bad-tables.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat bad-tables.txt; bad "install.sh took a table list naming a path outside its folder"; }
+          said bad-tables.txt "the published checksums name '../K.rtbw', which is not a table's file name, so nothing was downloaded" \
+            "install.sh did not refuse the table name"
+          echo "every refusal held"
+
+      - name: install.ps1 refuses what it must
+        if: matrix.script == 'install.ps1'
+        shell: powershell
+        run: |
+          $releases = Join-Path $env:RUNNER_TEMP 'releases'
+          $server = Start-Process -FilePath python -ArgumentList (Join-Path $env:RUNNER_TEMP 'serve.py'), '8712' `
+            -WorkingDirectory $releases -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'serve.out') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'serve.log')
+          function Install([string[]]$Arguments) {
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 @Arguments 2>&1 | Out-String
+            return @{ Code = $LASTEXITCODE; Out = $out }
+          }
+          function Said($Run, [string]$Text, [string]$Why) {
+            if (-not $Run.Out.Contains($Text)) { Write-Host $Run.Out; throw $Why }
+          }
+          try {
+            $url = 'http://127.0.0.1:8712'
+            $v = $env:RELEASE_VERSION
+            $up = $false
+            for ($n = 0; $n -lt 30 -and -not $up; $n++) {
+              try { Invoke-WebRequest -UseBasicParsing -Uri "$url/good/$v/SHA256SUMS" -ErrorAction Stop | Out-Null; $up = $true } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $up) { throw 'the release folder is not served' }
+            $tmp = $env:RUNNER_TEMP
+
+            $env:CADENCE_RELEASES_URL = "$url/good"
+            $run = Install @('--yes', '--version', $v, '--dir', (Join-Path $tmp 'plain'))
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 took release files over plain HTTP without --test-urls' }
+            Said $run "CADENCE_RELEASES_URL is $url/good, which is not HTTPS on github.com" 'the refusal of the URL does not say why'
+            if (Test-Path (Join-Path $tmp 'plain')) { throw 'install.ps1 installed from a server it refused' }
+            Remove-Item Env:CADENCE_RELEASES_URL
+            $env:CADENCE_API_URL = "$url/api-list/releases"
+            $run = Install @('--yes', '--version', $v, '--dir', (Join-Path $tmp 'plain'))
+            if ($run.Code -eq 0) { throw 'install.ps1 took CADENCE_API_URL without --test-urls' }
+            Said $run 'CADENCE_API_URL is set, which only a test may do, with --test-urls' 'the refusal of the API does not say why'
+
+            # The list puts rc.3 first and rc.10 after rc.9; nothing is served for rc.10, so the run then fails.
+            $env:CADENCE_RELEASES_URL = "$url/good"
+            $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'newest'))
+            Said $run 'The newest pre-release is 0.6.0-rc.10.' 'install.ps1 did not take the highest candidate'
+
+            $env:CADENCE_API_URL = "$url/moved/releases"
+            $gh = [bool](Get-Command gh -ErrorAction SilentlyContinue)
+            if ($gh) {
+              $env:CADENCE_RELEASES_URL = "$url/tampered"
+            } else {
+              Write-Host '::notice::no gh here, so the moved tag is reached through a corrupt binary instead'
+              $env:CADENCE_RELEASES_URL = "$url/corrupt"
+            }
+            $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'tampered'))
+            Write-Host $run.Out
+            if ($run.Code -eq 0) { throw 'install.ps1 installed a binary it should have refused' }
+            if ($gh) {
+              Said $run "Its SHA-256 matches the release's SHA256SUMS." "the tampered binary's checksum was not the one listed"
+              Said $run "$env:RELEASE_FILE's build attestation does not verify (" 'install.ps1 did not refuse the attestation'
+            }
+            $commit = "$(git rev-parse "$v^{commit}")".Trim()
+            Said $run "the tag $v is commit $commit, and the release names 0000000000000000000000000000000000000000, so it is not built" 'install.ps1 did not refuse a tag that is not the commit its release names'
+            if (Test-Path (Join-Path $tmp 'tampered\cadence.exe')) { throw 'a binary was installed' }
+
+            # gh signed out, by a configuration folder of its own and no token.
+            $token = $env:GITHUB_TOKEN
+            Remove-Item Env:GITHUB_TOKEN, Env:GH_TOKEN -ErrorAction SilentlyContinue
+            $env:GH_CONFIG_DIR = Join-Path $tmp 'no-gh'
+            try {
+              Remove-Item Env:CADENCE_API_URL
+              $env:CADENCE_RELEASES_URL = "$url/good"
+              $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'signed-out'))
+              if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) with gh signed out" }
+              if ($gh) { Said $run 'Its build attestation was not verified: gh is installed but not signed in (gh auth login).' 'install.ps1 did not say the attestation was not verified' }
+              Said $run 'Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed.' 'install.ps1 did not repeat at the end that the attestation was not verified'
+
+              $env:CADENCE_API_URL = "$url/moved/releases"
+              $env:CADENCE_RELEASES_URL = "$url/hang"
+              $env:HANG_CHILD = Join-Path $tmp 'hang-child.txt'
+              $clock = [System.Diagnostics.Stopwatch]::StartNew()
+              $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'hang'))
+              Write-Host "the run took $([int]$clock.Elapsed.TotalSeconds) s"
+              if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 installed a binary that never answers' }
+              Said $run 'It did not answer uci within 30 seconds, so it was stopped, so it is not used.' 'install.ps1 did not stop the binary at its deadline'
+              $child = [int](Get-Content -Raw $env:HANG_CHILD).Trim()
+              if (Get-Process -Id $child -ErrorAction SilentlyContinue) { Stop-Process -Id $child -Force; throw "the hanging binary's child $child outlived it" }
+            } finally {
+              $env:GITHUB_TOKEN = $token
+              Remove-Item Env:GH_CONFIG_DIR, Env:HANG_CHILD -ErrorAction SilentlyContinue
+            }
+
+            Remove-Item Env:CADENCE_API_URL
+            $env:CADENCE_RELEASES_URL = "$url/good"
+            $env:CADENCE_TABLES_URL = "$url/badtables"
+            $run = Install @('--yes', '--test-urls', '--tables', '--version', $v, '--dir', (Join-Path $tmp 'bad-tables'))
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 took a table list naming a path outside its folder' }
+            Said $run "the published checksums name '../K.rtbw', which is not a table's file name, so nothing was downloaded" 'install.ps1 did not refuse the table name'
+            Write-Host 'every refusal held'
+          } finally {
+            Remove-Item Env:CADENCE_RELEASES_URL, Env:CADENCE_API_URL, Env:CADENCE_TABLES_URL -ErrorAction SilentlyContinue
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      # A home of its own for each run, so the comparison reads only what these runs installed: an
+      # older release, then the upgrade with tables, a second run that must change nothing, both
+      # downgrades declined, a file the script did not install, and the uninstall.
+      - name: install.sh compares versions, and a second run changes nothing
+        if: matrix.script == 'install.sh'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tmp=$RUNNER_TEMP
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); py=python; fi
+          (cd "$tmp/releases" && exec $py "$tmp/serve.py" 8713) > "$tmp/serve-2.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2> /dev/null || true' EXIT
+          url=http://127.0.0.1:8713
+          for i in $(seq 30); do curl -fs -o /dev/null "$url/tables/sha256" && break; sleep 1; done
+          v=$RELEASE_VERSION
+          bad() { echo "::error::$*"; exit 1; }
+          said() { grep -qF -- "$2" "$1" || { cat "$1"; bad "$3"; }; }
+          # The published release just below this one, from GitHub's list.
+          old=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/grounzero/cadence/releases?per_page=100" \
+            | $py -c 'import json, sys; print("\n".join(r["tag_name"] for r in json.load(sys.stdin) if not r["draft"]))' \
+            | tr -d '\r' | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?' \
+            | awk -F '[.-]' '{rc = ($4 == "rc"); print $1, $2, $3, (rc ? 0 : 1), (rc ? $5 : 0), $0}' \
+            | sort -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | awk -v v="$v" '$6 == v {exit} {o = $6} END {print o}')
+          [ -n "$old" ] || bad "GitHub lists no published release older than $v"
+          echo "older: $old; this: $v"
+
+          if [ "$RUNNER_OS" = Windows ]; then
+            export LOCALAPPDATA=$(cygpath -w "$tmp/home-lad")
+            app=$tmp/home-lad/Cadence
+            bin=$app/cadence.exe state=$app/install-state tables=$app/syzygy/3-4-5
+          else
+            export HOME=$tmp/home
+            bin=$HOME/.local/bin/cadence state=$HOME/.local/share/cadence/install-state
+            tables=$HOME/.local/share/cadence/syzygy/3-4-5
+          fi
+          mkdir -p "$tmp/home" "$tmp/home-lad"
+          snapshot() {
+            $py - "$bin" "$state" "$tables" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile" <<'EOF'
+          import hashlib, os, sys
+          for root in sys.argv[1:]:
+              files = [root] if os.path.isfile(root) else sorted(
+                  os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs)
+              if not files:
+                  print("absent", root)
+              for path in files:
+                  st = os.stat(path)
+                  print(path, st.st_size, st.st_mtime_ns, hashlib.sha256(open(path, "rb").read()).hexdigest())
+          EOF
+            [ "$RUNNER_OS" != Windows ] || powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')"
+          }
+          marks() {
+            if [ "$RUNNER_OS" = Windows ]; then
+              powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" | tr -d '\r' | tr ';' '\n' \
+                | grep -cixF "$(cygpath -w "$tmp/home-lad/Cadence")" || true
+            else
+              cat "$HOME"/.bashrc "$HOME"/.bash_profile "$HOME"/.zshrc "$HOME"/.profile 2> /dev/null \
+                | grep -cxF '# Added by the Cadence installer' || true
+            fi
+          }
+
+          bash install.sh --yes --version "$old" > old.txt 2>&1 || { cat old.txt; bad "install.sh could not install $old"; }
+          said old.txt "Installed " "install.sh did not install $old"
+          [ "$(marks)" = 1 ] || bad "the first install did not add one PATH entry"
+
+          rc=0
+          CADENCE_TABLES_URL="$url/tables" bash install.sh --yes --test-urls --tables --version "$v" > up.txt 2>&1 || rc=$?
+          [ "$rc" -eq 0 ] || { cat up.txt; bad "install.sh exited $rc on the upgrade"; }
+          said up.txt "Cadence $old is installed at" "install.sh did not name the installed version"
+          said up.txt ", and $v is available." "install.sh did not name the version available"
+          said up.txt "Upgrade it to $v? [Y/n]: y (--yes)" "the upgrade did not default to yes"
+          said up.txt "290 downloaded now, 0 already there." "the tables were not downloaded"
+          [ "$(marks)" = 1 ] || bad "the upgrade added the PATH entry again"
+          id=$(printf 'uci\nquit\n' | "$bin" | tr -d '\r' | sed -n 's/^id name //p')
+          [ "$id" = "Cadence $v" ] || bad "after the upgrade the binary calls itself $id"
+
+          snapshot > before.txt
+          rc=0
+          CADENCE_TABLES_URL="$url/tables" bash install.sh --yes --test-urls --tables --version "$v" > again.txt 2>&1 || rc=$?
+          snapshot > after.txt
+          [ "$rc" -eq 0 ] || { cat again.txt; bad "install.sh exited $rc on the second run"; }
+          said again.txt "Cadence $v is already installed at" "the second run did not find the version installed"
+          said again.txt ", so it is up to date." "the second run did not say it is up to date"
+          said again.txt "0 downloaded now, 290 already there." "the second run downloaded tables again"
+          diff before.txt after.txt || bad "the second run changed what the first installed"
+          [ "$(marks)" = 1 ] || bad "the second run added the PATH entry again"
+
+          for mode in "" --update; do
+            rc=0
+            bash install.sh --yes $mode --version "$old" > down.txt 2>&1 || rc=$?
+            [ "$rc" -ne 0 ] || { cat down.txt; bad "install.sh ${mode:-without --update} downgraded by default"; }
+            said down.txt "It is newer than $old, so installing $old would be a downgrade." "the downgrade was not named"
+            said down.txt "Downgrade it to $old? [y/N]: n (--yes)" "the downgrade did not default to no"
+            snapshot > down-after.txt
+            diff after.txt down-after.txt || bad "a declined downgrade changed the install"
+          done
+
+          # A file the script has no record of, which leaves a mark if it is run.
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "$tmp/marker.exe" "$bin"
+          else
+            printf '#!/bin/sh\ntouch "%s"\n' "$tmp/ran.txt" > "$bin"
+            chmod 755 "$bin"
+          fi
+          rc=0
+          bash install.sh --yes --update --version "$v" > unknown.txt 2>&1 || rc=$?
+          [ "$rc" -eq 0 ] || { cat unknown.txt; bad "install.sh exited $rc replacing a file it did not install"; }
+          said unknown.txt "whose version this script has no record of." "install.sh did not say the file there is unknown to it"
+          said unknown.txt "Replace it? [Y/n]: y (--yes)" "the replacement under --update did not default to yes"
+          [ ! -e "$tmp/ran.txt" ] || bad "install.sh ran the file at the install path"
+
+          rc=0
+          bash install.sh --yes --uninstall > uninstall.txt 2>&1 || rc=$?
+          [ "$rc" -eq 0 ] || { cat uninstall.txt; bad "the uninstall exited $rc"; }
+          [ ! -e "$bin" ] || bad "the uninstall left $bin"
+          [ ! -e "$tables" ] || bad "the uninstall left the tables"
+          [ ! -e "$state" ] || bad "the uninstall left the install state"
+          [ "$(marks)" = 0 ] || bad "the uninstall left the PATH entry"
+          bash install.sh --yes --uninstall > uninstall-again.txt 2>&1 || { cat uninstall-again.txt; bad "a second uninstall failed"; }
+          said uninstall-again.txt "There is no Cadence at" "a second uninstall did not find nothing to remove"
+          echo "upgrade, second run, both downgrades, the unknown file and the uninstall held"
+
+      - name: install.ps1 compares versions, and a second run changes nothing
+        if: matrix.script == 'install.ps1'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $releases = Join-Path $env:RUNNER_TEMP 'releases'
+          $server = Start-Process -FilePath python -ArgumentList (Join-Path $env:RUNNER_TEMP 'serve.py'), '8713' `
+            -WorkingDirectory $releases -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'serve-2.out') -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'serve-2.log')
+          function Install([string[]]$Arguments) {
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 @Arguments 2>&1 | Out-String
+            return @{ Code = $LASTEXITCODE; Out = $out }
+          }
+          function Said($Run, [string]$Text, [string]$Why) {
+            if (-not $Run.Out.Contains($Text)) { Write-Host $Run.Out; throw $Why }
+          }
+          $saved = $env:LOCALAPPDATA
+          try {
+            $url = 'http://127.0.0.1:8713'
+            $v = $env:RELEASE_VERSION
+            $up = $false
+            for ($n = 0; $n -lt 30 -and -not $up; $n++) {
+              try { Invoke-WebRequest -UseBasicParsing -Uri "$url/tables/sha256" -ErrorAction Stop | Out-Null; $up = $true } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $up) { throw 'the tables are not served' }
+            # The published release just below this one, from GitHub's list.
+            $listed = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/grounzero/cadence/releases?per_page=100' `
+              -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+            $key = { param($t) if ($t -match '^(\d+)\.(\d+)\.(\d+)(-rc\.(\d+))?$') { '{0:D6}{1:D6}{2:D6}{3}{4:D6}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $(if ($Matches[4]) { 0 } else { 1 }), $(if ($Matches[5]) { [int]$Matches[5] } else { 0 }) } }
+            $older = @($listed | Where-Object { -not $_.draft -and $_.tag_name -match '^\d+\.\d+\.\d+(-rc\.\d+)?$' -and (& $key $_.tag_name) -lt (& $key $v) } |
+              Sort-Object { & $key $_.tag_name })
+            if (-not $older) { throw "GitHub lists no published release older than $v" }
+            $old = $older[-1].tag_name
+            Write-Host "older: $old; this: $v"
+
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'home-ps'
+            New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+            $app = Join-Path $env:LOCALAPPDATA 'Cadence'
+            $bin = Join-Path $app 'cadence.exe'
+            $state = Join-Path $app 'install-state'
+            $tables = Join-Path $app 'syzygy\3-4-5'
+            function Snapshot {
+              $lines = foreach ($path in @($bin, $state, $tables)) {
+                if (Test-Path $path) {
+                  Get-ChildItem -Recurse -File -LiteralPath $path | Sort-Object FullName | ForEach-Object {
+                    '{0} {1} {2} {3}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks, (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+                  }
+                } else { "absent $path" }
+              }
+              $lines += [Environment]::GetEnvironmentVariable('Path', 'User')
+              return ($lines -join "`n")
+            }
+            function Marks { @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -eq $app }).Count }
+
+            $run = Install @('--yes', '--version', $old)
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 could not install $old" }
+            if ((Marks) -ne 1) { throw 'the first install did not add one PATH entry' }
+
+            $env:CADENCE_TABLES_URL = "$url/tables"
+            $run = Install @('--yes', '--test-urls', '--tables', '--version', $v)
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) on the upgrade" }
+            Said $run "Cadence $old is installed at" 'install.ps1 did not name the installed version'
+            Said $run ", and $v is available." 'install.ps1 did not name the version available'
+            Said $run "Upgrade it to $($v)? [Y/n]: y (--yes)" 'the upgrade did not default to yes'
+            Said $run '290 downloaded now, 0 already there.' 'the tables were not downloaded'
+            if ((Marks) -ne 1) { throw 'the upgrade added the PATH entry again' }
+
+            $before = Snapshot
+            $run = Install @('--yes', '--test-urls', '--tables', '--version', $v)
+            $after = Snapshot
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) on the second run" }
+            Said $run "Cadence $v is already installed at" 'the second run did not find the version installed'
+            Said $run ', so it is up to date.' 'the second run did not say it is up to date'
+            Said $run '0 downloaded now, 290 already there.' 'the second run downloaded tables again'
+            if ($before -ne $after) { Write-Host $before; Write-Host $after; throw 'the second run changed what the first installed' }
+            Remove-Item Env:CADENCE_TABLES_URL
+
+            foreach ($mode in @('', '--update')) {
+              $list = @('--yes')
+              if ($mode) { $list += $mode }
+              $run = Install ($list + @('--version', $old))
+              if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 downgraded by default' }
+              Said $run "It is newer than $old, so installing $old would be a downgrade." 'the downgrade was not named'
+              Said $run "Downgrade it to $($old)? [y/N]: n (--yes)" 'the downgrade did not default to no'
+              if ((Snapshot) -ne $after) { throw 'a declined downgrade changed the install' }
+            }
+
+            # A file the script has no record of, which leaves a mark if it is run.
+            Copy-Item -Force (Join-Path $env:RUNNER_TEMP 'marker.exe') $bin
+            $run = Install @('--yes', '--update', '--version', $v)
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) replacing a file it did not install" }
+            Said $run 'whose version this script has no record of.' 'install.ps1 did not say the file there is unknown to it'
+            Said $run 'Replace it? [Y/n]: y (--yes)' 'the replacement under --update did not default to yes'
+            if (Test-Path (Join-Path $env:RUNNER_TEMP 'ran.txt')) { throw 'install.ps1 ran the file at the install path' }
+
+            $run = Install @('--yes', '--uninstall')
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "the uninstall exited $($run.Code)" }
+            foreach ($path in @($bin, $tables, $state)) { if (Test-Path $path) { throw "the uninstall left $path" } }
+            if ((Marks) -ne 0) { throw 'the uninstall left the PATH entry' }
+            $run = Install @('--yes', '--uninstall')
+            Said $run 'There is no Cadence at' 'a second uninstall did not find nothing to remove'
+            Write-Host 'upgrade, second run, both downgrades, the unknown file and the uninstall held'
+          } finally {
+            $env:LOCALAPPDATA = $saved
+            Remove-Item Env:CADENCE_TABLES_URL -ErrorAction SilentlyContinue
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: The worker setup's tests
+        if: matrix.asset == 'linux-x86-64-avx2'
+        run: python3 -m unittest discover -s openbench/tests -v
 
       - name: The logs, when an install failed
         if: failure()
