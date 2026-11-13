@@ -709,7 +709,7 @@ jobs:
           echo "installed $bin: bench $got against $want, id name $id"
           [ "$got" = "$want" ] || { echo "::error::the installed bench is $got and $version's bench.txt says $want"; exit 1; }
           [ "$id" = "Cadence $version" ] || { echo "::error::the installed binary calls itself $id and not Cadence $version"; exit 1; }
-          printf '### %s\nCadence %s installed, bench %s\n' "${{ env.LEG }}" "$version" "$got" >> "$GITHUB_STEP_SUMMARY"
+          printf '### %s\nCadence %s installed, bench %s\n' "$LEG" "$version" "$got" >> "$GITHUB_STEP_SUMMARY"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           echo "INSTALLED=$bin" >> "$GITHUB_ENV"
 
@@ -721,7 +721,7 @@ jobs:
           exe=""
           if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); exe=.exe; fi
           # The file is named for the build the installer chose, which it then looks for.
-          asset=${{ env.ASSET }}
+          asset=$ASSET
           case "$asset" in
             *-avx2) if grep -qF 'the generic build runs here' install.txt; then asset=${asset%-avx2}-generic; fi ;;
           esac
@@ -1757,7 +1757,7 @@ jobs:
           [ "$rc" -ne 0 ] || { cat source.txt; bad "install.sh built a tag that is not the commit its release names"; }
           said source.txt "and --source asks for it built from source, so it is replaced." "install.sh took --source at the same version as up to date"
           said source.txt "and the release names 0000000000000000000000000000000000000000, so it is not built" "the moved tag did not stop the build"
-          case "${{ env.ASSET }}" in
+          case "$ASSET" in
             *-avx2)
               if grep -qF 'the AVX2 build runs here' up.txt; then
                 rc=0
