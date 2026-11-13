@@ -1124,6 +1124,8 @@ jobs:
             Remove-Item Env:CADENCE_RELEASES_URL, Env:CADENCE_API_URL, Env:CADENCE_TABLES_URL -ErrorAction SilentlyContinue
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+          # The step's shell exits with the last native exit code, which a refused install left at 1.
+          exit 0
 
       # A home of its own for each run, so the comparison reads only what these runs installed: an
       # older release, then the upgrade with tables, a second run that must change nothing, both
@@ -1356,6 +1358,8 @@ jobs:
             Remove-Item Env:CADENCE_TABLES_URL -ErrorAction SilentlyContinue
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
+          # The step's shell exits with the last native exit code, which a refused install left at 1.
+          exit 0
 
       - name: The worker setup's tests
         if: matrix.asset == 'linux-x86-64-avx2'
