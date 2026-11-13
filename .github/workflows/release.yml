@@ -327,6 +327,20 @@ jobs:
             || { echo "::error::no push run of CI has passed at $COMMIT, so nothing is drafted from it"; exit 1; }
           echo "$COMMIT is on main and CI passed there"
 
+      # A published version is never attested again, so a re-run cannot make an attestation for a
+      # rebuild of it; drafting checks once more, for a release published while this ran.
+      - name: The version is not published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          published=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$VERSION\" and .draft == false) | .id")
+          [ -z "$published" ] || { echo "::error::$VERSION is published, so nothing is attested or drafted for it again"; exit 1; }
+          echo "$VERSION has no published release"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.ref }}

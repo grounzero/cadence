@@ -45,7 +45,7 @@ the tablebases and ponders.
   macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
   install scripts and a provenance attestation for each binary, made by the
   release workflow run at the release's tag; a manual run drafts and attests
-  a release only when run at its tag.
+  a release only when run at its tag, and never once it is published.
 - The test log: `docs/testing/sprt-log.csv` gives every SPRT, passed or
   failed, with its games and result.
 
