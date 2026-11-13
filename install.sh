@@ -44,6 +44,7 @@ WHY=""
 BUILT=""
 ATTESTED=""
 FROM=""
+MADE=""
 LIMITED=0
 UP_TO_DATE=0
 REPLACE=0
@@ -163,6 +164,12 @@ else
 fi
 STATE="$DATA_DIR/install-state"
 WORK="$DATA_DIR/build.$$"
+# --dir as one absolute spelling without trailing slashes, so the state records one name for a folder.
+if [ -n "$PREFIX" ]; then
+    [ "$OS" != windows ] || PREFIX=$(cygpath -u "$PREFIX")
+    case "$PREFIX" in /*) ;; *) PREFIX="$PWD/$PREFIX" ;; esac
+    while [ "$PREFIX" != / ] && [ "${PREFIX%/}" != "$PREFIX" ]; do PREFIX=${PREFIX%/}; done
+fi
 
 # --- The log -----------------------------------------------------------------------------------
 
@@ -343,6 +350,12 @@ state_path() {
     local value
     value=$(state_get "$1")
     if [ "$OS" = windows ] && [ -n "$value" ]; then cygpath -u "$value"; else printf '%s' "$value"; fi
+}
+
+# Whether two paths are one file or folder, by the file itself where both exist, so a link, a
+# trailing slash or a second spelling of a folder is still that folder.
+same_file() {
+    [ "$1" -ef "$2" ] || same_path "$1" "$2"
 }
 
 # Windows names a file the same in any case.
@@ -1018,6 +1031,7 @@ repo_flags() {
 build() {
     step "Building Cadence $VERSION"
     local args="build --release --locked -p cadence-engine --bin cadence" files=".cargo/config.toml"
+    MADE=$BUILD
     case "$BUILD" in
         generic)
             if grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/x86-64-generic.toml" 2>/dev/null; then
@@ -1025,17 +1039,26 @@ build() {
                 files="$files .cargo/x86-64-generic.toml"
             else
                 say "Cadence $VERSION has no generic settings for $TRIPLE, so it is built for that system's baseline."
+                MADE=baseline
             fi
             ;;
         avx2)
-            grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/config.toml" \
-                || say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
+            if ! grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/config.toml"; then
+                say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
+                MADE=baseline
+            fi
             ;;
     esac
     # The repository's own flags, in the order Cargo would join them, given as CARGO_ENCODED_RUSTFLAGS,
     # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
     local flags encoded file
     flags="CARGO_TARGET_$(printf '%s' "$TRIPLE" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+    # A table for the target with no flags read from it is a file this script misreads, not one to build by.
+    for file in $files; do
+        if grep -q "^\[target\.$TRIPLE\]" "$SRC/$file" 2>/dev/null && [ -z "$(repo_flags "$SRC/$file")" ]; then
+            fail "$file has settings for $TRIPLE, but no rustflags could be read from them, so nothing is built"
+        fi
+    done
     encoded=$(for file in $files; do repo_flags "$SRC/$file"; done | awk '{printf "%s%s", (NR > 1 ? "\037" : ""), $0}')
     log "rustflags: $(printf '%s' "$encoded" | tr '\037' ' ')"
     (cd "$SRC" && run env -u RUSTFLAGS -u "$flags" CARGO_ENCODED_RUSTFLAGS="$encoded" cargo $args) || fail "the build failed"
@@ -1192,7 +1215,7 @@ installed_version() {
     INSTALLED=""
     HELD=""
     EARLIER=0
-    [ -f "$TARGET" ] && same_path "$(state_path binary)" "$TARGET" || return 0
+    [ -f "$TARGET" ] && same_file "$(state_path binary)" "$TARGET" || return 0
     sum=$(state_get sha256)
     if [ -z "$sum" ]; then
         EARLIER=1
@@ -1325,13 +1348,13 @@ install_binary() {
     { cp "$BUILT" "$TARGET.new" && chmod 755 "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"; } \
         || { rm -f "$TARGET.new"; fail "could not write $TARGET; if Cadence is running, close it and run this again"; }
     previous=$(state_path binary)
-    if [ -n "$previous" ] && [ -e "$previous" ] && ! same_path "$previous" "$TARGET"; then
+    if [ -n "$previous" ] && [ -e "$previous" ] && ! same_file "$previous" "$TARGET"; then
         retire_previous "$previous"
     fi
     state_set binary "$(shown "$TARGET")"
     state_set version "$VERSION"
     state_set sha256 "$(checksum "$TARGET")"
-    state_set build "$BUILD"
+    state_set build "${MADE:-$BUILD}"
     state_set from "$FROM"
     say "Installed $(shown "$TARGET")."
 }
@@ -1363,7 +1386,7 @@ EOF
 offer_path() {
     local dest default=y
     dest=$(dirname "$TARGET")
-    same_path "$dest" "$DEFAULT_PREFIX" || default=n
+    same_file "$dest" "$DEFAULT_PREFIX" || default=n
     case ":$PATH:" in
         *":$dest:"*)
             say "$(shown "$dest") is already on your PATH."
@@ -1441,10 +1464,20 @@ remove_path_windows() {
 # A copy an earlier run installed in another folder, offered for removal with the PATH entry this
 # script added for it, so the state names one install and the uninstall leaves nothing behind.
 retire_previous() {
-    local previous=$1 folder win
+    local previous=$1 folder win sum default=y
+    [ ! "$previous" -ef "$TARGET" ] || return 0
     folder=$(dirname "$previous")
+    sum=$(state_get sha256)
     say "An earlier run installed Cadence at $(shown "$previous")."
-    if ! ask "Remove that copy, and the PATH entry this script added for it?" y; then
+    # A copy that is no longer the file recorded there may be the user's own, so it is kept by default.
+    if [ -z "$sum" ]; then
+        say "No SHA-256 was recorded for it, so it may not be the file installed there."
+        default=n
+    elif [ "$(checksum "$previous")" != "$sum" ]; then
+        say "It has changed since it was installed: its SHA-256 is not the one recorded."
+        default=n
+    fi
+    if ! ask "Remove that copy, and the PATH entry this script added for it?" "$default"; then
         say "Kept it. This script now records only the new install, so its uninstall will not remove that copy."
         return 0
     fi
@@ -1456,7 +1489,7 @@ retire_previous() {
         state_unset path_line
     fi
     win=$(state_get path_windows)
-    if [ -n "$win" ] && same_path "$(cygpath -u "$win")" "$folder"; then
+    if [ -n "$win" ] && same_file "$(cygpath -u "$win")" "$folder"; then
         remove_path_windows "$win" now
         state_unset path_windows
     fi
@@ -1565,8 +1598,11 @@ afterwards() {
     say "  Arena: Engines, Install New Engine, choose the file, then UCI when asked."
     say "  Cute Chess: Tools, Settings, Engines, the + button, the file as the command, UCI as the protocol."
     say "  Banksia: add an engine in its engine manager and choose the file."
-    if [ "$OS" = windows ] && same_path "$(dirname "$TARGET")" "$DEFAULT_PREFIX"; then
+    if [ "$OS" = windows ] && same_file "$(dirname "$TARGET")" "$DEFAULT_PREFIX"; then
         say "AppData is hidden, so paste the path above into the GUI's file dialog, or type %LOCALAPPDATA%\\Cadence into its address bar."
+    fi
+    if [ "$OS" = macos ] && same_file "$(dirname "$TARGET")" "$DEFAULT_PREFIX"; then
+        say ".local is hidden in file dialogs; use Cmd+Shift+G and type ~/.local/bin, or Cmd+Shift+. to show hidden files."
     fi
     [ "$WSL" = 0 ] || say "This is a Linux build in WSL, for chess programs in WSL; a Windows one needs install.ps1."
     say ""

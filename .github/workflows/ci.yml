@@ -694,6 +694,10 @@ jobs:
             grep -qF "AppData is hidden, so paste the path above into the GUI's file dialog, or type %LOCALAPPDATA%\Cadence into its address bar." install.txt \
               || { echo "::error::the run did not say how to reach the hidden AppData folder"; exit 1; }
           fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            grep -qF ".local is hidden in file dialogs; use Cmd+Shift+G and type ~/.local/bin, or Cmd+Shift+. to show hidden files." install.txt \
+              || { echo "::error::the run did not say how to reach the hidden .local folder"; exit 1; }
+          fi
           # The job's token signs gh in, so wherever the runner has gh the attestation is checked.
           if command -v gh > /dev/null; then
             grep -qF "Its build attestation verifies: GitHub's release workflow built it at the tag $version." install.txt \
@@ -787,7 +791,7 @@ jobs:
           fi
           grep -qE 'to your PATH.*\[y/N\]: n \(--yes\)' good.txt \
             || { echo "::error::the PATH offer did not default to no under --dir"; exit 1; }
-          if grep -qF 'AppData is hidden' good.txt; then echo "::error::install.sh named AppData for a folder outside it"; exit 1; fi
+          if grep -qE 'AppData is hidden|\.local is hidden' good.txt; then echo "::error::install.sh named a hidden folder for one outside it"; exit 1; fi
           # The PATH and the tablebases are the only questions a checked binary's install asks.
           asked=$(grep -c '(--yes)$' good.txt)
           [ "$asked" -eq 2 ] || { grep -F '(--yes)' good.txt; echo "::error::install.sh asked $asked questions, not 2"; exit 1; }
@@ -1848,6 +1852,40 @@ jobs:
           moved --uninstall > moved-3.txt 2>&1 || { cat moved-3.txt; bad "the uninstall after the move failed"; }
           for copy in "$first" "$home/elsewhere/cadence$exe"; do [ ! -e "$copy" ] || bad "the uninstall left $copy"; done
 
+          # An earlier copy changed since it was installed may be the user's own, so it is kept by default.
+          moved --version "$v" > changed-1.txt 2>&1 || { cat changed-1.txt; bad "the first install failed"; }
+          printf 'changed by hand\n' > "$first"
+          moved --version "$v" --dir "$home/elsewhere" > changed-2.txt 2>&1 || { cat changed-2.txt; bad "the install beside a changed copy failed"; }
+          said changed-2.txt "It has changed since it was installed: its SHA-256 is not the one recorded." "the changed copy was not named as changed"
+          said changed-2.txt "Remove that copy, and the PATH entry this script added for it? [y/N]: n (--yes)" "the changed copy's removal did not default to no"
+          [ "$(cat "$first")" = 'changed by hand' ] || bad "the changed copy was removed or rewritten"
+
+          # The folder the state records, spelled with a trailing slash or reached through a link, is that
+          # folder: the install in it is found up to date and is never removed.
+          home=$tmp/home-spelled
+          mkdir -p "$home/real"
+          lad=$home
+          [ "$RUNNER_OS" != Windows ] || lad=$(cygpath -w "$home")
+          spelled() {
+            env HOME="$home" LOCALAPPDATA="$lad" CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --test-urls --version "$v" "$@"
+          }
+          spelled --dir "$home/real/" > spelled-0.txt 2>&1 || { cat spelled-0.txt; bad "the install with a trailing slash failed"; }
+          if [ "$RUNNER_OS" = Windows ]; then
+            st=$home/Cadence/install-state
+            grep -qxF "binary=$(cygpath -w "$home/real/cadence.exe")" "$st" || { cat "$st"; bad "the state did not record the folder without its trailing slash"; }
+            powershell.exe -NoProfile -Command "New-Item -ItemType Junction -Path '$(cygpath -w "$home/link")' -Target '$(cygpath -w "$home/real")' | Out-Null"
+          else
+            st=$home/.local/share/cadence/install-state
+            grep -qxF "binary=$home/real/cadence" "$st" || { cat "$st"; bad "the state did not record the folder without its trailing slash"; }
+            ln -s "$home/real" "$home/link"
+          fi
+          for dir in "$home/real" "$home/link" "$home/link/"; do
+            spelled --dir "$dir" > spelled.txt 2>&1 || { cat spelled.txt; bad "the run with --dir $dir failed"; }
+            said spelled.txt ", so it is up to date." "--dir $dir was not taken for the folder installed in"
+            if grep -qF 'An earlier run installed Cadence at' spelled.txt; then cat spelled.txt; bad "--dir $dir offered to remove the install in its own folder"; fi
+            [ -f "$home/real/cadence$exe" ] || bad "--dir $dir removed the install"
+          done
+
           # A tablebase download that stopped is offered again by a plain run, yes by default, and keeps
           # what it already has; once finished, a plain run does not offer it.
           home=$tmp/home-tables
@@ -2151,6 +2189,34 @@ jobs:
             $run = Install @('--yes', '--test-urls', '--uninstall')
             if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the uninstall after the move failed' }
             foreach ($copy in @((Join-Path $firstFolder 'cadence.exe'), (Join-Path $elsewhere 'cadence.exe'))) { if (Test-Path $copy) { throw "the uninstall left $copy" } }
+
+            # An earlier copy changed since it was installed may be the user's own, so it is kept by default.
+            $run = Install @('--yes', '--test-urls', '--version', $v)
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the first install failed' }
+            Set-Content -Encoding ascii -Path (Join-Path $firstFolder 'cadence.exe') -Value 'changed by hand'
+            $changed = Install @('--yes', '--test-urls', '--version', $v, '--dir', $elsewhere)
+            if ($changed.Code -ne 0) { Write-Host $changed.Out; throw 'the install beside a changed copy failed' }
+            Said $changed 'It has changed since it was installed: its SHA-256 is not the one recorded.' 'the changed copy was not named as changed'
+            Said $changed 'Remove that copy, and the PATH entry this script added for it? [y/N]: n (--yes)' "the changed copy's removal did not default to no"
+            if ((Get-Content -Raw (Join-Path $firstFolder 'cadence.exe')).Trim() -ne 'changed by hand') { throw 'the changed copy was removed or rewritten' }
+
+            # The folder the state records, spelled with a trailing separator or reached through a junction,
+            # is that folder: the install in it is found up to date and is never removed.
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'home-spelled'
+            $realDir = Join-Path $env:LOCALAPPDATA 'real'
+            New-Item -ItemType Directory -Force -Path $realDir | Out-Null
+            $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', ($realDir + '\'))
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the install with a trailing separator failed' }
+            if (@(Get-Content (Join-Path $env:LOCALAPPDATA 'Cadence\install-state')) -notcontains "binary=$realDir\cadence.exe") { throw 'the state did not record the folder without its trailing separator' }
+            $link = Join-Path $env:LOCALAPPDATA 'link'
+            New-Item -ItemType Junction -Path $link -Target $realDir | Out-Null
+            foreach ($dir in @($realDir, $link, ($link + '\'))) {
+              $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', $dir)
+              if ($run.Code -ne 0) { Write-Host $run.Out; throw "the run with --dir $dir failed" }
+              Said $run ', so it is up to date.' "--dir $dir was not taken for the folder installed in"
+              if ($run.Out.Contains('An earlier run installed Cadence at')) { Write-Host $run.Out; throw "--dir $dir offered to remove the install in its own folder" }
+              if (-not (Test-Path (Join-Path $realDir 'cadence.exe'))) { throw "--dir $dir removed the install" }
+            }
 
             # A tablebase download that stopped is offered again by a plain run, yes by default, and keeps
             # what it already has; once finished, a plain run does not offer it.

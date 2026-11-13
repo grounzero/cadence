@@ -47,6 +47,7 @@ $script:Built = ''
 $script:Id = ''
 $script:Attested = ''
 $script:From = ''
+$script:Made = ''
 $script:Limited = $false
 $script:UpToDate = $false
 $script:Replace = $false
@@ -125,6 +126,12 @@ if ($script:Build -notin @('', 'avx2', 'generic')) { Write-Host '--build takes a
 # The build named on the command line, which an install of another build at the same version yields to.
 $script:Asked = $script:Build
 $script:AskedVersion = $script:Version
+# --dir as one absolute spelling without trailing separators, so the state records one name for a folder.
+if ($script:Prefix) {
+    $full = [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($script:Prefix))
+    while ($full.Length -gt 3 -and ($full.EndsWith('\') -or $full.EndsWith('/'))) { $full = $full.Substring(0, $full.Length - 1) }
+    $script:Prefix = $full
+}
 
 # --- The system --------------------------------------------------------------------------------
 
@@ -578,6 +585,32 @@ function Get-Listed([string]$Name) {
     return ''
 }
 
+# A path with each symbolic link and junction along it followed, so two spellings of one file or folder
+# compare equal; the file itself need not exist.
+function Get-RealPath([string]$Path, [int]$Depth = 0) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ($Depth -gt 16 -or $full.StartsWith('\\')) { return $full.TrimEnd('\') }
+    $parts = @($full.TrimEnd('\').Split('\'))
+    $real = $parts[0]
+    for ($n = 1; $n -lt $parts.Count; $n++) {
+        $next = $real + '\' + $parts[$n]
+        $item = Get-Item -LiteralPath $next -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and $item.PSObject.Properties['Target'] -and @($item.Target).Count -gt 0) {
+            $target = "$(@($item.Target)[0])"
+            if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $real $target }
+            $next = Get-RealPath $target ($Depth + 1)
+        }
+        $real = $next
+    }
+    return $real
+}
+
+# Whether two paths are one file or folder, whatever links, junctions or trailing separators spell them.
+function Test-SameFile([string]$First, [string]$Second) {
+    if (-not $First -or -not $Second) { return $false }
+    return (Get-RealPath $First) -eq (Get-RealPath $Second)
+}
+
 function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower() }
 
 # The release workflow attests every binary it builds, run at the version's tag, and gh checks that
@@ -924,6 +957,7 @@ function Invoke-Build {
     $cargoArgs = @('build', '--release', '--locked', '-p', 'cadence-engine', '--bin', 'cadence')
     $files = @('.cargo\config.toml')
     $section = '^\[target\.' + [regex]::Escape($script:Triple) + '\]'
+    $script:Made = $script:Build
     if ($script:Build -eq 'generic') {
         $generic = Join-Path $script:Src '.cargo\x86-64-generic.toml'
         if ((Test-Path $generic) -and (Select-String -Path $generic -Pattern $section -Quiet)) {
@@ -931,16 +965,25 @@ function Invoke-Build {
             $files += '.cargo\x86-64-generic.toml'
         } else {
             Say "Cadence $script:Version has no generic settings for $script:Triple, so it is built for that system's baseline."
+            $script:Made = 'baseline'
         }
     } elseif ($script:Build -eq 'avx2') {
         if (-not (Select-String -Path (Join-Path $script:Src '.cargo\config.toml') -Pattern $section -Quiet)) {
             Say "Cadence $script:Version has no AVX2 settings for $script:Triple, so it is built for that system's baseline."
+            $script:Made = 'baseline'
         }
     }
     # The repository's own flags, in the order Cargo would join them, given as CARGO_ENCODED_RUSTFLAGS,
     # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
     $flags = @()
-    foreach ($file in $files) { $flags += @(Get-RepoFlags (Join-Path $script:Src $file)) }
+    foreach ($file in $files) {
+        $read = @(Get-RepoFlags (Join-Path $script:Src $file))
+        # A table for the target with no flags read from it is a file this script misreads, not one to build by.
+        if ($read.Count -eq 0 -and (Select-String -Path (Join-Path $script:Src $file) -Pattern $section -Quiet)) {
+            Fail "$file has settings for $($script:Triple), but no rustflags could be read from them, so nothing is built"
+        }
+        $flags += $read
+    }
     $encoded = $flags -join [char]0x1f
     Write-Log ('rustflags: ' + ($flags -join ' '))
     $names = @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', ('CARGO_TARGET_' + $script:Triple.ToUpper().Replace('-', '_') + '_RUSTFLAGS'))
@@ -1044,7 +1087,7 @@ function Get-InstalledVersion {
     $script:HeldFrom = ''
     $script:Earlier = $false
     if (-not (Test-Path -LiteralPath $script:Target -PathType Leaf)) { return }
-    if ((Get-StatePath 'binary') -ne $script:Target) { return }
+    if (-not (Test-SameFile (Get-StatePath 'binary') $script:Target)) { return }
     $sum = Get-StateValue 'sha256'
     if (-not $sum) {
         $script:Earlier = $true
@@ -1187,11 +1230,11 @@ function Install-Binary {
         Fail "could not write $($script:Target); if Cadence is running, close it and run this again"
     }
     $previous = Get-StatePath 'binary'
-    if ($previous -and (Test-Path -LiteralPath $previous) -and $previous -ne $script:Target) { Remove-Previous $previous }
+    if ($previous -and (Test-Path -LiteralPath $previous) -and -not (Test-SameFile $previous $script:Target)) { Remove-Previous $previous }
     Set-StateValue 'binary' $script:Target
     Set-StateValue 'version' $script:Version
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)
-    Set-StateValue 'build' $script:Build
+    Set-StateValue 'build' $(if ($script:Made) { $script:Made } else { $script:Build })
     Set-StateValue 'from' $script:From
     Say "Installed $script:Target."
 }
@@ -1236,9 +1279,20 @@ function Remove-FromPath([string]$Added, [switch]$Now) {
 # A copy an earlier run installed in another folder, offered for removal with the PATH entry this
 # script added for it, so the state names one install and the uninstall leaves nothing behind.
 function Remove-Previous([string]$Previous) {
+    if (Test-SameFile $Previous $script:Target) { return }
     $folder = Split-Path -Parent $Previous
+    $sum = Get-StateValue 'sha256'
+    $default = $true
     Say "An earlier run installed Cadence at $Previous."
-    if (-not (Ask 'Remove that copy, and the PATH entry this script added for it?' $true)) {
+    # A copy that is no longer the file recorded there may be the user's own, so it is kept by default.
+    if (-not $sum) {
+        Say 'No SHA-256 was recorded for it, so it may not be the file installed there.'
+        $default = $false
+    } elseif ((Get-Sha256 $Previous) -ne $sum) {
+        Say 'It has changed since it was installed: its SHA-256 is not the one recorded.'
+        $default = $false
+    }
+    if (-not (Ask 'Remove that copy, and the PATH entry this script added for it?' $default)) {
         Say 'Kept it. This script now records only the new install, so its uninstall will not remove that copy.'
         return
     }
@@ -1249,7 +1303,7 @@ function Remove-Previous([string]$Previous) {
     }
     Say "Removed $Previous."
     $added = Get-StateValue 'path_windows'
-    if ($added -and $added.TrimEnd('\') -eq $folder.TrimEnd('\')) {
+    if ($added -and (Test-SameFile $added $folder)) {
         Remove-FromPath $added -Now
         Remove-StateValue 'path_windows'
     }
@@ -1268,7 +1322,7 @@ function Add-ToPath {
         Say "$dest is already on your user PATH, for each new terminal."
         return
     }
-    if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" ($dest -eq $DefaultPrefix))) { return }
+    if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" (Test-SameFile $dest $DefaultPrefix))) { return }
     Set-UserPath ($entries + $dest)
     Set-StateValue 'path_windows' $dest
     # Each command on a line of its own, so it can be copied whole; a path with a space or a quote runs
@@ -1383,7 +1437,7 @@ function Show-Done {
     Say '  Arena: Engines, Install New Engine, choose the file, then UCI when asked.'
     Say '  Cute Chess: Tools, Settings, Engines, the + button, the file as the command, UCI as the protocol.'
     Say '  Banksia: add an engine in its engine manager and choose the file.'
-    if ((Split-Path -Parent $script:Target) -eq $DefaultPrefix) {
+    if (Test-SameFile (Split-Path -Parent $script:Target) $DefaultPrefix) {
         Say 'AppData is hidden, so paste the path above into the GUI''s file dialog, or type %LOCALAPPDATA%\Cadence into its address bar.'
     }
     Say ''
