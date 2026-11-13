@@ -50,6 +50,8 @@ REPLACE=0
 INSTALLED=""
 HELD=""
 EARLIER=0
+RELEASED=""
+UNLISTED=""
 NAMED=""
 UNREAD=""
 UNREAD_LIMIT=0
@@ -328,6 +330,11 @@ state_set() {
     mkdir -p "$DATA_DIR" || fail "cannot create $DATA_DIR"
     { [ -f "$STATE" ] && state_lines | grep -v "^$1="; printf '%s=%s\n' "$1" "$2"; } > "$STATE.new" \
         && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
+}
+
+state_unset() {
+    [ -n "$(state_get "$1")" ] || return 0
+    { state_lines | grep -v "^$1="; true; } > "$STATE.new" && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
 }
 
 # A path from the state as this shell names it; on Windows either script's form, and the /c/ form
@@ -993,13 +1000,29 @@ prepare_toolchain() {
     log "target: $TRIPLE"
 }
 
+# The rustflags a config file of the repository gives the target, one to a line.
+repo_flags() {
+    [ -f "$1" ] || return 0
+    awk -v t="[target.$TRIPLE]" '
+        /^[[:space:]]*#/ {next}
+        $0 == t {on = 1; next}
+        /^\[/ {on = 0}
+        on && /^[[:space:]]*rustflags[[:space:]]*=/ {grab = 1}
+        grab {
+            s = $0
+            while (match(s, /"[^"]*"/)) {print substr(s, RSTART + 1, RLENGTH - 2); s = substr(s, RSTART + RLENGTH)}
+            if (index($0, "]")) grab = 0
+        }' "$1"
+}
+
 build() {
     step "Building Cadence $VERSION"
-    local args="build --release --locked -p cadence-engine --bin cadence"
+    local args="build --release --locked -p cadence-engine --bin cadence" files=".cargo/config.toml"
     case "$BUILD" in
         generic)
             if grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/x86-64-generic.toml" 2>/dev/null; then
                 args="$args --config .cargo/x86-64-generic.toml"
+                files="$files .cargo/x86-64-generic.toml"
             else
                 say "Cadence $VERSION has no generic settings for $TRIPLE, so it is built for that system's baseline."
             fi
@@ -1009,11 +1032,13 @@ build() {
                 || say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
             ;;
     esac
-    # RUSTFLAGS would replace the repository's own per-target flags and the target's own variable
-    # would add to them, so none of them reaches the build.
-    local flags
+    # The repository's own flags, in the order Cargo would join them, given as CARGO_ENCODED_RUSTFLAGS,
+    # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
+    local flags encoded file
     flags="CARGO_TARGET_$(printf '%s' "$TRIPLE" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
-    (cd "$SRC" && run env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS -u "$flags" cargo $args) || fail "the build failed"
+    encoded=$(for file in $files; do repo_flags "$SRC/$file"; done | awk '{printf "%s%s", (NR > 1 ? "\037" : ""), $0}')
+    log "rustflags: $(printf '%s' "$encoded" | tr '\037' ' ')"
+    (cd "$SRC" && run env -u RUSTFLAGS -u "$flags" CARGO_ENCODED_RUSTFLAGS="$encoded" cargo $args) || fail "the build failed"
     BUILT="$SRC/target/release/cadence$EXE"
     [ -f "$BUILT" ] || fail "the build left no binary at $BUILT"
     FROM=source
@@ -1178,23 +1203,26 @@ installed_version() {
     HELD="$(state_get build) $(state_get from)"
 }
 
-# The published release binary with this SHA-256, by the digests GitHub's API lists for every
-# release's files, or nothing; the list is not read where it cannot be.
+# The published release binary with this SHA-256 in RELEASED, by the digests GitHub's API lists for
+# every release's files; where that list cannot be read it fails, with the reason in UNLISTED.
 released_as() {
+    RELEASED=""
+    UNLISTED=""
     log "\$ download $API_URL?per_page=100"
     if ! download "$API_URL?per_page=100" "$WORK/every-release.json" 2> "$OUT"; then
+        UNLISTED=$(said)
         redact < "$OUT" >> "$LOG"
-        return 0
+        return 1
     fi
-    tr ',{}[]' '\n\n\n\n\n' < "$WORK/every-release.json" | awk -v d="\"sha256:$1\"" '
+    RELEASED=$(tr ',{}[]' '\n\n\n\n\n' < "$WORK/every-release.json" | awk -v d="\"sha256:$1\"" '
         /^[[:space:]]*"name":[[:space:]]*"/ {n = $0}
-        index($0, d) && n != "" {sub(/^[[:space:]]*"name":[[:space:]]*"/, "", n); sub(/".*/, "", n); print n; exit}'
+        index($0, d) && n != "" {sub(/^[[:space:]]*"name":[[:space:]]*"/, "", n); sub(/".*/, "", n); print n; exit}')
 }
 
 # The installers before this one recorded the path alone, so their install is known by its SHA-256
 # among the release's binaries, and recorded as this script records it; otherwise it may be replaced.
 earlier_install() {
-    local sum name default=n
+    local sum name="" default=n
     step "The installed Cadence"
     sum=$(checksum "$TARGET")
     case "$VERSION" in *+*) name="" ;; *) release_sums && name=$(listed_as "$sum") ;; esac
@@ -1217,15 +1245,21 @@ earlier_install() {
             # Its version unknown, it is replaced by default only with the newest release, and only
             # where it is some other release's binary rather than a file put there by hand.
             if [ -z "$ASKED_VERSION" ]; then
-                name=$(released_as "$sum")
-                if [ -n "$name" ]; then
-                    say "Its SHA-256 is that of $name, another release's binary."
+                if ! released_as "$sum"; then
+                    say "The list of published releases could not be read$UNLISTED, so whether it is a release's binary is not known."
+                elif [ -n "$RELEASED" ]; then
+                    say "Its SHA-256 is that of $RELEASED, another release's binary."
                     default=y
                 else
                     say "Its SHA-256 is that of no published release's binary."
                 fi
             fi
-            ask "Replace it with Cadence $VERSION?" "$default" || stop "Kept the one there; nothing was installed."
+            # --yes with --version installs that version over whatever is there.
+            if [ "$YES" = 1 ] && [ -n "$ASKED_VERSION" ]; then
+                say "Replacing it with Cadence $VERSION, as --yes and --version $VERSION ask."
+            else
+                ask "Replace it with Cadence $VERSION?" "$default" || stop "Kept the one there; nothing was installed."
+            fi
             REPLACE=1
             ;;
     esac
@@ -1273,6 +1307,7 @@ compare_installed() {
 }
 
 install_binary() {
+    local previous
     step "Installing"
     case "$WHERE" in
         dir) say "Installing into $DEST, as --dir asks." ;;
@@ -1289,6 +1324,10 @@ install_binary() {
     fi
     { cp "$BUILT" "$TARGET.new" && chmod 755 "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"; } \
         || { rm -f "$TARGET.new"; fail "could not write $TARGET; if Cadence is running, close it and run this again"; }
+    previous=$(state_path binary)
+    if [ -n "$previous" ] && [ -e "$previous" ] && ! same_path "$previous" "$TARGET"; then
+        retire_previous "$previous"
+    fi
     state_set binary "$(shown "$TARGET")"
     state_set version "$VERSION"
     state_set sha256 "$(checksum "$TARGET")"
@@ -1365,6 +1404,64 @@ offer_path() {
     fi
 }
 
+# Removes the PATH line under this script's marker from a profile, asking first unless told "now";
+# only the marked line goes, so the same line written by hand stays.
+remove_path_line() {
+    local rc=$1 line=$2 how=$3
+    [ -n "$rc" ] && [ -f "$rc" ] || return 0
+    CADENCE_LINE=$line CADENCE_MARK=$MARK awk '
+        held != "" && $0 == ENVIRON["CADENCE_LINE"] {held = ""; next}
+        held != "" {print held; held = ""}
+        $0 == ENVIRON["CADENCE_MARK"] {held = $0; next}
+        {print}
+        END {if (held != "") print held}' \
+        "$rc" > "$rc.cadence" || fail "could not read $rc"
+    if cmp -s "$rc" "$rc.cadence"; then
+        say "$rc holds no PATH line under this script's marker, so there is none to remove."
+    elif [ "$how" = now ] || ask "Remove the PATH line this script added to $rc?" y; then
+        cat "$rc.cadence" > "$rc" || fail "could not rewrite $rc"
+        say "Removed the PATH line from $rc."
+    fi
+    rm -f "$rc.cadence"
+}
+
+# Removes a folder this script added to the Windows user PATH, asking first unless told "now".
+remove_path_windows() {
+    local win=$1 how=$2 held
+    held=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" 2> /dev/null | tr -d '\r')
+    if ! printf '%s\n' "$held" | tr ';' '\n' | grep -qixF -- "$win"; then
+        say "$win is not on your user PATH, so there is nothing to remove there."
+    elif [ "$how" = now ] || ask "Remove $win from your PATH, which this script added?" y; then
+        CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
+            || fail "could not remove $win from your PATH"
+        say "Removed $win from your PATH."
+    fi
+}
+
+# A copy an earlier run installed in another folder, offered for removal with the PATH entry this
+# script added for it, so the state names one install and the uninstall leaves nothing behind.
+retire_previous() {
+    local previous=$1 folder win
+    folder=$(dirname "$previous")
+    say "An earlier run installed Cadence at $(shown "$previous")."
+    if ! ask "Remove that copy, and the PATH entry this script added for it?" y; then
+        say "Kept it. This script now records only the new install, so its uninstall will not remove that copy."
+        return 0
+    fi
+    rm -f "$previous" || fail "could not remove $previous; if Cadence is running, close it and run this again"
+    say "Removed $(shown "$previous")."
+    if [ "$(state_get path_line)" = "export PATH=\"$folder:\$PATH\"" ]; then
+        remove_path_line "$(state_get path_rc)" "$(state_get path_line)" now
+        state_unset path_rc
+        state_unset path_line
+    fi
+    win=$(state_get path_windows)
+    if [ -n "$win" ] && same_path "$(cygpath -u "$win")" "$folder"; then
+        remove_path_windows "$win" now
+        state_unset path_windows
+    fi
+}
+
 # Each command on a line of its own, so it can be copied whole.
 added_to_path() {
     say "Added. This terminal will not find cadence until you open a new one. To run it here now:"
@@ -1385,9 +1482,18 @@ tables_held() {
     printf '%s\n' "$n"
 }
 
-# A download the state records that stopped before all 290 tables were in.
+# A download the state records that stopped part way: some tables, or a table half fetched, in its
+# folder. A folder emptied or removed since is not offered again.
 tables_unfinished() {
-    [ -n "$(state_get tables)" ] && [ "$(tables_held)" -lt 290 ]
+    local held file
+    [ -n "$(state_get tables)" ] || return 1
+    held=$(tables_held)
+    [ "$held" -lt 290 ] || return 1
+    [ "$held" -eq 0 ] || return 0
+    for file in "$(state_path tables)"/*.part; do
+        [ ! -f "$file" ] || return 0
+    done
+    return 1
 }
 
 offer_tables() {
@@ -1459,6 +1565,9 @@ afterwards() {
     say "  Arena: Engines, Install New Engine, choose the file, then UCI when asked."
     say "  Cute Chess: Tools, Settings, Engines, the + button, the file as the command, UCI as the protocol."
     say "  Banksia: add an engine in its engine manager and choose the file."
+    if [ "$OS" = windows ] && same_path "$(dirname "$TARGET")" "$DEFAULT_PREFIX"; then
+        say "AppData is hidden, so paste the path above into the GUI's file dialog, or type %LOCALAPPDATA%\\Cadence into its address bar."
+    fi
     [ "$WSL" = 0 ] || say "This is a Linux build in WSL, for chess programs in WSL; a Windows one needs install.ps1."
     say ""
     say "Report bugs as GitHub issues: $ISSUES_URL"
@@ -1466,7 +1575,7 @@ afterwards() {
 
 uninstall() {
     step "Uninstalling Cadence"
-    local bin rc line win held tables
+    local bin win tables
     bin=$(state_path binary)
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
     if [ -e "$bin" ]; then
@@ -1477,36 +1586,9 @@ uninstall() {
     else
         say "There is no Cadence at $(shown "$bin")."
     fi
-    rc=$(state_get path_rc)
-    line=$(state_get path_line)
-    if [ -n "$rc" ] && [ -f "$rc" ]; then
-        # Only the line under the marker goes, with the marker, so the same line written by hand stays.
-        CADENCE_LINE=$line CADENCE_MARK=$MARK awk '
-            held != "" && $0 == ENVIRON["CADENCE_LINE"] {held = ""; next}
-            held != "" {print held; held = ""}
-            $0 == ENVIRON["CADENCE_MARK"] {held = $0; next}
-            {print}
-            END {if (held != "") print held}' \
-            "$rc" > "$rc.cadence" || fail "could not read $rc"
-        if cmp -s "$rc" "$rc.cadence"; then
-            say "$rc holds no PATH line under this script's marker, so there is none to remove."
-        elif ask "Remove the PATH line this script added to $rc?" y; then
-            cat "$rc.cadence" > "$rc" || fail "could not rewrite $rc"
-            say "Removed it."
-        fi
-        rm -f "$rc.cadence"
-    fi
+    remove_path_line "$(state_get path_rc)" "$(state_get path_line)" ask
     win=$(state_get path_windows)
-    if [ -n "$win" ]; then
-        held=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" 2> /dev/null | tr -d '\r')
-        if ! printf '%s\n' "$held" | tr ';' '\n' | grep -qixF -- "$win"; then
-            say "$win is not on your user PATH, so there is nothing to remove there."
-        elif ask "Remove $win from your PATH, which this script added?" y; then
-            CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
-                || fail "could not remove $win from your PATH"
-            say "Removed it."
-        fi
-    fi
+    [ -z "$win" ] || remove_path_windows "$win" ask
     tables=$(state_path tables)
     if [ -n "$tables" ] && [ -d "$tables" ] && ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
         rm -rf "$tables" || fail "could not remove $tables; if a chess program has them open, close it and run this again"

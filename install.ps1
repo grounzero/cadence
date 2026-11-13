@@ -53,6 +53,8 @@ $script:Replace = $false
 $script:Installed = ''
 $script:HeldBuild = ''
 $script:HeldFrom = ''
+$script:Released = ''
+$script:Unlisted = ''
 $script:Earlier = $false
 $script:Named = ''
 $script:Unread = ''
@@ -252,6 +254,12 @@ function Set-StateValue([string]$Key, [string]$Value) {
     if ((Test-Path -LiteralPath $State) -and (Get-StateValue $Key) -ceq $Value) { return }
     $lines = @(Get-StateLines | Where-Object { -not $_.StartsWith("$Key=") })
     $lines += "$Key=$Value"
+    [System.IO.File]::WriteAllText($State, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Remove-StateValue([string]$Key) {
+    if (-not (Get-StateValue $Key)) { return }
+    $lines = @(Get-StateLines | Where-Object { -not $_.StartsWith("$Key=") })
     [System.IO.File]::WriteAllText($State, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
 }
 
@@ -872,14 +880,55 @@ function Initialize-Toolchain {
     Write-Log "target: $script:Triple"
 }
 
+# The rustflags a config file of the repository gives the target.
+function Get-RepoFlags([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    $flags = @()
+    $on = $false
+    $grab = $false
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match '^\s*#') { continue }
+        if ($line -eq "[target.$($script:Triple)]") { $on = $true; continue }
+        if ($line -match '^\[') { $on = $false }
+        if ($on -and $line -match '^\s*rustflags\s*=') { $grab = $true }
+        if ($grab) {
+            foreach ($match in [regex]::Matches($line, '"([^"]*)"')) { $flags += $match.Groups[1].Value }
+            if ($line.Contains(']')) { $grab = $false }
+        }
+    }
+    return $flags
+}
+
+# Sets a variable for this process and the programs it starts, an empty value included: .NET deletes a
+# variable set empty, so kernel32 sets that one.
+function Set-ProcessVariable([string]$Name, $Value) {
+    if ($null -eq $Value -or "$Value") {
+        [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+        return
+    }
+    try {
+        if (-not ('CadenceInstall.Env' -as [type])) {
+            Add-Type -Namespace CadenceInstall -Name Env -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+public static extern bool SetEnvironmentVariable(string name, string value);
+'@
+        }
+        [void][CadenceInstall.Env]::SetEnvironmentVariable($Name, '')
+    } catch {
+        Write-Log "could not set $Name empty: $_"
+    }
+}
+
 function Invoke-Build {
     Step "Building Cadence $script:Version"
     $cargoArgs = @('build', '--release', '--locked', '-p', 'cadence-engine', '--bin', 'cadence')
+    $files = @('.cargo\config.toml')
     $section = '^\[target\.' + [regex]::Escape($script:Triple) + '\]'
     if ($script:Build -eq 'generic') {
         $generic = Join-Path $script:Src '.cargo\x86-64-generic.toml'
         if ((Test-Path $generic) -and (Select-String -Path $generic -Pattern $section -Quiet)) {
             $cargoArgs += @('--config', '.cargo/x86-64-generic.toml')
+            $files += '.cargo\x86-64-generic.toml'
         } else {
             Say "Cadence $script:Version has no generic settings for $script:Triple, so it is built for that system's baseline."
         }
@@ -888,14 +937,19 @@ function Invoke-Build {
             Say "Cadence $script:Version has no AVX2 settings for $script:Triple, so it is built for that system's baseline."
         }
     }
-    # RUSTFLAGS would replace the repository's own per-target flags and the target's own variable
-    # would add to them, so none of them reaches the build.
+    # The repository's own flags, in the order Cargo would join them, given as CARGO_ENCODED_RUSTFLAGS,
+    # which takes the place of every other source: RUSTFLAGS, a target's variable and any config file.
+    $flags = @()
+    foreach ($file in $files) { $flags += @(Get-RepoFlags (Join-Path $script:Src $file)) }
+    $encoded = $flags -join [char]0x1f
+    Write-Log ('rustflags: ' + ($flags -join ' '))
     $names = @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', ('CARGO_TARGET_' + $script:Triple.ToUpper().Replace('-', '_') + '_RUSTFLAGS'))
     $saved = @{}
     foreach ($name in $names) {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
         [Environment]::SetEnvironmentVariable($name, $null, 'Process')
     }
+    Set-ProcessVariable 'CARGO_ENCODED_RUSTFLAGS' $encoded
     Push-Location $script:Src
     try {
         $code = Invoke-Logged 'cargo' $cargoArgs
@@ -1002,24 +1056,29 @@ function Get-InstalledVersion {
     $script:HeldFrom = Get-StateValue 'from'
 }
 
-# The published release binary with this SHA-256, by the digests GitHub's API lists for every
-# release's files, or the empty string; the list is not read where it cannot be.
-function Get-ReleasedAs([string]$Sum) {
+# The published release binary with this SHA-256 in Released, by the digests GitHub's API lists for
+# every release's files; where that list cannot be read it returns false, with the reason in Unlisted.
+function Find-ReleasedAs([string]$Sum) {
+    $script:Released = ''
+    $script:Unlisted = ''
     $headers = @{}
     if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
     Write-Log "downloading ${ApiUrl}?per_page=100"
     try {
         $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=100" -Headers $headers -ErrorAction Stop
     } catch {
-        Write-Log "the releases were not read$(Get-DownloadTrouble $_)"
-        return ''
+        $script:Unlisted = Get-DownloadTrouble $_
+        return $false
     }
     foreach ($release in @($releases)) {
         foreach ($asset in @($release.assets)) {
-            if ($asset -and $asset.PSObject.Properties['digest'] -and "$($asset.digest)" -eq "sha256:$Sum") { return "$($asset.name)" }
+            if ($asset -and $asset.PSObject.Properties['digest'] -and "$($asset.digest)" -eq "sha256:$Sum") {
+                $script:Released = "$($asset.name)"
+                return $true
+            }
         }
     }
-    return ''
+    return $true
 }
 
 # The installers before this one recorded the path alone, so their install is known by its SHA-256
@@ -1053,15 +1112,21 @@ function Find-EarlierInstall {
     # is some other release's binary rather than a file put there by hand.
     $default = $false
     if (-not $script:AskedVersion) {
-        $other = Get-ReleasedAs $sum
-        if ($other) {
-            Say "Its SHA-256 is that of $other, another release's binary."
+        if (-not (Find-ReleasedAs $sum)) {
+            Say "The list of published releases could not be read$($script:Unlisted), so whether it is a release's binary is not known."
+        } elseif ($script:Released) {
+            Say "Its SHA-256 is that of $($script:Released), another release's binary."
             $default = $true
         } else {
             Say "Its SHA-256 is that of no published release's binary."
         }
     }
-    if (-not (Ask "Replace it with Cadence $($script:Version)?" $default)) { Stop-Install 'Kept the one there; nothing was installed.' }
+    # --yes with --version installs that version over whatever is there.
+    if ($script:Yes -and $script:AskedVersion) {
+        Say "Replacing it with Cadence $($script:Version), as --yes and --version $($script:Version) ask."
+    } elseif (-not (Ask "Replace it with Cadence $($script:Version)?" $default)) {
+        Stop-Install 'Kept the one there; nothing was installed.'
+    }
     $script:Replace = $true
 }
 
@@ -1121,6 +1186,8 @@ function Install-Binary {
     } catch {
         Fail "could not write $($script:Target); if Cadence is running, close it and run this again"
     }
+    $previous = Get-StatePath 'binary'
+    if ($previous -and (Test-Path -LiteralPath $previous) -and $previous -ne $script:Target) { Remove-Previous $previous }
     Set-StateValue 'binary' $script:Target
     Set-StateValue 'version' $script:Version
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)
@@ -1155,6 +1222,39 @@ function Set-UserPath([string[]]$Entries) {
     [Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
 }
 
+# Removes a folder this script added to the user PATH, asking first unless Now is given.
+function Remove-FromPath([string]$Added, [switch]$Now) {
+    $entries = @(Get-UserPath)
+    if ($entries -notcontains $Added) {
+        Say "$Added is not on your user PATH, so there is nothing to remove there."
+    } elseif ($Now -or (Ask "Remove $Added from your PATH, which this script added?" $true)) {
+        Set-UserPath @($entries | Where-Object { $_ -ne $Added })
+        Say "Removed $Added from your PATH."
+    }
+}
+
+# A copy an earlier run installed in another folder, offered for removal with the PATH entry this
+# script added for it, so the state names one install and the uninstall leaves nothing behind.
+function Remove-Previous([string]$Previous) {
+    $folder = Split-Path -Parent $Previous
+    Say "An earlier run installed Cadence at $Previous."
+    if (-not (Ask 'Remove that copy, and the PATH entry this script added for it?' $true)) {
+        Say 'Kept it. This script now records only the new install, so its uninstall will not remove that copy.'
+        return
+    }
+    try {
+        Remove-Item -Force -LiteralPath $Previous -ErrorAction Stop
+    } catch {
+        Fail "could not remove $Previous; if Cadence is running, close it and run this again"
+    }
+    Say "Removed $Previous."
+    $added = Get-StateValue 'path_windows'
+    if ($added -and $added.TrimEnd('\') -eq $folder.TrimEnd('\')) {
+        Remove-FromPath $added -Now
+        Remove-StateValue 'path_windows'
+    }
+}
+
 # A folder other than the default is the caller's to manage, so the offer defaults to no there.
 function Add-ToPath {
     $dest = Split-Path -Parent $script:Target
@@ -1187,8 +1287,16 @@ function Get-TablesHeld {
     return @(Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -cmatch '^K[QRBNP]*vK[QRBNP]*\.rtb[wz]$' }).Count
 }
 
-# A download the state records that stopped before all 290 tables were in.
-function Test-TablesUnfinished { return [bool]((Get-StateValue 'tables') -and (Get-TablesHeld) -lt 290) }
+# A download the state records that stopped part way: some tables, or a table half fetched, in its
+# folder. A folder emptied or removed since is not offered again.
+function Test-TablesUnfinished {
+    if (-not (Get-StateValue 'tables')) { return $false }
+    $held = Get-TablesHeld
+    if ($held -ge 290) { return $false }
+    if ($held -gt 0) { return $true }
+    $dir = Get-StatePath 'tables'
+    return [bool]((Test-Path -LiteralPath $dir -PathType Container) -and @(Get-ChildItem -LiteralPath $dir -File -Filter '*.part').Count -gt 0)
+}
 
 function Get-Tables {
     Step 'Syzygy tablebases, if you want them'
@@ -1275,6 +1383,9 @@ function Show-Done {
     Say '  Arena: Engines, Install New Engine, choose the file, then UCI when asked.'
     Say '  Cute Chess: Tools, Settings, Engines, the + button, the file as the command, UCI as the protocol.'
     Say '  Banksia: add an engine in its engine manager and choose the file.'
+    if ((Split-Path -Parent $script:Target) -eq $DefaultPrefix) {
+        Say 'AppData is hidden, so paste the path above into the GUI''s file dialog, or type %LOCALAPPDATA%\Cadence into its address bar.'
+    }
     Say ''
     Say "Report bugs as GitHub issues: $IssuesUrl"
 }
@@ -1299,15 +1410,7 @@ function Uninstall-Cadence {
         Say "There is no Cadence at $bin."
     }
     $added = Get-StateValue 'path_windows'
-    if ($added) {
-        $entries = @(Get-UserPath)
-        if ($entries -notcontains $added) {
-            Say "$added is not on your user PATH, so there is nothing to remove there."
-        } elseif (Ask "Remove $added from your PATH, which this script added?" $true) {
-            Set-UserPath @($entries | Where-Object { $_ -ne $added })
-            Say 'Removed it.'
-        }
-    }
+    if ($added) { Remove-FromPath $added }
     $tables = Get-StatePath 'tables'
     if ($tables -and (Test-Path -LiteralPath $tables) -and (Ask "Remove the tablebases at $tables, about 1 GB?" $true)) {
         Remove-Item -Recurse -Force -LiteralPath $tables -ErrorAction SilentlyContinue

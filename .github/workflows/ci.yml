@@ -472,6 +472,43 @@ jobs:
     defaults: *check-defaults
     steps: *check-steps
 
+  # What a change elsewhere can break in the installers' surroundings, so it runs on every change: the
+  # workspace version both installers name, the README's options and the worker setup's tests.
+  installer-checks:
+    name: the installers' version, options and worker setup
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A version cut changes the workspace version, and both installers must name the same one.
+      - name: The installers name the workspace version
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
+          sh_version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
+          ps_version=$(sed -n "s/^.InstallerVersion = '\(.*\)'\$/\1/p" install.ps1)
+          echo "the workspace is $version; install.sh names $sh_version and install.ps1 names $ps_version"
+          [ -n "$version" ] && [ "$sh_version" = "$version" ] && [ "$ps_version" = "$version" ] \
+            || { echo "::error::both installers must name the workspace version, $version"; exit 1; }
+          bash install.sh --help > help.txt
+          [ "$(head -n 1 help.txt)" = "Cadence installer $version" ] \
+            || { echo "::error::install.sh --help does not open with Cadence installer $version"; exit 1; }
+
+      # The README names every option a user gives: all but --build, the alias, the log, the test flag
+      # and the help.
+      - name: The README names the installers' options
+        run: |
+          for opt in $(bash install.sh --help | sed -n 's/^  \(--[a-z-]*\).*/\1/p'); do
+            case "$opt" in --build | --prefix | --keep-log | --test-urls | --help) continue ;; esac
+            grep -qF -- "\`$opt" README.md || { echo "::error::the README's options leave out $opt"; exit 1; }
+          done
+          echo "the README names every option a user gives"
+
+      - name: The worker setup's tests
+        run: python3 -m unittest discover -s openbench/tests -v
+
   # Whether a pull request changes an installer or a workflow, read from its merge commit against the
   # base; any other event runs the install jobs, and so does a failure here, which never skips them.
   changes:
@@ -533,12 +570,6 @@ jobs:
           bash -n install.sh
           shellcheck --version
           shellcheck -S warning install.sh
-          # The README names every option a user gives: all but --build, the alias, the log, the test
-          # flag and the help.
-          for opt in $(bash install.sh --help | sed -n 's/^  \(--[a-z-]*\).*/\1/p'); do
-            case "$opt" in --build | --prefix | --keep-log | --test-urls | --help) continue ;; esac
-            grep -qF -- "\`$opt" README.md || { echo "::error::the README's options leave out $opt"; exit 1; }
-          done
 
       - name: Parse install.ps1
         if: env.SCRIPT == 'install.ps1'
@@ -548,20 +579,6 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors | ForEach-Object { Write-Host $_ }; throw 'install.ps1 does not parse' }
           Write-Host 'install.ps1 parses'
-
-      # A version cut changes the workspace version, and both installers must name the same one.
-      - name: The installers name the workspace version
-        if: env.SCRIPT == 'install.sh' && runner.os == 'Linux'
-        run: |
-          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
-          sh_version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
-          ps_version=$(sed -n "s/^.InstallerVersion = '\(.*\)'\$/\1/p" install.ps1)
-          echo "the workspace is $version; install.sh names $sh_version and install.ps1 names $ps_version"
-          [ -n "$version" ] && [ "$sh_version" = "$version" ] && [ "$ps_version" = "$version" ] \
-            || { echo "::error::both installers must name the workspace version, $version"; exit 1; }
-          bash install.sh --help > help.txt
-          [ "$(head -n 1 help.txt)" = "Cadence installer $version" ] \
-            || { echo "::error::install.sh --help does not open with Cadence installer $version"; exit 1; }
 
       # A release that does not exist fails at once, and the failure must leave its log behind with
       # the reason in it and no home folder named.
@@ -673,6 +690,10 @@ jobs:
           fi
           grep -qF "Release files come from https://github.com/grounzero/cadence/releases/download." install.txt \
             || { echo "::error::the run did not say where the release files come from"; exit 1; }
+          if [ "$RUNNER_OS" = Windows ]; then
+            grep -qF "AppData is hidden, so paste the path above into the GUI's file dialog, or type %LOCALAPPDATA%\Cadence into its address bar." install.txt \
+              || { echo "::error::the run did not say how to reach the hidden AppData folder"; exit 1; }
+          fi
           # The job's token signs gh in, so wherever the runner has gh the attestation is checked.
           if command -v gh > /dev/null; then
             grep -qF "Its build attestation verifies: GitHub's release workflow built it at the tag $version." install.txt \
@@ -736,8 +757,21 @@ jobs:
           curl -fsS -o /dev/null "$url/good/$RELEASE_VERSION/SHA256SUMS" \
             || { cat "$tmp/server.log"; echo "::error::the release folder is not served"; exit 1; }
 
+          # Each run keeps a state of its own, so neither takes the other's install, or the one before
+          # them, for an earlier copy to remove; Rust stays where the runner has it.
+          own() {
+            local name=$1
+            shift
+            mkdir -p "$tmp/state-$name"
+            if [ "$RUNNER_OS" = Windows ]; then
+              env LOCALAPPDATA="$(cygpath -w "$tmp/state-$name")" "$@"
+            else
+              env HOME="$tmp/state-$name" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" "$@"
+            fi
+          }
+
           rc=0
-          CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --test-urls --version "$RELEASE_VERSION" \
+          own good env CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --test-urls --version "$RELEASE_VERSION" \
             --dir "$tmp/from-binary" 2>&1 | tee good.txt || rc=$?
           [ "$rc" -eq 0 ] || { echo "::error::install.sh exited $rc on a release whose binary checks"; exit 1; }
           grep -qF "Release files come from $url/good." good.txt \
@@ -753,16 +787,25 @@ jobs:
           fi
           grep -qE 'to your PATH.*\[y/N\]: n \(--yes\)' good.txt \
             || { echo "::error::the PATH offer did not default to no under --dir"; exit 1; }
+          if grep -qF 'AppData is hidden' good.txt; then echo "::error::install.sh named AppData for a folder outside it"; exit 1; fi
           # The PATH and the tablebases are the only questions a checked binary's install asks.
           asked=$(grep -c '(--yes)$' good.txt)
           [ "$asked" -eq 2 ] || { grep -F '(--yes)' good.txt; echo "::error::install.sh asked $asked questions, not 2"; exit 1; }
 
-          # RUSTFLAGS in each of its forms, which would break the build if any reached it.
+          # RUSTFLAGS in each of its forms, and a user's own Cargo config adding a flag, which would each
+          # break the build if they reached it.
           rc=0
-          target=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
-          env RUSTFLAGS=-Cnot-a-flag CARGO_ENCODED_RUSTFLAGS=-Cnot-a-flag "CARGO_TARGET_${target}_RUSTFLAGS=-Cnot-a-flag" \
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          target=$(printf '%s' "$host" | tr 'a-z-' 'A-Z_')
+          cargo_home=${CARGO_HOME:-$HOME/.cargo}
+          [ "$RUNNER_OS" != Windows ] || cargo_home=$(cygpath -u "$cargo_home")
+          mkdir -p "$cargo_home"
+          [ ! -e "$cargo_home/config.toml" ] || cp "$cargo_home/config.toml" "$tmp/user-config.toml"
+          printf '\n[target.%s]\nrustflags = ["-Cnot-a-flag"]\n' "$host" >> "$cargo_home/config.toml"
+          own source env RUSTFLAGS=-Cnot-a-flag CARGO_ENCODED_RUSTFLAGS=-Cnot-a-flag "CARGO_TARGET_${target}_RUSTFLAGS=-Cnot-a-flag" \
             CADENCE_RELEASES_URL="$url/corrupt" bash install.sh --yes --test-urls --version "$RELEASE_VERSION" \
             --prefix "$tmp/from-source" 2>&1 | tee corrupt.txt || rc=$?
+          if [ -e "$tmp/user-config.toml" ]; then cp "$tmp/user-config.toml" "$cargo_home/config.toml"; else rm -f "$cargo_home/config.toml"; fi
           [ "$rc" -eq 0 ] || { echo "::error::install.sh exited $rc and did not fall back to the build"; exit 1; }
           grep -qF "$RELEASE_FILE's SHA-256 is" corrupt.txt \
             || { echo "::error::install.sh did not say why the binary is not used"; exit 1; }
@@ -804,10 +847,19 @@ jobs:
             }
             if (-not $up) { throw 'the release folder is not served' }
 
+            # Each run keeps a state of its own, so neither takes the other's install, or the one before
+            # them, for an earlier copy to remove.
+            $lad = $env:LOCALAPPDATA
             $env:CADENCE_RELEASES_URL = "$url/good"
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --test-urls --version $env:RELEASE_VERSION `
-              --dir (Join-Path $env:RUNNER_TEMP 'from-binary') 2>&1 | Out-String
-            $code = $LASTEXITCODE
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'state-good'
+            New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+            try {
+              $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --test-urls --version $env:RELEASE_VERSION `
+                --dir (Join-Path $env:RUNNER_TEMP 'from-binary') 2>&1 | Out-String
+              $code = $LASTEXITCODE
+            } finally {
+              $env:LOCALAPPDATA = $lad
+            }
             Write-Host $out
             if ($code -ne 0) { throw "install.ps1 exited $code on a release whose binary checks" }
             if (-not $out.Contains("Release files come from $url/good.")) { throw 'install.ps1 did not say where the release files come from' }
@@ -816,23 +868,33 @@ jobs:
             if (-not $out.Contains('as bench.txt says')) { throw 'install.ps1 did not check the bench' }
             if ($out.Contains('Building from source')) { throw 'install.ps1 built from source though the binary checked' }
             if ($out -notmatch 'to your PATH.*\[y/N\]: n \(--yes\)') { throw 'the PATH offer did not default to no under --dir' }
+            if ($out.Contains('AppData is hidden')) { throw 'install.ps1 named AppData for a folder outside it' }
             # The PATH and the tablebases are the only questions a checked binary's install asks.
             $asked = ([regex]::Matches($out, '\(--yes\)\r?\n')).Count
             if ($asked -ne 2) { throw "install.ps1 asked $asked questions, not 2" }
             # install.ps1 names the AVX2 build's features as install.sh does.
             if ($out.Contains('the AVX2 build runs here') -and -not $out.Contains('with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.')) { throw 'install.ps1 named the AVX2 build features differently from install.sh' }
 
-            # RUSTFLAGS in each of its forms, which would break the build if any reached it.
+            # RUSTFLAGS in each of its forms, and a user's own Cargo config adding a flag, which would each
+            # break the build if they reached it.
             $target = "$(rustc -vV | Where-Object { $_ -match '^host: ' })" -replace '^host: ', ''
             $poison = @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', ('CARGO_TARGET_' + $target.ToUpper().Replace('-', '_') + '_RUSTFLAGS'))
             foreach ($name in $poison) { [Environment]::SetEnvironmentVariable($name, '-Cnot-a-flag', 'Process') }
+            $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+            $userConfig = Join-Path $cargoHome 'config.toml'
+            $kept = if (Test-Path $userConfig) { Get-Content -Raw $userConfig } else { $null }
+            Add-Content -Encoding ascii -Path $userConfig -Value @('', "[target.$target]", 'rustflags = ["-Cnot-a-flag"]')
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'state-source'
+            New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
             try {
               $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --test-urls --version $env:RELEASE_VERSION `
                 --prefix (Join-Path $env:RUNNER_TEMP 'from-source') 2>&1 | Out-String
               $code = $LASTEXITCODE
             } finally {
+              $env:LOCALAPPDATA = $lad
               foreach ($name in $poison) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+              if ($null -ne $kept) { Set-Content -NoNewline -Encoding ascii -Path $userConfig -Value $kept } else { Remove-Item -Force $userConfig }
             }
             Write-Host $out
             if ($code -ne 0) { throw "install.ps1 exited $code and did not fall back to the build" }
@@ -899,6 +961,8 @@ jobs:
           iv=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
           mkdir -p "$r/api-known/releases/tags"
           printf '{"tag_name": "9.9.9"}\n' > "$r/api-known/releases/latest"
+          mkdir -p "$r/nolist"
+          printf '{"tag_name": "9.9.9"}\n' > "$r/nolist/latest"
           printf '{"tag_name": "%s"}\n' "$iv" > "$r/api-known/releases/tags/$iv"
           # Bytes no system starts as a program, with a NUL so no shell runs them as a script.
           cp "$r/good/$v/bench.txt" "$r/noexec/$v/"
@@ -977,13 +1041,17 @@ jobs:
           class Handler(http.server.SimpleHTTPRequestHandler):
               def guess_type(self, path):
                   # The API's answers are JSON, as GitHub serves them, whatever their names look like.
-                  if any(part in path.replace("\\", "/") for part in ("/api-", "/moved/")):
+                  if any(part in path.replace("\\", "/") for part in ("/api-", "/moved/", "/nolist/")):
                       return "application/json"
                   return super().guess_type(path)
               def do_GET(self):
                   # A refusal, and GitHub's answer to an address past its hourly limit, which says so.
                   if self.path.startswith("/forbidden/"):
                       self.send_error(403, "Forbidden")
+                      return
+                  # A release list that cannot be read, beside a latest release that can.
+                  if self.path.startswith("/nolist") and "?" in self.path:
+                      self.send_error(503, "Service Unavailable")
                       return
                   if self.path.startswith("/limited/"):
                       self.send_response(403)
@@ -1752,6 +1820,34 @@ jobs:
           env HOME="$home" LOCALAPPDATA="$lad" bash install.sh --yes --uninstall > dir-3.txt 2>&1 || { cat dir-3.txt; bad "the uninstall failed"; }
           [ ! -e "$tmp/chosen/cadence$exe" ] || bad "the uninstall left the binary in the --dir folder"
 
+          # A run into another folder offers to remove the copy the state records and its PATH entry, yes
+          # by default, so the uninstall after it leaves nothing behind.
+          home=$tmp/home-moved
+          mkdir -p "$home"
+          lad=$home
+          [ "$RUNNER_OS" != Windows ] || lad=$(cygpath -w "$home")
+          first=$home/.local/bin/cadence
+          [ "$RUNNER_OS" != Windows ] || first=$home/Cadence/cadence.exe
+          moved() {
+            env HOME="$home" LOCALAPPDATA="$lad" SHELL=/bin/bash CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --test-urls "$@"
+          }
+          moved --version "$v" > moved-1.txt 2>&1 || { cat moved-1.txt; bad "the first install failed"; }
+          [ -f "$first" ] || bad "the first install put nothing at $first"
+          moved --version "$v" --dir "$home/elsewhere" > moved-2.txt 2>&1 || { cat moved-2.txt; bad "the install into another folder failed"; }
+          said moved-2.txt "An earlier run installed Cadence at" "the run into another folder did not name the earlier copy"
+          said moved-2.txt "Remove that copy, and the PATH entry this script added for it? [Y/n]: y (--yes)" \
+            "the earlier copy's removal was not offered with yes as the default"
+          [ ! -e "$first" ] || bad "the earlier copy was left at $first"
+          if [ "$RUNNER_OS" = Windows ]; then
+            left=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" | tr -d '\r' | tr ';' '\n' \
+              | grep -cixF "$(cygpath -w "$home/Cadence")" || true)
+            [ "$left" = 0 ] || bad "the earlier copy's PATH entry was left"
+          elif { cat "$home/.bashrc" "$home/.bash_profile" 2> /dev/null || true; } | grep -qxF '# Added by the Cadence installer'; then
+            bad "the earlier copy's PATH line was left"
+          fi
+          moved --uninstall > moved-3.txt 2>&1 || { cat moved-3.txt; bad "the uninstall after the move failed"; }
+          for copy in "$first" "$home/elsewhere/cadence$exe"; do [ ! -e "$copy" ] || bad "the uninstall left $copy"; done
+
           # A tablebase download that stopped is offered again by a plain run, yes by default, and keeps
           # what it already has; once finished, a plain run does not offer it.
           home=$tmp/home-tables
@@ -1772,15 +1868,40 @@ jobs:
           said tables-2.txt "Download them now? [Y/n]: y (--yes)" "the stopped download was not offered with yes as the default"
           said tables-2.txt "289 downloaded now, 1 already there." "the download did not keep the table it had"
           if grep -qF 'Syzygy tablebases' tables-3.txt; then cat tables-3.txt; bad "a plain run offered the finished tables again"; fi
+          # Tables deleted by hand leave no download to finish, so none is offered.
+          if [ "$RUNNER_OS" = Windows ]; then rm -rf "$home/Cadence/syzygy"; else rm -rf "$home/.local/share/cadence/syzygy"; fi
+          env HOME="$home" LOCALAPPDATA="$lad" CADENCE_RELEASES_URL="$url/good" CADENCE_TABLES_URL="$url/tables" \
+            bash install.sh --yes --test-urls --version "$v" > tables-4.txt 2>&1 || { cat tables-4.txt; bad "the plain run after deleting the tables failed"; }
+          if grep -qF 'Syzygy tablebases' tables-4.txt; then cat tables-4.txt; bad "a plain run offered tables deleted by hand"; fi
+
+          # An earlier install whose SHA-256 cannot be looked up, because the release list does not
+          # answer, is said to be unknown rather than no release's, and kept by default.
+          home=$tmp/home-nolist
+          mkdir -p "$home"
+          lad=$home
+          [ "$RUNNER_OS" != Windows ] || lad=$(cygpath -w "$home")
+          if [ "$RUNNER_OS" = Windows ]; then st=$home/Cadence/install-state; put=$home/Cadence/cadence.exe; else st=$home/.local/share/cadence/install-state; put=$home/.local/bin/cadence; fi
+          mkdir -p "$(dirname "$st")" "$(dirname "$put")"
+          printf 'put here by hand\n' > "$put"
+          recorded=$put
+          [ "$RUNNER_OS" != Windows ] || recorded=$(cygpath -w "$put")
+          printf 'binary=%s\n' "$recorded" > "$st"
+          rc=0
+          env HOME="$home" LOCALAPPDATA="$lad" CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/nolist" \
+            bash install.sh --yes --test-urls > nolist.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat nolist.txt; bad "install.sh replaced a file it could not look up"; }
+          said nolist.txt "The list of published releases could not be read (the server answered 503), so whether it is a release's binary is not known." \
+            "install.sh did not say the release list could not be read"
+          said nolist.txt "Replace it with Cadence 9.9.9? [y/N]: n (--yes)" "install.sh did not keep the unknown file by default"
+          if grep -qF "no published release's binary" nolist.txt; then bad "install.sh called a lookup that never happened a negative"; fi
 
           # The installer the candidates were published with, which recorded the binary's path alone.
           curl -fsSL -o published-install.sh https://github.com/grounzero/cadence/releases/download/0.6.0-rc.4/install.sh
           if command -v sha256sum > /dev/null; then sum=$(sha256sum published-install.sh); else sum=$(shasum -a 256 published-install.sh); fi
           [ "${sum%% *}" = 8699db9c460174885ade0d81b502f3efd33ec3be97805c47f865af471127906e ] \
             || bad "0.6.0-rc.4's install.sh is not the one published"
-          # The same version is known by its SHA-256. Another version, or a file put there by hand, is
-          # not replaced by default under --version; a plain run replaces the older release by default
-          # and the file by hand only if asked.
+          # The same version is known by its SHA-256. A plain run replaces another release's binary by
+          # default and a file put there by hand only if asked; --yes with --version replaces either.
           for kind in same older other; do
             want=$v
             [ "$kind" = same ] || want=$old
@@ -1794,13 +1915,10 @@ jobs:
               > "earlier-$kind-0.txt" 2>&1 || { cat "earlier-$kind-0.txt"; bad "the published installer could not install $want"; }
             grep -q '^binary=' "$st" && ! grep -q '^version=' "$st" || { cat "$st"; bad "the published installer recorded more than the path"; }
             [ "$kind" != other ] || printf 'put here by hand\n' > "$home/bin/cadence$exe"
-            rc=0
-            env HOME="$home" LOCALAPPDATA="$lad" bash install.sh --yes --version "$v" --dir "$home/bin" > "earlier-$kind.txt" 2>&1 || rc=$?
             if [ "$kind" = same ]; then
-              [ "$rc" -eq 0 ] || { cat "earlier-$kind.txt"; bad "install.sh exited $rc over the published installer's $want"; }
+              env HOME="$home" LOCALAPPDATA="$lad" bash install.sh --yes --version "$v" --dir "$home/bin" > earlier-same.txt 2>&1 \
+                || { cat earlier-same.txt; bad "install.sh failed over the published installer's $want"; }
             else
-              [ "$rc" -ne 0 ] || { cat "earlier-$kind.txt"; bad "install.sh replaced the earlier install by default under --version"; }
-              said "earlier-$kind.txt" "Replace it with Cadence $v? [y/N]: n (--yes)" "install.sh did not ask to replace it, default no, under --version"
               rc=0
               env HOME="$home" LOCALAPPDATA="$lad" bash install.sh --yes > "earlier-$kind-plain.txt" 2>&1 || rc=$?
               echo "$rc" > "earlier-$kind-plain.rc"
@@ -1811,7 +1929,7 @@ jobs:
           said earlier-same.txt "Cadence $v is already installed at" "install.sh did not find the published installer's $v up to date"
           grep -qx "version=$v" "$tmp/earlier-same/.local/share/cadence/install-state" "$tmp/earlier-same/Cadence/install-state" 2> /dev/null \
             || bad "install.sh did not record the version it found"
-          said earlier-older.txt "without recording its version, and its SHA-256 is none of release $v's." \
+          said earlier-older-plain.txt "without recording its version, and its SHA-256 is none of release $v's." \
             "install.sh did not say the published installer's $old is not $v"
           [ "$(cat earlier-older-plain.rc)" = 0 ] || { cat earlier-older-plain.txt; bad "the plain run over the earlier $old failed"; }
           said earlier-older-plain.txt "Its SHA-256 is that of cadence-$old-" "install.sh did not find the earlier binary among the releases"
@@ -1822,6 +1940,13 @@ jobs:
           said earlier-other-plain.txt "Its SHA-256 is that of no published release's binary." "install.sh did not say the file is no release's"
           said earlier-other-plain.txt "Replace it with Cadence $v? [y/N]: n (--yes)" "the plain run did not keep a file put there by hand by default"
           [ "$(cat "$tmp/earlier-other/bin/cadence$exe")" = 'put here by hand' ] || bad "the file put there by hand was changed"
+          env HOME="$tmp/earlier-other" LOCALAPPDATA="$(cygpath -w "$tmp/earlier-other" 2> /dev/null || echo "$tmp/earlier-other")" \
+            bash install.sh --yes --version "$v" > earlier-other-pinned.txt 2>&1 \
+            || { cat earlier-other-pinned.txt; bad "install.sh --yes --version $v did not install over a file put there by hand"; }
+          said earlier-other-pinned.txt "Replacing it with Cadence $v, as --yes and --version $v ask." \
+            "install.sh --yes --version did not replace the earlier install"
+          id=$(printf 'uci\nquit\n' | "$tmp/earlier-other/bin/cadence$exe" | tr -d '\r' | sed -n 's/^id name //p')
+          [ "$id" = "Cadence $v" ] || bad "after --yes --version the binary calls itself $id"
 
           # A PATH entry this script recorded but no longer finds is not said to be removed.
           home=$tmp/home-marker
@@ -2008,6 +2133,25 @@ jobs:
             if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the uninstall failed' }
             if (Test-Path (Join-Path $chosen 'cadence.exe')) { throw 'the uninstall left the binary in the --dir folder' }
 
+            # A run into another folder offers to remove the copy the state records and its PATH entry, yes
+            # by default, so the uninstall after it leaves nothing behind.
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'home-moved'
+            New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+            $firstFolder = Join-Path $env:LOCALAPPDATA 'Cadence'
+            $elsewhere = Join-Path $env:LOCALAPPDATA 'elsewhere'
+            $run = Install @('--yes', '--test-urls', '--version', $v)
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the first install failed' }
+            if (-not (Test-Path (Join-Path $firstFolder 'cadence.exe'))) { throw 'the first install put nothing in the default folder' }
+            $moved = Install @('--yes', '--test-urls', '--version', $v, '--dir', $elsewhere)
+            if ($moved.Code -ne 0) { Write-Host $moved.Out; throw 'the install into another folder failed' }
+            Said $moved 'An earlier run installed Cadence at' 'the run into another folder did not name the earlier copy'
+            Said $moved 'Remove that copy, and the PATH entry this script added for it? [Y/n]: y (--yes)' "the earlier copy's removal was not offered with yes as the default"
+            if (Test-Path (Join-Path $firstFolder 'cadence.exe')) { throw 'the earlier copy was left' }
+            if (@([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -eq $firstFolder }).Count -ne 0) { throw "the earlier copy's PATH entry was left" }
+            $run = Install @('--yes', '--test-urls', '--uninstall')
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the uninstall after the move failed' }
+            foreach ($copy in @((Join-Path $firstFolder 'cadence.exe'), (Join-Path $elsewhere 'cadence.exe'))) { if (Test-Path $copy) { throw "the uninstall left $copy" } }
+
             # A tablebase download that stopped is offered again by a plain run, yes by default, and keeps
             # what it already has; once finished, a plain run does not offer it.
             $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'home-tables'
@@ -2027,6 +2171,26 @@ jobs:
             Said $again 'Download them now? [Y/n]: y (--yes)' 'the stopped download was not offered with yes as the default'
             Said $again '289 downloaded now, 1 already there.' 'the download did not keep the table it had'
             if ($last.Out.Contains('Syzygy tablebases')) { Write-Host $last.Out; throw 'a plain run offered the finished tables again' }
+            # Tables deleted by hand leave no download to finish, so none is offered.
+            Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Cadence\syzygy')
+            $gone = Install @('--yes', '--test-urls', '--version', $v)
+            if ($gone.Code -ne 0) { Write-Host $gone.Out; throw 'the plain run after deleting the tables failed' }
+            if ($gone.Out.Contains('Syzygy tablebases')) { Write-Host $gone.Out; throw 'a plain run offered tables deleted by hand' }
+
+            # An earlier install whose SHA-256 cannot be looked up, because the release list does not
+            # answer, is said to be unknown rather than no release's, and kept by default.
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'home-nolist'
+            $put = Join-Path $env:LOCALAPPDATA 'Cadence\cadence.exe'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $put) | Out-Null
+            Set-Content -Encoding ascii -Path $put -Value 'put here by hand'
+            Set-Content -Encoding ascii -Path (Join-Path $env:LOCALAPPDATA 'Cadence\install-state') -Value "binary=$put"
+            $env:CADENCE_API_URL = "$url/nolist"
+            $run = Install @('--yes', '--test-urls')
+            Remove-Item Env:CADENCE_API_URL
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 replaced a file it could not look up' }
+            Said $run "The list of published releases could not be read (the server answered 503), so whether it is a release's binary is not known." 'install.ps1 did not say the release list could not be read'
+            Said $run 'Replace it with Cadence 9.9.9? [y/N]: n (--yes)' 'install.ps1 did not keep the unknown file by default'
+            if ($run.Out.Contains("no published release's binary")) { throw 'install.ps1 called a lookup that never happened a negative' }
 
             # The session PATH is read as install.sh reads it, and the tables are said to be removed only
             # once they are.
@@ -2059,9 +2223,8 @@ jobs:
             $published = Join-Path $env:RUNNER_TEMP 'published-install.ps1'
             Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/grounzero/cadence/releases/download/0.6.0-rc.4/install.ps1' -OutFile $published
             if ((Get-FileHash -Algorithm SHA256 $published).Hash -ne '43c1658df17ae918b9fd725ab9c06e2b7ee26046f19de1ead80fbe71895f69ee') { throw "0.6.0-rc.4's install.ps1 is not the one published" }
-            # The same version is known by its SHA-256. Another version, or a file put there by hand, is
-            # not replaced by default under --version; a plain run replaces the older release by default
-            # and the file by hand only if asked.
+            # The same version is known by its SHA-256. A plain run replaces another release's binary by
+            # default and a file put there by hand only if asked; --yes with --version replaces either.
             $earlier = @{}
             $plain = @{}
             foreach ($kind in @('same', 'older', 'other')) {
@@ -2074,19 +2237,17 @@ jobs:
               $recorded = @(Get-Content (Join-Path $env:LOCALAPPDATA 'Cadence\install-state'))
               if (-not ($recorded -match '^binary=') -or ($recorded -match '^version=')) { throw 'the published installer recorded more than the path' }
               if ($kind -eq 'other') { Set-Content -Encoding ascii -Path (Join-Path $dir 'cadence.exe') -Value 'put here by hand' }
-              $earlier[$kind] = Install @('--yes', '--version', $v, '--dir', $dir)
               if ($kind -eq 'same') {
+                $earlier[$kind] = Install @('--yes', '--version', $v, '--dir', $dir)
                 if ($earlier[$kind].Code -ne 0) { Write-Host $earlier[$kind].Out; throw "install.ps1 exited $($earlier[$kind].Code) over the published installer's $want" }
               } else {
-                if ($earlier[$kind].Code -eq 0) { Write-Host $earlier[$kind].Out; throw 'install.ps1 replaced the earlier install by default under --version' }
-                Said $earlier[$kind] "Replace it with Cadence $($v)? [y/N]: n (--yes)" 'install.ps1 did not ask to replace it, default no, under --version'
                 $plain[$kind] = Install @('--yes')
               }
             }
             Said $earlier['same'] "without recording its version; its SHA-256 is release $v's cadence-$v-" "install.ps1 did not know the published installer's $v by its SHA-256"
             Said $earlier['same'] "Cadence $v is already installed at" "install.ps1 did not find the published installer's $v up to date"
             if (@(Get-Content (Join-Path $env:RUNNER_TEMP 'earlier-same\Cadence\install-state')) -notcontains "version=$v") { throw 'install.ps1 did not record the version it found' }
-            Said $earlier['older'] "without recording its version, and its SHA-256 is none of release $v's." "install.ps1 did not say the published installer's $old is not $v"
+            Said $plain['older'] "without recording its version, and its SHA-256 is none of release $v's." "install.ps1 did not say the published installer's $old is not $v"
             if ($plain['older'].Code -ne 0) { Write-Host $plain['older'].Out; throw "the plain run over the earlier $old failed" }
             Said $plain['older'] "Its SHA-256 is that of cadence-$old-" 'install.ps1 did not find the earlier binary among the releases'
             Said $plain['older'] "Replace it with Cadence $($v)? [Y/n]: y (--yes)" "the plain run did not replace another release's binary by default"
@@ -2097,6 +2258,12 @@ jobs:
             Said $plain['other'] "Its SHA-256 is that of no published release's binary." "install.ps1 did not say the file is no release's"
             Said $plain['other'] "Replace it with Cadence $($v)? [y/N]: n (--yes)" 'the plain run did not keep a file put there by hand by default'
             if ((Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'earlier-other\bin\cadence.exe')).Trim() -ne 'put here by hand') { throw 'the file put there by hand was changed' }
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'earlier-other'
+            $run = Install @('--yes', '--version', $v)
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 --yes --version $v did not install over a file put there by hand" }
+            Said $run "Replacing it with Cadence $v, as --yes and --version $v ask." 'install.ps1 --yes --version did not replace the earlier install'
+            $id = "`nuci`nquit`n" | & (Join-Path $env:RUNNER_TEMP 'earlier-other\bin\cadence.exe') | Where-Object { $_ -match '^id name ' }
+            if ("$id" -ne "id name Cadence $v") { throw "after --yes --version the binary calls itself $id" }
 
             # A PATH entry this script recorded but no longer finds is not said to be removed.
             $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'home-marker'
@@ -2192,10 +2359,6 @@ jobs:
               "[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment').SetValue('Path', \$env:CADENCE_PATH, \$env:CADENCE_KIND)"
           fi
           echo "both installers read, write and uninstall one state"
-
-      - name: The worker setup's tests
-        if: env.ASSET == 'linux-x86-64-avx2'
-        run: python3 -m unittest discover -s openbench/tests -v
 
       - name: The logs, when an install failed
         if: failure()
