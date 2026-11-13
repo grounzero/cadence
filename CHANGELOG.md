@@ -34,12 +34,13 @@ the tablebases and ponders.
   the score encoding, the transposition table's entries and buckets, the
   history and correction updates, the pruning margins and reductions, and
   the time budget stay within their bounds. A failed proof fails the build.
-- Install scripts: `install.sh` for Linux, macOS, and Windows under Git
-  Bash or WSL, and `install.ps1` for Windows PowerShell. Each installs a
-  release's binary for the system it runs on once the binary's SHA-256 and
-  bench match the release's, or builds the release from source where no
-  binary fits, and can download the 3-4-5 piece Syzygy tables. The README
-  says how to run them.
+- The README installs from the latest release's own scripts.
+- The installers verify each binary (checksum, bench and, with gh, its build
+  attestation) and say which checks ran.
+- They upgrade older installs, report when you're up to date, and ask before
+  a downgrade or replacing a different build.
+- Clearer errors when a system blocks the binary, and uninstall removes only
+  what the installer added.
 - Releases: each release builds seven binaries, Windows and Linux x86-64
   each in an AVX2 build and a generic one, Linux aarch64, macOS arm64 and
   macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
@@ -53,71 +54,10 @@ the tablebases and ponders.
 
 - Search: a position where neither side has the material to mate is scored
   as a draw. The bench rises from 24,819,899 to 34,686,410 nodes.
-- Install scripts: they ask only before building from source, installing a
-  compiler or Rust, replacing an install, changing the PATH or downloading
-  the tablebases, and state the rest: the build they take, the folder and
-  the binary's check. `--generic` and `--dir` are new names for
-  `--build generic` and `--prefix`, which still work. The tablebase download
-  shows its progress in megabytes and prints the folder for `SyzygyPath` on
-  a line of its own, and after adding to the PATH they say how to run
-  `cadence` before a new terminal opens. `--update` now differs from a plain
-  run only in replacing a file at the install path that they did not
-  install unless that is declined.
-- Install scripts: without `--version` they take the latest stable release,
-  or where none is published they name the newest pre-release, print the
-  command that installs it and ask. A build from source names the tag it
-  builds, and none is offered when nothing is published. A failed download
-  is described in plain words, with the details in the log.
-- Install scripts: a token in `GITHUB_TOKEN` is sent with their requests to
-  GitHub's API, and a refusal for GitHub's hourly limit on unauthenticated
-  requests is named as one, with what to do.
-- Install scripts: where `gh` is installed and signed in, they check that
-  each binary's build attestation was made by the release workflow run at
-  the version's tag, and do not use a binary whose attestation fails; where
-  `gh` cannot check it, they say so and go on with the checksum and the
-  bench. A build from source first checks that
-  the release's tag is the commit the release names, before any compiler or
-  Rust is installed; where GitHub's API does not answer, they say so and
-  build without that check. The end of a run names the checks the binary
-  passed, with no SHA-256 for a build from source.
-- Install scripts: they compare the installed version with the release. The
-  same version is reported as up to date and the run stops, an older one is
-  upgraded unless that is declined, and a newer one is kept unless a
-  downgrade is asked for, as `--yes` with `--version` asks for one. A plain
-  run installs into the folder the last install went to, `--dir`'s included.
-  An install by an earlier installer, which recorded only its path, is known
-  by its SHA-256 among the release's binaries; otherwise they ask to replace
-  it, yes by default only on a run taking the newest release over another
-  release's binary. Another build, or a build from source, asked for
-  at the same version replaces the one installed. A file at the install path
-  that they did not install is never run, and a second run changes nothing.
-- Install scripts: a binary the system refuses to start, as on a managed
-  machine whose policy blocks it, is reported in plain words with what
-  installing needs, and the log is kept. One the system cannot start for
-  another reason, such as a missing loader, is built from source instead.
-  The installer offers its own version only where that release is
-  published.
-- Install scripts: `CADENCE_RELEASES_URL` must name this repository's
-  releases unless `--test-urls` is given, and every run prints where the
-  release files come from. A binary's bench and its answer to `uci` are
-  stopped, with every process they started, after ten minutes and thirty
-  seconds.
-- Install scripts: `--tables` downloads the tablebases without asking. The
-  table names published with their checksums are checked before any becomes
-  a path, a table already there and matching its checksum is kept, and a
-  download that stopped is offered again by the next run.
-- Install scripts: on Windows, `install.sh` and `install.ps1` keep one
-  install state, Windows paths in UTF-8 without a byte order mark, each
-  reading what the other wrote, and either uninstalls what the other
-  installed.
-- The README fetches the install scripts from the latest release rather
-  than from `main`, and says a release's binaries can be downloaded
-  directly.
 - Tools: `setup-worker.py` refuses a configuration inside the repository,
   and git ignores `worker.json` and `credentials.cadence`. The Makefile
   clears an inherited `RUSTFLAGS`, and with it `CARGO_ENCODED_RUSTFLAGS`
-  and every `CARGO_TARGET_<triple>_RUSTFLAGS`, as the install scripts' builds
-  do for the target they build.
+  and every `CARGO_TARGET_<triple>_RUSTFLAGS`.
 - The README gives a table of strength estimates from our own gauntlets
   against rated engines, and `docs/calibration/strength.md` publishes each
   gauntlet's games and fit, and how to check them.
@@ -158,21 +98,6 @@ the tablebases and ponders.
   `go`, as `nodes` does. `nps` was overstated.
 - Tablebases: at a won root, only the winning moves that reach a capture
   or a pawn move soonest are searched. The losing side is unchanged.
-- Install scripts: under Git Bash on an Intel processor, `install.sh`
-  chose the generic build where the AVX2 build runs. It now chooses as
-  `install.ps1` does.
-- Install scripts: the newest pre-release is the highest version, where it
-  was the first one GitHub listed, and a second run no longer adds the PATH
-  line to a shell profile that already holds it.
-- Install scripts: the uninstall removes only the PATH line under the
-  installer's marker, leaving the same line written by hand, and on Windows
-  the user PATH is edited as the registry holds it, so a `%VARIABLE%` in it
-  stays unexpanded. After a `--dir` install, a plain run no longer installs
-  a second copy in the default folder, and the uninstall removes the binary
-  wherever the install put it. The uninstall says it removed a PATH entry
-  only when there was one, and removes a user PATH it leaves empty.
-- Install scripts: `install.ps1` finds its folder on the session PATH as
-  `install.sh` does, and says the tablebases are removed only once they are.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its
