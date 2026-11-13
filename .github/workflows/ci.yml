@@ -507,24 +507,19 @@ jobs:
   # default release, and the binary each installed held to that release's bench and id name. Each then
   # takes that binary from a release folder served on the runner, and builds when its copy is corrupted.
   install-linux-x86-64:
-    # Each leg is a job named outright, since a skipped job reports its required check by name only
-    # where the name is written out; one matrix would leave every leg's check waiting.
+    # Each leg is a job named outright, with no matrix, so its check carries exactly the name the
+    # ruleset requires whether it runs or is skipped; a matrix job's name gains its values in brackets.
     name: install.sh, Linux x86-64
     needs: changes
     if: &install-when ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.install == 'true') }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install.sh, Linux x86-64
-            os: ubuntu-latest
-            script: install.sh
-            asset: linux-x86-64-avx2
-    # The installers send it to GitHub's API, whose unauthenticated limit runners sharing an address
-    # can exhaust.
-    env: &install-env
+    runs-on: ubuntu-latest
+    # The installers send GITHUB_TOKEN to GitHub's API, whose unauthenticated limit runners sharing an
+    # address can exhaust. The rest name the leg for the shared steps.
+    env:
       GITHUB_TOKEN: ${{ github.token }}
+      LEG: install.sh, Linux x86-64
+      SCRIPT: install.sh
+      ASSET: linux-x86-64-avx2
     defaults: &install-defaults
       run:
         shell: bash
@@ -533,7 +528,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint install.sh
-        if: matrix.script == 'install.sh' && runner.os == 'Linux'
+        if: env.SCRIPT == 'install.sh' && runner.os == 'Linux'
         run: |
           bash -n install.sh
           shellcheck --version
@@ -546,7 +541,7 @@ jobs:
           done
 
       - name: Parse install.ps1
-        if: matrix.script == 'install.ps1'
+        if: env.SCRIPT == 'install.ps1'
         shell: powershell
         run: |
           $errors = $null
@@ -556,7 +551,7 @@ jobs:
 
       # A version cut changes the workspace version, and both installers must name the same one.
       - name: The installers name the workspace version
-        if: matrix.script == 'install.sh' && runner.os == 'Linux'
+        if: env.SCRIPT == 'install.sh' && runner.os == 'Linux'
         run: |
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
           sh_version=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
@@ -571,7 +566,7 @@ jobs:
       # A release that does not exist fails at once, and the failure must leave its log behind with
       # the reason in it and no home folder named.
       - name: A failure keeps its log, install.sh
-        if: matrix.script == 'install.sh'
+        if: env.SCRIPT == 'install.sh'
         run: |
           if bash install.sh --yes --version 0.0.0 > forced.txt 2>&1; then
             cat forced.txt
@@ -594,7 +589,7 @@ jobs:
           echo "the failure kept $log, with its reason and no home folder"
 
       - name: A failure keeps its log, install.ps1
-        if: matrix.script == 'install.ps1'
+        if: env.SCRIPT == 'install.ps1'
         shell: powershell
         run: |
           $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --version 0.0.0 2>&1 | Out-String
@@ -617,11 +612,11 @@ jobs:
           exit 0
 
       - name: Install with install.sh --yes
-        if: matrix.script == 'install.sh'
+        if: env.SCRIPT == 'install.sh'
         run: bash install.sh --yes --keep-log 2>&1 | tee install.txt
 
       - name: Install with install.ps1 --yes
-        if: matrix.script == 'install.ps1'
+        if: env.SCRIPT == 'install.ps1'
         shell: powershell
         run: |
           $out = & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --keep-log | Out-String
@@ -633,7 +628,7 @@ jobs:
       # Git Bash's /proc/cpuinfo prints abm, LZCNT's flag, only on AMD processors. Every processor with
       # AVX2 has LZCNT, so the build install.sh chose is checked against AVX2.
       - name: The build install.sh chose under Git Bash
-        if: matrix.script == 'install.sh' && runner.os == 'Windows'
+        if: env.SCRIPT == 'install.sh' && runner.os == 'Windows'
         run: |
           sed -n 's/^vendor_id[[:space:]]*: //p; s/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 2
           flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
@@ -693,7 +688,7 @@ jobs:
           echo "installed $bin: bench $got against $want, id name $id"
           [ "$got" = "$want" ] || { echo "::error::the installed bench is $got and $version's bench.txt says $want"; exit 1; }
           [ "$id" = "Cadence $version" ] || { echo "::error::the installed binary calls itself $id and not Cadence $version"; exit 1; }
-          printf '### %s\nCadence %s installed, bench %s\n' "${{ matrix.name }}" "$version" "$got" >> "$GITHUB_STEP_SUMMARY"
+          printf '### %s\nCadence %s installed, bench %s\n' "${{ env.LEG }}" "$version" "$got" >> "$GITHUB_STEP_SUMMARY"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           echo "INSTALLED=$bin" >> "$GITHUB_ENV"
 
@@ -705,7 +700,7 @@ jobs:
           exe=""
           if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); exe=.exe; fi
           # The file is named for the build the installer chose, which it then looks for.
-          asset=${{ matrix.asset }}
+          asset=${{ env.ASSET }}
           case "$asset" in
             *-avx2) if grep -qF 'the generic build runs here' install.txt; then asset=${asset%-avx2}-generic; fi ;;
           esac
@@ -725,7 +720,7 @@ jobs:
       # Each folder served over HTTP on the runner, so the script downloads as it would from GitHub, and
       # --version keeps GitHub's rate-limited API out of it. The checks read what the script said.
       - name: install.sh takes the release binary, and builds when it is corrupt
-        if: matrix.script == 'install.sh'
+        if: env.SCRIPT == 'install.sh'
         run: |
           tmp=$RUNNER_TEMP
           py=python3
@@ -791,7 +786,7 @@ jobs:
           fi
 
       - name: install.ps1 takes the release binary, and builds when it is corrupt
-        if: matrix.script == 'install.ps1'
+        if: env.SCRIPT == 'install.ps1'
         shell: powershell
         run: |
           $releases = Join-Path $env:RUNNER_TEMP 'releases'
@@ -1095,7 +1090,7 @@ jobs:
       # program here, gh failing to check, and GitHub's API refusing. The newest candidate is the
       # highest.
       - name: install.sh refuses what it must
-        if: matrix.script == 'install.sh'
+        if: env.SCRIPT == 'install.sh'
         run: |
           tmp=$RUNNER_TEMP
           py=python3
@@ -1330,7 +1325,7 @@ jobs:
           echo "every refusal held"
 
       - name: install.ps1 refuses what it must
-        if: matrix.script == 'install.ps1'
+        if: env.SCRIPT == 'install.ps1'
         shell: powershell
         run: |
           $releases = Join-Path $env:RUNNER_TEMP 'releases'
@@ -1560,7 +1555,7 @@ jobs:
       # not install, and the uninstall. Then the installs the published installers recorded by path
       # alone, the same version and an older one.
       - name: install.sh compares versions, and a second run changes nothing
-        if: matrix.script == 'install.sh'
+        if: env.SCRIPT == 'install.sh'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1694,7 +1689,7 @@ jobs:
           [ "$rc" -ne 0 ] || { cat source.txt; bad "install.sh built a tag that is not the commit its release names"; }
           said source.txt "and --source asks for it built from source, so it is replaced." "install.sh took --source at the same version as up to date"
           said source.txt "and the release names 0000000000000000000000000000000000000000, so it is not built" "the moved tag did not stop the build"
-          case "${{ matrix.asset }}" in
+          case "${{ env.ASSET }}" in
             *-avx2)
               if grep -qF 'the AVX2 build runs here' up.txt; then
                 rc=0
@@ -1850,7 +1845,7 @@ jobs:
           echo "upgrade, second run, downgrades, builds, the unknown file, the uninstall, the --dir folder, stopped tables and earlier installs held"
 
       - name: install.ps1 compares versions, and a second run changes nothing
-        if: matrix.script == 'install.ps1'
+        if: env.SCRIPT == 'install.ps1'
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2124,7 +2119,7 @@ jobs:
       # each reading what the other writes and what the published candidates' installers wrote, and
       # each uninstalling what the other installed, its PATH entry with it.
       - name: The two installers share one state on Windows
-        if: runner.os == 'Windows' && matrix.script == 'install.sh'
+        if: runner.os == 'Windows' && env.SCRIPT == 'install.sh'
         run: |
           tmp=$(cygpath -u "$RUNNER_TEMP")
           (cd "$tmp/releases" && exec python "$tmp/serve.py" 8714) > "$tmp/serve-3.log" 2>&1 &
@@ -2199,7 +2194,7 @@ jobs:
           echo "both installers read, write and uninstall one state"
 
       - name: The worker setup's tests
-        if: matrix.asset == 'linux-x86-64-avx2'
+        if: env.ASSET == 'linux-x86-64-avx2'
         run: python3 -m unittest discover -s openbench/tests -v
 
       - name: The logs, when an install failed
@@ -2215,16 +2210,12 @@ jobs:
     name: install.sh, Linux aarch64
     needs: changes
     if: *install-when
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install.sh, Linux aarch64
-            os: ubuntu-24.04-arm
-            script: install.sh
-            asset: linux-aarch64
-    env: *install-env
+    runs-on: ubuntu-24.04-arm
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LEG: install.sh, Linux aarch64
+      SCRIPT: install.sh
+      ASSET: linux-aarch64
     defaults: *install-defaults
     steps: *install-steps
 
@@ -2232,16 +2223,12 @@ jobs:
     name: install.sh, macOS arm64
     needs: changes
     if: *install-when
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install.sh, macOS arm64
-            os: macos-latest
-            script: install.sh
-            asset: macos-arm64
-    env: *install-env
+    runs-on: macos-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LEG: install.sh, macOS arm64
+      SCRIPT: install.sh
+      ASSET: macos-arm64
     defaults: *install-defaults
     steps: *install-steps
 
@@ -2249,16 +2236,12 @@ jobs:
     name: install.sh, macOS x86-64
     needs: changes
     if: *install-when
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install.sh, macOS x86-64
-            os: macos-26-intel
-            script: install.sh
-            asset: macos-x86-64
-    env: *install-env
+    runs-on: macos-26-intel
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LEG: install.sh, macOS x86-64
+      SCRIPT: install.sh
+      ASSET: macos-x86-64
     defaults: *install-defaults
     steps: *install-steps
 
@@ -2266,16 +2249,12 @@ jobs:
     name: install.sh, Windows Git Bash
     needs: changes
     if: *install-when
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install.sh, Windows Git Bash
-            os: windows-latest
-            script: install.sh
-            asset: windows-x86-64-avx2
-    env: *install-env
+    runs-on: windows-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LEG: install.sh, Windows Git Bash
+      SCRIPT: install.sh
+      ASSET: windows-x86-64-avx2
     defaults: *install-defaults
     steps: *install-steps
 
@@ -2283,16 +2262,12 @@ jobs:
     name: install.ps1, Windows PowerShell
     needs: changes
     if: *install-when
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install.ps1, Windows PowerShell
-            os: windows-latest
-            script: install.ps1
-            asset: windows-x86-64-avx2
-    env: *install-env
+    runs-on: windows-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      LEG: install.ps1, Windows PowerShell
+      SCRIPT: install.ps1
+      ASSET: windows-x86-64-avx2
     defaults: *install-defaults
     steps: *install-steps
 
