@@ -19,13 +19,14 @@ result.
 
 ## [Unreleased]
 
-## [0.6.0-rc.4] - 2026-11-13
+## [0.6.0] - 2026-11-13
 
-A release candidate for 0.6.0, published as a pre-release, after
-0.6.0-rc.3 of 2026-11-10. It scores a position where neither side has the
-material to mate as a draw, stops a running search before `position` or a
-new `Hash` takes effect, and has the install scripts ask only where there
-is a choice to make.
+Everything since 0.5.23, published first as four release candidates, each
+a pre-release: 0.6.0-rc.1 (2026-11-06), 0.6.0-rc.2 (2026-11-08),
+0.6.0-rc.3 (2026-11-10) and 0.6.0-rc.4 (2026-11-13). It adds release
+binaries and install scripts, scores a position where neither side has the
+material to mate as a draw, and fixes how the engine answers the GUI, uses
+the tablebases and ponders.
 
 ### Added
 
@@ -43,6 +44,8 @@ is a choice to make.
   each in an AVX2 build and a generic one, Linux aarch64, macOS arm64 and
   macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
   install scripts and a provenance attestation for each binary.
+- The test log: `docs/testing/sprt-log.csv` gives every SPRT, passed or
+  failed, with its games and result.
 
 ### Changed
 
@@ -585,8 +588,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.4...main
-[0.6.0-rc.4]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.4
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0...main
+[0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21

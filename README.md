@@ -6,7 +6,7 @@
 [![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
 Cadence is a UCI chess engine written in Rust, for standard chess, Chess960
-and double Chess960 (DFRC). Using a classical alpha-beta search and a
+and double Chess960 (DFRC), using a classical alpha-beta search and a
 hand-written evaluation tuned on its own games, with no neural network. It
 reads Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
 crates, which with the crates they use are its only outside dependencies.

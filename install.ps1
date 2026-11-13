@@ -22,7 +22,7 @@ $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
 $TablesBytes = 983957920
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
-$InstallerVersion = '0.6.0-rc.4'
+$InstallerVersion = '0.6.0'
 
 $script:Yes = $false
 $script:KeepLog = $false
