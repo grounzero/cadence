@@ -58,7 +58,9 @@ the tablebases and ponders.
   `--build generic` and `--prefix`, which still work. The tablebase download
   shows its progress in megabytes and prints the folder for `SyzygyPath` on
   a line of its own, and after adding to the PATH they say how to run
-  `cadence` before a new terminal opens.
+  `cadence` before a new terminal opens. `--update` now differs from a plain
+  run only in replacing a file at the install path that they did not
+  install unless that is declined.
 - Install scripts: without `--version` they take the latest stable release,
   or where none is published they name the newest pre-release, print the
   command that installs it and ask. A build from source names the tag it
@@ -79,12 +81,13 @@ the tablebases and ponders.
 - Install scripts: they compare the installed version with the release. The
   same version is reported as up to date and the run stops, an older one is
   upgraded unless that is declined, and a newer one is kept unless a
-  downgrade is asked for. An install by an earlier installer, which
-  recorded only its path, is known by its SHA-256 among the release's
-  binaries, and is otherwise upgraded unless that is declined. Another
-  build, or a build from source, asked for at the same version replaces the
-  one installed. A file at the install path that they did not install is
-  never run, and a second run changes nothing.
+  downgrade is asked for, as `--yes` with `--version` asks for one. A plain
+  run installs into the folder the last install went to, `--dir`'s included.
+  An install by an earlier installer, which recorded only its path, is known
+  by its SHA-256 among the release's binaries, and is otherwise upgraded
+  unless that is declined. Another build, or a build from source, asked for
+  at the same version replaces the one installed. A file at the install path
+  that they did not install is never run, and a second run changes nothing.
 - Install scripts: a binary the system refuses to start, as on a managed
   machine whose policy blocks it, is reported in plain words with what
   installing needs, and the log is kept. One the system cannot start for
@@ -93,17 +96,25 @@ the tablebases and ponders.
   published.
 - Install scripts: `CADENCE_RELEASES_URL` must name this repository's
   releases unless `--test-urls` is given, and every run prints where the
-  release files come from. A binary's bench and its answer to `uci` are stopped,
-  with every process they started, after ten minutes and thirty seconds.
+  release files come from. A binary's bench and its answer to `uci` are
+  stopped, with every process they started, after ten minutes and thirty
+  seconds.
 - Install scripts: `--tables` downloads the tablebases without asking. The
   table names published with their checksums are checked before any becomes
-  a path, and a table already there and matching its checksum is kept.
+  a path, a table already there and matching its checksum is kept, and a
+  download that stopped is offered again by the next run.
+- Install scripts: on Windows, `install.sh` and `install.ps1` keep one
+  install state, Windows paths in UTF-8 without a byte order mark, each
+  reading what the other wrote, and either uninstalls what the other
+  installed.
 - The README fetches the install scripts from the latest release rather
   than from `main`, and says a release's binaries can be downloaded
   directly.
 - Tools: `setup-worker.py` refuses a configuration inside the repository,
   and git ignores `worker.json` and `credentials.cadence`. The Makefile
-  clears an inherited `RUSTFLAGS`.
+  clears an inherited `RUSTFLAGS`, and with it `CARGO_ENCODED_RUSTFLAGS`
+  and every `CARGO_TARGET_<triple>_RUSTFLAGS`, as the install scripts' builds
+  do for the target they build.
 - The README gives a table of strength estimates from our own gauntlets
   against rated engines, and `docs/calibration/strength.md` publishes each
   gauntlet's games and fit, and how to check them.
@@ -153,7 +164,11 @@ the tablebases and ponders.
 - Install scripts: the uninstall removes only the PATH line under the
   installer's marker, leaving the same line written by hand, and on Windows
   the user PATH is edited as the registry holds it, so a `%VARIABLE%` in it
-  stays unexpanded.
+  stays unexpanded. After a `--dir` install, a plain run no longer installs
+  a second copy in the default folder, and the uninstall removes the binary
+  wherever the install put it.
+- Install scripts: `install.ps1` finds its folder on the session PATH as
+  `install.sh` does, and says the tablebases are removed only once they are.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its

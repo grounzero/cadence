@@ -55,8 +55,8 @@ Windows), or offers to build from source if none fits. It asks before anything
 big: building, installing Rust, changing your PATH or downloading tablebases.
 
 Options: `--version X.Y.Z`, `--dir DIR`, `--generic`, `--source`, `--update`,
-`--uninstall` and `--yes`. If a run fails, attach the log it names to a
-GitHub issue.
+`--uninstall`, `--tables` and `--yes`. If a run fails, attach the log it
+names to a GitHub issue.
 
 ### Building from source
 

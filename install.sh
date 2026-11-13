@@ -30,6 +30,7 @@ YES=0
 KEEP_LOG=0
 MODE=install
 VERSION=""
+ASKED_VERSION=""
 PREFIX=""
 BUILD=""
 ASKED=""
@@ -71,7 +72,8 @@ asked first; a build from source names the tag it builds.
   --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the default release, or --version's, over an installed Cadence
+  --update         as a plain run, which upgrades an older install, but also replace a file at
+                   the install path that this script did not install, unless declined
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
   --tables         download the 3-4-5 piece tablebases without asking
   --yes            take every default without asking
@@ -116,6 +118,7 @@ case "$BUILD" in
 esac
 # The build named on the command line, which an install of another build at the same version yields to.
 ASKED=$BUILD
+ASKED_VERSION=$VERSION
 
 # --- The system --------------------------------------------------------------------------------
 
@@ -306,17 +309,41 @@ choose() {
     done
 }
 
-state_get() {
-    [ -f "$STATE" ] || return 0
-    sed -n "s/^$1=//p" "$STATE" | head -n 1
+# The state's lines without the byte order mark and carriage returns install.ps1 wrote before the two
+# scripts shared one format.
+state_lines() {
+    tr -d '\r' < "$STATE" | LC_ALL=C sed "1s/^$(printf '\357\273\277')//"
 }
 
-# A value already held is not written again, so a second run leaves the file as it was.
+state_get() {
+    [ -f "$STATE" ] || return 0
+    state_lines | sed -n "s/^$1=//p" | head -n 1
+}
+
+# A value already held is not written again, so a second run leaves the file as it was. The file is
+# UTF-8 without a byte order mark, its paths Windows ones on Windows, as install.ps1 writes it.
 state_set() {
     [ ! -f "$STATE" ] || [ "$(state_get "$1")" != "$2" ] || return 0
     mkdir -p "$DATA_DIR" || fail "cannot create $DATA_DIR"
-    { [ -f "$STATE" ] && grep -v "^$1=" "$STATE"; printf '%s=%s\n' "$1" "$2"; } > "$STATE.new" \
+    { [ -f "$STATE" ] && state_lines | grep -v "^$1="; printf '%s=%s\n' "$1" "$2"; } > "$STATE.new" \
         && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
+}
+
+# A path from the state as this shell names it; on Windows either script's form, and the /c/ form
+# earlier versions of this one wrote, reads as the same file.
+state_path() {
+    local value
+    value=$(state_get "$1")
+    if [ "$OS" = windows ] && [ -n "$value" ]; then cygpath -u "$value"; else printf '%s' "$value"; fi
+}
+
+# Windows names a file the same in any case.
+same_path() {
+    if [ "$OS" = windows ]; then
+        [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
+    else
+        [ "$1" = "$2" ]
+    fi
 }
 
 shown() {
@@ -972,8 +999,11 @@ build() {
                 || say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
             ;;
     esac
-    # RUSTFLAGS would replace the repository's own per-target flags, so it is left out of the build.
-    (cd "$SRC" && run env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS cargo $args) || fail "the build failed"
+    # RUSTFLAGS would replace the repository's own per-target flags and the target's own variable
+    # would add to them, so none of them reaches the build.
+    local flags
+    flags="CARGO_TARGET_$(printf '%s' "$TRIPLE" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+    (cd "$SRC" && run env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS -u "$flags" cargo $args) || fail "the build failed"
     BUILT="$SRC/target/release/cadence$EXE"
     [ -f "$BUILT" ] || fail "the build left no binary at $BUILT"
     FROM=source
@@ -1073,17 +1103,17 @@ verify() {
 
 # --- The install -------------------------------------------------------------------------------
 
-# Where the binary goes, in DEST and TARGET: --dir's folder, the earlier install's under --update, or
-# the default.
+# Where the binary goes, in DEST and TARGET: --dir's folder, the folder the state records the binary
+# in while it is still there, or the default.
 target_path() {
     local previous
-    previous=$(state_get binary)
+    previous=$(state_path binary)
     WHERE=default
     DEST=$DEFAULT_PREFIX
     if [ -n "$PREFIX" ]; then
         WHERE=dir
         DEST=$PREFIX
-    elif [ "$MODE" = update ] && [ -n "$previous" ]; then
+    elif [ -n "$previous" ] && [ -e "$previous" ]; then
         WHERE=before
         DEST=$(dirname "$previous")
     fi
@@ -1123,7 +1153,7 @@ installed_version() {
     INSTALLED=""
     HELD=""
     EARLIER=0
-    [ -f "$TARGET" ] && [ "$(state_get binary)" = "$TARGET" ] || return 0
+    [ -f "$TARGET" ] && same_path "$(state_path binary)" "$TARGET" || return 0
     sum=$(state_get sha256)
     if [ -z "$sum" ]; then
         EARLIER=1
@@ -1193,7 +1223,12 @@ compare_installed() {
             ;;
         *)
             say "Cadence $INSTALLED is installed at $(shown "$TARGET"). It is newer than $VERSION, so installing $VERSION would be a downgrade."
-            ask "Downgrade it to $VERSION?" n || stop "Kept Cadence $INSTALLED; nothing was installed."
+            # --yes takes a downgrade only where --version names the release.
+            if [ "$YES" = 1 ] && [ -n "$ASKED_VERSION" ]; then
+                say "Downgrading it to $VERSION, as --yes and --version $VERSION ask."
+            else
+                ask "Downgrade it to $VERSION?" n || stop "Kept Cadence $INSTALLED; nothing was installed."
+            fi
             REPLACE=1
             ;;
     esac
@@ -1216,7 +1251,7 @@ install_binary() {
     fi
     { cp "$BUILT" "$TARGET.new" && chmod 755 "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"; } \
         || { rm -f "$TARGET.new"; fail "could not write $TARGET; if Cadence is running, close it and run this again"; }
-    state_set binary "$TARGET"
+    state_set binary "$(shown "$TARGET")"
     state_set version "$VERSION"
     state_set sha256 "$(checksum "$TARGET")"
     state_set build "$BUILD"
@@ -1247,11 +1282,11 @@ $k.Close()
 EOF
 )
 
-# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
+# A folder other than the default is the caller's to manage, so the offer defaults to no there.
 offer_path() {
     local dest default=y
     dest=$(dirname "$TARGET")
-    [ -z "$PREFIX" ] || default=n
+    same_path "$dest" "$DEFAULT_PREFIX" || default=n
     case ":$PATH:" in
         *":$dest:"*)
             say "$(shown "$dest") is already on your PATH."
@@ -1300,16 +1335,41 @@ added_to_path() {
     say "$1"
 }
 
+# How many tables a download left in the folder the state records; all 290 is a finished one.
+tables_held() {
+    local dir file n=0
+    dir=$(state_path tables)
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+        for file in "$dir"/K*v*.rtb[wz]; do
+            [ ! -f "$file" ] || n=$((n + 1))
+        done
+    fi
+    printf '%s\n' "$n"
+}
+
+# A download the state records that stopped before all 290 tables were in.
+tables_unfinished() {
+    [ -n "$(state_get tables)" ] && [ "$(tables_held)" -lt 290 ]
+}
+
 offer_tables() {
+    local default=n
     step "Syzygy tablebases, if you want them"
     say "Cadence can read the 3-4-5 piece Syzygy tablebases, 290 files and about 1 GB, to play every"
     say "ending of five pieces or fewer perfectly. They are downloaded from $TABLES_URL."
+    if tables_unfinished; then
+        say "An earlier download stopped with $(tables_held) of the 290 tables in $(shown "$(state_path tables)")."
+        default=y
+    fi
     if [ "$TABLES" = 1 ]; then
         say "Downloading them, as --tables asks."
     else
-        ask "Download them now?" n || { say "Skipped."; return 0; }
+        ask "Download them now?" "$default" || { say "Skipped."; return 0; }
     fi
     local dir="$DATA_DIR/syzygy/3-4-5" sum file group count checked=0 fetched=0 bytes=0
+    # Recorded before anything is fetched, so a download that stops is offered again.
+    mkdir -p "$dir" || fail "cannot create $dir"
+    state_set tables "$(shown "$dir")"
     if ! download "$TABLES_URL/sha256" "$WORK/sha256" 2> "$OUT"; then
         redact < "$OUT" >> "$LOG"
         fail "could not download the tables' published checksums$(said)"
@@ -1322,8 +1382,6 @@ offer_tables() {
     file=$(awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ || $2 !~ /^K[QRBNP]*vK[QRBNP]*\.rtb[wz]$/ {
         print $2; exit}' "$WORK/3-4-5.sha256")
     [ -z "$file" ] || fail "the published checksums name '$file', which is not a table's file name, so nothing was downloaded"
-    mkdir -p "$dir" || fail "cannot create $dir"
-    state_set tables "$dir"
     while read -r sum file; do
         case "$file" in
             *.rtbw) group=3-4-5-wdl ;;
@@ -1371,7 +1429,7 @@ afterwards() {
 uninstall() {
     step "Uninstalling Cadence"
     local bin rc line win tables
-    bin=$(state_get binary)
+    bin=$(state_path binary)
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
     if [ -e "$bin" ]; then
         if ask "Remove $(shown "$bin")?" y; then
@@ -1400,9 +1458,9 @@ uninstall() {
             || fail "could not remove $win from your PATH"
         say "Removed it."
     fi
-    tables=$(state_get tables)
+    tables=$(state_path tables)
     if [ -n "$tables" ] && [ -d "$tables" ] && ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
-        rm -rf "$tables" || fail "could not remove $tables"
+        rm -rf "$tables" || fail "could not remove $tables; if a chess program has them open, close it and run this again"
         say "Removed them."
     fi
     rm -f "$STATE"
@@ -1428,8 +1486,9 @@ confirm_system
 if [ "$SOURCE" != 1 ] || [ -z "$VERSION" ]; then find_release; fi
 compare_installed
 if [ "$UP_TO_DATE" = 1 ]; then
-    # Up to date, the run stops, and only tablebases asked for by name are still fetched.
-    [ "$TABLES" != 1 ] || offer_tables
+    # Up to date, the run stops, and only tablebases asked for by name or a download that stopped are
+    # still fetched.
+    if [ "$TABLES" = 1 ] || tables_unfinished; then offer_tables; fi
     exit 0
 fi
 [ "$SOURCE" = 1 ] || try_binary

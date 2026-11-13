@@ -33,6 +33,7 @@ $script:Yes = $false
 $script:KeepLog = $false
 $script:Mode = 'install'
 $script:Version = ''
+$script:AskedVersion = ''
 $script:Prefix = ''
 $script:Build = ''
 $script:Asked = ''
@@ -74,7 +75,8 @@ asked first; a build from source names the tag it builds.
   --generic        on x86-64, the generic build, for any processor with POPCNT
   --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
   --source         build from source even where a release binary fits
-  --update         install the default release, or --version's, over an installed Cadence
+  --update         as a plain run, which upgrades an older install, but also replace a file at
+                   the install path that this script did not install, unless declined
   --uninstall      remove Cadence, and the PATH entry and tablebases if this script added them
   --tables         download the 3-4-5 piece tablebases without asking
   --yes            take every default without asking
@@ -119,6 +121,7 @@ while ($i -lt $args.Count) {
 if ($script:Build -notin @('', 'avx2', 'generic')) { Write-Host '--build takes avx2 or generic'; exit 2 }
 # The build named on the command line, which an install of another build at the same version yields to.
 $script:Asked = $script:Build
+$script:AskedVersion = $script:Version
 
 # --- The system --------------------------------------------------------------------------------
 
@@ -221,21 +224,34 @@ function Select-Choice([string]$Question, [string[]]$Options) {
     }
 }
 
+# The state's lines, read as UTF-8 past any byte order mark this script wrote before the two scripts
+# shared one format.
+function Get-StateLines {
+    if (-not (Test-Path -LiteralPath $State)) { return @() }
+    return @([System.IO.File]::ReadAllLines($State, [System.Text.Encoding]::UTF8))
+}
+
 function Get-StateValue([string]$Key) {
-    if (-not (Test-Path $State)) { return '' }
-    foreach ($line in Get-Content -Path $State) {
+    foreach ($line in Get-StateLines) {
         if ($line.StartsWith("$Key=")) { return $line.Substring($Key.Length + 1) }
     }
     return ''
 }
 
+# A path from the state as Windows names it; install.sh before this one wrote it as /c/....
+function Get-StatePath([string]$Key) {
+    $value = Get-StateValue $Key
+    if ($value -match '^/([A-Za-z])/(.*)$') { return $Matches[1].ToUpper() + ':\' + $Matches[2].Replace('/', '\') }
+    return $value
+}
+
 # A value already held is not written again, so a second run leaves the file as it was.
+# The file is UTF-8 without a byte order mark and with one line feed a line, as install.sh writes it.
 function Set-StateValue([string]$Key, [string]$Value) {
-    if ((Test-Path $State) -and (Get-StateValue $Key) -ceq $Value) { return }
-    $lines = @()
-    if (Test-Path $State) { $lines = @(Get-Content -Path $State | Where-Object { -not $_.StartsWith("$Key=") }) }
+    if ((Test-Path -LiteralPath $State) -and (Get-StateValue $Key) -ceq $Value) { return }
+    $lines = @(Get-StateLines | Where-Object { -not $_.StartsWith("$Key=") })
     $lines += "$Key=$Value"
-    Set-Content -Path $State -Value $lines -Encoding UTF8
+    [System.IO.File]::WriteAllText($State, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
 }
 
 # Runs a program in the work folder for at most Seconds, with Feed as its input, and returns its exit
@@ -858,16 +874,20 @@ function Invoke-Build {
             Say "Cadence $script:Version has no AVX2 settings for $script:Triple, so it is built for that system's baseline."
         }
     }
-    # RUSTFLAGS would replace the repository's own per-target flags, so it is left out of the build.
-    $saved = @($env:RUSTFLAGS, $env:CARGO_ENCODED_RUSTFLAGS)
-    Remove-Item Env:RUSTFLAGS, Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+    # RUSTFLAGS would replace the repository's own per-target flags and the target's own variable
+    # would add to them, so none of them reaches the build.
+    $names = @('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', ('CARGO_TARGET_' + $script:Triple.ToUpper().Replace('-', '_') + '_RUSTFLAGS'))
+    $saved = @{}
+    foreach ($name in $names) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
     Push-Location $script:Src
     try {
         $code = Invoke-Logged 'cargo' $cargoArgs
     } finally {
         Pop-Location
-        if ($null -ne $saved[0]) { $env:RUSTFLAGS = $saved[0] }
-        if ($null -ne $saved[1]) { $env:CARGO_ENCODED_RUSTFLAGS = $saved[1] }
+        foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     }
     if ($code -ne 0) { Fail 'the build failed' }
     $script:Built = Join-Path $script:Src 'target\release\cadence.exe'
@@ -931,16 +951,16 @@ function Test-Build {
 
 # --- The install -------------------------------------------------------------------------------
 
-# Where the binary goes, in Dest and Target: --dir's folder, the earlier install's under --update, or
-# the default.
+# Where the binary goes, in Dest and Target: --dir's folder, the folder the state records the binary
+# in while it is still there, or the default.
 function Get-TargetPath {
-    $previous = Get-StateValue 'binary'
+    $previous = Get-StatePath 'binary'
     $script:Where = 'default'
     $script:Dest = $DefaultPrefix
     if ($script:Prefix) {
         $script:Where = 'dir'
         $script:Dest = $script:Prefix
-    } elseif ($script:Mode -eq 'update' -and $previous) {
+    } elseif ($previous -and (Test-Path -LiteralPath $previous)) {
         $script:Where = 'before'
         $script:Dest = Split-Path -Parent $previous
     }
@@ -956,7 +976,7 @@ function Get-InstalledVersion {
     $script:HeldFrom = ''
     $script:Earlier = $false
     if (-not (Test-Path -LiteralPath $script:Target -PathType Leaf)) { return }
-    if ((Get-StateValue 'binary') -ne $script:Target) { return }
+    if ((Get-StatePath 'binary') -ne $script:Target) { return }
     $sum = Get-StateValue 'sha256'
     if (-not $sum) {
         $script:Earlier = $true
@@ -1027,7 +1047,12 @@ function Compare-Installed {
         $script:Replace = $true
     } else {
         Say "Cadence $($script:Installed) is installed at $($script:Target). It is newer than $($script:Version), so installing $($script:Version) would be a downgrade."
-        if (-not (Ask "Downgrade it to $($script:Version)?" $false)) { Stop-Install "Kept Cadence $($script:Installed); nothing was installed." }
+        # --yes takes a downgrade only where --version names the release.
+        if ($script:Yes -and $script:AskedVersion) {
+            Say "Downgrading it to $($script:Version), as --yes and --version $($script:Version) ask."
+        } elseif (-not (Ask "Downgrade it to $($script:Version)?" $false)) {
+            Stop-Install "Kept Cadence $($script:Installed); nothing was installed."
+        }
         $script:Replace = $true
     }
 }
@@ -1083,15 +1108,20 @@ function Set-UserPath([string[]]$Entries) {
     [Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
 }
 
-# A folder named with --dir is the caller's to manage, so the offer defaults to no there.
+# A folder other than the default is the caller's to manage, so the offer defaults to no there.
 function Add-ToPath {
     $dest = Split-Path -Parent $script:Target
-    $entries = @(Get-UserPath)
-    if (@($entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_) -eq $dest }).Count -gt 0) {
+    if (@($env:Path -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -eq $dest.TrimEnd('\') }).Count -gt 0) {
         Say "$dest is already on your PATH."
         return
     }
-    if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" (-not $script:Prefix))) { return }
+    # The user PATH a new terminal reads, which this one does not see until it is opened again.
+    $entries = @(Get-UserPath)
+    if (@($entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -eq $dest.TrimEnd('\') }).Count -gt 0) {
+        Say "$dest is already on your user PATH, for each new terminal."
+        return
+    }
+    if (-not (Ask "Add $dest to your PATH, so a terminal finds cadence?" ($dest -eq $DefaultPrefix))) { return }
     Set-UserPath ($entries + $dest)
     Set-StateValue 'path_windows' $dest
     # Each command on a line of its own, so it can be copied whole; a path with a space or a quote runs
@@ -1103,17 +1133,35 @@ function Add-ToPath {
     Say 'If a new Windows Terminal tab still does not find cadence, close all of its windows and start it again.'
 }
 
+# How many tables a download left in the folder the state records; all 290 is a finished one.
+function Get-TablesHeld {
+    $dir = Get-StatePath 'tables'
+    if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return 0 }
+    return @(Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -cmatch '^K[QRBNP]*vK[QRBNP]*\.rtb[wz]$' }).Count
+}
+
+# A download the state records that stopped before all 290 tables were in.
+function Test-TablesUnfinished { return [bool]((Get-StateValue 'tables') -and (Get-TablesHeld) -lt 290) }
+
 function Get-Tables {
     Step 'Syzygy tablebases, if you want them'
     Say 'Cadence can read the 3-4-5 piece Syzygy tablebases, 290 files and about 1 GB, to play every'
     Say "ending of five pieces or fewer perfectly. They are downloaded from $TablesUrl."
+    $default = $false
+    if (Test-TablesUnfinished) {
+        Say "An earlier download stopped with $(Get-TablesHeld) of the 290 tables in $(Get-StatePath 'tables')."
+        $default = $true
+    }
     if ($script:Tables) {
         Say 'Downloading them, as --tables asks.'
-    } elseif (-not (Ask 'Download them now?' $false)) {
+    } elseif (-not (Ask 'Download them now?' $default)) {
         Say 'Skipped.'
         return
     }
     $dir = Join-Path $DataDir 'syzygy\3-4-5'
+    # Recorded before anything is fetched, so a download that stops is offered again.
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    Set-StateValue 'tables' $dir
     $sums = Join-Path $Work 'sha256'
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/sha256" -OutFile $sums -ErrorAction Stop
@@ -1134,8 +1182,6 @@ function Get-Tables {
             Fail "the published checksums name '$($table.File)', which is not a table's file name, so nothing was downloaded"
         }
     }
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    Set-StateValue 'tables' $dir
     $checked = 0
     $fetched = 0
     $bytes = 0
@@ -1188,7 +1234,7 @@ function Show-Done {
 
 function Uninstall-Cadence {
     Step 'Uninstalling Cadence'
-    $bin = Get-StateValue 'binary'
+    $bin = Get-StatePath 'binary'
     if (-not $bin) {
         $folder = if ($script:Prefix) { $script:Prefix } else { $DefaultPrefix }
         $bin = Join-Path $folder 'cadence.exe'
@@ -1210,9 +1256,10 @@ function Uninstall-Cadence {
         Set-UserPath @(Get-UserPath | Where-Object { $_ -ne $added })
         Say 'Removed it.'
     }
-    $tables = Get-StateValue 'tables'
-    if ($tables -and (Test-Path $tables) -and (Ask "Remove the tablebases at $tables, about 1 GB?" $true)) {
-        Remove-Item -Recurse -Force -Path $tables
+    $tables = Get-StatePath 'tables'
+    if ($tables -and (Test-Path -LiteralPath $tables) -and (Ask "Remove the tablebases at $tables, about 1 GB?" $true)) {
+        Remove-Item -Recurse -Force -LiteralPath $tables -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $tables) { Fail "could not remove $tables; if a chess program has them open, close it and run this again" }
         Say 'Removed them.'
     }
     if (Test-Path $State) { Remove-Item -Force -Path $State }
@@ -1239,8 +1286,9 @@ try {
         if (-not $script:Source -or -not $script:Version) { Find-Release }
         Compare-Installed
         if ($script:UpToDate) {
-            # Up to date, the run stops, and only tablebases asked for by name are still fetched.
-            if ($script:Tables) { Get-Tables }
+            # Up to date, the run stops, and only tablebases asked for by name or a download that stopped
+            # are still fetched.
+            if ($script:Tables -or (Test-TablesUnfinished)) { Get-Tables }
         } else {
             if (-not $script:Source) { Test-Binary }
             if (-not $script:Built) {
