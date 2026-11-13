@@ -242,7 +242,20 @@ function Invoke-Limited([string]$Binary, [string]$Arguments, [string]$Feed, [int
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
-    $process = [System.Diagnostics.Process]::Start($info)
+    try {
+        $process = [System.Diagnostics.Process]::Start($info)
+    } catch {
+        $cause = $_.Exception
+        while ($cause.InnerException) { $cause = $cause.InnerException }
+        Write-Log "starting $Binary failed: $($cause.Message)"
+        $name = Split-Path -Leaf $Binary
+        # Access denied, a virus, or a block by group policy or by application control.
+        if ($cause -is [System.ComponentModel.Win32Exception] -and $cause.NativeErrorCode -in @(5, 225, 1260, 4551)) {
+            Say "Windows blocked $name from running. This is most likely application control or antivirus software, which managed machines often have."
+            Stop-Install "Installing Cadence here needs this machine's administrator, or a machine without that policy."
+        }
+        Fail "Windows could not start $($name): $($cause.Message)"
+    }
     $out = $process.StandardOutput.ReadToEndAsync()
     $err = $process.StandardError.ReadToEndAsync()
     try {
@@ -429,8 +442,15 @@ function Find-Release {
             if (-not (Ask "Install pre-release $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
         }
     }
+    # The installer's own version is offered only where a release of it is published.
     if ($script:Version -ne $InstallerVersion) {
-        Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
+        Write-Log "downloading $ApiUrl/tags/$InstallerVersion"
+        try {
+            Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/tags/$InstallerVersion" -Headers $headers -ErrorAction Stop | Out-Null
+            Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
+        } catch {
+            Write-Log "release $InstallerVersion is not offered$(Get-DownloadTrouble $_)"
+        }
     }
 }
 

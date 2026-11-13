@@ -570,8 +570,16 @@ find_release() {
             ask "Install pre-release $VERSION?" y || stop "Nothing was installed."
         fi
     fi
-    [ "$VERSION" = "$INSTALLER_VERSION" ] \
-        || say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
+    # The installer's own version is offered only where a release of it is published.
+    if [ "$VERSION" != "$INSTALLER_VERSION" ]; then
+        log "\$ download $API_URL/tags/$INSTALLER_VERSION"
+        if download "$API_URL/tags/$INSTALLER_VERSION" "$WORK/installer-release.json" 2> "$OUT"; then
+            say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
+        else
+            log "release $INSTALLER_VERSION is not offered$(said)"
+            redact < "$OUT" >> "$LOG"
+        fi
+    fi
 }
 
 # The SHA-256 the release's SHA256SUMS gives a file, or nothing.
@@ -933,6 +941,19 @@ id_name() {
     ID=$(tr -d '\r' < "$WORK/uci.out" | sed -n 's/^id name //p' | head -n 1)
 }
 
+# A program the system will not start, said in plain words, which stops the run; what the system
+# answered is in the log.
+refused() {
+    local name
+    name=$(basename "$1")
+    if [ "$OS" = windows ]; then
+        say "Windows blocked $name from running. This is most likely application control or antivirus software, which managed machines often have."
+    else
+        say "This system refused to run $name. A security policy, or a folder where programs may not run, most likely stops it."
+    fi
+    stop "Installing Cadence here needs this machine's administrator, or a machine without that policy."
+}
+
 # Runs a binary's bench and asks its name, leaving the reason in WHY if either is not the one wanted.
 bench_and_name() {
     local bin=$1 want=$2 name=$3 rc got first
@@ -941,6 +962,8 @@ bench_and_name() {
     limited "$BENCH_SECONDS" /dev/null "$WORK/bench.out" "$bin" bench
     rc=$?
     redact < "$OUT" >> "$LOG"
+    # The shell's status for a program the system would not start at all.
+    [ "$rc" -ne 126 ] || refused "$bin"
     if [ "$LIMITED" = 1 ]; then
         WHY="its bench did not finish within $BENCH_SECONDS seconds, so it was stopped"
         return 1

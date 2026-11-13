@@ -76,6 +76,10 @@ the tablebases and ponders.
   upgraded unless that is declined, and a newer one is kept unless a
   downgrade is asked for. A file at the install path that they did not
   install is never run, and a second run changes nothing.
+- Install scripts: a binary the system will not start, as on a managed
+  machine whose policy blocks it, is reported in plain words with what
+  installing needs, and the installer offers its own version only where
+  that release is published.
 - Install scripts: `CADENCE_RELEASES_URL` must be HTTPS on github.com
   unless `--test-urls` is given, and every run prints where the release
   files come from. A binary's bench and its answer to `uci` are stopped,

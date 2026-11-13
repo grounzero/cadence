@@ -843,7 +843,7 @@ jobs:
           r=$tmp/releases
           v=$RELEASE_VERSION
           if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
-          mkdir -p "$r/tampered/$v" "$r/hang/$v" "$r/api-list" "$r/moved/releases/tags"
+          mkdir -p "$r/tampered/$v" "$r/hang/$v" "$r/api-list" "$r/moved/releases/tags" "$r/noexec/$v"
           cp "$r/good/$v/$RELEASE_FILE" "$r/good/$v/bench.txt" "$r/tampered/$v/"
           printf 'x' >> "$r/tampered/$v/$RELEASE_FILE"
           (cd "$r/tampered/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
@@ -852,6 +852,15 @@ jobs:
           printf '{"tag_name": "%s", "body": "Cadence %s, built from %s at the tag %s."}\n' \
             "$v" "$v" 0000000000000000000000000000000000000000 "$v" > "$r/moved/releases/tags/$v"
           cp "$r/good/$v/bench.txt" "$r/hang/$v/"
+          # A latest release other than this one, and the installer's own version published beside it.
+          iv=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
+          mkdir -p "$r/api-known/releases/tags"
+          printf '{"tag_name": "9.9.9"}\n' > "$r/api-known/releases/latest"
+          printf '{"tag_name": "%s"}\n' "$iv" > "$r/api-known/releases/tags/$iv"
+          # Bytes no system starts as a program, with a NUL so no shell runs them as a script.
+          cp "$r/good/$v/bench.txt" "$r/noexec/$v/"
+          printf 'MZ\000\001 not a program\n' > "$r/noexec/$v/$RELEASE_FILE"
+          (cd "$r/noexec/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
           if [ "$RUNNER_OS" != Windows ]; then
             # Benches with the release's count at once; asked anything else, it starts a child that
             # holds the output open, names it, and never answers.
@@ -871,7 +880,7 @@ jobs:
           class Handler(http.server.SimpleHTTPRequestHandler):
               def guess_type(self, path):
                   # The API's answers are JSON, as GitHub serves them, whatever their names look like.
-                  if any(part in path.replace("\\", "/") for part in ("/api-list/", "/moved/")):
+                  if any(part in path.replace("\\", "/") for part in ("/api-list/", "/api-known/", "/moved/")):
                       return "application/json"
                   return super().guess_type(path)
           http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
@@ -951,6 +960,9 @@ jobs:
           v=$RELEASE_VERSION
           bad() { echo "::error::$*"; exit 1; }
           said() { grep -qF -- "$2" "$1" || { cat "$1"; bad "$3"; }; }
+          # gh signed out, by a configuration folder of its own and no token.
+          nogh=$tmp/no-gh
+          [ "$RUNNER_OS" != Windows ] || nogh=$(cygpath -w "$tmp/no-gh")
 
           rc=0
           CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --version "$v" --dir "$tmp/plain" > plain.txt 2>&1 || rc=$?
@@ -966,6 +978,37 @@ jobs:
           CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/api-list/releases" bash install.sh --yes --test-urls \
             --dir "$tmp/newest" > newest.txt 2>&1 || true
           said newest.txt "The newest pre-release is 0.6.0-rc.10." "install.sh did not take the highest candidate"
+          if grep -qF 'This installer comes with' newest.txt; then
+            bad "install.sh offered its own version, which the API there does not publish"
+          fi
+          iv=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
+          CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/api-known/releases" bash install.sh --yes --test-urls \
+            --dir "$tmp/known" > known.txt 2>&1 || true
+          said known.txt "This installer comes with Cadence $iv; --version $iv installs that one instead." \
+            "install.sh did not offer its own version where it is published"
+
+          # A binary the system will not start: on Windows an inherited ACL denies running it, as a
+          # managed machine's policy does, and elsewhere its bytes are not a program.
+          rc=0
+          if [ "$RUNNER_OS" = Windows ]; then
+            mkdir -p "$tmp/blocked/Cadence"
+            icacls "$(cygpath -w "$tmp/blocked/Cadence")" //deny "$USERNAME:(OI)(X)"
+            LOCALAPPDATA=$(cygpath -w "$tmp/blocked") CADENCE_RELEASES_URL="$url/good" bash install.sh --yes --test-urls \
+              --version "$v" --dir "$tmp/blocked-dir" > blocked.txt 2>&1 || rc=$?
+            said blocked.txt "Windows blocked $RELEASE_FILE from running." "install.sh did not say Windows blocked the binary"
+          else
+            env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" CADENCE_RELEASES_URL="$url/noexec" bash install.sh --yes \
+              --test-urls --version "$v" --dir "$tmp/blocked-dir" > blocked.txt 2>&1 || rc=$?
+            said blocked.txt "This system refused to run $RELEASE_FILE." "install.sh did not say the system refused the binary"
+          fi
+          [ "$rc" -ne 0 ] || { cat blocked.txt; bad "install.sh went on with a binary the system will not start"; }
+          said blocked.txt "Installing Cadence here needs this machine's administrator, or a machine without that policy." \
+            "install.sh did not say what installing needs"
+          if grep -qE 'install\.sh: line|Permission denied|cannot execute' blocked.txt; then
+            cat blocked.txt
+            bad "install.sh showed the shell's own error"
+          fi
+          [ ! -e "$tmp/blocked-dir" ] || bad "install.sh installed a binary the system will not start"
 
           if command -v gh > /dev/null; then
             rc=0
@@ -988,9 +1031,6 @@ jobs:
             "install.sh did not refuse a tag that is not the commit its release names"
           [ ! -e "$tmp/tampered/cadence" ] && [ ! -e "$tmp/tampered/cadence.exe" ] || bad "a binary was installed"
 
-          # gh signed out, by a configuration folder of its own and no token.
-          nogh=$tmp/no-gh
-          [ "$RUNNER_OS" != Windows ] || nogh=$(cygpath -w "$tmp/no-gh")
           rc=0
           env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" CADENCE_RELEASES_URL="$url/good" bash install.sh --yes \
             --test-urls --version "$v" --dir "$tmp/signed-out" > signed-out.txt 2>&1 || rc=$?
@@ -1066,6 +1106,29 @@ jobs:
             $env:CADENCE_RELEASES_URL = "$url/good"
             $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'newest'))
             Said $run 'The newest pre-release is 0.6.0-rc.10.' 'install.ps1 did not take the highest candidate'
+            if ($run.Out.Contains('This installer comes with')) { throw 'install.ps1 offered its own version, which the API there does not publish' }
+            $iv = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
+            $env:CADENCE_API_URL = "$url/api-known/releases"
+            $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'known'))
+            Said $run "This installer comes with Cadence $iv; --version $iv installs that one instead." 'install.ps1 did not offer its own version where it is published'
+            Remove-Item Env:CADENCE_API_URL
+
+            # A binary Windows will not start: an inherited ACL denies running it, as a managed machine's policy does.
+            $blocked = Join-Path $tmp 'blocked'
+            New-Item -ItemType Directory -Force -Path (Join-Path $blocked 'Cadence') | Out-Null
+            & icacls.exe (Join-Path $blocked 'Cadence') /deny "$($env:USERNAME):(OI)(X)"
+            $lad = $env:LOCALAPPDATA
+            $env:LOCALAPPDATA = $blocked
+            try {
+              $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'blocked-dir'))
+            } finally {
+              $env:LOCALAPPDATA = $lad
+            }
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 went on with a binary Windows will not start' }
+            Said $run "Windows blocked $env:RELEASE_FILE from running." 'install.ps1 did not say Windows blocked the binary'
+            Said $run "Installing Cadence here needs this machine's administrator, or a machine without that policy." 'install.ps1 did not say what installing needs'
+            if ($run.Out -match 'Exception|install\.ps1:\d|At line|CategoryInfo') { Write-Host $run.Out; throw "install.ps1 showed PowerShell's own error" }
+            if (Test-Path (Join-Path $tmp 'blocked-dir')) { throw 'install.ps1 installed a binary Windows will not start' }
 
             $env:CADENCE_API_URL = "$url/moved/releases"
             $gh = [bool](Get-Command gh -ErrorAction SilentlyContinue)
