@@ -316,7 +316,9 @@ const USAGE: &str = "usage: cadence datagen play --games N --seed S [--threads N
      cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n       \
      cadence datagen run --out DIR --run-seed HEX|fresh [--threads N] [--chunk-games N] \
      [--standard-share P] [--host NAME] (packed-datagen feature)\n       \
-     cadence datagen repair CHUNK.tmp (packed-datagen feature)\n\
+     cadence datagen repair CHUNK.tmp (packed-datagen feature)\n       \
+     cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest] (packed-datagen \
+     feature)\n\
      --threads is cut to the number of games and to 256";
 
 /// What a build without the packed writer answers `run` and `repair` with.
@@ -336,8 +338,9 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("extract") => extract_from_args(&args[1..]),
         Some("run") => run_from_args(&args[1..]),
         Some("repair") => repair_from_args(&args[1..]),
+        Some("verify") => verify_from_args(&args[1..]),
         _ => Err(Failure::Usage(
-            "name play, extract, run or repair".to_string(),
+            "name play, extract, run, repair or verify".to_string(),
         )),
     };
     match result {
@@ -383,6 +386,148 @@ fn repair_from_args(args: &[String]) -> Result<(), Failure> {
     );
     println!("{}", report?);
     Ok(())
+}
+
+/// The paths given, chunks checked in parallel, the report and what was not examined, and with
+/// `--manifest` the directory's manifest written last, only when every chunk in it passed.
+#[cfg(feature = "packed-datagen")]
+fn verify_from_args(args: &[String]) -> Result<(), Failure> {
+    let manifest = args.iter().any(|a| a == "--manifest");
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--manifest")
+        .cloned()
+        .collect();
+    let (flags, paths) = split(&rest).map_err(Failure::Usage)?;
+    let (mut every, mut threads) = (None, 1);
+    for (name, value) in &flags {
+        match name.as_str() {
+            "--replay" => {
+                let n = value.strip_prefix("1/").and_then(|n| n.parse::<u32>().ok());
+                every = Some(
+                    n.filter(|&n| n > 0)
+                        .ok_or_else(|| Failure::Usage(format!("bad --replay `{value}`: 1/N")))?,
+                );
+            }
+            "--threads" => {
+                threads = usize::try_from(number(name, value).map_err(Failure::Usage)?)
+                    .map_err(|_| Failure::Usage("bad --threads".to_string()))?;
+            }
+            other => return Err(Failure::Usage(format!("unknown flag {other}"))),
+        }
+    }
+    if paths.is_empty() {
+        return Err(Failure::Usage("name a chunk or a directory".to_string()));
+    }
+    if manifest && (paths.len() != 1 || !Path::new(&paths[0]).is_dir()) {
+        return Err(Failure::Usage("--manifest takes one directory".to_string()));
+    }
+    let checked = verify_paths(&paths, every, threads);
+    let mut stdout = io::stdout().lock();
+    let unexamined = [
+        "chunks in paths not given (verify reads only the paths it is given)".to_string(),
+        match every {
+            None => {
+                "the regeneration of every game (--replay 1/N regenerates a sample)".to_string()
+            }
+            Some(n) => {
+                format!("games outside the --replay 1/{n} sample, game 0 of a chunk always in it")
+            }
+        },
+    ];
+    let summaries = match checked {
+        Ok(summaries) => summaries,
+        Err(e) => {
+            for spot in &unexamined {
+                let _ = writeln!(stdout, "  not examined: {spot}");
+            }
+            return Err(Failure::Work(e));
+        }
+    };
+    let _ = write!(stdout, "{}", verify::report(&summaries));
+    for spot in &unexamined {
+        let _ = writeln!(stdout, "  not examined: {spot}");
+    }
+    if manifest {
+        let dir = Path::new(&paths[0]);
+        write_manifest(dir, &summaries).map_err(Failure::Work)?;
+        let _ = writeln!(stdout, "manifest {}", dir.join("MANIFEST.tsv").display());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "packed-datagen")]
+fn verify_paths(
+    paths: &[String],
+    every: Option<u32>,
+    threads: usize,
+) -> Result<Vec<verify::Summary>, String> {
+    let mut chunks = Vec::new();
+    for path in paths {
+        chunks.extend(verify::chunk_paths(Path::new(path))?);
+    }
+    if chunks.is_empty() {
+        return Err("no chunk to verify".to_string());
+    }
+    let next = AtomicU64::new(0);
+    let results = Mutex::new(vec![None; chunks.len()]);
+    thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..threads.clamp(1, MAX_THREADS).min(chunks.len()) {
+            let (next, results, chunks) = (&next, &results, &chunks);
+            handles.push(spawn_search(scope, move || {
+                let Some(tt) = Table::new(HASH_MB) else {
+                    return Err("a table could not be allocated".to_string());
+                };
+                loop {
+                    let i =
+                        usize::try_from(next.fetch_add(1, Ordering::Relaxed)).unwrap_or(usize::MAX);
+                    let Some(path) = chunks.get(i) else {
+                        return Ok(());
+                    };
+                    let checked = verify::chunk(path, every, &tt);
+                    unpoisoned(results.lock())[i] = Some(checked);
+                }
+            }));
+        }
+        for handle in handles {
+            let joined = handle.map_err(|e| e.to_string())?.join();
+            joined.map_err(|payload| panic_text(payload.as_ref()))??;
+        }
+        Ok::<(), String>(())
+    })?;
+    let mut summaries = Vec::new();
+    for result in results.into_inner().unwrap_or_else(PoisonError::into_inner) {
+        summaries.push(result.ok_or("a chunk was not checked")??);
+    }
+    Ok(summaries)
+}
+
+/// Refused beside a `.tmp`, staged, and renamed into place, so a manifest is only ever whole.
+#[cfg(feature = "packed-datagen")]
+fn write_manifest(dir: &Path, summaries: &[verify::Summary]) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        if Path::new(&name).extension().is_some_and(|e| e == "tmp") {
+            return Err(format!(
+                "{} holds {}; repair it and verify again",
+                dir.display(),
+                name.to_string_lossy()
+            ));
+        }
+    }
+    let text = verify::manifest(summaries)?;
+    let path = dir.join("MANIFEST.tsv");
+    let mut stage = Staged::create(&path, stage_name(&path)?)?;
+    stage
+        .write_all(text.as_bytes())
+        .map_err(|e| e.to_string())?;
+    publish(vec![stage])
+}
+
+#[cfg(not(feature = "packed-datagen"))]
+fn verify_from_args(_: &[String]) -> Result<(), Failure> {
+    Err(Failure::Work(WITHOUT_PACKED.to_string()))
 }
 
 #[cfg(not(feature = "packed-datagen"))]

@@ -484,7 +484,7 @@ jobs:
         run: |
           dir=target/packed
           cargo test --locked -p cadence-engine --features packed-datagen --target-dir "$dir" \
-            --lib --test packed --test datagen $CONFIG_ARG
+            --lib --test packed --test verify --test datagen $CONFIG_ARG
           cargo build --locked --release -p cadence-engine --features packed-datagen \
             --target-dir "$dir" $CONFIG_ARG
           got=$("$dir/release/cadence" bench | tail -n 1 | awk '{print $1}')
