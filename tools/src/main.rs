@@ -5,19 +5,27 @@
 
 #![forbid(unsafe_code)]
 
+mod convert;
 mod magics;
 
 use std::process::ExitCode;
 
-const SUBCOMMANDS: &[(&str, &str)] = &[(
-    "magics",
-    "search for the sliding-attack magic numbers and print them as Rust; optional seed",
-)];
+const SUBCOMMANDS: &[(&str, &str)] = &[
+    (
+        "magics",
+        "search for the sliding-attack magic numbers and print them as Rust; optional seed",
+    ),
+    (
+        "convert",
+        "datasets of packed chunks to the trainer's position records, published as one unit",
+    ),
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let result = match args.get(1).map(String::as_str) {
         Some("magics") => magics::run(&args[2..]),
+        Some("convert") => convert::run(&args[2..]),
         Some(other) => Err(format!("unknown subcommand `{other}`")),
         None => Err("no subcommand".to_string()),
     };
