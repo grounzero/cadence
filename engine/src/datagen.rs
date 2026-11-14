@@ -9,6 +9,8 @@ pub mod opening;
 #[cfg(feature = "packed-datagen")]
 pub mod packed;
 pub mod record;
+#[cfg(feature = "packed-datagen")]
+pub mod verify;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

@@ -741,6 +741,7 @@ fn the_packed_writer_is_off_by_default() {
     for args in [
         &["run", "--out", "x", "--run-seed", "1"][..],
         &["repair", "x.cdg.tmp"][..],
+        &["verify", "x.cdg"][..],
     ] {
         let out = Command::new(support::binary())
             .arg("datagen")
