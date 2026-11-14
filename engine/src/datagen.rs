@@ -85,7 +85,15 @@ pub fn generate(
     generate_with(seed, games, threads, AHEAD, out, progress, &line_for)
 }
 
-/// `line_for` makes a game's record line, so a test can hold a game back.
+/// What a worker sends the writer.
+enum Message {
+    Line(u64, String),
+    NoTable,
+    /// The game a worker was playing when it panicked, whose record will never arrive.
+    Panicked(u64),
+}
+
+/// `line_for` makes a game's record line, so a test can hold a game back or make one panic.
 fn generate_with(
     seed: u64,
     games: u64,
@@ -98,53 +106,125 @@ fn generate_with(
     writeln!(out, "{}", provenance(seed, games))?;
     let next = AtomicU64::new(0);
     let window = Window::new(ahead);
-    let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
+    let (tx, rx) = mpsc::channel::<Message>();
     thread::scope(|scope| {
         let _closing = Closing(&window);
+        let mut handles = Vec::new();
+        let mut result = Ok(());
         for _ in 0..workers(threads, games) {
             let tx = tx.clone();
-            let next = &next;
-            let window = &window;
-            let spawned = spawn_search(scope, move || {
-                let Some(tt) = Table::new(HASH_MB) else {
-                    let _ = tx.send(None);
-                    return;
-                };
-                loop {
-                    let number = next.fetch_add(1, Ordering::Relaxed);
-                    if number >= games || !window.wait_for(number) {
-                        return;
-                    }
-                    let line = line_for(number, &tt);
-                    if tx.send(Some((number, line))).is_err() {
-                        return;
-                    }
+            let (next, window) = (&next, &window);
+            match spawn_search(scope, move || work(next, window, games, &tx, line_for)) {
+                Ok(handle) => handles.push(handle),
+                Err(e) => {
+                    result = Err(e);
+                    break;
                 }
-            });
-            if let Err(e) = spawned {
-                // The workers already started take no new game, so the scope ends soon.
-                next.store(games, Ordering::Relaxed);
-                return Err(e);
             }
         }
         drop(tx);
-        // Records arrive in whatever order the workers finish, and leave in number order.
-        let mut pending = BTreeMap::new();
-        let mut wanted = 0;
-        for message in rx {
-            let Some((number, line)) = message else {
-                return Err(io::Error::other("a worker's table could not be allocated"));
-            };
-            pending.insert(number, line);
-            while let Some(line) = pending.remove(&wanted) {
-                writeln!(out, "{line}")?;
-                wanted += 1;
-                progress(wanted);
-            }
-            window.advance(wanted);
+        if result.is_ok() {
+            result = write_in_order(&rx, &window, out, progress);
         }
-        out.flush()
+        // Every worker is released and joined here, so a panic is this run's error and not a
+        // second panic at the scope's end.
+        next.store(games, Ordering::Relaxed);
+        window.close();
+        drop(rx);
+        let mut panic = None;
+        for handle in handles {
+            if let Err(payload) = handle.join() {
+                panic.get_or_insert_with(|| panic_text(payload.as_ref()));
+            }
+        }
+        match (result, panic) {
+            (Err(e), Some(text)) => Err(io::Error::other(format!("{e}: {text}"))),
+            (Ok(()), Some(text)) => Err(io::Error::other(format!("a worker panicked: {text}"))),
+            (result, None) => result,
+        }
     })
+}
+
+/// Games from `next` in number order, each started only inside the window.
+fn work(
+    next: &AtomicU64,
+    window: &Window,
+    games: u64,
+    tx: &mpsc::Sender<Message>,
+    line_for: &(dyn Fn(u64, &Table) -> String + Sync),
+) {
+    let Some(tt) = Table::new(HASH_MB) else {
+        let _ = tx.send(Message::NoTable);
+        return;
+    };
+    loop {
+        let number = next.fetch_add(1, Ordering::Relaxed);
+        if number >= games || !window.wait_for(number) {
+            return;
+        }
+        let playing = Playing { number, tx };
+        let line = line_for(number, &tt);
+        drop(playing);
+        if tx.send(Message::Line(number, line)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Held while a game is played, so a panic in it tells the writer which record will never come.
+struct Playing<'a> {
+    number: u64,
+    tx: &'a mpsc::Sender<Message>,
+}
+
+impl Drop for Playing<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            let _ = self.tx.send(Message::Panicked(self.number));
+        }
+    }
+}
+
+/// Records arrive in whatever order the workers finish, and leave in number order.
+fn write_in_order(
+    rx: &mpsc::Receiver<Message>,
+    window: &Window,
+    out: &mut dyn Write,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    let mut pending = BTreeMap::new();
+    let mut wanted = 0;
+    for message in rx {
+        match message {
+            Message::Line(number, line) => {
+                pending.insert(number, line);
+            }
+            Message::NoTable => {
+                return Err(io::Error::other("a worker's table could not be allocated"));
+            }
+            Message::Panicked(number) => {
+                return Err(io::Error::other(format!("game {number} panicked")));
+            }
+        }
+        while let Some(line) = pending.remove(&wanted) {
+            writeln!(out, "{line}")?;
+            wanted += 1;
+            progress(wanted);
+        }
+        window.advance(wanted);
+    }
+    out.flush()
+}
+
+/// A panic's message, where it carried one.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "no message".to_string()
+    }
 }
 
 /// Every thread that searches, on the stack a `go` gives its search.

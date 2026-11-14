@@ -36,7 +36,8 @@ fn screen(board: &mut Position, tt: &Table) -> Option<Score> {
     game::probe(board, SCREEN_NODES, tt)
 }
 
-/// `None` if the random plies end the game or the screen refuses it.
+/// `None` if the random plies end the game or the screen refuses it, as it does a probe that did not
+/// finish.
 ///
 /// # Panics
 ///
@@ -64,7 +65,7 @@ fn draw_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>) -> Option<Opening> {
     if game::ending(&board).is_some() {
         return None;
     }
-    let score = probe(&mut board, tt).unwrap_or(0);
+    let score = probe(&mut board, tt)?;
     (score.abs() <= WINDOW).then_some(Opening {
         white,
         black,

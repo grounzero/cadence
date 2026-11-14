@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Split into training and holdout by game number. A position is kept if its ply is inside the
-//! window, it is not in check, its move is not noisy and its search reported no mate.
+//! window, it is not in check, its move is not noisy, and its search finished depth 1 with no mate.
 
 use std::io::{BufRead, Write};
 
@@ -228,7 +228,9 @@ fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io
             stats.in_check += 1;
         } else if m.is_noisy() {
             stats.noisy += 1;
-        } else if score::is_mate(score.unwrap_or(0)) {
+        } else if score.is_none() {
+            stats.no_score += 1;
+        } else if score.is_some_and(score::is_mate) {
             stats.mate += 1;
         } else {
             writeln!(out, "{} | {result}", board.to_fen(FenStyle::Shredder))?;
@@ -303,8 +305,9 @@ impl Stats {
         )?;
         writeln!(
             out,
-            "visited {} outside-plies-{FIRST_PLY}-{LAST_PLY} {} in-check {} noisy {} mate {}",
-            self.visited, self.outside, self.in_check, self.noisy, self.mate
+            "visited {} outside-plies-{FIRST_PLY}-{LAST_PLY} {} in-check {} noisy {} no-score {} \
+             mate {}",
+            self.visited, self.outside, self.in_check, self.noisy, self.no_score, self.mate
         )?;
         writeln!(
             out,

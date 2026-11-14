@@ -52,13 +52,17 @@ impl Record {
         Position::new(Board::from_fen(&fen).unwrap_or_else(|e| panic!("{fen}: {e:?}")))
     }
 
-    /// Castles are spelled king-takes-rook, so they read the same in every start.
+    /// Castles are spelled king-takes-rook, so they read the same in every start, and a move with no
+    /// score is spelled `none`.
     #[must_use]
     pub fn line(&self) -> String {
         let plies: Vec<String> = self.plies.iter().map(|m| m.to_uci_chess960()).collect();
         let mut moves = String::new();
         for (m, score) in &self.moves {
-            let _ = write!(moves, " {}:{}", m.to_uci_chess960(), score.unwrap_or(0));
+            let _ = match score {
+                Some(score) => write!(moves, " {}:{score}", m.to_uci_chess960()),
+                None => write!(moves, " {}:none", m.to_uci_chess960()),
+            };
         }
         format!(
             "{} | {} {} | {} | {} | {} {} | {}",
@@ -114,7 +118,10 @@ impl Record {
         for pair in moves.split_whitespace() {
             let (text, score) = pair.split_once(':').ok_or("a move without a score")?;
             let m = legal_move(&board, text)?;
-            let score = Some(score.parse().map_err(|_| "bad score")?);
+            let score = match score {
+                "none" => None,
+                score => Some(score.parse().map_err(|_| "bad score")?),
+            };
             board.play(m);
             record.moves.push((m, score));
         }

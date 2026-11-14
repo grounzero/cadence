@@ -102,7 +102,8 @@ pub fn ending(board: &Board) -> Option<(Ending, Outcome)> {
     None
 }
 
-/// Scores from the side to move's point of view.
+/// Scores from the side to move's point of view, `None` where the search did not finish depth 1.
+/// Such a search's score is a fallback of 0 or a partial bound, so it labels nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Played {
     pub moves: Vec<(Move, Option<Score>)>,
@@ -110,14 +111,14 @@ pub struct Played {
     pub outcome: Outcome,
 }
 
-/// From an empty table; what screens a start.
+/// From an empty table; what screens a start, `None` if the search did not finish depth 1.
 pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Option<Score> {
     tt.clear();
     let stop = AtomicBool::new(false);
     let mut search = Search::new(&stop, tt);
     search.set_limits(node_limit(nodes));
     search.run(board, &mut io::sink());
-    Some(search.score())
+    label(&search)
 }
 
 /// The same board and node count give the same game, whatever `tt` held before.
@@ -144,9 +145,13 @@ pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
             generate_legal(board).contains(best),
             "the search returned {best:?}, which is not legal"
         );
-        moves.push((best, Some(search.score())));
+        moves.push((best, label(&search)));
         board.play(best);
     }
+}
+
+fn label(search: &Search<'_>) -> Option<Score> {
+    (search.completed_depth() > 0).then_some(search.score())
 }
 
 fn node_limit(nodes: u64) -> Limits {
