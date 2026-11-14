@@ -32,10 +32,10 @@ use record::Record;
 
 /// Compiled in, like `bench`'s depth, so a record's provenance line names every setting that shaped
 /// it.
-pub const NODES: u64 = 5_000;
+pub const NODES: u64 = cadence_dataset::constants::NODES;
 
 /// Cleared at the start of every game.
-pub const HASH_MB: usize = 16;
+pub const HASH_MB: usize = cadence_dataset::constants::HASH_MB;
 
 pub const HOLDOUT_EVERY: u64 = 10;
 

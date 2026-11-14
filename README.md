@@ -173,6 +173,7 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest]` | Checks chunks against their sidecars, this build's settings and the rules, regenerating every Nth game; `--manifest` writes a directory's `MANIFEST.tsv` once every chunk in it passes. Built only with the `packed-datagen` feature. |
 | `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
+| `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. |
 
 ### Git hooks
 

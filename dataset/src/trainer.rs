@@ -4,7 +4,9 @@
 //! a piece, the score, the result and the two king squares. Written before a trainer is chosen, so a
 //! different one changes this module alone.
 
+use cadence_core::Colour;
 use cadence_core::position::Board;
+use cadence_core::types::Square;
 
 pub const RECORD_LEN: usize = 32;
 
@@ -13,12 +15,47 @@ pub const LOSS: u8 = 0;
 pub const DRAW: u8 = 1;
 pub const WIN: u8 = 2;
 
+/// Black to move is seen flipped, its pieces as the mover's, so every record reads as White to
+/// move; `score` and `result` are already the side to move's.
+///
 /// # Panics
 ///
-/// Not yet.
+/// If an occupied square holds no piece, which a board never allows.
 #[must_use]
-pub fn encode(_board: &Board, _score: i16, _result: u8) -> [u8; RECORD_LEN] {
-    [0; RECORD_LEN]
+pub fn encode(board: &Board, score: i16, result: u8) -> [u8; RECORD_LEN] {
+    let mover = board.side_to_move();
+    let seen = |sq: Square| -> usize {
+        if mover == Colour::White {
+            sq.index()
+        } else {
+            sq.flip_vertical().index()
+        }
+    };
+    let mut occupancy = 0_u64;
+    let mut pieces = [0_u8; 64];
+    for sq in board.occupied() {
+        let piece = board
+            .piece_at(sq)
+            .expect("an occupied square holds a piece");
+        let theirs = u8::from(piece.colour() != mover);
+        let at = seen(sq);
+        occupancy |= 1 << at;
+        pieces[at] = piece.piece_type() as u8 | theirs << 3;
+    }
+    let mut out = [0_u8; RECORD_LEN];
+    out[..8].copy_from_slice(&occupancy.to_le_bytes());
+    let mut n = 0;
+    for (at, &piece) in pieces.iter().enumerate() {
+        if occupancy >> at & 1 == 1 {
+            out[8 + n / 2] |= piece << (4 * (n % 2));
+            n += 1;
+        }
+    }
+    out[24..26].copy_from_slice(&score.to_le_bytes());
+    out[26] = result;
+    out[27] = seen(board.king_square(mover)) as u8;
+    out[28] = seen(board.king_square(mover.flip())) as u8;
+    out
 }
 
 #[cfg(test)]
