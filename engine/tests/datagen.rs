@@ -861,20 +861,21 @@ fn extraction_publishes_neither_output_when_one_cannot_be() {
 }
 
 /// The report is written before the outputs are published, so an extraction whose report has
-/// nowhere to go publishes nothing.
+/// nowhere to go publishes nothing. The pipe's reading end is closed before the child starts, or a
+/// child that wrote first would find a reader.
 #[test]
 fn extraction_publishes_nothing_when_its_report_cannot_be_written() {
     let (dir, _) = scratch("extract-closed");
-    let mut child = Command::new(support::binary())
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let status = Command::new(support::binary())
         .current_dir(&dir)
         .args(["datagen", "extract", "games.txt", "--train", "train.txt"])
         .args(["--holdout", "held.txt"])
-        .stdout(Stdio::piped())
+        .stdout(writer)
         .stderr(Stdio::null())
-        .spawn()
+        .status()
         .expect("runs");
-    drop(child.stdout.take());
-    let status = child.wait().expect("waits");
     let left = listed(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
