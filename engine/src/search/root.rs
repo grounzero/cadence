@@ -132,6 +132,8 @@ impl Search<'_> {
             }
             // Before the budget is read, so the first clocked decision uses the new clock.
             self.absorb_ponder_hit();
+            // An iteration has completed, so none is left running unbudgeted from a hit.
+            self.clock.unbudgeted_iteration = false;
             if let Some(b) = self.clock.budget {
                 let elapsed = self.elapsed_ms();
                 self.run.iterations.push(elapsed);

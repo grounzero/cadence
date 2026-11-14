@@ -251,6 +251,9 @@ impl Run {
 /// The run's clock, started in `begin` from the origin a `go` left and budgeted from its limits.
 struct Clock {
     start: Instant,
+    /// Where the run began, which a `ponderhit` leaves where it is: the reported `time` counts from
+    /// here, as `nodes` does.
+    reported_from: Instant,
     /// When the `go` was read, so the work before the search starts is spent from the clock too;
     /// taken by the next run.
     origin: Option<Instant>,
@@ -260,35 +263,37 @@ struct Clock {
     pondering: bool,
     /// Derived up front: the hit is absorbed where no board is at hand.
     budget_on_hit: Option<Budget>,
+    /// From a hit absorbed inside an iteration until that or a later one completes: it began with
+    /// no budget and rarely finishes in the one the hit brings, so the soft budget ends it.
+    unbudgeted_iteration: bool,
 }
 
 impl Clock {
     fn new() -> Self {
+        let now = Instant::now();
         Clock {
-            start: Instant::now(),
+            start: now,
+            reported_from: now,
             origin: None,
             budget: None,
             pondering: false,
             budget_on_hit: None,
+            unbudgeted_iteration: false,
         }
     }
 
     /// The origin first, then both budgets, from the limits and the side to move.
     fn begin(&mut self, limits: &Limits, us: Colour) {
         self.start = self.origin.take().unwrap_or_else(Instant::now);
+        self.reported_from = self.start;
         self.pondering = limits.ponder;
+        self.unbudgeted_iteration = false;
         self.budget = if limits.infinite {
             None
         } else {
             time::budget(limits, us)
         };
-        self.budget_on_hit = if self.pondering {
-            let mut clocked = *limits;
-            clocked.ponder = false;
-            time::budget(&clocked, us)
-        } else {
-            None
-        };
+        self.budget_on_hit = time::hit_budget(limits, us);
     }
 }
 

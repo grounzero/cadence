@@ -233,7 +233,7 @@ impl Search<'_> {
         beta: Score,
         kind: Expected,
     ) -> Result<(Score, Score), Score> {
-        if board.is_repetition() {
+        if board.is_repetition() || board.is_insufficient_material() {
             return Err(DRAW);
         }
         // Above the sort, where the first read past the arrays would be; release has only a bounds

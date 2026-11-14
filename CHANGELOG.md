@@ -12,34 +12,61 @@ Each test played the new version against the one before it, at 8 seconds
 plus 0.08 a move unless a longer time control is named. The test result
 is how much stronger the new version scored, in Elo, give or take the
 figure shown (95% of the time). These are gains against Cadence's own
-previous version. They do not add up to a rating. The test records are
-private, so the results are reported here rather than linked.
+previous version. They do not add up to a rating. Each test named here is
+listed under its number in
+[docs/testing/sprt-log.csv](docs/testing/sprt-log.csv), with its games and
+result.
 
 ## [Unreleased]
 
-## [0.6.0-rc.2] - 2026-11-08
+## [0.6.0] - 2026-11-13
 
-A release candidate for 0.6.0, published as a pre-release, after
-0.6.0-rc.1 of 2026-11-06. It adds the change that keeps only the fastest
-wins at a won tablebase root, pull request 189, which rc.1 left out while
-its test ran, and a fix to the install script under Git Bash. The release
-checks run on our own machines have passed.
+Everything since 0.5.23, published first as four release candidates, each
+a pre-release: 0.6.0-rc.1 (2026-11-06), 0.6.0-rc.2 (2026-11-08),
+0.6.0-rc.3 (2026-11-10) and 0.6.0-rc.4 (2026-11-13). It adds release
+binaries and install scripts, scores a position where neither side has the
+material to mate as a draw, and fixes how the engine answers the GUI, uses
+the tablebases and ponders.
 
 ### Added
 
-- Install scripts: `install.sh` for Linux, macOS, and Windows under Git
-  Bash or WSL, and `install.ps1` for Windows PowerShell. Each installs a
-  release's binary for the system it runs on once the binary's SHA-256 and
-  bench match the release's, or builds the release from source where no
-  binary fits, and can download the 3-4-5 piece Syzygy tables. The README
-  says how to run them.
+- Tests: proofs, checked by the Kani model checker on every change, that
+  the score encoding, the transposition table's entries and buckets, the
+  history and correction updates, the pruning margins and reductions, and
+  the time budget stay within their bounds. A failed proof fails the build.
+- The README installs from the latest release's own scripts.
+- The installers verify each binary (checksum, bench and, with gh, its build
+  attestation) and say which checks ran.
+- They upgrade older installs, report when you're up to date, and ask before
+  a downgrade or replacing a different build.
+- Clearer errors when a system blocks the binary, and uninstall removes only
+  what the installer added.
 - Releases: each release builds seven binaries, Windows and Linux x86-64
   each in an AVX2 build and a generic one, Linux aarch64, macOS arm64 and
   macOS x86-64, and publishes them with `SHA256SUMS`, `bench.txt`, the two
-  install scripts and a provenance attestation for each binary.
+  install scripts and a provenance attestation for each binary, made by the
+  release workflow run at the release's tag; a manual run drafts and attests
+  a release only when run at its tag, and never once it is published.
+- The test log: `docs/testing/sprt-log.csv` gives every SPRT, passed or
+  failed, with its games and result.
 
 ### Changed
 
+- Search: a position where neither side has the material to mate is scored
+  as a draw. The bench rises from 24,819,899 to 34,686,410 nodes.
+- Tools: `setup-worker.py` refuses a configuration inside the repository,
+  and git ignores `worker.json` and `credentials.cadence`. The Makefile
+  clears an inherited `RUSTFLAGS`, and with it `CARGO_ENCODED_RUSTFLAGS`
+  and every `CARGO_TARGET_<triple>_RUSTFLAGS`.
+- The README gives a table of strength estimates from our own gauntlets
+  against rated engines, and `docs/calibration/strength.md` publishes each
+  gauntlet's games and fit, and how to check them.
+- Tools: the pre-commit hook rebuilds its boundary checker when any file
+  the checker is built from is newer than it, not only its main source.
+- The README is shorter. Getting started offers a release's binaries first,
+  then the install scripts, and the README ends with acknowledgements and
+  the license. Setting up an OpenBench worker and creating a test are
+  explained by `python3 openbench/setup-worker.py --help` instead.
 - UCI: under `UCI_LimitStrength`, the engine prints only the lines the GUI
   asked for, and reports the move it plays.
 - UCI: `SyzygyPath` is taken exactly as sent, spaces included.
@@ -50,11 +77,28 @@ checks run on our own machines have passed.
 
 ### Fixed
 
+- UCI: `position` sent during a search stops and joins that search first.
+  The search could answer `bestmove` for the old position after the new
+  one had been set.
+- UCI: `setoption name Hash` sent during a search stops and joins that
+  search before the table is resized. The search could end without its
+  `bestmove`.
+- Tools: `perft --divide` writes castling as the position does, the king
+  taking its rook only where a castling king or rook stands off its
+  standard square. A standard position listed `e1h1` and `e1a1`.
+- Tools: `datagen extract` publishes its training and holdout files as a
+  pair, so a failure between the two no longer leaves one of them
+  published.
+- Tools: `bench` runs its searches on the 16 MB stack the engine's search
+  threads have, as the tests now do, rather than the system's default.
+- Pondering: after a ponderhit, the iteration the search was running stops
+  at the move's planned time until an iteration completes. It could run on
+  to the limit of half the remaining clock and then play the ponder's last
+  result.
+- UCI: after a ponderhit, the reported `time` and `nps` count from the
+  `go`, as `nodes` does. `nps` was overstated.
 - Tablebases: at a won root, only the winning moves that reach a capture
   or a pawn move soonest are searched. The losing side is unchanged.
-- Install scripts: under Git Bash on an Intel processor, `install.sh`
-  chose the generic build where the AVX2 build runs. It now chooses as
-  `install.ps1` does.
 - Search: when the tablebases cut a node, the transposition table keeps
   that node's move.
 - Tablebases: a root the tables rank reports the tables' verdict as its
@@ -94,6 +138,12 @@ or take 1.63, a self-play estimate against the build before it at the
 short control, both sides given the tables up to five pieces. This was a
 non-regression test, which asks only whether the change costs strength,
 and it passed at 54,626 games. It is not a rating.
+
+Test 80, for scoring a position with no mating material as a draw: +2.73
+(between -0.46 and +5.93), a self-play estimate against the build before it
+at the short control. This was a non-regression test, which asks only
+whether the change costs strength, and it passed at 15,760 games. It is not
+a rating.
 
 ## [0.5.23] - 2026-11-03
 
@@ -527,8 +577,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0-rc.2...main
-[0.6.0-rc.2]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0-rc.2
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0...main
+[0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
 [0.5.21]: https://github.com/grounzero/cadence/compare/0.5.20...0.5.21

@@ -17,26 +17,51 @@ fn main() {
 
     let facts = repo_root().map_or_else(Facts::unknown, |root| {
         watch_refs(&root);
+        watch_tree(&root);
         Facts::read(&root)
     });
 
     println!("cargo::rustc-env=CADENCE_COMMIT={}", facts.commit);
+    println!("cargo::rustc-env=CADENCE_COMMIT_FULL={}", facts.full);
     println!("cargo::rustc-env=CADENCE_TAG={}", facts.tag);
+    println!("cargo::rustc-env=CADENCE_DIRTY={}", u8::from(facts.dirty));
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo::rustc-env=CADENCE_TARGET={target}");
+    // The `-C target-feature` flags the build was given, and the whole set they resolve to.
+    println!("cargo::rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    let flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let features: Vec<&str> = flags
+        .split('\x1f')
+        .filter_map(|flag| {
+            flag.trim_start_matches("-C")
+                .strip_prefix("target-feature=")
+        })
+        .collect();
+    println!(
+        "cargo::rustc-env=CADENCE_TARGET_FEATURES={}",
+        features.join(",")
+    );
+    let cfg = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    println!("cargo::rustc-env=CADENCE_CFG_FEATURES={cfg}");
 }
 
-/// `commit` is never empty; `tag` is empty when HEAD is not at the annotated tag naming the version
-/// or nobody could be asked, and ends `-dirty` when the tree differs from it.
+/// `commit` and `full` are never empty; `tag` is empty when HEAD is not at the annotated tag naming
+/// the version or nobody could be asked.
 struct Facts {
     commit: String,
+    full: String,
     tag: String,
+    dirty: bool,
 }
 
 impl Facts {
-    /// Every route to not knowing produces the same pair.
+    /// Every route to not knowing produces the same facts.
     fn unknown() -> Self {
         Self {
             commit: "unknown".to_string(),
+            full: "unknown".to_string(),
             tag: String::new(),
+            dirty: false,
         }
     }
 
@@ -48,16 +73,17 @@ impl Facts {
         };
         let version = env!("CARGO_PKG_VERSION");
         // Annotated tags only, and only the one naming this version, so neither a lightweight tag
-        // nor another tag on the commit can make a release; a modified tree reads `-dirty`. No
-        // commit is named, because git refuses one beside `--dirty` and reads HEAD itself.
-        let args = ["describe", "--exact-match", "--dirty", "--match", version];
+        // nor another tag on the commit can make a release.
+        let args = ["describe", "--exact-match", "--match", version];
         let tag = git(root, &args).unwrap_or_default();
-        if !tag.is_empty() {
-            watch_tree(root);
-        }
+        // Tracked files only, staged or not, as `describe --dirty` reads them; an answer git could
+        // not give counts as modified.
+        let dirty = git_status(root, &["diff", "--quiet", "HEAD", "--"]) != Some(0);
         Self {
             commit: full.chars().take(COMMIT_LEN).collect(),
+            full,
             tag,
+            dirty,
         }
     }
 }
@@ -97,8 +123,8 @@ fn watch_refs(root: &Path) {
     }
 }
 
-/// At the tag, an edit to any tracked path decides whether the build is the release, so each
-/// top-level one reruns the script.
+/// An edit to any tracked path can change whether the tree is modified, so each top-level one
+/// reruns the script.
 fn watch_tree(root: &Path) {
     let Some(names) = git(root, &["ls-tree", "--name-only", "HEAD"]) else {
         return;
@@ -106,6 +132,16 @@ fn watch_tree(root: &Path) {
     for name in names.lines() {
         println!("cargo::rerun-if-changed={}", root.join(name).display());
     }
+}
+
+/// The exit status alone, `None` if git could not be run.
+fn git_status(root: &Path, args: &[&str]) -> Option<i32> {
+    Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .status()
+        .ok()?
+        .code()
 }
 
 /// `None` if git is missing, failed or answered empty: all one thing to the caller.

@@ -1,7 +1,8 @@
 # Release binaries from a version tag: seven builds, their checksums and a provenance attestation for
 # each, with bench.txt and the two install scripts summed beside them, drafted for publishing by hand,
 # a release candidate as a pre-release. A manual run or a change to this file only builds and checks,
-# unless a manual run names an existing tag and asks for the draft, which re-runs a failed release.
+# unless a manual run at an existing tag (`--ref <tag>`) asks for the draft, which re-runs a failed
+# release with the tag's own workflow, so its attestations name the tag as the installers require.
 
 name: release
 
@@ -19,7 +20,7 @@ on:
         required: false
         default: ''
       draft:
-        description: With a tag, attest the binaries and draft its release, replacing an earlier draft
+        description: Run at the tag (--ref <tag>), attest the binaries and draft its release, replacing an earlier draft
         type: boolean
         default: false
 
@@ -70,6 +71,9 @@ jobs:
               || { echo "::error::run at the tag $tag and asked for $INPUT_TAG"; exit 1; }
             tag="$INPUT_TAG"
           fi
+          # The installers accept an attestation only from this workflow at the version's tag.
+          [ "$INPUT_DRAFT" != true ] || [ "$GITHUB_REF_TYPE" = tag ] \
+            || { echo "::error::a draft is attested from the workflow at its tag: run it with --ref ${tag:-<tag>}"; exit 1; }
           publish=false
           prerelease=false
           if [ -n "$tag" ]; then
@@ -323,6 +327,20 @@ jobs:
             || { echo "::error::no push run of CI has passed at $COMMIT, so nothing is drafted from it"; exit 1; }
           echo "$COMMIT is on main and CI passed there"
 
+      # A published version is never attested again, so a re-run cannot make an attestation for a
+      # rebuild of it; drafting checks once more, for a release published while this ran.
+      - name: The version is not published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          published=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$VERSION\" and .draft == false) | .id")
+          [ -z "$published" ] || { echo "::error::$VERSION is published, so nothing is attested or drafted for it again"; exit 1; }
+          echo "$VERSION has no published release"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.version.outputs.ref }}
@@ -387,9 +405,9 @@ jobs:
             echo
             echo "Seven binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of bench.txt, which holds the bench count every binary was checked against, and of the install scripts. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
-            echo "The macOS binaries are not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
+            echo "The macOS binaries are not notarized. Before running one, make it executable and clear its quarantine flag: \`chmod +x <file>\`, then \`xattr -d com.apple.quarantine <file>\`. Or build from source."
             echo
-            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. Where no binary fits or the check fails, as on an Intel Mac without AVX2, they build the release from source and hold the build to the same bench. They take the latest published release, which is never a release candidate, unless \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
+            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. Where no binary fits or the check fails, as on an Intel Mac without AVX2, they build the release from source and hold the build to the same bench. Without \`--version\` they take the latest stable release, or while none is published they offer the newest pre-release; \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
             echo
             echo '```'
             grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS

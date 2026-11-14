@@ -542,6 +542,12 @@ impl Search<'_> {
         u64::try_from(self.clock.start.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    /// From the run's start, where a `ponderhit` moves only the budget's origin, so a rate over it
+    /// divides the nodes by the time they took.
+    pub(super) fn reported_ms(&self) -> u64 {
+        u64::try_from(self.clock.reported_from.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
     /// The group's where one is watching: the siblings' counts from their slots, this worker's
     /// live.
     #[inline]

@@ -6,9 +6,14 @@
 pub mod extract;
 pub mod game;
 pub mod opening;
+#[cfg(feature = "packed-datagen")]
+pub mod packed;
 pub mod record;
+#[cfg(feature = "packed-datagen")]
+pub mod verify;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -19,6 +24,7 @@ use std::thread;
 use std::time::Instant;
 
 use cadence_core::rng::{Rng, splitmix64};
+use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 
 use crate::tt::Table;
 use crate::uci::SEARCH_STACK_BYTES;
@@ -27,10 +33,10 @@ use record::Record;
 
 /// Compiled in, like `bench`'s depth, so a record's provenance line names every setting that shaped
 /// it.
-pub const NODES: u64 = 5_000;
+pub const NODES: u64 = cadence_dataset::constants::NODES;
 
 /// Cleared at the start of every game.
-pub const HASH_MB: usize = 16;
+pub const HASH_MB: usize = cadence_dataset::constants::HASH_MB;
 
 pub const HOLDOUT_EVERY: u64 = 10;
 
@@ -84,7 +90,15 @@ pub fn generate(
     generate_with(seed, games, threads, AHEAD, out, progress, &line_for)
 }
 
-/// `line_for` makes a game's record line, so a test can hold a game back.
+/// What a worker sends the writer.
+enum Message {
+    Line(u64, String),
+    NoTable,
+    /// The game a worker was playing when it panicked, whose record will never arrive.
+    Panicked(u64),
+}
+
+/// `line_for` makes a game's record line, so a test can hold a game back or make one panic.
 fn generate_with(
     seed: u64,
     games: u64,
@@ -97,56 +111,139 @@ fn generate_with(
     writeln!(out, "{}", provenance(seed, games))?;
     let next = AtomicU64::new(0);
     let window = Window::new(ahead);
-    let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
+    let (tx, rx) = mpsc::channel::<Message>();
     thread::scope(|scope| {
         let _closing = Closing(&window);
+        let mut handles = Vec::new();
+        let mut result = Ok(());
         for _ in 0..workers(threads, games) {
             let tx = tx.clone();
-            let next = &next;
-            let window = &window;
-            // The stack a `go` gives its search, since these games are the same search.
-            let spawned = thread::Builder::new()
-                .stack_size(SEARCH_STACK_BYTES)
-                .spawn_scoped(scope, move || {
-                    let Some(tt) = Table::new(HASH_MB) else {
-                        let _ = tx.send(None);
-                        return;
-                    };
-                    loop {
-                        let number = next.fetch_add(1, Ordering::Relaxed);
-                        if number >= games || !window.wait_for(number) {
-                            return;
-                        }
-                        let line = line_for(number, &tt);
-                        if tx.send(Some((number, line))).is_err() {
-                            return;
-                        }
-                    }
-                });
-            if let Err(e) = spawned {
-                // The workers already started take no new game, so the scope ends soon.
-                next.store(games, Ordering::Relaxed);
-                return Err(e);
+            let (next, window) = (&next, &window);
+            match spawn_search(scope, move || work(next, window, games, &tx, line_for)) {
+                Ok(handle) => handles.push(handle),
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
             }
         }
         drop(tx);
-        // Records arrive in whatever order the workers finish, and leave in number order.
-        let mut pending = BTreeMap::new();
-        let mut wanted = 0;
-        for message in rx {
-            let Some((number, line)) = message else {
-                return Err(io::Error::other("a worker's table could not be allocated"));
-            };
-            pending.insert(number, line);
-            while let Some(line) = pending.remove(&wanted) {
-                writeln!(out, "{line}")?;
-                wanted += 1;
-                progress(wanted);
-            }
-            window.advance(wanted);
+        if result.is_ok() {
+            result = write_in_order(&rx, &window, out, progress);
         }
-        out.flush()
+        // Every worker is released and joined here, so a panic is this run's error and not a
+        // second panic at the scope's end.
+        next.store(games, Ordering::Relaxed);
+        window.close();
+        drop(rx);
+        let mut panic = None;
+        for handle in handles {
+            if let Err(payload) = handle.join() {
+                panic.get_or_insert_with(|| panic_text(payload.as_ref()));
+            }
+        }
+        match (result, panic) {
+            (Err(e), Some(text)) => Err(io::Error::other(format!("{e}: {text}"))),
+            (Ok(()), Some(text)) => Err(io::Error::other(format!("a worker panicked: {text}"))),
+            (result, None) => result,
+        }
     })
+}
+
+/// Games from `next` in number order, each started only inside the window.
+fn work(
+    next: &AtomicU64,
+    window: &Window,
+    games: u64,
+    tx: &mpsc::Sender<Message>,
+    line_for: &(dyn Fn(u64, &Table) -> String + Sync),
+) {
+    let Some(tt) = Table::new(HASH_MB) else {
+        let _ = tx.send(Message::NoTable);
+        return;
+    };
+    loop {
+        let number = next.fetch_add(1, Ordering::Relaxed);
+        if number >= games || !window.wait_for(number) {
+            return;
+        }
+        let playing = Playing { number, tx };
+        let line = line_for(number, &tt);
+        drop(playing);
+        if tx.send(Message::Line(number, line)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Held while a game is played, so a panic in it tells the writer which record will never come.
+struct Playing<'a> {
+    number: u64,
+    tx: &'a mpsc::Sender<Message>,
+}
+
+impl Drop for Playing<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            let _ = self.tx.send(Message::Panicked(self.number));
+        }
+    }
+}
+
+/// Records arrive in whatever order the workers finish, and leave in number order.
+fn write_in_order(
+    rx: &mpsc::Receiver<Message>,
+    window: &Window,
+    out: &mut dyn Write,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    let mut pending = BTreeMap::new();
+    let mut wanted = 0;
+    for message in rx {
+        match message {
+            Message::Line(number, line) => {
+                pending.insert(number, line);
+            }
+            Message::NoTable => {
+                return Err(io::Error::other("a worker's table could not be allocated"));
+            }
+            Message::Panicked(number) => {
+                return Err(io::Error::other(format!("game {number} panicked")));
+            }
+        }
+        while let Some(line) = pending.remove(&wanted) {
+            writeln!(out, "{line}")?;
+            wanted += 1;
+            progress(wanted);
+        }
+        window.advance(wanted);
+    }
+    out.flush()
+}
+
+/// A panic's message, where it carried one.
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "no message".to_string()
+    }
+}
+
+/// Every thread that searches, on the stack a `go` gives its search.
+///
+/// # Errors
+///
+/// If the thread cannot be started.
+pub fn spawn_search<'scope, T: Send + 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    work: impl FnOnce() -> T + Send + 'scope,
+) -> io::Result<thread::ScopedJoinHandle<'scope, T>> {
+    thread::Builder::new()
+        .stack_size(SEARCH_STACK_BYTES)
+        .spawn_scoped(scope, work)
 }
 
 /// How far the workers may run ahead of the next record to be written.
@@ -216,30 +313,247 @@ fn workers(threads: usize, games: u64) -> usize {
         .min(usize::try_from(games).unwrap_or(usize::MAX))
 }
 
-const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
-     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
+const USAGE: &str = "usage: cadence datagen play --games N --seed S [--threads N] [--out PATH]\n       \
+     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n       \
+     cadence datagen run --out DIR --run-seed HEX|fresh [--threads N] [--chunk-games N] \
+     [--standard-share P] [--host NAME] (packed-datagen feature)\n       \
+     cadence datagen repair CHUNK.tmp (packed-datagen feature)\n       \
+     cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest] (packed-datagen \
+     feature)\n\
      --threads is cut to the number of games and to 256";
+
+/// What a build without the packed writer answers `run` and `repair` with.
+pub const WITHOUT_PACKED: &str =
+    "this binary was built without the packed writer (feature packed-datagen)";
+
+/// Only a command line that does not parse is answered with the usage.
+enum Failure {
+    Usage(String),
+    Work(String),
+}
 
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("play") => play_from_args(&args[1..]),
         Some("extract") => extract_from_args(&args[1..]),
-        _ => Err("name play or extract".to_string()),
+        Some("run") => run_from_args(&args[1..]),
+        Some("repair") => repair_from_args(&args[1..]),
+        Some("verify") => verify_from_args(&args[1..]),
+        _ => Err(Failure::Usage(
+            "name play, extract, run, repair or verify".to_string(),
+        )),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+        Err(Failure::Usage(e)) => {
             eprintln!("cadence datagen: {e}");
             eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+        Err(Failure::Work(e)) => {
+            eprintln!("cadence datagen: {e}");
             ExitCode::from(2)
         }
     }
 }
 
+#[cfg(feature = "packed-datagen")]
+fn run_from_args(args: &[String]) -> Result<(), Failure> {
+    let settings = packed::settings_from_args(args).map_err(Failure::Usage)?;
+    let build = packed::Build::this();
+    if let Some(why) = packed::build_refusal(&build.commit_full, build.modified) {
+        return Err(Failure::Work(why.to_string()));
+    }
+    std::fs::create_dir_all(&settings.dir)
+        .map_err(|e| Failure::Work(format!("{}: {e}", settings.dir.display())))?;
+    let written = packed::run(&settings, &build, &packed::play);
+    if let Ok(written) = &written {
+        println!(
+            "stopped: chunks {} games uniform {} standard {}",
+            written.chunks, written.games[0], written.games[1]
+        );
+    }
+    if let Some(spot) = UNSYNCED {
+        println!("  not examined: {spot}");
+    }
+    written.map(|_| ()).map_err(Failure::Work)
+}
+
+#[cfg(feature = "packed-datagen")]
+fn repair_from_args(args: &[String]) -> Result<(), Failure> {
+    let [tmp] = args else {
+        return Err(Failure::Usage("name one CHUNK.tmp".to_string()));
+    };
+    let report = packed::repair(Path::new(tmp)).map_err(Failure::Work);
+    println!(
+        "  not examined: the games themselves (repair checks lengths and CRCs; verify replays)"
+    );
+    if let Some(spot) = UNSYNCED {
+        println!("  not examined: {spot}");
+    }
+    println!("{}", report?);
+    Ok(())
+}
+
+/// The paths given, chunks checked in parallel, the report and what was not examined, and with
+/// `--manifest` the directory's manifest written last, only when every chunk in it passed.
+#[cfg(feature = "packed-datagen")]
+fn verify_from_args(args: &[String]) -> Result<(), Failure> {
+    let manifest = args.iter().any(|a| a == "--manifest");
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--manifest")
+        .cloned()
+        .collect();
+    let (flags, paths) = split(&rest).map_err(Failure::Usage)?;
+    let (mut every, mut threads) = (None, 1);
+    for (name, value) in &flags {
+        match name.as_str() {
+            "--replay" => {
+                let n = value.strip_prefix("1/").and_then(|n| n.parse::<u32>().ok());
+                every = Some(
+                    n.filter(|&n| n > 0)
+                        .ok_or_else(|| Failure::Usage(format!("bad --replay `{value}`: 1/N")))?,
+                );
+            }
+            "--threads" => {
+                threads = usize::try_from(number(name, value).map_err(Failure::Usage)?)
+                    .map_err(|_| Failure::Usage("bad --threads".to_string()))?;
+            }
+            other => return Err(Failure::Usage(format!("unknown flag {other}"))),
+        }
+    }
+    if paths.is_empty() {
+        return Err(Failure::Usage("name a chunk or a directory".to_string()));
+    }
+    if manifest && (paths.len() != 1 || !Path::new(&paths[0]).is_dir()) {
+        return Err(Failure::Usage("--manifest takes one directory".to_string()));
+    }
+    let checked = verify_paths(&paths, every, threads);
+    let mut stdout = io::stdout().lock();
+    let mut unexamined = vec![
+        "chunks in paths not given (verify reads only the paths it is given)".to_string(),
+        match every {
+            None => {
+                "the regeneration of every game (--replay 1/N regenerates a sample)".to_string()
+            }
+            Some(n) => {
+                format!("games outside the --replay 1/{n} sample, game 0 of a chunk always in it")
+            }
+        },
+    ];
+    if let (true, Some(spot)) = (manifest, UNSYNCED) {
+        unexamined.push(spot.to_string());
+    }
+    let summaries = match checked {
+        Ok(summaries) => summaries,
+        Err(e) => {
+            for spot in &unexamined {
+                let _ = writeln!(stdout, "  not examined: {spot}");
+            }
+            return Err(Failure::Work(e));
+        }
+    };
+    let _ = write!(stdout, "{}", verify::report(&summaries));
+    for spot in &unexamined {
+        let _ = writeln!(stdout, "  not examined: {spot}");
+    }
+    if manifest {
+        let dir = Path::new(&paths[0]);
+        write_manifest(dir, &summaries).map_err(Failure::Work)?;
+        let _ = writeln!(stdout, "manifest {}", dir.join("MANIFEST.tsv").display());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "packed-datagen")]
+fn verify_paths(
+    paths: &[String],
+    every: Option<u32>,
+    threads: usize,
+) -> Result<Vec<verify::Summary>, String> {
+    let mut chunks = Vec::new();
+    for path in paths {
+        chunks.extend(verify::chunk_paths(Path::new(path))?);
+    }
+    if chunks.is_empty() {
+        return Err("no chunk to verify".to_string());
+    }
+    let next = AtomicU64::new(0);
+    let results = Mutex::new(vec![None; chunks.len()]);
+    thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..threads.clamp(1, MAX_THREADS).min(chunks.len()) {
+            let (next, results, chunks) = (&next, &results, &chunks);
+            handles.push(spawn_search(scope, move || {
+                let Some(tt) = Table::new(HASH_MB) else {
+                    return Err("a table could not be allocated".to_string());
+                };
+                loop {
+                    let i =
+                        usize::try_from(next.fetch_add(1, Ordering::Relaxed)).unwrap_or(usize::MAX);
+                    let Some(path) = chunks.get(i) else {
+                        return Ok(());
+                    };
+                    let checked = verify::chunk(path, every, &tt);
+                    unpoisoned(results.lock())[i] = Some(checked);
+                }
+            }));
+        }
+        for handle in handles {
+            let joined = handle.map_err(|e| e.to_string())?.join();
+            joined.map_err(|payload| panic_text(payload.as_ref()))??;
+        }
+        Ok::<(), String>(())
+    })?;
+    let mut summaries = Vec::new();
+    for result in results.into_inner().unwrap_or_else(PoisonError::into_inner) {
+        summaries.push(result.ok_or("a chunk was not checked")??);
+    }
+    Ok(summaries)
+}
+
+/// Refused beside a `.tmp`, staged, and renamed into place, so a manifest is only ever whole.
+#[cfg(feature = "packed-datagen")]
+fn write_manifest(dir: &Path, summaries: &[verify::Summary]) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        if Path::new(&name).extension().is_some_and(|e| e == "tmp") {
+            return Err(format!(
+                "{} holds {}; repair it and verify again",
+                dir.display(),
+                name.to_string_lossy()
+            ));
+        }
+    }
+    let text = verify::manifest(summaries)?;
+    let path = dir.join("MANIFEST.tsv");
+    let mut stage = Staged::create(&path, stage_name(&path)?)?;
+    stage
+        .write_all(text.as_bytes())
+        .map_err(|e| e.to_string())?;
+    publish(vec![stage])
+}
+
+#[cfg(not(feature = "packed-datagen"))]
+fn verify_from_args(_: &[String]) -> Result<(), Failure> {
+    Err(Failure::Work(WITHOUT_PACKED.to_string()))
+}
+
+#[cfg(not(feature = "packed-datagen"))]
+fn run_from_args(_: &[String]) -> Result<(), Failure> {
+    Err(Failure::Work(WITHOUT_PACKED.to_string()))
+}
+
+#[cfg(not(feature = "packed-datagen"))]
+fn repair_from_args(_: &[String]) -> Result<(), Failure> {
+    Err(Failure::Work(WITHOUT_PACKED.to_string()))
+}
+
 type Split = (Vec<(String, String)>, Vec<String>);
 
-fn split(args: &[String]) -> Result<Split, String> {
+pub(crate) fn split(args: &[String]) -> Result<Split, String> {
     let (mut flags, mut rest) = (Vec::new(), Vec::new());
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -253,20 +567,27 @@ fn split(args: &[String]) -> Result<Split, String> {
     Ok((flags, rest))
 }
 
-fn number(name: &str, value: &str) -> Result<u64, String> {
+pub(crate) fn number(name: &str, value: &str) -> Result<u64, String> {
     value.parse().map_err(|_| format!("bad {name} `{value}`"))
 }
 
-fn play_from_args(args: &[String]) -> Result<(), String> {
+struct PlayArgs {
+    games: u64,
+    seed: u64,
+    threads: usize,
+    path: Option<String>,
+}
+
+fn play_args(args: &[String]) -> Result<PlayArgs, String> {
     let (flags, rest) = split(args)?;
     if let Some(extra) = rest.first() {
         return Err(format!("unexpected argument {extra}"));
     }
-    let (mut games, mut seed, mut threads, mut path) = (None, 0, 1, None);
+    let (mut games, mut seed, mut threads, mut path) = (None, None, 1, None);
     for (name, value) in &flags {
         match name.as_str() {
             "--games" => games = Some(number(name, value)?),
-            "--seed" => seed = number(name, value)?,
+            "--seed" => seed = Some(number(name, value)?),
             "--threads" => {
                 threads = usize::try_from(number(name, value)?).map_err(|_| "bad --threads")?;
             }
@@ -274,7 +595,27 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown flag {other}")),
         }
     }
-    let games = games.ok_or("--games is required")?;
+    Ok(PlayArgs {
+        games: games.ok_or("--games is required")?,
+        seed: seed
+            .ok_or("--seed is required: a run without one repeats every other run's games")?,
+        threads,
+        path,
+    })
+}
+
+fn play_from_args(args: &[String]) -> Result<(), Failure> {
+    let args = play_args(args).map_err(Failure::Usage)?;
+    play_to(&args).map_err(Failure::Work)
+}
+
+fn play_to(args: &PlayArgs) -> Result<(), String> {
+    let PlayArgs {
+        games,
+        seed,
+        threads,
+        ref path,
+    } = *args;
     if threads > MAX_THREADS {
         eprintln!("cadence datagen: --threads {threads} is cut to {MAX_THREADS}");
     }
@@ -300,7 +641,43 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
     staged.map_or(Ok(()), |stage| publish(vec![stage]))
 }
 
-fn extract_from_args(args: &[String]) -> Result<(), String> {
+fn extract_from_args(args: &[String]) -> Result<(), Failure> {
+    let (input, train, holdout, every) = extract_args(args).map_err(Failure::Usage)?;
+    let extracted = extract_to(
+        Path::new(&input),
+        Path::new(&train),
+        Path::new(&holdout),
+        every,
+        &mut io::stdout().lock(),
+    );
+    if extracted.is_err() {
+        let mut stdout = io::stdout().lock();
+        for spot in not_examined(None) {
+            let _ = writeln!(stdout, "  not examined: {spot}");
+        }
+    }
+    extracted.map_err(Failure::Work)
+}
+
+/// What an extraction did not look at, said on every run however it ended.
+fn not_examined(stats: Option<&extract::Stats>) -> Vec<String> {
+    let mut spots = vec!["duplicates in files not given (extract reads one input)".to_string()];
+    spots.extend(UNSYNCED.map(str::to_string));
+    let foreign: Vec<&str> = stats
+        .into_iter()
+        .flat_map(|stats| stats.versions.iter().map(String::as_str))
+        .filter(|&version| version != VERSION)
+        .collect();
+    if !foreign.is_empty() {
+        spots.push(format!(
+            "the seed claims of runs from another build, {} (only this build's games replay)",
+            foreign.join(" ")
+        ));
+    }
+    spots
+}
+
+fn extract_args(args: &[String]) -> Result<(String, String, String, u64), String> {
     let (flags, rest) = split(args)?;
     let [input] = &rest[..] else {
         return Err("name one record file".to_string());
@@ -316,23 +693,43 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
     }
     let train = train.ok_or("--train is required")?;
     let holdout = holdout.ok_or("--holdout is required")?;
-    let (train_path, holdout_path) = (Path::new(&train), Path::new(&holdout));
+    Ok((input.clone(), train, holdout, every))
+}
+
+/// The report is written before the outputs are published, so a failure exits with nothing
+/// published; `report` is the destination, so a test can make it fail.
+fn extract_to(
+    input: &Path,
+    train_path: &Path,
+    holdout_path: &Path,
+    every: u64,
+    report: &mut dyn Write,
+) -> Result<(), String> {
     let (train_temp, holdout_temp) = (stage_name(train_path)?, stage_name(holdout_path)?);
     distinct(&[
-        Path::new(input),
+        input,
         train_path,
         holdout_path,
         train_temp.as_path(),
         holdout_temp.as_path(),
     ])?;
-    let input = BufReader::new(File::open(input).map_err(|e| format!("{input}: {e}"))?);
+    let file = File::open(input).map_err(|e| format!("{}: {e}", input.display()))?;
     let mut train = Staged::create(train_path, train_temp)?;
     let mut holdout = Staged::create(holdout_path, holdout_temp)?;
-    let stats = extract::extract(input, &mut train, &mut holdout, every)?;
-    publish(vec![train, holdout])?;
-    stats
-        .report(&mut io::stdout().lock())
-        .map_err(|e| e.to_string())
+    let stats = extract::extract(BufReader::new(file), &mut train, &mut holdout, every)?;
+    let mut text = Vec::new();
+    stats.report(&mut text).map_err(|e| e.to_string())?;
+    for spot in not_examined(Some(&stats)) {
+        writeln!(text, "  not examined: {spot}").map_err(|e| e.to_string())?;
+    }
+    if report
+        .write_all(&text)
+        .and_then(|()| report.flush())
+        .is_err()
+    {
+        return Err("the report could not be written; nothing was published".to_string());
+    }
+    publish(vec![train, holdout])
 }
 
 /// Refused before anything is created: an output or a stage that is the input, or another output
@@ -384,13 +781,17 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// Beside `path`, named by this process and a count, so no two stages share a name and an earlier
 /// run's leftover is refused by the creation rather than written over.
 fn stage_name(path: &Path) -> Result<PathBuf, String> {
+    beside(path, "partial")
+}
+
+fn beside(path: &Path, kind: &str) -> Result<PathBuf, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = path
         .file_name()
         .ok_or_else(|| format!("{}: not a file name", path.display()))?;
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut temp = name.to_os_string();
-    temp.push(format!(".{}.{n}.partial", std::process::id()));
+    temp.push(format!(".{}.{n}.{kind}", std::process::id()));
     Ok(path.with_file_name(temp))
 }
 
@@ -420,18 +821,38 @@ impl Staged {
         })
     }
 
-    /// Written out and closed, which some platforms require of a file before it is renamed.
+    /// Written out, synced and closed, so its contents are durable before its name is published.
     fn close(&mut self) -> Result<(), String> {
         if let Some(file) = self.file.take() {
-            file.into_inner()
+            let file = file
+                .into_inner()
                 .map_err(|e| format!("{}: {}", self.temp.display(), e.error()))?;
+            file.sync_all()
+                .map_err(|e| format!("{}: {e}", self.temp.display()))?;
         }
         Ok(())
     }
 
-    fn rename(mut self) -> Result<(), String> {
-        std::fs::rename(&self.temp, &self.path)
-            .map_err(|e| format!("{}: {e}", self.path.display()))?;
+    /// A file already at the destination is moved aside first, and every step is recorded so a
+    /// later failure can undo it.
+    fn publish(&mut self, steps: &mut dyn Steps, undo: &mut Vec<Undo>) -> Result<(), String> {
+        let failed = |e: io::Error| format!("{}: {e}", self.path.display());
+        if self.path.symlink_metadata().is_err() {
+            durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
+            self.published = true;
+            undo.push(Undo::Remove(self.path.clone()));
+            return Ok(());
+        }
+        let aside = beside(&self.path, "previous")?;
+        if aside.symlink_metadata().is_ok() {
+            return Err(format!("{}: already there", aside.display()));
+        }
+        steps.rename(&self.path, &aside).map_err(failed)?;
+        undo.push(Undo::Restore {
+            aside,
+            path: self.path.clone(),
+        });
+        durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
         self.published = true;
         Ok(())
     }
@@ -463,29 +884,173 @@ impl Drop for Staged {
     }
 }
 
-/// Every stage is written out and every destination checked before any is renamed, so one that
-/// cannot be published leaves the others' destinations as they were.
-fn publish(mut stages: Vec<Staged>) -> Result<(), String> {
+/// What puts one step of a publish back.
+enum Undo {
+    /// The destination's earlier file, moved aside, returns over whatever replaced it.
+    Restore { aside: PathBuf, path: PathBuf },
+    /// The destination had no file, so the one published there is removed.
+    Remove(PathBuf),
+}
+
+fn publish(stages: Vec<Staged>) -> Result<(), String> {
+    publish_with(stages, &mut Disk)
+}
+
+/// Every stage is written out and every destination checked before any is renamed, and a rename
+/// that fails undoes those before it, so the set is published whole or not at all.
+fn publish_with(mut stages: Vec<Staged>, steps: &mut dyn Steps) -> Result<(), String> {
     for stage in &mut stages {
-        stage.close()?;
+        stage
+            .close()
+            .map_err(|e| format!("{e}; nothing was published"))?;
     }
     if let Some(stage) = stages.iter().find(|stage| stage.path.is_dir()) {
-        return Err(format!("{}: a directory, not a file", stage.path.display()));
+        return Err(format!(
+            "{}: a directory, not a file; nothing was published",
+            stage.path.display()
+        ));
     }
-    for stage in stages {
-        stage.rename()?;
+    let mut undo = Vec::new();
+    for stage in &mut stages {
+        if let Err(e) = stage.publish(steps, &mut undo) {
+            return Err(roll_back(undo, steps, e));
+        }
+    }
+    for step in undo {
+        if let Undo::Restore { aside, .. } = step {
+            let _ = std::fs::remove_file(aside);
+        }
     }
     Ok(())
 }
 
+/// Last step first, each tried whatever became of the one before, and any that fails named after
+/// `error`; only a roll back with none failing says nothing was published.
+fn roll_back(undo: Vec<Undo>, steps: &mut dyn Steps, mut error: String) -> String {
+    let mut whole = true;
+    for step in undo.into_iter().rev() {
+        match step {
+            Undo::Restore { aside, path } => {
+                if let Err(e) = steps.rename(&aside, &path) {
+                    let kept = format!("; {} kept as {}: {e}", path.display(), aside.display());
+                    error.push_str(&kept);
+                    whole = false;
+                }
+            }
+            Undo::Remove(path) => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    let _ = write!(error, "; {} not removed: {e}", path.display());
+                    whole = false;
+                }
+            }
+        }
+    }
+    if whole {
+        error.push_str("; nothing was published");
+    }
+    error
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Write};
+    use std::path::Path;
     use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{MAX_THREADS, USAGE, generate_with, provenance, workers};
+    use cadence_dataset::durable::{Logged, Step};
+
+    use super::{
+        HASH_MB, MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, play,
+        provenance, publish_with, spawn_search, stage_name, workers,
+    };
     use crate::tt::Table;
+
+    /// A game that panics ends the run with an error naming it, at one thread and at three, rather
+    /// than leaving the writer waiting for its record.
+    #[test]
+    fn a_panicking_game_ends_the_run_naming_it() {
+        for threads in [1, 3] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                let line_for = |number: u64, _: &Table| {
+                    assert!(number != 3, "game 3 cannot be played");
+                    format!("game {number}")
+                };
+                let mut out = Vec::new();
+                let run = generate_with(1, 8, threads, 4, &mut out, &mut |_| {}, &line_for);
+                let _ = tx.send(run.map_err(|e| e.to_string()));
+            });
+            let ended = rx.recv_timeout(Duration::from_secs(30));
+            let run = ended.unwrap_or_else(|e| panic!("{threads} threads: no end: {e}"));
+            let error = run.expect_err("a run with a panicking game succeeded");
+            assert!(
+                error.contains("game 3 panicked"),
+                "{threads} threads: {error}"
+            );
+            assert!(
+                error.contains("cannot be played"),
+                "{threads} threads: {error}"
+            );
+        }
+        let line_for = |number: u64, _: &Table| format!("game {number}");
+        let mut out = Vec::new();
+        generate_with(1, 8, 3, 4, &mut out, &mut |_| {}, &line_for).expect("the control");
+    }
+
+    /// The helper gives a search the stack a `go` gives it, and the game is the same game.
+    #[test]
+    fn a_game_on_a_search_thread_is_the_game_played_here() {
+        let here = play(3, 1, &Table::new(HASH_MB).expect("a table"));
+        let there = thread::scope(|scope| {
+            let spawned =
+                spawn_search(scope, || play(3, 1, &Table::new(HASH_MB).expect("a table")));
+            spawned.expect("spawns").join().expect("joins")
+        });
+        assert_eq!(there, here);
+    }
+
+    /// A change to the derivation changes every dataset, so it fails here first.
+    #[test]
+    fn a_game_seed_is_pinned_to_its_derivation() {
+        assert_eq!(game_seed(0, 0), 0xA706_DD2F_4D19_7E6F);
+        assert_eq!(game_seed(5, 3), 0x67E0_7EA6_E630_C1F5);
+    }
+
+    /// The report is written before anything is published, so a report that fails leaves neither
+    /// output nor a stage.
+    #[test]
+    fn a_report_that_cannot_be_written_publishes_nothing() {
+        let dir = std::env::temp_dir().join(format!("cadence-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let games = dir.join("games.txt");
+        let mut text = Vec::new();
+        generate(9, 2, 1, &mut text, &mut |_| {}).expect("a run into memory");
+        std::fs::write(&games, text).expect("writes");
+        let (train, held) = (dir.join("train.txt"), dir.join("held.txt"));
+        let refused = extract_to(&games, &train, &held, 10, &mut Closed);
+        let left = listed(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            refused.is_err(),
+            "a report nobody could read was taken as written"
+        );
+        assert_eq!(left, ["games.txt"]);
+    }
+
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
 
     #[test]
     fn workers_number_at_most_the_games_and_the_maximum() {
@@ -534,6 +1099,83 @@ mod tests {
         let lines: Vec<&str> = std::str::from_utf8(&out).expect("utf-8").lines().collect();
         let names: Vec<String> = (0..GAMES).map(|n| format!("game {n}")).collect();
         assert_eq!(lines[1..], names, "written in number order");
+    }
+
+    /// The pair is published whole or not at all: a rename that fails, whichever it is, leaves both
+    /// destinations as they were and nothing beside them.
+    #[test]
+    fn a_failed_rename_leaves_the_original_pair_untouched() {
+        let dir = std::env::temp_dir();
+        let dir = dir.join(format!("cadence-pair-{}", std::process::id()));
+        let train = dir.join("train.txt");
+        let holdout = dir.join("holdout.txt");
+        let mut failed = 0;
+        for fail_at in 0.. {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch directory");
+            std::fs::write(&train, "train 1").expect("writes");
+            std::fs::write(&holdout, "holdout 1").expect("writes");
+            let stages = vec![staged(&train, "train 2"), staged(&holdout, "holdout 2")];
+            let published = publish_with(stages, &mut Logged::failing_at(fail_at)).is_ok();
+            assert_eq!(
+                listed(&dir),
+                ["holdout.txt", "train.txt"],
+                "call {fail_at} failing"
+            );
+            let pair = [read(&train), read(&holdout)];
+            if published {
+                assert_eq!(pair, ["train 2", "holdout 2"]);
+                break;
+            }
+            failed += 1;
+            assert_eq!(pair, ["train 1", "holdout 1"], "call {fail_at} failing");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failed >= 2, "the second rename was never made to fail");
+    }
+
+    /// Each file's name is synced in its directory right after the rename that publishes it.
+    #[test]
+    fn each_published_file_has_its_directory_synced_after_its_rename() {
+        let dir = std::env::temp_dir().join(format!("cadence-synced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let (train, holdout) = (dir.join("train.txt"), dir.join("holdout.txt"));
+        let stages = vec![staged(&train, "train"), staged(&holdout, "holdout")];
+        let mut logged = Logged::default();
+        let published = publish_with(stages, &mut logged);
+        let _ = std::fs::remove_dir_all(&dir);
+        published.expect("publishes");
+        assert_eq!(
+            logged.steps,
+            [
+                Step::Rename(train),
+                Step::Sync(dir.clone()),
+                Step::Rename(holdout),
+                Step::Sync(dir)
+            ]
+        );
+    }
+
+    fn staged(path: &Path, text: &str) -> Staged {
+        let name = stage_name(path).expect("a stage name");
+        let mut stage = Staged::create(path, name).expect("a stage");
+        stage.write_all(text.as_bytes()).expect("writes");
+        stage
+    }
+
+    fn listed(dir: &Path) -> Vec<String> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("lists") {
+            let name = entry.expect("an entry").file_name();
+            names.push(name.to_string_lossy().into_owned());
+        }
+        names.sort();
+        names
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).expect("reads")
     }
 
     /// A writer that fails releases every worker the window holds, so the run ends.

@@ -15,6 +15,7 @@ use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::Table;
 use crate::tune::Tunables;
+use crate::uci::SEARCH_STACK_BYTES;
 
 /// What the STC preset passes.
 pub const HASH_MB: usize = 16;
@@ -51,10 +52,25 @@ pub fn positions() -> Vec<&'static str> {
 
 /// # Panics
 ///
-/// If a checked-in position does not parse, or a table of [`HASH_MB`] mebibytes cannot be
-/// allocated.
+/// If a checked-in position does not parse, a table of [`HASH_MB`] mebibytes cannot be
+/// allocated, or the bench's search thread cannot be started.
 #[must_use]
 pub fn bench() -> Report {
+    // The search recurses a frame a ply, so it gets the search threads' stack and not the caller's.
+    std::thread::scope(|scope| {
+        #[expect(clippy::expect_used, reason = "no thread, no bench to report")]
+        let thread = std::thread::Builder::new()
+            .stack_size(SEARCH_STACK_BYTES)
+            .spawn_scoped(scope, search_positions)
+            .expect("the bench's search thread");
+        match thread.join() {
+            Ok(report) => report,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
+}
+
+fn search_positions() -> Report {
     let start = Instant::now();
     let stop = AtomicBool::new(false);
     #[expect(clippy::expect_used, reason = "sixteen mebibytes")]
