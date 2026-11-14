@@ -6,6 +6,8 @@
 pub mod extract;
 pub mod game;
 pub mod opening;
+#[cfg(feature = "packed-datagen")]
+pub mod packed;
 pub mod record;
 
 use std::collections::BTreeMap;
@@ -311,6 +313,10 @@ fn workers(threads: usize, games: u64) -> usize {
 const USAGE: &str = "usage: cadence datagen play --games N --seed S [--threads N] [--out PATH]\n       \
      cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
      --threads is cut to the number of games and to 256";
+
+/// What a build without the packed writer answers `run` and `repair` with.
+pub const WITHOUT_PACKED: &str =
+    "this binary was built without the packed writer (feature packed-datagen)";
 
 /// Only a command line that does not parse is answered with the usage.
 enum Failure {

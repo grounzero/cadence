@@ -734,6 +734,25 @@ fn extraction_says_what_it_did_not_examine() {
     }
 }
 
+/// A build without the feature carries none of the packed writer, and says so.
+#[cfg(not(feature = "packed-datagen"))]
+#[test]
+fn the_packed_writer_is_off_by_default() {
+    for args in [
+        &["run", "--out", "x", "--run-seed", "1"][..],
+        &["repair", "x.cdg.tmp"][..],
+    ] {
+        let out = Command::new(support::binary())
+            .arg("datagen")
+            .args(args)
+            .output()
+            .expect("runs");
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(datagen::WITHOUT_PACKED), "{err}");
+    }
+}
+
 /// A run without a seed would repeat every other run's games, so it is refused and writes nothing.
 #[test]
 fn play_refuses_to_run_without_a_seed() {

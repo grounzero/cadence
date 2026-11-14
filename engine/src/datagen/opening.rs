@@ -30,7 +30,7 @@ pub struct Opening {
 }
 
 /// What screens a start, which a test replaces.
-type Probe<'a> = dyn Fn(&mut Position, &Table) -> Option<Score> + 'a;
+pub type Probe<'a> = dyn Fn(&mut Position, &Table) -> Option<Score> + 'a;
 
 fn screen(board: &mut Position, tt: &Table) -> Option<Score> {
     game::probe(board, SCREEN_NODES, tt)
