@@ -27,6 +27,22 @@ fn main() {
     println!("cargo::rustc-env=CADENCE_DIRTY={}", u8::from(facts.dirty));
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo::rustc-env=CADENCE_TARGET={target}");
+    // The `-C target-feature` flags the build was given, and the whole set they resolve to.
+    println!("cargo::rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    let flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let features: Vec<&str> = flags
+        .split('\x1f')
+        .filter_map(|flag| {
+            flag.trim_start_matches("-C")
+                .strip_prefix("target-feature=")
+        })
+        .collect();
+    println!(
+        "cargo::rustc-env=CADENCE_TARGET_FEATURES={}",
+        features.join(",")
+    );
+    let cfg = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    println!("cargo::rustc-env=CADENCE_CFG_FEATURES={cfg}");
 }
 
 /// `commit` and `full` are never empty; `tag` is empty when HEAD is not at the annotated tag naming

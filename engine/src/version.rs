@@ -24,6 +24,12 @@ pub const MODIFIED: bool = DIRTY.len() == 1 && DIRTY.as_bytes()[0] == b'1';
 /// The triple the build was compiled for.
 pub const TARGET: &str = env!("CADENCE_TARGET");
 
+/// The `-C target-feature` flags it was given, comma-separated.
+pub const TARGET_FEATURES: &str = env!("CADENCE_TARGET_FEATURES");
+
+/// Every target feature those flags resolve to, as `cfg(target_feature)` lists them.
+pub const CFG_FEATURES: &str = env!("CADENCE_CFG_FEATURES");
+
 /// The version half of the UCI `id name`, the release only at the exact tag with a clean tree.
 pub const VERSION: &str = if is_release(TAG, PACKAGE) && !MODIFIED {
     PACKAGE

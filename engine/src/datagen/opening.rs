@@ -43,12 +43,17 @@ fn screen(board: &mut Position, tt: &Table) -> Option<Score> {
 ///
 /// If the drawn start does not parse.
 pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
-    draw_with(rng, tt, &screen)
+    draw_with(rng, tt, &screen, false)
 }
 
-fn draw_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>) -> Option<Opening> {
-    let white = draw_array(rng);
-    let black = draw_array(rng);
+/// The standard array for both sides when `standard`, and otherwise two drawn uniformly.
+fn draw_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>, standard: bool) -> Option<Opening> {
+    let (white, black) = if standard {
+        let array = u32::from(cadence_dataset::chunk::STANDARD_ARRAY);
+        (array, array)
+    } else {
+        (draw_array(rng), draw_array(rng))
+    };
     let fen = dfrc_fen(white, black);
     let start = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
     let mut board = Position::new(start);
@@ -80,9 +85,19 @@ pub fn next(rng: &mut Rng, tt: &Table) -> (Opening, u32) {
 }
 
 fn next_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>) -> (Opening, u32) {
+    next_of_kind(rng, tt, false, probe)
+}
+
+/// A start the screen refuses is drawn again under the same kind, so the share holds.
+pub fn next_of_kind(
+    rng: &mut Rng,
+    tt: &Table,
+    standard: bool,
+    probe: &Probe<'_>,
+) -> (Opening, u32) {
     let mut refused = 0;
     loop {
-        if let Some(opening) = draw_with(rng, tt, probe) {
+        if let Some(opening) = draw_with(rng, tt, probe, standard) {
             return (opening, refused);
         }
         refused += 1;
