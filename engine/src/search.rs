@@ -6,6 +6,7 @@ use std::time::Instant;
 use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList};
 
+use crate::capthist::CaptureHistory;
 use crate::conthist::{ContinuationHistory, Frame};
 use crate::corrhist::CorrectionHistory;
 use crate::eval::PawnCache;
@@ -163,6 +164,7 @@ struct Heuristics {
     /// On the heap: `Search` is returned by value.
     history: History,
     conthist: ContinuationHistory,
+    capthist: CaptureHistory,
     /// The move made at each ply of the current path, which the continuation history reads back.
     frames: [Frame; MAX_PLY],
     corrhist: CorrectionHistory,
@@ -176,6 +178,7 @@ impl Heuristics {
             killers: [[Move::NULL; 2]; MAX_PLY],
             history: History::new(),
             conthist: ContinuationHistory::new(),
+            capthist: CaptureHistory::new(),
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
             evals: [None; MAX_PLY],
@@ -186,6 +189,7 @@ impl Heuristics {
         self.killers = [[Move::NULL; 2]; MAX_PLY];
         self.history.clear();
         self.conthist.clear();
+        self.capthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
         self.corrhist.clear();

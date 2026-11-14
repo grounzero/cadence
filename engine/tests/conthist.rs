@@ -71,6 +71,7 @@ fn the_order_follows(b: &Board, row: &[i16], offset: usize) {
     let view = Tables {
         butterfly: &[],
         continuation,
+        capture: &[],
     };
     sort_from(b, &mut ranked, 0, [Move::NULL; 2], &view);
     let first_quiet = |l: &MoveList| l.iter().position(|m| !m.is_noisy()).expect("a quiet move");

@@ -7,6 +7,7 @@ use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{MAX_MOVES, Move, MoveList, Piece, PieceType, Square};
 
+use crate::capthist;
 use crate::conthist::{self, OFFSETS};
 use crate::history::HISTORY_MAX;
 use crate::see;
@@ -143,12 +144,30 @@ pub fn sort_from(
     while picker.next(board, list, &mut slots).is_some() {}
 }
 
-/// What the main search's quiet keys read: the mover's butterfly row, empty where there is none,
-/// and a continuation row per offset, absent where its frame is.
+/// One victim class of [`capture_key`], eight attacker steps, is worth the history's cap, so a
+/// capture's score moves it at most one class either way.
+pub const CAPTURE_SCALE: i32 = HISTORY_MAX / 8;
+
+const CAPTURE_MAX: i32 = capture_key(PieceType::Pawn, PieceType::Queen);
+const CAPTURE_MIN: i32 = capture_key(PieceType::King, PieceType::Pawn);
+
+// Whatever the scores, a queen promotion still ranks above every capture and an underpromotion
+// below every one.
+const _: () =
+    assert!(QUEEN_PROMOTION * CAPTURE_SCALE > CAPTURE_MAX * CAPTURE_SCALE + 2 * HISTORY_MAX);
+const _: () = assert!(
+    (UNDERPROMOTION + CAPTURE_MAX) * CAPTURE_SCALE + HISTORY_MAX
+        < CAPTURE_MIN * CAPTURE_SCALE - HISTORY_MAX
+);
+
+/// What the main search's keys read: the mover's butterfly row, empty where there is none, a
+/// continuation row per offset, absent where its frame is, and the capture history, empty where
+/// there is none.
 #[derive(Clone, Copy)]
 pub struct Tables<'a> {
     pub butterfly: &'a [i32],
     pub continuation: [Option<&'a [i16]>; OFFSETS.len()],
+    pub capture: &'a [i16],
 }
 
 impl<'a> Tables<'a> {
@@ -158,6 +177,7 @@ impl<'a> Tables<'a> {
         Tables {
             butterfly: &[],
             continuation: [None; OFFSETS.len()],
+            capture: &[],
         }
     }
 
@@ -166,7 +186,20 @@ impl<'a> Tables<'a> {
         Tables {
             butterfly: row,
             continuation: [None; OFFSETS.len()],
+            capture: &[],
         }
+    }
+
+    /// A noisy move's MVV-LVA key on the scale its capture's score is read at, plus that score; a
+    /// promotion that captures nothing has none.
+    ///
+    /// # Panics
+    ///
+    /// If a capture's squares do not hold pieces.
+    #[must_use]
+    pub fn noisy_key(&self, board: &Board, m: Move) -> i32 {
+        let score = capthist::index(board, m).and_then(|i| self.capture.get(i));
+        noisy_key(board, m) * CAPTURE_SCALE + score.map_or(0, |&v| i32::from(v))
     }
 
     /// The butterfly score and each continuation row's, all in the history's range, so the weights
@@ -291,7 +324,7 @@ impl Picker {
             slots[i] = if m.is_noisy() {
                 noisy += 1;
                 Slot {
-                    key: noisy_key(board, m),
+                    key: tables.noisy_key(board, m),
                     generated,
                     band: Band::Untested,
                 }
