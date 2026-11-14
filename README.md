@@ -168,6 +168,8 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence spsa` | Prints an SPSA tuner's input, one line per tuning option above. |
 | `cadence datagen play --games N --seed S [--threads N] [--out PATH]` | Plays games against itself; the same seed and game count give the same file at any thread count. |
 | `cadence datagen extract <games> --train PATH --holdout PATH [--every N]` | Cuts games into positions, every Nth game to the holdout set. |
+| `cadence datagen run --out DIR --run-seed HEX\|fresh [--threads N] [--chunk-games N] [--standard-share P] [--host NAME]` | Writes packed chunks of games until a `STOP` file appears in `DIR`; a `PAUSE` file pauses it. Built only with the `packed-datagen` feature. |
+| `cadence datagen repair CHUNK.tmp` | Closes a chunk a killed run left, keeping its whole records. Built only with the `packed-datagen` feature. |
 | `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
 

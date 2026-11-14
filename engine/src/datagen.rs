@@ -6,6 +6,8 @@
 pub mod extract;
 pub mod game;
 pub mod opening;
+#[cfg(feature = "packed-datagen")]
+pub mod packed;
 pub mod record;
 
 use std::collections::BTreeMap;
@@ -217,7 +219,7 @@ fn write_in_order(
 }
 
 /// A panic's message, where it carried one.
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(text) = payload.downcast_ref::<&str>() {
         (*text).to_string()
     } else if let Some(text) = payload.downcast_ref::<String>() {
@@ -309,8 +311,15 @@ fn workers(threads: usize, games: u64) -> usize {
 }
 
 const USAGE: &str = "usage: cadence datagen play --games N --seed S [--threads N] [--out PATH]\n       \
-     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
+     cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n       \
+     cadence datagen run --out DIR --run-seed HEX|fresh [--threads N] [--chunk-games N] \
+     [--standard-share P] [--host NAME] (packed-datagen feature)\n       \
+     cadence datagen repair CHUNK.tmp (packed-datagen feature)\n\
      --threads is cut to the number of games and to 256";
+
+/// What a build without the packed writer answers `run` and `repair` with.
+pub const WITHOUT_PACKED: &str =
+    "this binary was built without the packed writer (feature packed-datagen)";
 
 /// Only a command line that does not parse is answered with the usage.
 enum Failure {
@@ -323,7 +332,11 @@ pub fn run(args: &[String]) -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("play") => play_from_args(&args[1..]),
         Some("extract") => extract_from_args(&args[1..]),
-        _ => Err(Failure::Usage("name play or extract".to_string())),
+        Some("run") => run_from_args(&args[1..]),
+        Some("repair") => repair_from_args(&args[1..]),
+        _ => Err(Failure::Usage(
+            "name play, extract, run or repair".to_string(),
+        )),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -339,9 +352,50 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+#[cfg(feature = "packed-datagen")]
+fn run_from_args(args: &[String]) -> Result<(), Failure> {
+    let settings = packed::settings_from_args(args).map_err(Failure::Usage)?;
+    let build = packed::Build::this();
+    if let Some(why) = packed::build_refusal(&build.commit_full, build.modified) {
+        return Err(Failure::Work(why.to_string()));
+    }
+    std::fs::create_dir_all(&settings.dir)
+        .map_err(|e| Failure::Work(format!("{}: {e}", settings.dir.display())))?;
+    let written = packed::run(&settings, &build, &packed::play);
+    let written = written.map_err(Failure::Work)?;
+    println!(
+        "stopped: chunks {} games uniform {} standard {}",
+        written.chunks, written.games[0], written.games[1]
+    );
+    Ok(())
+}
+
+#[cfg(feature = "packed-datagen")]
+fn repair_from_args(args: &[String]) -> Result<(), Failure> {
+    let [tmp] = args else {
+        return Err(Failure::Usage("name one CHUNK.tmp".to_string()));
+    };
+    let report = packed::repair(Path::new(tmp)).map_err(Failure::Work);
+    println!(
+        "  not examined: the games themselves (repair checks lengths and CRCs; verify replays)"
+    );
+    println!("{}", report?);
+    Ok(())
+}
+
+#[cfg(not(feature = "packed-datagen"))]
+fn run_from_args(_: &[String]) -> Result<(), Failure> {
+    Err(Failure::Work(WITHOUT_PACKED.to_string()))
+}
+
+#[cfg(not(feature = "packed-datagen"))]
+fn repair_from_args(_: &[String]) -> Result<(), Failure> {
+    Err(Failure::Work(WITHOUT_PACKED.to_string()))
+}
+
 type Split = (Vec<(String, String)>, Vec<String>);
 
-fn split(args: &[String]) -> Result<Split, String> {
+pub(crate) fn split(args: &[String]) -> Result<Split, String> {
     let (mut flags, mut rest) = (Vec::new(), Vec::new());
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -355,7 +409,7 @@ fn split(args: &[String]) -> Result<Split, String> {
     Ok((flags, rest))
 }
 
-fn number(name: &str, value: &str) -> Result<u64, String> {
+pub(crate) fn number(name: &str, value: &str) -> Result<u64, String> {
     value.parse().map_err(|_| format!("bad {name} `{value}`"))
 }
 

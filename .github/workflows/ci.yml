@@ -135,12 +135,28 @@ jobs:
           expect "one commit past the tag" "Cadence $version-dev-$short"
           echo >> README.md
           expect "with README.md edited past the tag" "Cadence $version-dev-$short-dirty"
+          # A build carrying the packed writer refuses to write from a modified tree or an
+          # unknown commit, and writes nothing.
+          refuses() {
+            cargo build --locked --quiet --bin cadence --features packed-datagen
+            out="$RUNNER_TEMP/packed-$2"
+            if target/debug/cadence datagen run --out "$out" --run-seed 1 --host ci \
+                2> "$RUNNER_TEMP/refused-$2"; then
+              echo "::error::$1, datagen run wrote a dataset"; exit 1
+            fi
+            cat "$RUNNER_TEMP/refused-$2"
+            grep -q "$3" "$RUNNER_TEMP/refused-$2" \
+              || { echo "::error::$1, datagen run did not say $3"; exit 1; }
+            [ ! -e "$out" ] || { echo "::error::$1, the refused run made $out"; exit 1; }
+          }
+          refuses "with README.md edited" edited "modified tree"
           # An export has no repository to ask, so it names no commit.
           export="$RUNNER_TEMP/export"
           mkdir "$export"
           git archive HEAD | tar -x -C "$export"
           cd "$export"
           expect "exported with git archive" "Cadence $version-dev-unknown"
+          refuses "exported" exported "no commit known"
 
   check:
     name: ${{ matrix.name }}
@@ -458,6 +474,24 @@ jobs:
             exit 1
           fi
           echo "bench: $got nodes, as bench.txt says"
+
+      # The packed writer's tests, and the bench of a release build carrying it, which must equal
+      # bench.txt: the feature adds commands and touches no search path. Its own target directory
+      # keeps the default release binary the steps above checked.
+      - name: The packed writer, feature on
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          dir=target/packed
+          cargo test --locked -p cadence-engine --features packed-datagen --target-dir "$dir" \
+            --lib --test packed --test datagen $CONFIG_ARG
+          cargo build --locked --release -p cadence-engine --features packed-datagen \
+            --target-dir "$dir" $CONFIG_ARG
+          got=$("$dir/release/cadence" bench | tail -n 1 | awk '{print $1}')
+          expected=$(tr -d '[:space:]' < bench.txt)
+          [ "$got" = "$expected" ] \
+            || { echo "::error::with packed-datagen the bench is $got nodes and bench.txt says $expected"; exit 1; }
+          echo "with packed-datagen: $got nodes, as bench.txt says"
 
       # The Windows binary, kept with the run so it can be tried without a toolchain.
       - name: Upload the Windows binary

@@ -15,6 +15,8 @@ path = "src/main.rs"
 default = []
 # The search's diagnostic counts, which only tests read; a release build keeps none of them.
 counters = []
+# The packed datagen writer, `datagen run` and `repair`; off by default, which is its off switch.
+packed-datagen = []
 
 [dependencies]
 cadence-core = { path = "../core" }
