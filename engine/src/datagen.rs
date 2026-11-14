@@ -461,8 +461,11 @@ fn verify_from_args(args: &[String]) -> Result<(), Failure> {
     }
     if manifest {
         let dir = Path::new(&paths[0]);
-        write_manifest(dir, &summaries).map_err(Failure::Work)?;
+        let notes = write_manifest(dir, &summaries).map_err(Failure::Work)?;
         let _ = writeln!(stdout, "manifest {}", dir.join("MANIFEST.tsv").display());
+        for note in notes {
+            let _ = writeln!(stdout, "{note}");
+        }
     }
     Ok(())
 }
@@ -516,7 +519,7 @@ fn verify_paths(
 
 /// Refused beside a `.tmp`, staged, and renamed into place, so a manifest is only ever whole.
 #[cfg(feature = "packed-datagen")]
-fn write_manifest(dir: &Path, summaries: &[verify::Summary]) -> Result<(), String> {
+fn write_manifest(dir: &Path, summaries: &[verify::Summary]) -> Result<Vec<String>, String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let name = entry.map_err(|e| e.to_string())?.file_name();
         if Path::new(&name).extension().is_some_and(|e| e == "tmp") {
@@ -638,7 +641,11 @@ fn play_to(args: &PlayArgs) -> Result<(), String> {
         }
     };
     generate(seed, games, threads, out, &mut progress).map_err(|e| e.to_string())?;
-    staged.map_or(Ok(()), |stage| publish(vec![stage]))
+    let notes = staged.map_or(Ok(Vec::new()), |stage| publish(vec![stage]))?;
+    for note in notes {
+        eprintln!("cadence datagen: {note}");
+    }
+    Ok(())
 }
 
 fn extract_from_args(args: &[String]) -> Result<(), Failure> {
@@ -729,7 +736,10 @@ fn extract_to(
     {
         return Err("the report could not be written; nothing was published".to_string());
     }
-    publish(vec![train, holdout])
+    for note in publish(vec![train, holdout])? {
+        let _ = writeln!(report, "{note}");
+    }
+    Ok(())
 }
 
 /// Refused before anything is created: an output or a stage that is the input, or another output
@@ -835,13 +845,17 @@ impl Staged {
 
     /// A file already at the destination is moved aside first, and every step is recorded so a
     /// later failure can undo it.
-    fn publish(&mut self, steps: &mut dyn Steps, undo: &mut Vec<Undo>) -> Result<(), String> {
+    fn publish(
+        &mut self,
+        steps: &mut dyn Steps,
+        undo: &mut Vec<Undo>,
+    ) -> Result<Option<String>, String> {
         let failed = |e: io::Error| format!("{}: {e}", self.path.display());
         if self.path.symlink_metadata().is_err() {
             durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
             self.published = true;
             undo.push(Undo::Remove(self.path.clone()));
-            return Ok(());
+            return Ok(None);
         }
         let aside = beside(&self.path, "previous")?;
         if aside.symlink_metadata().is_ok() {
@@ -854,7 +868,7 @@ impl Staged {
         });
         durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
         self.published = true;
-        Ok(())
+        Ok(None)
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {
@@ -892,13 +906,14 @@ enum Undo {
     Remove(PathBuf),
 }
 
-fn publish(stages: Vec<Staged>) -> Result<(), String> {
+/// Each file whose directory sync failed after its rename, reported and left published.
+fn publish(stages: Vec<Staged>) -> Result<Vec<String>, String> {
     publish_with(stages, &mut Disk)
 }
 
 /// Every stage is written out and every destination checked before any is renamed, and a rename
 /// that fails undoes those before it, so the set is published whole or not at all.
-fn publish_with(mut stages: Vec<Staged>, steps: &mut dyn Steps) -> Result<(), String> {
+fn publish_with(mut stages: Vec<Staged>, steps: &mut dyn Steps) -> Result<Vec<String>, String> {
     for stage in &mut stages {
         stage
             .close()
@@ -910,10 +925,11 @@ fn publish_with(mut stages: Vec<Staged>, steps: &mut dyn Steps) -> Result<(), St
             stage.path.display()
         ));
     }
-    let mut undo = Vec::new();
+    let (mut undo, mut notes) = (Vec::new(), Vec::new());
     for stage in &mut stages {
-        if let Err(e) = stage.publish(steps, &mut undo) {
-            return Err(roll_back(undo, steps, e));
+        match stage.publish(steps, &mut undo) {
+            Ok(note) => notes.extend(note),
+            Err(e) => return Err(roll_back(undo, steps, e)),
         }
     }
     for step in undo {
@@ -921,7 +937,7 @@ fn publish_with(mut stages: Vec<Staged>, steps: &mut dyn Steps) -> Result<(), St
             let _ = std::fs::remove_file(aside);
         }
     }
-    Ok(())
+    Ok(notes)
 }
 
 /// Last step first, each tried whatever became of the one before, and any that fails named after
@@ -1132,6 +1148,28 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failed >= 2, "the second rename was never made to fail");
+    }
+
+    /// A directory sync that fails after a rename leaves that file published and says so, and the
+    /// rest of the set is still published: nothing is rolled back.
+    #[test]
+    fn a_failed_sync_after_a_rename_is_reported_and_rolls_nothing_back() {
+        let dir =
+            std::env::temp_dir().join(format!("cadence-unsynced-pair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let (train, holdout) = (dir.join("train.txt"), dir.join("holdout.txt"));
+        let stages = vec![staged(&train, "train"), staged(&holdout, "holdout")];
+        let published = publish_with(stages, &mut Logged::failing_sync(0));
+        let pair = [read(&train), read(&holdout)];
+        let _ = std::fs::remove_dir_all(&dir);
+        let notes = published.expect("published, with one sync failed");
+        assert_eq!(pair, ["train", "holdout"]);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("train.txt: published, durability unconfirmed"),
+            "{notes:?}"
+        );
     }
 
     /// Each file's name is synced in its directory right after the rename that publishes it.

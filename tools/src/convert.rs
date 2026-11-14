@@ -35,6 +35,13 @@ const BUCKET: i32 = 100;
 const SPAN: i32 = 2_000;
 const BUCKETS: usize = (2 * SPAN / BUCKET) as usize + 2;
 
+/// The unit published, and the line reporting it when the sync after its rename failed.
+#[derive(Debug)]
+pub struct Converted {
+    pub unit: PathBuf,
+    pub unconfirmed: Option<String>,
+}
+
 /// What the command line asks.
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -61,8 +68,8 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         "each manifest row's games, plies and kinds (a chunk is held to its SHA-256 and its header)",
     ];
     unexamined.extend(UNSYNCED);
-    let unit = match converted {
-        Ok(unit) => unit,
+    let converted = match converted {
+        Ok(converted) => converted,
         Err(e) => {
             for spot in &unexamined {
                 let _ = writeln!(stdout, "  not examined: {spot}");
@@ -70,12 +77,17 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
             return Err(e);
         }
     };
+    let unit = &converted.unit;
     let report = fs::read_to_string(unit.join("report.txt")).unwrap_or_default();
     let _ = write!(stdout, "{report}");
     for spot in unexamined {
         let _ = writeln!(stdout, "  not examined: {spot}");
     }
-    let _ = writeln!(stdout, "published {}", unit.display());
+    let published = converted
+        .unconfirmed
+        .clone()
+        .unwrap_or_else(|| format!("published {}", unit.display()));
+    let _ = writeln!(stdout, "{published}");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -341,7 +353,7 @@ struct Kept {
 ///
 /// Any refusal before a record is read, a duplicate game or chunk, a record that does not replay,
 /// or a file that cannot be written; nothing is published then.
-pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<PathBuf, String> {
+pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, String> {
     let sets = request
         .manifests
         .iter()
@@ -658,7 +670,7 @@ fn publish(
     kept: &Kept,
     report: &str,
     steps: &mut dyn Steps,
-) -> Result<PathBuf, String> {
+) -> Result<Converted, String> {
     fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
     let staging = request.out.join(format!(".staging-{}", std::process::id()));
     fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
@@ -688,7 +700,10 @@ fn publish(
             .sync_dir(&staging)
             .map_err(|e| format!("{}: {e}", staging.display()))?;
         durable::publish(steps, &staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
-        Ok(unit)
+        Ok(Converted {
+            unit,
+            unconfirmed: None,
+        })
     })();
     if staged.is_err() {
         let _ = fs::remove_dir_all(&staging);
@@ -780,7 +795,7 @@ fn manifest(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::{BUCKETS, Request, bucket, convert, result_for_mover};
     use cadence_core::chess960::dfrc_fen;
@@ -792,13 +807,11 @@ mod tests {
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{DRAW, LOSS, WIN};
 
-    /// A rename that fails leaves neither the unit nor its staging behind, and one that works has the
-    /// unit's entries synced before it and the unit's name synced after it.
-    #[test]
-    fn a_failed_rename_publishes_nothing() {
-        let dir = std::env::temp_dir().join(format!("cadence-convert-unit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("a scratch directory");
+    /// Two short games in a chunk of `dir`, its sidecar and manifest, and the request that converts
+    /// them to `dir/out`.
+    fn fixture(dir: &Path) -> Request {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).expect("a scratch directory");
         let header = Header {
             commit: [1; 20],
             version: "0.0.0-test".to_string(),
@@ -838,16 +851,25 @@ mod tests {
         let rows = format!("chunk\tsha256\n{name}\t{digest}\n");
         std::fs::write(&manifest, provenance + &rows).expect("writes");
         let out = dir.join("out");
-        let request = Request {
+        Request {
             manifests: vec![manifest],
-            out: out.clone(),
+            out,
             every: 10,
             shuffle_seed: 1,
             standard_share: None,
             score_cap: None,
             swing_cap: None,
             dedup: false,
-        };
+        }
+    }
+
+    /// A rename that fails leaves neither the unit nor its staging behind, and one that works has the
+    /// unit's entries synced before it and the unit's name synced after it.
+    #[test]
+    fn a_failed_rename_publishes_nothing() {
+        let dir = std::env::temp_dir().join(format!("cadence-convert-unit-{}", std::process::id()));
+        let request = fixture(&dir);
+        let out = request.out.clone();
         let failed = convert(&request, &mut Logged::failing_at(0));
         let left: Vec<PathBuf> = std::fs::read_dir(&out)
             .expect("lists")
@@ -858,13 +880,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failed.is_err(), "a failed rename was taken as published");
         assert_eq!(left, [] as [PathBuf; 0]);
-        let unit = published.expect("the same request publishes once the rename works");
+        let unit = published
+            .expect("the same request publishes once the rename works")
+            .unit;
         let staging = out.join(format!(".staging-{}", std::process::id()));
         assert_eq!(
             logged.steps,
             [Step::Sync(staging), Step::Rename(unit), Step::Sync(out)],
             "the unit's entries synced before its rename, and its name after"
         );
+    }
+
+    /// A directory sync that fails before the unit's rename publishes nothing, and one that fails
+    /// after it leaves the unit published and says its durability is unconfirmed.
+    #[test]
+    fn a_failed_sync_publishes_nothing_before_the_rename_and_is_reported_after_it() {
+        let dir = std::env::temp_dir().join(format!("cadence-convert-sync-{}", std::process::id()));
+        let request = fixture(&dir);
+        let before = convert(&request, &mut Logged::failing_sync(0));
+        let left: Vec<PathBuf> = std::fs::read_dir(&request.out).map_or_else(
+            |_| Vec::new(),
+            |d| d.map(|e| e.expect("an entry").path()).collect(),
+        );
+        let after = convert(&request, &mut Logged::failing_sync(1));
+        let landed = after
+            .as_ref()
+            .is_ok_and(|c| c.unit.join("train.bin").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            before.is_err(),
+            "a sync before the rename failed and a unit was published"
+        );
+        assert_eq!(left, [] as [PathBuf; 0]);
+        let after = after.expect("published once the rename is made");
+        assert!(landed, "the unit is not in place");
+        let note = after.unconfirmed.expect("the failed sync is reported");
+        assert!(note.contains("published, durability unconfirmed"), "{note}");
     }
 
     /// Eight random plies and 32 random moves from the standard start, each move scored 5.
