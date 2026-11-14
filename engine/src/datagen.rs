@@ -217,22 +217,32 @@ fn workers(threads: usize, games: u64) -> usize {
         .min(usize::try_from(games).unwrap_or(usize::MAX))
 }
 
-const USAGE: &str = "usage: cadence datagen play --games N [--seed S] [--threads N] [--out PATH]\n       \
+const USAGE: &str = "usage: cadence datagen play --games N --seed S [--threads N] [--out PATH]\n       \
      cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n\
      --threads is cut to the number of games and to 256";
+
+/// Only a command line that does not parse is answered with the usage.
+enum Failure {
+    Usage(String),
+    Work(String),
+}
 
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("play") => play_from_args(&args[1..]),
         Some("extract") => extract_from_args(&args[1..]),
-        _ => Err("name play or extract".to_string()),
+        _ => Err(Failure::Usage("name play or extract".to_string())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+        Err(Failure::Usage(e)) => {
             eprintln!("cadence datagen: {e}");
             eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+        Err(Failure::Work(e)) => {
+            eprintln!("cadence datagen: {e}");
             ExitCode::from(2)
         }
     }
@@ -258,16 +268,23 @@ fn number(name: &str, value: &str) -> Result<u64, String> {
     value.parse().map_err(|_| format!("bad {name} `{value}`"))
 }
 
-fn play_from_args(args: &[String]) -> Result<(), String> {
+struct PlayArgs {
+    games: u64,
+    seed: u64,
+    threads: usize,
+    path: Option<String>,
+}
+
+fn play_args(args: &[String]) -> Result<PlayArgs, String> {
     let (flags, rest) = split(args)?;
     if let Some(extra) = rest.first() {
         return Err(format!("unexpected argument {extra}"));
     }
-    let (mut games, mut seed, mut threads, mut path) = (None, 0, 1, None);
+    let (mut games, mut seed, mut threads, mut path) = (None, None, 1, None);
     for (name, value) in &flags {
         match name.as_str() {
             "--games" => games = Some(number(name, value)?),
-            "--seed" => seed = number(name, value)?,
+            "--seed" => seed = Some(number(name, value)?),
             "--threads" => {
                 threads = usize::try_from(number(name, value)?).map_err(|_| "bad --threads")?;
             }
@@ -275,7 +292,27 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown flag {other}")),
         }
     }
-    let games = games.ok_or("--games is required")?;
+    Ok(PlayArgs {
+        games: games.ok_or("--games is required")?,
+        seed: seed
+            .ok_or("--seed is required: a run without one repeats every other run's games")?,
+        threads,
+        path,
+    })
+}
+
+fn play_from_args(args: &[String]) -> Result<(), Failure> {
+    let args = play_args(args).map_err(Failure::Usage)?;
+    play_to(&args).map_err(Failure::Work)
+}
+
+fn play_to(args: &PlayArgs) -> Result<(), String> {
+    let PlayArgs {
+        games,
+        seed,
+        threads,
+        ref path,
+    } = *args;
     if threads > MAX_THREADS {
         eprintln!("cadence datagen: --threads {threads} is cut to {MAX_THREADS}");
     }
@@ -301,7 +338,19 @@ fn play_from_args(args: &[String]) -> Result<(), String> {
     staged.map_or(Ok(()), |stage| publish(vec![stage]))
 }
 
-fn extract_from_args(args: &[String]) -> Result<(), String> {
+fn extract_from_args(args: &[String]) -> Result<(), Failure> {
+    let (input, train, holdout, every) = extract_args(args).map_err(Failure::Usage)?;
+    extract_to(
+        Path::new(&input),
+        Path::new(&train),
+        Path::new(&holdout),
+        every,
+        &mut io::stdout().lock(),
+    )
+    .map_err(Failure::Work)
+}
+
+fn extract_args(args: &[String]) -> Result<(String, String, String, u64), String> {
     let (flags, rest) = split(args)?;
     let [input] = &rest[..] else {
         return Err("name one record file".to_string());
@@ -317,16 +366,11 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
     }
     let train = train.ok_or("--train is required")?;
     let holdout = holdout.ok_or("--holdout is required")?;
-    extract_to(
-        Path::new(input),
-        Path::new(&train),
-        Path::new(&holdout),
-        every,
-        &mut io::stdout().lock(),
-    )
+    Ok((input.clone(), train, holdout, every))
 }
 
-/// `report` takes the statistics, so a test can make it fail.
+/// The report is written before the outputs are published, so a failure exits with nothing
+/// published; `report` is the destination, so a test can make it fail.
 fn extract_to(
     input: &Path,
     train_path: &Path,
@@ -346,8 +390,16 @@ fn extract_to(
     let mut train = Staged::create(train_path, train_temp)?;
     let mut holdout = Staged::create(holdout_path, holdout_temp)?;
     let stats = extract::extract(BufReader::new(file), &mut train, &mut holdout, every)?;
-    publish(vec![train, holdout])?;
-    stats.report(report).map_err(|e| e.to_string())
+    let mut text = Vec::new();
+    stats.report(&mut text).map_err(|e| e.to_string())?;
+    if report
+        .write_all(&text)
+        .and_then(|()| report.flush())
+        .is_err()
+    {
+        return Err("the report could not be written; nothing was published".to_string());
+    }
+    publish(vec![train, holdout])
 }
 
 /// Refused before anything is created: an output or a stage that is the input, or another output
@@ -522,10 +574,15 @@ fn publish(stages: Vec<Staged>) -> Result<(), String> {
 /// that fails undoes those before it, so the set is published whole or not at all.
 fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), String> {
     for stage in &mut stages {
-        stage.close()?;
+        stage
+            .close()
+            .map_err(|e| format!("{e}; nothing was published"))?;
     }
     if let Some(stage) = stages.iter().find(|stage| stage.path.is_dir()) {
-        return Err(format!("{}: a directory, not a file", stage.path.display()));
+        return Err(format!(
+            "{}: a directory, not a file; nothing was published",
+            stage.path.display()
+        ));
     }
     let mut undo = Vec::new();
     for stage in &mut stages {
@@ -542,22 +599,28 @@ fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), 
 }
 
 /// Last step first, each tried whatever became of the one before, and any that fails named after
-/// `error`.
+/// `error`; only a roll back with none failing says nothing was published.
 fn roll_back(undo: Vec<Undo>, rename: &mut Rename<'_>, mut error: String) -> String {
+    let mut whole = true;
     for step in undo.into_iter().rev() {
         match step {
             Undo::Restore { aside, path } => {
                 if let Err(e) = rename(&aside, &path) {
                     let kept = format!("; {} kept as {}: {e}", path.display(), aside.display());
                     error.push_str(&kept);
+                    whole = false;
                 }
             }
             Undo::Remove(path) => {
                 if let Err(e) = std::fs::remove_file(&path) {
                     let _ = write!(error, "; {} not removed: {e}", path.display());
+                    whole = false;
                 }
             }
         }
+    }
+    if whole {
+        error.push_str("; nothing was published");
     }
     error
 }

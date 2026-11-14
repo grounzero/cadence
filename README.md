@@ -166,7 +166,7 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence bench` | The fixed benchmark. |
 | `cadence perft [--divide] [--threads N] <fen \| startpos> <depth>` | Counts the legal moves to a depth. |
 | `cadence spsa` | Prints an SPSA tuner's input, one line per tuning option above. |
-| `cadence datagen play --games N [--seed S] [--threads N] [--out PATH]` | Plays games against itself; the same seed and game count give the same file at any thread count. |
+| `cadence datagen play --games N --seed S [--threads N] [--out PATH]` | Plays games against itself; the same seed and game count give the same file at any thread count. |
 | `cadence datagen extract <games> --train PATH --holdout PATH [--every N]` | Cuts games into positions, every Nth game to the holdout set. |
 | `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
