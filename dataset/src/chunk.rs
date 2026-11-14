@@ -49,6 +49,25 @@ pub fn decode_move(legal: &MoveList, bits: u16) -> Option<Move> {
     legal.iter().find(|&m| encode_move(m) == bits)
 }
 
+/// The game itself, its arrays, random plies and moves, so a copy is found whatever its index,
+/// labels or chunk: 16 bytes of their SHA-256.
+#[must_use]
+pub fn game_key(record: &GameRecord) -> [u8; 16] {
+    let mut bytes = Vec::with_capacity(4 + 2 * record.plies.len() + 2 * record.moves.len());
+    bytes.extend_from_slice(&record.white.to_le_bytes());
+    bytes.extend_from_slice(&record.black.to_le_bytes());
+    for ply in &record.plies {
+        bytes.extend_from_slice(&ply.to_le_bytes());
+    }
+    for (m, _) in &record.moves {
+        bytes.extend_from_slice(&m.to_le_bytes());
+    }
+    let digest = crate::sha256::sha256(&bytes);
+    let mut key = [0; 16];
+    key.copy_from_slice(&digest[..16]);
+    key
+}
+
 /// `<run seed, 16 hex>-<chunk index, 6 digits>.cdg`.
 #[must_use]
 pub fn chunk_name(run_seed: u64, chunk_index: u32) -> String {

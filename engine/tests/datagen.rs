@@ -734,6 +734,15 @@ fn extraction_says_what_it_did_not_examine() {
     }
 }
 
+/// The converter reads mates by the dataset crate's bound, so it must be the search's.
+#[test]
+fn the_dataset_mate_bound_is_the_searchs() {
+    assert_eq!(
+        i32::from(cadence_dataset::constants::MATE_BOUND),
+        score::MATE_IN_MAX_PLY
+    );
+}
+
 /// A build without the feature carries none of the packed writer, and says so.
 #[cfg(not(feature = "packed-datagen"))]
 #[test]

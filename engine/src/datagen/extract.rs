@@ -20,9 +20,9 @@ use crate::version::VERSION;
 
 /// Plies of the game proper skipped before the window opens. The random plies are not in a
 /// record's moves, so they are not among these.
-pub const FIRST_PLY: usize = 8;
+pub const FIRST_PLY: usize = cadence_dataset::constants::FIRST_PLY;
 
-pub const LAST_PLY: usize = 240;
+pub const LAST_PLY: usize = cadence_dataset::constants::LAST_PLY;
 
 /// In pawns; the ends hold everything past them.
 pub const BALANCE_CAP: i32 = 9;

@@ -1,6 +1,6 @@
 [package]
 name         = "cadence-tools"
-description  = "Magic generation for Cadence"
+description  = "Magic generation and the training-data converter for Cadence"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -10,6 +10,10 @@ repository.workspace   = true
 [[bin]]
 name = "cadence-tools"
 path = "src/main.rs"
+
+[dependencies]
+cadence-core = { path = "../core" }
+cadence-dataset = { path = "../dataset" }
 
 [lints]
 workspace = true

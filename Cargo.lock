@@ -64,6 +64,10 @@ version = "0.6.0"
 [[package]]
 name = "cadence-tools"
 version = "0.6.0"
+dependencies = [
+ "cadence-core",
+ "cadence-dataset",
+]
 
 [[package]]
 name = "libc"

@@ -14,13 +14,13 @@ use crate::score::Score;
 use crate::tt::Table;
 
 /// Half for each side.
-pub const RANDOM_PLIES: usize = 8;
+pub const RANDOM_PLIES: usize = cadence_dataset::constants::RANDOM_PLIES;
 
 /// The same as a game move's.
-pub const SCREEN_NODES: u64 = 5_000;
+pub const SCREEN_NODES: u64 = cadence_dataset::constants::SCREEN_NODES;
 
 /// Drops gross imbalance without trying to keep a start balanced.
-pub const WINDOW: Score = 200;
+pub const WINDOW: Score = cadence_dataset::constants::WINDOW;
 
 pub struct Opening {
     pub white: u32,
