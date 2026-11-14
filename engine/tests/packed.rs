@@ -307,6 +307,42 @@ fn repair_keeps_exactly_the_whole_records_at_every_cut() {
     }
 }
 
+/// `repair` from the command line closes a `.tmp` and says what it did not examine, the skipped
+/// directory sync among it where a directory cannot be synced.
+#[test]
+fn repair_says_what_it_did_not_examine() {
+    let dir = scratch("repair-cli");
+    packed::run(&settings(&dir, 3, 1), &build(), &|s, i, sh, t| {
+        if i == 2 {
+            std::fs::write(dir.join("STOP"), "").expect("writes");
+        }
+        let _ = (s, t);
+        fake(i, sh)
+    })
+    .expect("a run");
+    let chunk = dir.join(chunk_name(SEED, 0));
+    let tmp = dir.join(format!("{}.tmp", chunk_name(SEED, 0)));
+    std::fs::rename(&chunk, &tmp).expect("renames");
+    let out = Command::new(support::binary())
+        .args(["datagen", "repair"])
+        .arg(&tmp)
+        .output()
+        .expect("runs");
+    let repaired = chunk.exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && repaired, "{out:?}");
+    assert!(
+        stdout.contains("  not examined: the games themselves"),
+        "{stdout}"
+    );
+    assert_eq!(
+        stdout.contains("  not examined: each published name's durability"),
+        cfg!(not(unix)),
+        "{stdout}"
+    );
+}
+
 /// A game that panics ends the run naming it and leaves its chunk's `.tmp`, holding every record
 /// before it, for `repair`.
 #[test]
