@@ -15,8 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cadence_core::chess960::dfrc_fen;
 use cadence_core::generate_legal;
 use cadence_core::position::Board;
-use cadence_core::rng::Rng;
-use cadence_dataset::chunk::{Chunk, GameRecord, NO_SCORE, decode_move, game_key};
+use cadence_core::rng::{Rng, splitmix64};
+use cadence_dataset::chunk::{Chunk, GameRecord, Header, NO_SCORE, decode_move, game_key};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND};
 use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 use cadence_dataset::sha256::{hex, sha256};
@@ -58,6 +58,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let mut unexamined = vec![
         "the trainer's own reading of the records (the train crate's round trip)",
         "each game's ending and its regeneration (datagen verify's)",
+        "each manifest row's games, plies and kinds (a chunk is held to its SHA-256 and its header)",
     ];
     unexamined.extend(UNSYNCED);
     let unit = match converted {
@@ -101,7 +102,14 @@ fn request_from(args: &[String]) -> Result<Request, String> {
         match arg.as_str() {
             "--manifest" => request.manifests.push(PathBuf::from(value)),
             "--out" => out = Some(PathBuf::from(value)),
-            "--every" => request.every = value.parse().map_err(|_| bad())?,
+            "--every" => {
+                request.every = value.parse().map_err(|_| bad())?;
+                if request.every < 2 {
+                    return Err(format!(
+                        "--every {value} is refused: 0 holds out nothing and 1 trains on nothing"
+                    ));
+                }
+            }
             "--shuffle-seed" => seed = Some(parse_seed(value).ok_or_else(bad)?),
             "--standard-share" => {
                 let share: u8 = value.parse().map_err(|_| bad())?;
@@ -139,11 +147,12 @@ fn parse_seed(value: &str) -> Option<u64> {
     u64::from_str_radix(value, 16).ok()
 }
 
-/// One dataset's manifest: its settings, and each chunk with its SHA-256.
+/// One dataset's manifest: its provenance, and each chunk with its SHA-256.
 struct Dataset {
     manifest: PathBuf,
     dir: PathBuf,
     sha256: String,
+    provenance: BTreeMap<String, String>,
     chunks: Vec<(String, String)>,
 }
 
@@ -151,12 +160,16 @@ fn read_manifest(path: &Path) -> Result<Dataset, String> {
     let text = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let digest = hex(&sha256(&text));
     let text = String::from_utf8(text).map_err(|_| format!("{}: not text", path.display()))?;
-    let mut chunks = Vec::new();
+    let (mut chunks, mut provenance) = (Vec::new(), BTreeMap::new());
     let mut rows = false;
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         if line.starts_with("chunk\t") {
             rows = true;
-        } else if rows {
+        } else if !rows {
+            if let Some((field, value)) = line.split_once('\t') {
+                provenance.insert(field.to_string(), value.to_string());
+            }
+        } else {
             let mut fields = line.split('\t');
             let (Some(name), Some(sha)) = (fields.next(), fields.next()) else {
                 return Err(format!(
@@ -178,8 +191,42 @@ fn read_manifest(path: &Path) -> Result<Dataset, String> {
         manifest: path.to_path_buf(),
         dir,
         sha256: digest,
+        provenance,
         chunks,
     })
+}
+
+/// A chunk's header against its manifest's provenance, so a manifest edited with every hash left
+/// matching is still refused.
+fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String> {
+    let fields = [
+        ("commit", hex(&h.commit)),
+        ("version", h.version.clone()),
+        ("nodes", h.nodes.to_string()),
+        ("screen-nodes", h.screen_nodes.to_string()),
+        ("hash", h.hash_mb.to_string()),
+        ("random-plies", h.random_plies.to_string()),
+        ("window", h.window.to_string()),
+        ("standard-share", h.standard_share.to_string()),
+        ("run-seeds", format!("{:016x}", h.run_seed)),
+    ];
+    for (field, have) in fields {
+        let want = set
+            .provenance
+            .get(field)
+            .ok_or_else(|| format!("{}: names no {field}", set.manifest.display()))?;
+        let agrees = if field == "run-seeds" {
+            want.split_whitespace().any(|seed| seed == have)
+        } else {
+            *want == have
+        };
+        if !agrees {
+            return Err(format!(
+                "{name}: {field} {have} in its header, and the manifest says {want}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Before any record is read: every chunk in the directory listed, every listed chunk present, and
@@ -282,6 +329,9 @@ struct Kept {
     holdout: Vec<[u8; RECORD_LEN]>,
     train_keys: BTreeSet<u64>,
     holdout_keys: Vec<u64>,
+    /// By network input, a reading only: sorted once every position is kept.
+    train_inputs: Vec<u64>,
+    holdout_inputs: Vec<u64>,
 }
 
 /// The whole conversion up to its published unit's path; `steps` renames the unit and syncs, so a
@@ -315,15 +365,29 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<PathBuf, Stri
         )
         .map_err(|e| format!("{} game {}: {e}", game.chunk, game.record.index))?;
     }
+    if kept.train.is_empty() {
+        return Err("no training position is left after the filters; nothing was published".into());
+    }
+    if kept.holdout.is_empty() {
+        return Err(
+            "no validation position is left after the filters; nothing was published".into(),
+        );
+    }
     let overlap = kept
         .holdout_keys
         .iter()
         .filter(|k| kept.train_keys.contains(k))
         .count();
+    kept.train_inputs.sort_unstable();
+    let input_overlap = kept
+        .holdout_inputs
+        .iter()
+        .filter(|k| kept.train_inputs.binary_search(k).is_ok())
+        .count();
     let mut rng = Rng::new(request.shuffle_seed);
     shuffle(&mut kept.train, &mut rng);
     shuffle(&mut kept.holdout, &mut rng);
-    let report = report(&sets, &counts, overlap);
+    let report = report(&sets, &counts, overlap, input_overlap);
     publish(request, &sets, &counts, &kept, &report, steps)
 }
 
@@ -336,6 +400,7 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
         for (name, _) in &set.chunks {
             let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
             let chunk = Chunk::read(&bytes).map_err(|e| format!("{name}: {e}"))?;
+            check_provenance(set, name, &chunk.header)?;
             let at = (chunk.header.run_seed, chunk.header.chunk_index);
             if let Some(first) = chunks.insert(at, name.clone()) {
                 return Err(format!(
@@ -450,16 +515,19 @@ fn positions(
                     board.side_to_move() == cadence_core::Colour::White,
                 );
                 let bytes = trainer::encode(&board, score, result);
+                let input = input_key(&bytes, board.side_to_move() == cadence_core::Colour::White);
                 counts.plies[band] += 1;
                 counts.zeros[band] += u64::from(score == 0);
                 counts.scores[bucket(score)] += 1;
                 if held {
                     kept.holdout.push(bytes);
                     kept.holdout_keys.push(key);
+                    kept.holdout_inputs.push(input);
                     counts.holdout += 1;
                 } else {
                     kept.train.push(bytes);
                     kept.train_keys.insert(key);
+                    kept.train_inputs.push(input);
                     counts.train += 1;
                 }
             }
@@ -471,6 +539,18 @@ fn positions(
         board.play(m);
     }
     Ok(())
+}
+
+/// The network's input, its 768 piece-square features and the side to move, hashed: the record's
+/// first 24 bytes are the pieces as the mover sees them, so the mover completes it.
+fn input_key(record: &[u8; RECORD_LEN], white_to_move: bool) -> u64 {
+    let word = |i: usize| {
+        let mut w = [0; 8];
+        w.copy_from_slice(&record[i..i + 8]);
+        u64::from_le_bytes(w)
+    };
+    let mix = |x: u64| splitmix64(x).1;
+    mix(word(0) ^ mix(word(8) ^ mix(word(16) ^ u64::from(white_to_move))))
 }
 
 /// The record stores White's result; the trainer reads the side to move's.
@@ -494,7 +574,12 @@ fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
     clippy::cast_precision_loss,
     reason = "a position count is far below 2^52"
 )]
-fn report(sets: &[Dataset], counts: &[[Counts; 2]], overlap: usize) -> String {
+fn report(
+    sets: &[Dataset],
+    counts: &[[Counts; 2]],
+    overlap: usize,
+    input_overlap: usize,
+) -> String {
     let mut text = String::new();
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "dataset {}", set.manifest.display());
@@ -554,6 +639,11 @@ fn report(sets: &[Dataset], counts: &[[Counts; 2]], overlap: usize) -> String {
     let _ = writeln!(
         text,
         "holdout positions whose key is also in training: {overlap}"
+    );
+    let _ = writeln!(
+        text,
+        "holdout positions whose network input (768 features and the side to move) is also in \
+         training: {input_overlap}"
     );
     text
 }
@@ -693,7 +783,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{BUCKETS, Request, bucket, convert, result_for_mover};
-    use cadence_dataset::chunk::{Chunk, Header, chunk_name};
+    use cadence_core::chess960::dfrc_fen;
+    use cadence_core::generate_legal;
+    use cadence_core::position::Board;
+    use cadence_core::rng::Rng;
+    use cadence_dataset::chunk::{Chunk, GameRecord, Header, chunk_name, encode_move};
     use cadence_dataset::durable::{Logged, Step};
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{DRAW, LOSS, WIN};
@@ -718,14 +812,15 @@ mod tests {
             standard_share: 50,
             run_seed: 1,
             chunk_index: 0,
-            games_planned: 1,
+            games_planned: 2,
             host: "test".to_string(),
             start_time: 0,
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [0; 32],
         };
-        let bytes = Chunk::bytes(&header, &[]).expect("an empty chunk");
+        let games = [short_game(0, 3), short_game(1, 4)];
+        let bytes = Chunk::bytes(&header, &games).expect("a chunk");
         let (name, digest) = (chunk_name(1, 0), hex(&sha256(&bytes)));
         std::fs::write(dir.join(&name), &bytes).expect("writes");
         std::fs::write(
@@ -734,7 +829,14 @@ mod tests {
         )
         .expect("writes");
         let manifest = dir.join("MANIFEST.tsv");
-        std::fs::write(&manifest, format!("chunk\tsha256\n{name}\t{digest}\n")).expect("writes");
+        let provenance = format!(
+            "commit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\nhash\t16\n\
+             random-plies\t8\nwindow\t200\nstandard-share\t50\nrun-seeds\t{:016x}\n",
+            hex(&[1; 20]),
+            1
+        );
+        let rows = format!("chunk\tsha256\n{name}\t{digest}\n");
+        std::fs::write(&manifest, provenance + &rows).expect("writes");
         let out = dir.join("out");
         let request = Request {
             manifests: vec![manifest],
@@ -763,6 +865,37 @@ mod tests {
             [Step::Sync(staging), Step::Rename(unit), Step::Sync(out)],
             "the unit's entries synced before its rename, and its name after"
         );
+    }
+
+    /// Eight random plies and 32 random moves from the standard start, each move scored 5.
+    fn short_game(index: u32, seed: u64) -> GameRecord {
+        let mut rng = Rng::new(seed);
+        let mut board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+        let (mut plies, mut moves) = (Vec::new(), Vec::new());
+        for ply in 0..40 {
+            let legal = generate_legal(&board);
+            let Some(&m) = legal.as_slice().get(rng.below(legal.len().max(1))) else {
+                break;
+            };
+            if ply < 8 {
+                plies.push(encode_move(m));
+            } else {
+                moves.push((encode_move(m), 5));
+            }
+            board.play(m);
+        }
+        GameRecord {
+            index,
+            seed,
+            kind: 1,
+            white: 518,
+            black: 518,
+            plies,
+            moves,
+            outcome: 2,
+            ending: 3,
+            refused: 0,
+        }
     }
 
     #[test]
