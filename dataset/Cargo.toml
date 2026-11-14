@@ -11,6 +11,7 @@ repository.workspace   = true
 name = "cadence_dataset"
 
 [dependencies]
+cadence-core = { path = "../core" }
 
 [lints]
 workspace = true
