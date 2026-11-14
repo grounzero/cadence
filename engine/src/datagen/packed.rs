@@ -642,9 +642,13 @@ fn close(
         .map_err(side_failed)?;
     side.sync_all().map_err(side_failed)?;
     drop(side);
-    durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
-    durable::publish(steps, tmp, path).map_err(failed)?;
-    Ok(Vec::new())
+    let sidecar_published = durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
+    let chunk_published = durable::publish(steps, tmp, path).map_err(failed)?;
+    Ok(sidecar_published
+        .note(&sidecar)
+        .into_iter()
+        .chain(chunk_published.note(path))
+        .collect())
 }
 
 fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header, String> {

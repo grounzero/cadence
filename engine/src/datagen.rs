@@ -852,10 +852,10 @@ impl Staged {
     ) -> Result<Option<String>, String> {
         let failed = |e: io::Error| format!("{}: {e}", self.path.display());
         if self.path.symlink_metadata().is_err() {
-            durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
+            let published = durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
             self.published = true;
             undo.push(Undo::Remove(self.path.clone()));
-            return Ok(None);
+            return Ok(published.note(&self.path));
         }
         let aside = beside(&self.path, "previous")?;
         if aside.symlink_metadata().is_ok() {
@@ -866,9 +866,9 @@ impl Staged {
             aside,
             path: self.path.clone(),
         });
-        durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
+        let published = durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
         self.published = true;
-        Ok(None)
+        Ok(published.note(&self.path))
     }
 
     fn open(&mut self) -> io::Result<&mut BufWriter<File>> {

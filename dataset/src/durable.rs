@@ -81,13 +81,22 @@ impl Published {
     }
 }
 
+/// Renamed into place, then the directory holding `to` synced; a sync that fails after the rename
+/// leaves the file published and says so.
+///
 /// # Errors
 ///
-/// Not yet.
+/// The rename's, and nothing is published then.
 pub fn publish(steps: &mut dyn Steps, from: &Path, to: &Path) -> io::Result<Published> {
     steps.rename(from, to)?;
-    steps.sync_dir(parent(to))?;
-    Ok(Published::Durable)
+    let dir = parent(to);
+    Ok(match steps.sync_dir(dir) {
+        Ok(()) => Published::Durable,
+        Err(error) => Published::Unconfirmed {
+            dir: dir.to_path_buf(),
+            error,
+        },
+    })
 }
 
 /// The directory a path's entry is in, `.` for a bare name.

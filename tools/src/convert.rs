@@ -699,10 +699,11 @@ fn publish(
         steps
             .sync_dir(&staging)
             .map_err(|e| format!("{}: {e}", staging.display()))?;
-        durable::publish(steps, &staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
+        let published = durable::publish(steps, &staging, &unit)
+            .map_err(|e| format!("{}: {e}", unit.display()))?;
         Ok(Converted {
+            unconfirmed: published.note(&unit),
             unit,
-            unconfirmed: None,
         })
     })();
     if staged.is_err() {
