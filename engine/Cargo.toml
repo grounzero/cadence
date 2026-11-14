@@ -18,6 +18,7 @@ counters = []
 
 [dependencies]
 cadence-core = { path = "../core" }
+cadence-dataset = { path = "../dataset" }
 shakmaty = { version = "=0.30.2", default-features = false }
 shakmaty-syzygy = { version = "=0.28.1", default-features = false }
 

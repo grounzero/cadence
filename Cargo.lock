@@ -40,10 +40,15 @@ name = "cadence-core"
 version = "0.6.0"
 
 [[package]]
+name = "cadence-dataset"
+version = "0.6.0"
+
+[[package]]
 name = "cadence-engine"
 version = "0.6.0"
 dependencies = [
  "cadence-core",
+ "cadence-dataset",
  "cadence-engine",
  "shakmaty",
  "shakmaty-syzygy",
