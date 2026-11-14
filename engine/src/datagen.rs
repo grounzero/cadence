@@ -105,25 +105,22 @@ fn generate_with(
             let tx = tx.clone();
             let next = &next;
             let window = &window;
-            // The stack a `go` gives its search, since these games are the same search.
-            let spawned = thread::Builder::new()
-                .stack_size(SEARCH_STACK_BYTES)
-                .spawn_scoped(scope, move || {
-                    let Some(tt) = Table::new(HASH_MB) else {
-                        let _ = tx.send(None);
+            let spawned = spawn_search(scope, move || {
+                let Some(tt) = Table::new(HASH_MB) else {
+                    let _ = tx.send(None);
+                    return;
+                };
+                loop {
+                    let number = next.fetch_add(1, Ordering::Relaxed);
+                    if number >= games || !window.wait_for(number) {
                         return;
-                    };
-                    loop {
-                        let number = next.fetch_add(1, Ordering::Relaxed);
-                        if number >= games || !window.wait_for(number) {
-                            return;
-                        }
-                        let line = line_for(number, &tt);
-                        if tx.send(Some((number, line))).is_err() {
-                            return;
-                        }
                     }
-                });
+                    let line = line_for(number, &tt);
+                    if tx.send(Some((number, line))).is_err() {
+                        return;
+                    }
+                }
+            });
             if let Err(e) = spawned {
                 // The workers already started take no new game, so the scope ends soon.
                 next.store(games, Ordering::Relaxed);
@@ -148,6 +145,20 @@ fn generate_with(
         }
         out.flush()
     })
+}
+
+/// Every thread that searches, on the stack a `go` gives its search.
+///
+/// # Errors
+///
+/// If the thread cannot be started.
+pub fn spawn_search<'scope, T: Send + 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    work: impl FnOnce() -> T + Send + 'scope,
+) -> io::Result<thread::ScopedJoinHandle<'scope, T>> {
+    thread::Builder::new()
+        .stack_size(SEARCH_STACK_BYTES)
+        .spawn_scoped(scope, work)
 }
 
 /// How far the workers may run ahead of the next record to be written.
@@ -634,10 +645,54 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, provenance,
-        publish_with, stage_name, workers,
+        HASH_MB, MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, play,
+        provenance, publish_with, spawn_search, stage_name, workers,
     };
     use crate::tt::Table;
+
+    /// A game that panics ends the run with an error naming it, at one thread and at three, rather
+    /// than leaving the writer waiting for its record.
+    #[test]
+    fn a_panicking_game_ends_the_run_naming_it() {
+        for threads in [1, 3] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                let line_for = |number: u64, _: &Table| {
+                    assert!(number != 3, "game 3 cannot be played");
+                    format!("game {number}")
+                };
+                let mut out = Vec::new();
+                let run = generate_with(1, 8, threads, 4, &mut out, &mut |_| {}, &line_for);
+                let _ = tx.send(run.map_err(|e| e.to_string()));
+            });
+            let ended = rx.recv_timeout(Duration::from_secs(30));
+            let run = ended.unwrap_or_else(|e| panic!("{threads} threads: no end: {e}"));
+            let error = run.expect_err("a run with a panicking game succeeded");
+            assert!(
+                error.contains("game 3 panicked"),
+                "{threads} threads: {error}"
+            );
+            assert!(
+                error.contains("cannot be played"),
+                "{threads} threads: {error}"
+            );
+        }
+        let line_for = |number: u64, _: &Table| format!("game {number}");
+        let mut out = Vec::new();
+        generate_with(1, 8, 3, 4, &mut out, &mut |_| {}, &line_for).expect("the control");
+    }
+
+    /// The helper gives a search the stack a `go` gives it, and the game is the same game.
+    #[test]
+    fn a_game_on_a_search_thread_is_the_game_played_here() {
+        let here = play(3, 1, &Table::new(HASH_MB).expect("a table"));
+        let there = thread::scope(|scope| {
+            let spawned =
+                spawn_search(scope, || play(3, 1, &Table::new(HASH_MB).expect("a table")));
+            spawned.expect("spawns").join().expect("joins")
+        });
+        assert_eq!(there, here);
+    }
 
     /// A change to the derivation changes every dataset, so it fails here first.
     #[test]

@@ -34,6 +34,7 @@ pub struct Stats {
     pub outside: u64,
     pub in_check: u64,
     pub noisy: u64,
+    pub no_score: u64,
     pub mate: u64,
     pub train: u64,
     pub holdout: u64,
@@ -227,7 +228,7 @@ fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io
             stats.in_check += 1;
         } else if m.is_noisy() {
             stats.noisy += 1;
-        } else if score::is_mate(score) {
+        } else if score::is_mate(score.unwrap_or(0)) {
             stats.mate += 1;
         } else {
             writeln!(out, "{} | {result}", board.to_fen(FenStyle::Shredder))?;

@@ -187,12 +187,55 @@ fn a_start_that_passes_is_inside_the_window_after_its_random_plies() {
         assert!(o.white < 960 && o.black < 960);
         assert_eq!(ending(&o.board), None);
         let score = game::probe(&mut o.board, opening::SCREEN_NODES, &table());
+        let score = score.expect("a probe at the screen's count finishes depth 1");
         assert!(score.abs() <= WINDOW, "screened {score}");
     }
 }
 
+/// A search that cannot finish depth 1 leaves no score, never a 0 that reads as a balanced position.
+#[test]
+fn a_move_whose_search_did_not_finish_carries_no_score() {
+    let start = || Position::new(board(cadence_core::START_FEN));
+    let starved = game::play(&mut start(), 1, &table());
+    assert_ne!(starved.moves, Vec::new(), "no move was played");
+    let scored: Vec<_> = starved.moves.iter().filter(|(_, s)| s.is_some()).collect();
+    assert_eq!(
+        scored,
+        [] as [&(Move, Option<i32>); 0],
+        "scored at one node"
+    );
+    let fed = game::play(&mut start(), datagen::NODES, &table());
+    assert!(fed.moves[0].1.is_some(), "no score at the full count");
+}
+
 // Records
 // ---------------------------------------------------------------------------
+
+/// A move with no score is spelled `none`, and reads back as itself.
+#[test]
+fn a_move_with_no_score_is_spelled_none_and_reads_back() {
+    let mut record = datagen::play(1, 0, &table());
+    record.moves[0].1 = None;
+    let line = record.line();
+    let spelled = format!("{}:none", record.moves[0].0.to_uci_chess960());
+    assert!(line.contains(&spelled), "{line}");
+    assert_eq!(Record::parse(&line).expect("parses"), record);
+}
+
+/// Extraction keeps no position whose move has no score, and counts it.
+#[test]
+fn extraction_keeps_no_position_for_a_move_with_no_score() {
+    let mut record = datagen::play(1, 0, &table());
+    for (_, s) in &mut record.moves {
+        *s = None;
+    }
+    let file = format!("{}\n{}\n", handmade(1), record.line());
+    let (train, _, stats) = extract(file.as_bytes(), 0);
+    assert_eq!(positions(&train), [] as [&str; 0]);
+    assert!(stats.no_score > 0, "no move counted");
+    let total = stats.outside + stats.in_check + stats.noisy + stats.no_score + stats.mate;
+    assert_eq!(total, stats.visited);
+}
 
 #[test]
 fn a_record_reads_back_as_itself_and_replays_to_the_ending_it_names() {
@@ -284,7 +327,8 @@ fn kept(record: &Record) -> Vec<String> {
     let mut out = Vec::new();
     for (ply, &(m, s)) in record.moves.iter().enumerate() {
         let window = (extract::FIRST_PLY..=extract::LAST_PLY).contains(&ply);
-        if window && !b.in_check() && !m.is_noisy() && !score::is_mate(s) {
+        let scored = s.is_some_and(|s| !score::is_mate(s));
+        if window && !b.in_check() && !m.is_noisy() && scored {
             let fen = b.to_fen(FenStyle::Shredder);
             out.push(format!("{fen} | {}", record.outcome.text()));
         }
@@ -305,7 +349,7 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
     assert!(train.starts_with("# cadence datagen"));
     let kept = stats.train;
     assert_eq!(
-        stats.outside + stats.in_check + stats.noisy + stats.mate + kept,
+        stats.outside + stats.in_check + stats.noisy + stats.no_score + stats.mate + kept,
         stats.visited
     );
     // The window is counted from the records alone, so the extractor's count can be checked.
