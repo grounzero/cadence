@@ -431,14 +431,37 @@ fn play_to(args: &PlayArgs) -> Result<(), String> {
 
 fn extract_from_args(args: &[String]) -> Result<(), Failure> {
     let (input, train, holdout, every) = extract_args(args).map_err(Failure::Usage)?;
-    extract_to(
+    let extracted = extract_to(
         Path::new(&input),
         Path::new(&train),
         Path::new(&holdout),
         every,
         &mut io::stdout().lock(),
-    )
-    .map_err(Failure::Work)
+    );
+    if extracted.is_err() {
+        let mut stdout = io::stdout().lock();
+        for spot in not_examined(None) {
+            let _ = writeln!(stdout, "  not examined: {spot}");
+        }
+    }
+    extracted.map_err(Failure::Work)
+}
+
+/// What an extraction did not look at, said on every run however it ended.
+fn not_examined(stats: Option<&extract::Stats>) -> Vec<String> {
+    let mut spots = vec!["duplicates in files not given (extract reads one input)".to_string()];
+    let foreign: Vec<&str> = stats
+        .into_iter()
+        .flat_map(|stats| stats.versions.iter().map(String::as_str))
+        .filter(|&version| version != VERSION)
+        .collect();
+    if !foreign.is_empty() {
+        spots.push(format!(
+            "the seed claims of runs from another build, {} (only this build's games replay)",
+            foreign.join(" ")
+        ));
+    }
+    spots
 }
 
 fn extract_args(args: &[String]) -> Result<(String, String, String, u64), String> {
@@ -483,6 +506,9 @@ fn extract_to(
     let stats = extract::extract(BufReader::new(file), &mut train, &mut holdout, every)?;
     let mut text = Vec::new();
     stats.report(&mut text).map_err(|e| e.to_string())?;
+    for spot in not_examined(Some(&stats)) {
+        writeln!(text, "  not examined: {spot}").map_err(|e| e.to_string())?;
+    }
     if report
         .write_all(&text)
         .and_then(|()| report.flush())
