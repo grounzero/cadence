@@ -369,7 +369,8 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
     assert!(String::from_utf8(report).expect("utf-8").contains("yield"));
 }
 
-/// A record file cut short still names the whole run in its provenance, so the count shows it.
+/// A record file cut short still names the whole run in its provenance, so the count shows it, and a
+/// run joined to itself names its seed twice.
 #[test]
 fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     let file = run(5, 3, 1);
@@ -383,8 +384,8 @@ fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     );
     let joined = [&file[..], &file[..]].concat();
     let (mut train, mut holdout) = (Vec::new(), Vec::new());
-    let stats = extract::extract(&joined[..], &mut train, &mut holdout, 0).expect("two runs");
-    assert_eq!(stats.games, 6);
+    let refused = extract::extract(&joined[..], &mut train, &mut holdout, 0);
+    assert!(refused.is_err(), "a run joined to itself was extracted");
 }
 
 /// The count passes a copy of one game standing in for another, and a short run beside a long one.
@@ -617,6 +618,120 @@ fn extraction_refuses_a_record_outside_a_whole_run() {
     let noted = ["# a note", header, first, second].join("\n");
     let (mut train, mut holdout) = (Vec::new(), Vec::new());
     extract::extract(noted.as_bytes(), &mut train, &mut holdout, 0).expect("a note first");
+}
+
+// Duplicates and provenance
+// ---------------------------------------------------------------------------
+
+/// A seed named again repeats its run's games, so the second run is refused at its header; runs of
+/// different seeds pass with their games summed.
+#[test]
+fn extraction_refuses_a_seed_named_twice() {
+    let file = run(5, 5, 1);
+    let joined = [&file[..], &file[..]].concat();
+    let error = extract_error(std::str::from_utf8(&joined).expect("utf-8"));
+    let want = "line 7: seed 5 is the seed of the run at line 1, so its games repeat";
+    assert!(error.starts_with(want), "{error}");
+    let other = [&file[..], &run(6, 2, 1)[..]].concat();
+    let (_, _, stats) = extract(&other, 0);
+    assert_eq!(stats.games, 7);
+}
+
+/// A game copied into another run, that run's provenance untouched, is found by its content.
+#[test]
+fn extraction_refuses_the_same_game_twice() {
+    let (a, b) = (run(5, 3, 1), run(6, 3, 1));
+    let a: Vec<&str> = std::str::from_utf8(&a).expect("utf-8").lines().collect();
+    let mut b: Vec<&str> = std::str::from_utf8(&b).expect("utf-8").lines().collect();
+    b[2] = a[2];
+    let error = extract_error(&[a, b].concat().join("\n"));
+    assert!(
+        error.starts_with("line 7: the same game as line 3"),
+        "{error}"
+    );
+}
+
+/// A provenance line is read field by field and held to this build's constants, and game 0 of a run
+/// this build wrote must replay from the seed the line names.
+#[test]
+fn extraction_holds_a_provenance_line_to_this_build() {
+    let text = String::from_utf8(run(5, 2, 1)).expect("utf-8");
+    let (header, records) = text.split_once('\n').expect("a header");
+    let with = |h: &str| format!("{h}\n{records}");
+    let seed = extract_error(&with(&header.replacen(" seed 5 ", " seed 99 ", 1)));
+    assert!(
+        seed.contains("game 0 does not replay from seed 99"),
+        "{seed}"
+    );
+    let edit = |name: &str| {
+        let mut words: Vec<&str> = header.split(' ').collect();
+        let at = words.iter().position(|&w| w == name).expect("a field") + 1;
+        words[at] = "4000";
+        words.join(" ")
+    };
+    for name in ["nodes", "hash", "plies", "window", "screen"] {
+        let error = extract_error(&with(&edit(name)));
+        let want = format!("line 1: the provenance names {name} 4000 and this build's is ");
+        assert!(error.starts_with(&want), "{error}");
+    }
+    for bad in [
+        header.replacen(" nodes ", " node ", 1),
+        header.replacen(" hash 16", "", 1),
+        header.replacen(" games 2", " games 2 games 2", 1),
+        header.replacen("hash 16 plies 8", "plies 8 hash 16", 1),
+        format!("{header} extra 1"),
+    ] {
+        let error = extract_error(&with(&bad));
+        assert!(error.starts_with("line 1: "), "{bad}: {error}");
+    }
+}
+
+/// The input's SHA-256 is in the report and closes both outputs.
+#[test]
+fn extraction_records_its_input_digest() {
+    let file = run(4, 3, 1);
+    let digest = cadence_dataset::sha256::hex(&cadence_dataset::sha256::sha256(&file));
+    let (train, held, stats) = extract(&file, 2);
+    let line = format!("# cadence extract input-sha256 {digest}");
+    assert_eq!(train.lines().last(), Some(line.as_str()));
+    assert_eq!(held.lines().last(), Some(line.as_str()));
+    let mut report = Vec::new();
+    stats.report(&mut report).expect("reports");
+    let report = String::from_utf8(report).expect("utf-8");
+    let want = format!("input-sha256 {digest}");
+    assert!(report.lines().any(|l| l == want), "{report}");
+}
+
+/// A run from another build passes with its seed claim named as not examined, and every extraction
+/// says duplicates in files it was not given were not.
+#[test]
+fn extraction_says_what_it_did_not_examine() {
+    let (dir, _) = scratch("extract-unexamined");
+    let games = String::from_utf8(run(9, 3, 1)).expect("utf-8");
+    let foreign = games.replacen(VERSION, "0.0.0-elsewhere", 1);
+    std::fs::write(dir.join("games.txt"), foreign).expect("writes");
+    let out = Command::new(support::binary())
+        .current_dir(&dir)
+        .args([
+            "datagen",
+            "extract",
+            "games.txt",
+            "--train",
+            "t",
+            "--holdout",
+            "h",
+        ])
+        .output()
+        .expect("runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    for want in [
+        "  not examined: duplicates in files not given",
+        "  not examined: the seed claims of runs from another build, 0.0.0-elsewhere",
+    ] {
+        assert!(stdout.contains(want), "{stdout}");
+    }
 }
 
 /// A run without a seed would repeat every other run's games, so it is refused and writes nothing.

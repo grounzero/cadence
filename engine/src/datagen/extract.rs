@@ -3,14 +3,20 @@
 //! Split into training and holdout by game number. A position is kept if its ply is inside the
 //! window, it is not in check, its move is not noisy, and its search finished depth 1 with no mate.
 
-use std::io::{BufRead, Write};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, BufReader, Read, Write};
 
 use cadence_core::{FenStyle, PieceType};
+use cadence_dataset::sha256::{Sha256, hex, sha256};
 
 use super::game::{Ending, Outcome, ending};
+use super::opening::{RANDOM_PLIES, SCREEN_NODES, WINDOW};
 use super::record::Record;
+use super::{HASH_MB, NODES};
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
+use crate::tt::Table;
+use crate::version::VERSION;
 
 /// Plies of the game proper skipped before the window opens. The random plies are not in a
 /// record's moves, so they are not among these.
@@ -48,18 +54,23 @@ pub struct Stats {
     /// The random plies not counted.
     pub ply: Vec<u64>,
     pub longest: usize,
+    /// Of the input's bytes as read.
+    pub input_sha256: [u8; 32],
+    /// Every version a provenance line names.
+    pub versions: BTreeSet<String>,
 }
 
 /// Every `every`-th game by number goes to `holdout`. Comment lines go to both, so the data sets
-/// carry the run's provenance.
+/// carry the run's provenance, and the input's SHA-256 closes both.
 ///
 /// # Errors
 ///
 /// A record that does not parse or whose moves do not end as it says, an output that cannot be
 /// written, a record before any provenance line, a run not holding every game it names by the next
-/// provenance line or the end, or a game out of turn in its run.
+/// provenance line or the end, a game out of turn in its run, a provenance line that is not this
+/// build's, a seed or a game read twice, or a game 0 of this build's that does not replay.
 pub fn extract(
-    input: impl BufRead,
+    input: impl Read,
     train: &mut dyn Write,
     holdout: &mut dyn Write,
     every: u64,
@@ -70,21 +81,29 @@ pub fn extract(
         ply: vec![0; PLY_BANDS],
         ..Stats::default()
     };
+    let mut hashed = Hashed {
+        inner: input,
+        hasher: Sha256::new(),
+    };
+    let mut seen = Seen::default();
+    let mut table = None;
     let mut named = None;
     let mut run: Option<Run> = None;
-    for (i, line) in input.lines().enumerate() {
+    for (i, line) in BufReader::new(&mut hashed).lines().enumerate() {
         let at = |e: String| format!("line {}: {e}", i + 1);
         let line = line.map_err(|e| at(e.to_string()))?;
         if line.starts_with('#') {
-            if let Some(n) = games_named(&line).map_err(at)? {
+            if let Some(header) = Header::parse(&line).map_err(at)? {
                 if let Some(done) = &run {
                     done.finished().map_err(at)?;
                 }
+                seen.seed(header.seed, i + 1).map_err(at)?;
+                stats.versions.insert(header.version.clone());
                 // Summed too, a second check that runs joined end to end hold every game.
-                named = Some(named.unwrap_or(0) + n);
+                named = Some(named.unwrap_or(0) + header.games);
                 run = Some(Run {
                     line: i + 1,
-                    games: n,
+                    header,
                     due: 0,
                 });
             }
@@ -101,6 +120,10 @@ pub fn extract(
         let record = Record::parse(&line).map_err(at)?;
         replay(&record).map_err(at)?;
         current.admit(record.number).map_err(at)?;
+        seen.game(&record, i + 1).map_err(at)?;
+        if record.number == 0 && current.header.version == VERSION {
+            claim(&current.header, &record, &mut table).map_err(at)?;
+        }
         let held = every > 0 && record.number % every == 0;
         if held {
             stats.holdout += positions(&record, &mut stats, holdout).map_err(|e| e.to_string())?;
@@ -120,7 +143,89 @@ pub fn extract(
             stats.games
         ));
     }
+    stats.input_sha256 = hashed.hasher.finish();
+    let closing = format!(
+        "# cadence extract input-sha256 {}",
+        hex(&stats.input_sha256)
+    );
+    writeln!(train, "{closing}").map_err(|e| e.to_string())?;
+    writeln!(holdout, "{closing}").map_err(|e| e.to_string())?;
     Ok(stats)
+}
+
+/// Hashes what it passes on, so the digest is of the bytes as read.
+struct Hashed<R> {
+    inner: R,
+    hasher: Sha256,
+}
+
+impl<R: Read> Read for Hashed<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+}
+
+/// The seeds and the games read so far, each with the line it was read at.
+#[derive(Default)]
+struct Seen {
+    seeds: BTreeMap<u64, usize>,
+    games: BTreeMap<[u8; 16], usize>,
+}
+
+impl Seen {
+    fn seed(&mut self, seed: u64, line: usize) -> Result<(), String> {
+        if let Some(first) = self.seeds.get(&seed) {
+            return Err(format!(
+                "seed {seed} is the seed of the run at line {first}, so its games repeat"
+            ));
+        }
+        self.seeds.insert(seed, line);
+        Ok(())
+    }
+
+    fn game(&mut self, record: &Record, line: usize) -> Result<(), String> {
+        let key = content_key(record);
+        if let Some(first) = self.games.get(&key) {
+            return Err(format!("the same game as line {first}"));
+        }
+        self.games.insert(key, line);
+        Ok(())
+    }
+}
+
+/// The game itself, its arrays, random plies and moves, so a copy is found whatever its number,
+/// labels or run.
+fn content_key(record: &Record) -> [u8; 16] {
+    let mut text = format!("{} {}", record.white, record.black);
+    for m in &record.plies {
+        text.push(' ');
+        text.push_str(&m.to_uci_chess960());
+    }
+    text.push_str(" |");
+    for (m, _) in &record.moves {
+        text.push(' ');
+        text.push_str(&m.to_uci_chess960());
+    }
+    let digest = sha256(text.as_bytes());
+    let mut key = [0; 16];
+    key.copy_from_slice(&digest[..16]);
+    key
+}
+
+/// Game 0 played again by this build from the seed its run names must be the record, which no
+/// constant check can show of an edited seed.
+fn claim(header: &Header, record: &Record, table: &mut Option<Table>) -> Result<(), String> {
+    if table.is_none() {
+        *table = Table::new(HASH_MB);
+    }
+    let tt = table.as_ref().ok_or("no table to replay game 0 in")?;
+    if super::play(header.seed, 0, tt) == *record {
+        Ok(())
+    } else {
+        Err(format!("game 0 does not replay from seed {}", header.seed))
+    }
 }
 
 /// The result labels every position the game gives, so the moves must end there and nothing may
@@ -144,14 +249,14 @@ fn replay(record: &Record) -> Result<(), String> {
 /// What a provenance line names, where it stands, and the game due next under it.
 struct Run {
     line: usize,
-    games: u64,
+    header: Header,
     due: u64,
 }
 
 impl Run {
     /// From 0 in order, and no more than the line names.
     fn admit(&mut self, number: u64) -> Result<(), String> {
-        let (games, due) = (self.games, self.due);
+        let (games, due) = (self.header.games, self.due);
         if due >= games {
             return Err(format!("game {number} past the {games} its run names"));
         }
@@ -164,12 +269,12 @@ impl Run {
 
     /// Every game the line names, read by the next provenance line and at the end.
     fn finished(&self) -> Result<(), String> {
-        if self.due == self.games {
+        if self.due == self.header.games {
             return Ok(());
         }
         Err(format!(
             "the run at line {} names {} games and holds {}",
-            self.line, self.games, self.due
+            self.line, self.header.games, self.due
         ))
     }
 }
@@ -177,31 +282,64 @@ impl Run {
 /// The words a provenance line opens with, as `provenance` writes them.
 const PROVENANCE: [&str; 3] = ["#", "cadence", "datagen"];
 
-/// The count a run's provenance line names, which a file cut short no longer matches, or `None` for
-/// any other comment. A line opening as provenance must parse to its end, or a header cut short
-/// would skip the count it carries.
-fn games_named(line: &str) -> Result<Option<u64>, String> {
-    let mut words = line.split_whitespace();
-    if !PROVENANCE.iter().all(|&w| words.next() == Some(w)) {
-        return Ok(None);
-    }
-    let refused = || format!("a provenance line that does not parse: {line}");
-    if words.next().is_none() || words.next() != Some("self-play") {
-        return Err(refused());
-    }
-    let fields: Vec<&str> = words.collect();
-    let (pairs, rest) = fields.as_chunks::<2>();
-    if !rest.is_empty() {
-        return Err(refused());
-    }
-    let mut games = None;
-    for [name, value] in pairs {
-        let value: u64 = value.parse().map_err(|_| refused())?;
-        if *name == "games" {
-            games = Some(value);
+/// The fields after `self-play`, in the order `provenance` writes them.
+const FIELDS: [&str; 7] = [
+    "seed", "games", "nodes", "hash", "plies", "window", "screen",
+];
+
+/// A run's provenance line.
+struct Header {
+    version: String,
+    seed: u64,
+    games: u64,
+}
+
+impl Header {
+    /// `None` for any other comment. A line opening as provenance must hold every field once in
+    /// `provenance`'s order, each setting this build's, or a header cut short or edited passes.
+    fn parse(line: &str) -> Result<Option<Header>, String> {
+        let mut words = line.split(' ');
+        if !PROVENANCE.iter().all(|&w| words.next() == Some(w)) {
+            return Ok(None);
         }
+        let refused = || format!("a provenance line that does not parse: {line}");
+        let version = words.next().filter(|v| !v.is_empty()).ok_or_else(refused)?;
+        if words.next() != Some("self-play") {
+            return Err(refused());
+        }
+        let mut values = [0_u64; FIELDS.len()];
+        for (name, value) in FIELDS.iter().zip(&mut values) {
+            if words.next() != Some(*name) {
+                return Err(refused());
+            }
+            *value = words
+                .next()
+                .and_then(|v| v.parse().ok())
+                .ok_or_else(refused)?;
+        }
+        if words.next().is_some() {
+            return Err(refused());
+        }
+        let [seed, games, nodes, hash, plies, window, screen] = values;
+        for (name, named, built) in [
+            ("nodes", nodes, NODES),
+            ("hash", hash, HASH_MB as u64),
+            ("plies", plies, RANDOM_PLIES as u64),
+            ("window", window, u64::from(WINDOW.unsigned_abs())),
+            ("screen", screen, SCREEN_NODES),
+        ] {
+            if named != built {
+                return Err(format!(
+                    "the provenance names {name} {named} and this build's is {built}"
+                ));
+            }
+        }
+        Ok(Some(Header {
+            version: version.to_string(),
+            seed,
+            games,
+        }))
     }
-    games.map(Some).ok_or_else(refused)
 }
 
 fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io::Result<u64> {
@@ -286,6 +424,9 @@ impl Stats {
     pub fn report(&self, out: &mut dyn Write) -> std::io::Result<()> {
         let kept = self.train + self.holdout;
         let per_game = |n: u64| n as f64 / self.games.max(1) as f64;
+        writeln!(out, "input-sha256 {}", hex(&self.input_sha256))?;
+        let versions: Vec<&str> = self.versions.iter().map(String::as_str).collect();
+        writeln!(out, "versions {}", versions.join(" "))?;
         writeln!(out, "games {} refused-starts {}", self.games, self.refused)?;
         writeln!(
             out,
