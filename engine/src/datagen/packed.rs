@@ -530,7 +530,7 @@ fn write_chunk(
         header_crc: crc32(&head),
     };
     sink.put(&trailer.encode())?;
-    close(
+    let notes = close(
         &mut Disk,
         &settings.dir,
         sink.file,
@@ -539,7 +539,17 @@ fn write_chunk(
         sink.hasher.finish(),
     )?;
     log(&settings.dir, &format!("closed {name} games {games}"))?;
+    unconfirmed(&settings.dir, notes)?;
     Ok(kinds)
+}
+
+/// Each closed file whose durability is unconfirmed, logged and said on stderr.
+fn unconfirmed(dir: &Path, notes: Vec<String>) -> Result<(), String> {
+    for note in notes {
+        log(dir, &note)?;
+        eprintln!("cadence datagen: {note}");
+    }
+    Ok(())
 }
 
 /// The open `.tmp`, hashed as it is written.
@@ -617,7 +627,7 @@ fn close(
     tmp: &Path,
     path: &Path,
     digest: [u8; 32],
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let failed = |e: io::Error| format!("{}: {e}", tmp.display());
     file.sync_all().map_err(failed)?;
     drop(file);
@@ -632,8 +642,13 @@ fn close(
         .map_err(side_failed)?;
     side.sync_all().map_err(side_failed)?;
     drop(side);
-    durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
-    durable::publish(steps, tmp, path).map_err(failed)
+    let sidecar_published = durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
+    let chunk_published = durable::publish(steps, tmp, path).map_err(failed)?;
+    Ok(sidecar_published
+        .note(&sidecar)
+        .into_iter()
+        .chain(chunk_published.note(path))
+        .collect())
 }
 
 fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header, String> {
@@ -796,12 +811,17 @@ pub fn repair(tmp: &Path) -> Result<String, String> {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    close(&mut Disk, &dir, file, tmp, &path, sha256(&whole))?;
-    Ok(format!(
+    let notes = close(&mut Disk, &dir, file, tmp, &path, sha256(&whole))?;
+    let mut report = format!(
         "repaired {} kept {} games dropped {dropped} bytes",
         path.display(),
         records.len()
-    ))
+    );
+    for note in notes {
+        report.push('\n');
+        report.push_str(&note);
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -812,6 +832,47 @@ mod tests {
     use cadence_dataset::sha256::{hex, sha256};
 
     use super::close;
+
+    /// A sync that fails after the sidecar's rename or the chunk's leaves both in place, and reports
+    /// the one whose durability is unconfirmed.
+    #[test]
+    fn a_failed_sync_after_either_rename_is_reported_and_leaves_the_chunk_closed() {
+        for (n, unsynced) in [(0, "x.cdg.sha256"), (1, "x.cdg")] {
+            let dir =
+                std::env::temp_dir().join(format!("cadence-close-{n}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch directory");
+            let (tmp, path) = (dir.join("x.cdg.tmp"), dir.join("x.cdg"));
+            std::fs::write(&tmp, b"chunk").expect("writes");
+            let file = File::options().write(true).open(&tmp).expect("opens");
+            let closed = close(
+                &mut Logged::failing_sync(n),
+                &dir,
+                file,
+                &tmp,
+                &path,
+                sha256(b"chunk"),
+            );
+            let mut left: Vec<String> = std::fs::read_dir(&dir)
+                .expect("lists")
+                .map(|e| {
+                    e.expect("an entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            left.sort_unstable();
+            let _ = std::fs::remove_dir_all(&dir);
+            let notes = closed.expect("closed, with one sync failed");
+            assert_eq!(left, ["x.cdg", "x.cdg.sha256"], "sync {n} failing");
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert!(
+                notes[0].contains(&format!("{unsynced}: published, durability unconfirmed")),
+                "{notes:?}"
+            );
+        }
+    }
 
     /// The sidecar and then the chunk are each published by a rename, and the directory is synced
     /// after each, so a crash cannot keep a name without its entry or lose one already reported.
