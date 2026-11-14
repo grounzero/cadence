@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -98,6 +99,58 @@ class PinTests(unittest.TestCase):
                     f"proxy_set_header X-Forwarded-Proto {expected};", rendered
                 )
                 self.assertIsNone(re.search(r"@@[A-Z_]+@@", rendered))
+
+
+class BookTests(unittest.TestCase):
+    BOOK = "cadence-chess960-v1.epd"
+
+    def test_the_overlay_offers_the_chess960_book(self) -> None:
+        config = json.loads(
+            (ROOT / "overlay" / "Config" / "config.base.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(self.BOOK, config["books"])
+        book = json.loads(
+            (ROOT / "overlay" / "Books" / f"{self.BOOK}.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            book["sha"], "FA0D08CF170CE0DA81312707CB09ED3031CC22D52EBB24D9B1179DD8B6671803"
+        )
+        self.assertRegex(
+            book["source"],
+            r"^https://raw\.githubusercontent\.com/grounzero/OpenBench/[0-9a-f]{40}"
+            r"/Books/cadence-chess960-v1\.epd\.zip$",
+        )
+
+    def test_every_overlay_book_is_offered(self) -> None:
+        config = json.loads(
+            (ROOT / "overlay" / "Config" / "config.base.json").read_text(encoding="utf-8")
+        )
+        for source in sorted((ROOT / "overlay" / "Books").glob("*.json")):
+            with self.subTest(book=source.name):
+                self.assertIn(source.name.removesuffix(".json"), config["books"])
+
+    def test_install_configuration_links_each_overlay_book(self) -> None:
+        server = load("cadence_setup_server_books", "setup-server.py")
+        books = sorted((ROOT / "overlay" / "Books").glob("*.json"))
+        self.assertIn(f"{self.BOOK}.json", [book.name for book in books])
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary) / "checkout"
+            (checkout / "Books").mkdir(parents=True)
+            config_directory = Path(temporary) / "config"
+            with mock.patch.dict(os.environ, {"CADENCE_GITHUB_TOKEN": "token"}):
+                server.install_configuration(
+                    argparse.Namespace(github_token_file=None), checkout, config_directory
+                )
+            for source in books:
+                with self.subTest(book=source.name):
+                    link = checkout / "Books" / source.name
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(
+                        link.resolve(), (config_directory / "Books" / source.name).resolve()
+                    )
+                    self.assertEqual(
+                        link.read_text(encoding="utf-8"), source.read_text(encoding="utf-8")
+                    )
 
 
 class WorkerTests(unittest.TestCase):
