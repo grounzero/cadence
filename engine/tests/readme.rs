@@ -9,16 +9,22 @@ use std::process::Command;
 
 const README: &str = include_str!("../../README.md");
 
-/// Every option `uci` declares has a row in the README's table, `Move Overhead` and the tuning
-/// options among them.
+/// Every option `uci` declares is named in the first column of the README's table, where a row
+/// may name several, `Move Overhead` and the tuning options among them.
 #[test]
 fn the_readme_documents_every_uci_option() {
+    let named: Vec<&str> = README
+        .lines()
+        .filter_map(|l| l.strip_prefix("| "))
+        .filter_map(|row| row.split_once(" | "))
+        .flat_map(|(cell, _)| cell.split(", "))
+        .collect();
     let out = support::talk("uci\nquit\n");
     let missing: Vec<&str> = out
         .lines()
         .filter_map(|l| l.strip_prefix("option name "))
         .map(|rest| rest.split(" type ").next().unwrap_or(rest))
-        .filter(|name| !README.contains(&format!("| `{name}` |")))
+        .filter(|name| !named.contains(&format!("`{name}`").as_str()))
         .collect();
     assert_eq!(
         missing,

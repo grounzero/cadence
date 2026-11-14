@@ -409,8 +409,12 @@ def install_configuration(
 ) -> None:
     engine_directory = config_directory / "Engines"
     site_directory = config_directory / "CadenceSite"
+    book_directory = config_directory / "Books"
     engine_directory.mkdir(parents=True, exist_ok=True)
     site_directory.mkdir(parents=True, exist_ok=True)
+    book_directory.mkdir(parents=True, exist_ok=True)
+    # Descriptors for books the official checkout does not carry, each naming its zip and SHA-256.
+    books = sorted((OVERLAY / "Books").glob("*.json"))
 
     secure_write(
         config_directory / "pins.json",
@@ -429,6 +433,8 @@ def install_configuration(
         site_directory / "settings.py",
         (OVERLAY / "CadenceSite" / "settings.py").read_text(encoding="utf-8"),
     )
+    for book in books:
+        secure_write(book_directory / book.name, book.read_text(encoding="utf-8"))
 
     credential = config_directory / "credentials.cadence"
     token = read_token(args, credential)
@@ -439,6 +445,8 @@ def install_configuration(
     replace_with_symlink(checkout / "Config" / "credentials.cadence", credential)
     replace_with_symlink(checkout / "Engines" / "Cadence.json", engine_directory / "Cadence.json")
     replace_with_symlink(checkout / "CadenceSite", site_directory)
+    for book in books:
+        replace_with_symlink(checkout / "Books" / book.name, book_directory / book.name)
 
 
 def environment_values(

@@ -6,17 +6,19 @@
 
 mod support;
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
-use cadence_core::{Move, PieceType, generate_legal, parse_uci};
+use cadence_core::{FenStyle, Move, PieceType, generate_legal, parse_uci};
 use cadence_engine::datagen::game::{Ending, Outcome, ending};
 use cadence_engine::datagen::opening::{self, RANDOM_PLIES, WINDOW};
 use cadence_engine::datagen::record::Record;
 use cadence_engine::datagen::{self, extract, game};
 use cadence_engine::position::Position;
+use cadence_engine::score;
 use cadence_engine::tt::Table;
+use cadence_engine::version::VERSION;
 
 fn table() -> Table {
     Table::new(datagen::HASH_MB).expect("a datagen table")
@@ -30,6 +32,25 @@ fn run(seed: u64, games: u64, threads: usize) -> Vec<u8> {
     let mut out = Vec::new();
     datagen::generate(seed, games, threads, &mut out, &mut |_| {}).expect("a run into memory");
     out
+}
+
+/// A run header for records built by hand rather than played.
+fn handmade(games: u64) -> String {
+    datagen::provenance(0, games).replacen(VERSION, "0.0.0-handmade", 1)
+}
+
+fn listed(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("lists")
+        .map(|e| {
+            e.expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 fn records(file: &[u8]) -> Vec<Record> {
@@ -166,12 +187,55 @@ fn a_start_that_passes_is_inside_the_window_after_its_random_plies() {
         assert!(o.white < 960 && o.black < 960);
         assert_eq!(ending(&o.board), None);
         let score = game::probe(&mut o.board, opening::SCREEN_NODES, &table());
+        let score = score.expect("a probe at the screen's count finishes depth 1");
         assert!(score.abs() <= WINDOW, "screened {score}");
     }
 }
 
+/// A search that cannot finish depth 1 leaves no score, never a 0 that reads as a balanced position.
+#[test]
+fn a_move_whose_search_did_not_finish_carries_no_score() {
+    let start = || Position::new(board(cadence_core::START_FEN));
+    let starved = game::play(&mut start(), 1, &table());
+    assert_ne!(starved.moves, Vec::new(), "no move was played");
+    let scored: Vec<_> = starved.moves.iter().filter(|(_, s)| s.is_some()).collect();
+    assert_eq!(
+        scored,
+        [] as [&(Move, Option<i32>); 0],
+        "scored at one node"
+    );
+    let fed = game::play(&mut start(), datagen::NODES, &table());
+    assert!(fed.moves[0].1.is_some(), "no score at the full count");
+}
+
 // Records
 // ---------------------------------------------------------------------------
+
+/// A move with no score is spelled `none`, and reads back as itself.
+#[test]
+fn a_move_with_no_score_is_spelled_none_and_reads_back() {
+    let mut record = datagen::play(1, 0, &table());
+    record.moves[0].1 = None;
+    let line = record.line();
+    let spelled = format!("{}:none", record.moves[0].0.to_uci_chess960());
+    assert!(line.contains(&spelled), "{line}");
+    assert_eq!(Record::parse(&line).expect("parses"), record);
+}
+
+/// Extraction keeps no position whose move has no score, and counts it.
+#[test]
+fn extraction_keeps_no_position_for_a_move_with_no_score() {
+    let mut record = datagen::play(1, 0, &table());
+    for (_, s) in &mut record.moves {
+        *s = None;
+    }
+    let file = format!("{}\n{}\n", handmade(1), record.line());
+    let (train, _, stats) = extract(file.as_bytes(), 0);
+    assert_eq!(positions(&train), [] as [&str; 0]);
+    assert!(stats.no_score > 0, "no move counted");
+    let total = stats.outside + stats.in_check + stats.noisy + stats.no_score + stats.mate;
+    assert_eq!(total, stats.visited);
+}
 
 #[test]
 fn a_record_reads_back_as_itself_and_replays_to_the_ending_it_names() {
@@ -241,10 +305,8 @@ fn extraction_holds_out_whole_games_by_number() {
     let (train, held, stats) = extract(&file, 4);
     let mut want_held = Vec::new();
     for r in records(&file) {
-        let one: Vec<u8> = [r.line().as_bytes(), b"\n"].concat();
-        let (lines, _, _) = extract(&one, 0);
         if r.number % 4 == 0 {
-            want_held.extend(positions(&lines).iter().map(ToString::to_string));
+            want_held.extend(kept(&r));
         }
     }
     assert_eq!(positions(&held), want_held);
@@ -254,6 +316,25 @@ fn extraction_holds_out_whole_games_by_number() {
     );
     assert_eq!(stats.train + stats.holdout, whole.train);
     assert_eq!(stats.games, 12);
+}
+
+/// What extraction keeps of a game, worked out here from the record alone.
+fn kept(record: &Record) -> Vec<String> {
+    let mut b = record.start();
+    for &m in &record.plies {
+        b.play(m);
+    }
+    let mut out = Vec::new();
+    for (ply, &(m, s)) in record.moves.iter().enumerate() {
+        let window = (extract::FIRST_PLY..=extract::LAST_PLY).contains(&ply);
+        let scored = s.is_some_and(|s| !score::is_mate(s));
+        if window && !b.in_check() && !m.is_noisy() && scored {
+            let fen = b.to_fen(FenStyle::Shredder);
+            out.push(format!("{fen} | {}", record.outcome.text()));
+        }
+        b.play(m);
+    }
+    out
 }
 
 #[test]
@@ -268,7 +349,7 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
     assert!(train.starts_with("# cadence datagen"));
     let kept = stats.train;
     assert_eq!(
-        stats.outside + stats.in_check + stats.noisy + stats.mate + kept,
+        stats.outside + stats.in_check + stats.noisy + stats.no_score + stats.mate + kept,
         stats.visited
     );
     // The window is counted from the records alone, so the extractor's count can be checked.
@@ -288,7 +369,8 @@ fn no_kept_position_is_in_check_and_every_count_adds_up() {
     assert!(String::from_utf8(report).expect("utf-8").contains("yield"));
 }
 
-/// A record file cut short still names the whole run in its provenance, so the count shows it.
+/// A record file cut short still names the whole run in its provenance, so the count shows it, and a
+/// run joined to itself names its seed twice.
 #[test]
 fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     let file = run(5, 3, 1);
@@ -302,8 +384,8 @@ fn extraction_refuses_a_file_holding_fewer_games_than_it_names() {
     );
     let joined = [&file[..], &file[..]].concat();
     let (mut train, mut holdout) = (Vec::new(), Vec::new());
-    let stats = extract::extract(&joined[..], &mut train, &mut holdout, 0).expect("two runs");
-    assert_eq!(stats.games, 6);
+    let refused = extract::extract(&joined[..], &mut train, &mut holdout, 0);
+    assert!(refused.is_err(), "a run joined to itself was extracted");
 }
 
 /// The count passes a copy of one game standing in for another, and a short run beside a long one.
@@ -334,7 +416,9 @@ fn extraction_refuses_a_false_result_and_moves_after_the_end() {
     let mate = "f2f3:0 e7e5:0 g2g4:0 d8h4:0";
     let shuffle = "g1f3:0 g8f6:0 f3g1:0 f6g8:0";
     let repeated = format!("{shuffle} {shuffle}");
-    let record = |moves: &str, result: &str| format!("0 | 518 518 |  | {moves} | {result} | 0");
+    let record = |moves: &str, result: &str| {
+        format!("{}\n0 | 518 518 |  | {moves} | {result} | 0", handmade(1))
+    };
     let extracts = |line: &str| {
         let (mut train, mut holdout) = (Vec::new(), Vec::new());
         extract::extract(line.as_bytes(), &mut train, &mut holdout, 0).is_ok()
@@ -466,7 +550,8 @@ fn the_window_keeps_plies_eight_to_two_hundred_and_forty_inclusive() {
         .map(|m| format!("{}:0", m.to_uci_chess960()))
         .collect();
     let line = format!(
-        "0 | 518 518 | {} | {} | {} {} | 0\n",
+        "{}\n0 | 518 518 | {} | {} | {} {} | 0\n",
+        handmade(1),
         plies.join(" "),
         moves.join(" "),
         outcome.text(),
@@ -501,6 +586,213 @@ fn extraction_refuses_a_provenance_line_cut_short() {
     ] {
         assert!(extract_with(&cut).is_err(), "{cut}");
     }
+}
+
+fn extract_error(file: &str) -> String {
+    let (mut train, mut holdout) = (Vec::new(), Vec::new());
+    match extract::extract(file.as_bytes(), &mut train, &mut holdout, 0) {
+        Ok(_) => panic!("extracted:\n{file}"),
+        Err(e) => e,
+    }
+}
+
+/// Every record stands in a run, and a run holds every game it names by the next header and by the
+/// end; a comment that is not a header passes anywhere.
+#[test]
+fn extraction_refuses_a_record_outside_a_whole_run() {
+    let text = String::from_utf8(run(3, 2, 1)).expect("utf-8");
+    let [header, first, second] = text.lines().collect::<Vec<_>>()[..] else {
+        panic!("a header and two records: {text}");
+    };
+    let before = extract_error(&[first, header, first].join("\n"));
+    let want = "line 1: a record before any provenance line";
+    assert!(before.starts_with(want), "{before}");
+    let short = extract_error(&[header, first, header, first, second].join("\n"));
+    let want = "line 3: the run at line 1 names 2 games and holds 1";
+    assert!(short.starts_with(want), "{short}");
+    let end = extract_error(&[header, first].join("\n"));
+    assert!(
+        end.contains("the run at line 1 names 2 games and holds 1"),
+        "{end}"
+    );
+    let noted = ["# a note", header, first, second].join("\n");
+    let (mut train, mut holdout) = (Vec::new(), Vec::new());
+    extract::extract(noted.as_bytes(), &mut train, &mut holdout, 0).expect("a note first");
+}
+
+// Duplicates and provenance
+// ---------------------------------------------------------------------------
+
+/// A seed named again repeats its run's games, so the second run is refused at its header; runs of
+/// different seeds pass with their games summed.
+#[test]
+fn extraction_refuses_a_seed_named_twice() {
+    let file = run(5, 5, 1);
+    let joined = [&file[..], &file[..]].concat();
+    let error = extract_error(std::str::from_utf8(&joined).expect("utf-8"));
+    let want = "line 7: seed 5 is the seed of the run at line 1, so its games repeat";
+    assert!(error.starts_with(want), "{error}");
+    let other = [&file[..], &run(6, 2, 1)[..]].concat();
+    let (_, _, stats) = extract(&other, 0);
+    assert_eq!(stats.games, 7);
+}
+
+/// A game copied into another run, that run's provenance untouched, is found by its content.
+#[test]
+fn extraction_refuses_the_same_game_twice() {
+    let (a, b) = (run(5, 3, 1), run(6, 3, 1));
+    let a: Vec<&str> = std::str::from_utf8(&a).expect("utf-8").lines().collect();
+    let mut b: Vec<&str> = std::str::from_utf8(&b).expect("utf-8").lines().collect();
+    b[2] = a[2];
+    let error = extract_error(&[a, b].concat().join("\n"));
+    assert!(
+        error.starts_with("line 7: the same game as line 3"),
+        "{error}"
+    );
+}
+
+/// A provenance line is read field by field and held to this build's constants, and game 0 of a run
+/// this build wrote must replay from the seed the line names.
+#[test]
+fn extraction_holds_a_provenance_line_to_this_build() {
+    let text = String::from_utf8(run(5, 2, 1)).expect("utf-8");
+    let (header, records) = text.split_once('\n').expect("a header");
+    let with = |h: &str| format!("{h}\n{records}");
+    let seed = extract_error(&with(&header.replacen(" seed 5 ", " seed 99 ", 1)));
+    assert!(
+        seed.contains("game 0 does not replay from seed 99"),
+        "{seed}"
+    );
+    let edit = |name: &str| {
+        let mut words: Vec<&str> = header.split(' ').collect();
+        let at = words.iter().position(|&w| w == name).expect("a field") + 1;
+        words[at] = "4000";
+        words.join(" ")
+    };
+    for name in ["nodes", "hash", "plies", "window", "screen"] {
+        let error = extract_error(&with(&edit(name)));
+        let want = format!("line 1: the provenance names {name} 4000 and this build's is ");
+        assert!(error.starts_with(&want), "{error}");
+    }
+    for bad in [
+        header.replacen(" nodes ", " node ", 1),
+        header.replacen(" hash 16", "", 1),
+        header.replacen(" games 2", " games 2 games 2", 1),
+        header.replacen("hash 16 plies 8", "plies 8 hash 16", 1),
+        format!("{header} extra 1"),
+    ] {
+        let error = extract_error(&with(&bad));
+        assert!(error.starts_with("line 1: "), "{bad}: {error}");
+    }
+}
+
+/// The input's SHA-256 is in the report and closes both outputs.
+#[test]
+fn extraction_records_its_input_digest() {
+    let file = run(4, 3, 1);
+    let digest = cadence_dataset::sha256::hex(&cadence_dataset::sha256::sha256(&file));
+    let (train, held, stats) = extract(&file, 2);
+    let line = format!("# cadence extract input-sha256 {digest}");
+    assert_eq!(train.lines().last(), Some(line.as_str()));
+    assert_eq!(held.lines().last(), Some(line.as_str()));
+    let mut report = Vec::new();
+    stats.report(&mut report).expect("reports");
+    let report = String::from_utf8(report).expect("utf-8");
+    let want = format!("input-sha256 {digest}");
+    assert!(report.lines().any(|l| l == want), "{report}");
+}
+
+/// A run from another build passes with its seed claim named as not examined, and every extraction
+/// says duplicates in files it was not given were not.
+#[test]
+fn extraction_says_what_it_did_not_examine() {
+    let (dir, _) = scratch("extract-unexamined");
+    let games = String::from_utf8(run(9, 3, 1)).expect("utf-8");
+    let foreign = games.replacen(VERSION, "0.0.0-elsewhere", 1);
+    std::fs::write(dir.join("games.txt"), foreign).expect("writes");
+    let out = Command::new(support::binary())
+        .current_dir(&dir)
+        .args([
+            "datagen",
+            "extract",
+            "games.txt",
+            "--train",
+            "t",
+            "--holdout",
+            "h",
+        ])
+        .output()
+        .expect("runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    for want in [
+        "  not examined: duplicates in files not given",
+        "  not examined: the seed claims of runs from another build, 0.0.0-elsewhere",
+    ] {
+        assert!(stdout.contains(want), "{stdout}");
+    }
+    assert_eq!(
+        stdout.contains("  not examined: each published name's durability"),
+        cfg!(not(unix)),
+        "{stdout}"
+    );
+}
+
+/// The converter reads mates by the dataset crate's bound, so it must be the search's.
+#[test]
+fn the_dataset_mate_bound_is_the_searchs() {
+    assert_eq!(
+        i32::from(cadence_dataset::constants::MATE_BOUND),
+        score::MATE_IN_MAX_PLY
+    );
+}
+
+/// A build without the feature carries none of the packed writer, and says so.
+#[cfg(not(feature = "packed-datagen"))]
+#[test]
+fn the_packed_writer_is_off_by_default() {
+    for args in [
+        &["run", "--out", "x", "--run-seed", "1"][..],
+        &["repair", "x.cdg.tmp"][..],
+        &["verify", "x.cdg"][..],
+    ] {
+        let out = Command::new(support::binary())
+            .arg("datagen")
+            .args(args)
+            .output()
+            .expect("runs");
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(datagen::WITHOUT_PACKED), "{err}");
+    }
+}
+
+/// A run without a seed would repeat every other run's games, so it is refused and writes nothing.
+#[test]
+fn play_refuses_to_run_without_a_seed() {
+    let dir = std::env::temp_dir().join(format!("cadence-datagen-seed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let play = |seed: &[&str]| {
+        Command::new(support::binary())
+            .args(["datagen", "play", "--games", "2", "--out"])
+            .arg(dir.join("games.txt"))
+            .args(seed)
+            .output()
+            .expect("runs")
+    };
+    let refused = play(&[]);
+    let before = listed(&dir);
+    let ran = play(&["--seed", "7"]);
+    let after = listed(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let err = String::from_utf8_lossy(&refused.stderr);
+    assert!(err.contains("--seed is required"), "{err}");
+    assert_eq!(before, [] as [&str; 0], "written without a seed");
+    assert!(ran.status.success(), "{ran:?}");
+    assert_eq!(after, ["games.txt"]);
 }
 
 // Extraction's paths
@@ -600,4 +892,60 @@ fn extraction_publishes_neither_output_when_one_cannot_be() {
     assert_eq!(names(&left), ["games.txt", "held/", "train.txt"]);
     assert!(left[0].1 == games, "the input changed");
     assert!(left[2].1 == b"before\n", "the train output was published");
+}
+
+/// The report is written before the outputs are published, so an extraction whose report has
+/// nowhere to go publishes nothing. The pipe's reading end is closed before the child starts, or a
+/// child that wrote first would find a reader.
+#[test]
+fn extraction_publishes_nothing_when_its_report_cannot_be_written() {
+    let (dir, _) = scratch("extract-closed");
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let status = Command::new(support::binary())
+        .current_dir(&dir)
+        .args(["datagen", "extract", "games.txt", "--train", "train.txt"])
+        .args(["--holdout", "held.txt"])
+        .stdout(writer)
+        .stderr(Stdio::null())
+        .status()
+        .expect("runs");
+    let left = listed(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !status.success(),
+        "a report nobody read was taken as written"
+    );
+    assert_eq!(left, ["games.txt"], "published without its report");
+
+    let (dir, _) = scratch("extract-open");
+    let (ok, left) = extract_in(&dir, "games.txt --train train.txt --holdout held.txt");
+    assert!(ok, "{:?}", names(&left));
+    assert_eq!(names(&left), ["games.txt", "held.txt", "train.txt"]);
+}
+
+/// The usage answers a command line that does not parse, not work that failed.
+#[test]
+fn the_usage_is_printed_only_for_an_argument_error() {
+    let (dir, _) = scratch("extract-usage");
+    std::fs::write(
+        dir.join("bad.txt"),
+        "0 | 518 518 | e2e5 |  | 1-0 mate | 0\n",
+    )
+    .expect("writes");
+    let stderr = |args: &[&str]| {
+        let out = Command::new(support::binary())
+            .current_dir(&dir)
+            .arg("datagen")
+            .args(args)
+            .output()
+            .expect("runs");
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        String::from_utf8(out.stderr).expect("utf-8")
+    };
+    let argument = stderr(&["extract", "bad.txt", "--train", "t"]);
+    let work = stderr(&["extract", "bad.txt", "--train", "t", "--holdout", "h"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(argument.contains("usage:"), "{argument}");
+    assert!(!work.contains("usage:"), "{work}");
 }

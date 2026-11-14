@@ -1,0 +1,18 @@
+# What the nightly dependency audit holds the workspace to, read by `cargo deny check`. A licence
+# not listed here fails it, so a new dependency's licence is chosen and not inherited.
+
+[advisories]
+# Every RustSec advisory fails it, vulnerable, unmaintained or unsound, and so does a yanked version.
+unsound = "all"
+yanked  = "deny"
+
+[licenses]
+# Each compatible with GPL-3.0, and between them enough for every crate in the tree today.
+allow = ["GPL-3.0-or-later", "MIT", "Apache-2.0", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"

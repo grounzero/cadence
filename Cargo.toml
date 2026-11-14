@@ -1,19 +1,19 @@
 [workspace]
-members  = ["core", "nnue", "engine", "tools"]
+members  = ["core", "dataset", "nnue", "engine", "tools"]
 exclude  = ["xtask"]
 resolver = "3"
 
 [workspace.package]
-# One version for the whole workspace. The four crates are built from one
+# One version for the whole workspace. The five crates are built from one
 # tree at one commit, so they must not be able to disagree about which
 # version they are; only `cadence-engine`'s reaches the UCI id, and a
-# per-crate version would leave the other three frozen while it advanced.
+# per-crate version would leave the other four frozen while it advanced.
 # The minor marks a milestone and is cut when that milestone opens; the patch
 # counts the changes that passed a test, and the fixes to how the engine
 # plays, inside it. The archived binary is
 # still what identifies a promotion, because a version says which release a
 # build is and not what it played like.
-version      = "0.6.0-rc.3"
+version      = "0.6.0"
 edition      = "2024"
 rust-version = "1.99"
 license      = "GPL-3.0-or-later"

@@ -24,7 +24,7 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
     ),
     (
         "datagen",
-        "self-play records and their positions: datagen play --games N | datagen extract <games>",
+        "self-play records and their positions: datagen play --games N --seed S | datagen extract <games> | datagen run, repair and verify, with the packed-datagen feature",
     ),
     (
         "texel",

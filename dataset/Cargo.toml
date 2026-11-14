@@ -1,0 +1,17 @@
+[package]
+name         = "cadence-dataset"
+description  = "The hashes and record formats of Cadence's training data"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "cadence_dataset"
+
+[dependencies]
+cadence-core = { path = "../core" }
+
+[lints]
+workspace = true
