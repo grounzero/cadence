@@ -32,7 +32,13 @@ ratings. Method, games and caveats:
 Or download a binary from the
 [latest release](https://github.com/grounzero/cadence/releases/latest): the
 AVX2 build for x86-64 machines from about 2015 on, the generic build if it
-won't start.
+won't start. On macOS, make the downloaded binary executable and clear its
+quarantine flag before running it:
+
+```sh
+chmod +x <file>
+xattr -d com.apple.quarantine <file>
+```
 
 ### With an install script
 
