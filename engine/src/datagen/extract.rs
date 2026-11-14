@@ -383,7 +383,7 @@ fn positions(record: &Record, stats: &mut Stats, out: &mut dyn Write) -> std::io
     Ok(kept)
 }
 
-fn balance(board: &cadence_core::position::Board) -> i32 {
+pub(crate) fn balance(board: &cadence_core::position::Board) -> i32 {
     let values = [
         (PieceType::Pawn, 1),
         (PieceType::Knight, 3),
