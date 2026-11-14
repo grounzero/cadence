@@ -693,7 +693,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{BUCKETS, Request, bucket, convert, result_for_mover};
-    use cadence_dataset::chunk::{Chunk, Header, chunk_name};
+    use cadence_core::chess960::dfrc_fen;
+    use cadence_core::generate_legal;
+    use cadence_core::position::Board;
+    use cadence_core::rng::Rng;
+    use cadence_dataset::chunk::{Chunk, GameRecord, Header, chunk_name, encode_move};
     use cadence_dataset::durable::{Logged, Step};
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{DRAW, LOSS, WIN};
@@ -718,14 +722,15 @@ mod tests {
             standard_share: 50,
             run_seed: 1,
             chunk_index: 0,
-            games_planned: 1,
+            games_planned: 2,
             host: "test".to_string(),
             start_time: 0,
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [0; 32],
         };
-        let bytes = Chunk::bytes(&header, &[]).expect("an empty chunk");
+        let games = [short_game(0, 3), short_game(1, 4)];
+        let bytes = Chunk::bytes(&header, &games).expect("a chunk");
         let (name, digest) = (chunk_name(1, 0), hex(&sha256(&bytes)));
         std::fs::write(dir.join(&name), &bytes).expect("writes");
         std::fs::write(
@@ -734,7 +739,14 @@ mod tests {
         )
         .expect("writes");
         let manifest = dir.join("MANIFEST.tsv");
-        std::fs::write(&manifest, format!("chunk\tsha256\n{name}\t{digest}\n")).expect("writes");
+        let provenance = format!(
+            "commit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\nhash\t16\n\
+             random-plies\t8\nwindow\t200\nstandard-share\t50\nrun-seeds\t{:016x}\n",
+            hex(&[1; 20]),
+            1
+        );
+        let rows = format!("chunk\tsha256\n{name}\t{digest}\n");
+        std::fs::write(&manifest, provenance + &rows).expect("writes");
         let out = dir.join("out");
         let request = Request {
             manifests: vec![manifest],
@@ -763,6 +775,37 @@ mod tests {
             [Step::Sync(staging), Step::Rename(unit), Step::Sync(out)],
             "the unit's entries synced before its rename, and its name after"
         );
+    }
+
+    /// Eight random plies and 32 random moves from the standard start, each move scored 5.
+    fn short_game(index: u32, seed: u64) -> GameRecord {
+        let mut rng = Rng::new(seed);
+        let mut board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+        let (mut plies, mut moves) = (Vec::new(), Vec::new());
+        for ply in 0..40 {
+            let legal = generate_legal(&board);
+            let Some(&m) = legal.as_slice().get(rng.below(legal.len().max(1))) else {
+                break;
+            };
+            if ply < 8 {
+                plies.push(encode_move(m));
+            } else {
+                moves.push((encode_move(m), 5));
+            }
+            board.play(m);
+        }
+        GameRecord {
+            index,
+            seed,
+            kind: 1,
+            white: 518,
+            black: 518,
+            plies,
+            moves,
+            outcome: 2,
+            ending: 3,
+            refused: 0,
+        }
     }
 
     #[test]

@@ -115,7 +115,9 @@ fn dataset(dir: &Path, run_seed: u64, chunks: &[Vec<GameRecord>]) -> PathBuf {
     }
     let manifest = dir.join("MANIFEST.tsv");
     let text = format!(
-        "# cadence dataset manifest\ncommit\t{}\nchunk\tsha256\tgames\tplies\tuniform\tstandard\n{rows}",
+        "# cadence dataset manifest\ncommit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\n\
+         hash\t16\nrandom-plies\t{RANDOM_PLIES}\nwindow\t200\nstandard-share\t50\n\
+         run-seeds\t{run_seed:016x}\nchunk\tsha256\tgames\tplies\tuniform\tstandard\n{rows}",
         hex(&[1; 20])
     );
     std::fs::write(&manifest, text).expect("writes");
@@ -412,7 +414,8 @@ fn a_game_longer_than_the_search_stack_is_read_whole() {
         .map(|_| game(&mut rng, 0, 0, 300))
         .find(|g| g.moves.len() == 300)
         .expect("a random game that lasts 300 moves");
-    let manifest = dataset(&dir.join("data"), 31, &[vec![long]]);
+    let trained = game(&mut rng, 1, 1, 60);
+    let manifest = dataset(&dir.join("data"), 31, &[vec![long, trained]]);
     let (ok, text, _) = convert(&[&manifest], &dir.join("out"), &["--shuffle-seed", "3"]);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "{text}");
@@ -488,4 +491,178 @@ fn a_position_is_judged_by_the_move_played_from_it() {
         "dropped the position fxe6 reached, left by a quiet move"
     );
     assert!(kept(11), "dropped a quiet position");
+}
+
+/// A game from the standard start, its random plies and moves given as UCI, each move scored 5.
+fn scripted(index: u32, plies: &[&str], moves: &[&str]) -> GameRecord {
+    let mut board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+    let mut play = |text: &str| {
+        let m = parse_uci(&generate_legal(&board), text).expect("legal");
+        board.play(m);
+        encode_move(m)
+    };
+    let plies = plies.iter().map(|t| play(t)).collect();
+    let moves = moves.iter().map(|t| (play(t), 5)).collect();
+    GameRecord {
+        index,
+        seed: u64::from(index),
+        kind: 1,
+        white: 518,
+        black: 518,
+        plies,
+        moves,
+        outcome: 2,
+        ending: 3,
+        refused: 0,
+    }
+}
+
+/// `--every 0` would hold out nothing and `--every 1` would train on nothing, so both are refused
+/// and nothing is published.
+#[test]
+fn an_every_below_two_is_refused() {
+    let dir = scratch("every");
+    let manifest = dataset(&dir.join("data"), 61, &[games(61, 12, |_| 0)]);
+    let tried: Vec<_> = ["0", "1"]
+        .iter()
+        .map(|every| {
+            let out = dir.join(format!("out-{every}"));
+            let args = ["--shuffle-seed", "1", "--every", every];
+            (*every, convert(&[&manifest], &out, &args))
+        })
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    for (every, (ok, text, units)) in tried {
+        assert!(!ok && units.is_empty(), "--every {every} published: {text}");
+        assert!(text.contains(&format!("--every {every} ")), "{text}");
+    }
+}
+
+/// A conversion that would publish no validation position, or no training position, is refused
+/// and publishes nothing.
+#[test]
+fn an_empty_training_or_validation_output_is_refused() {
+    let dir = scratch("empty");
+    let blank = |g: &mut GameRecord| {
+        for (_, score) in &mut g.moves {
+            *score = NO_SCORE;
+        }
+    };
+    let mut no_validation = games(71, 3, |_| 0);
+    blank(&mut no_validation[0]);
+    let mut no_training = games(72, 3, |_| 0);
+    blank(&mut no_training[1]);
+    blank(&mut no_training[2]);
+    let a = dataset(&dir.join("a"), 71, &[no_validation]);
+    let b = dataset(&dir.join("b"), 72, &[no_training]);
+    let (ok_a, text_a, units_a) = convert(&[&a], &dir.join("out-a"), &["--shuffle-seed", "1"]);
+    let (ok_b, text_b, units_b) = convert(&[&b], &dir.join("out-b"), &["--shuffle-seed", "1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!ok_a && units_a.is_empty(), "{text_a}");
+    assert!(text_a.contains("no validation position"), "{text_a}");
+    assert!(!ok_b && units_b.is_empty(), "{text_b}");
+    assert!(text_b.contains("no training position"), "{text_b}");
+}
+
+/// Each provenance line of a manifest edited in turn, every hash still matching, is refused naming
+/// the field and both values, and a line removed is refused naming it.
+#[test]
+fn a_manifest_whose_provenance_disagrees_with_the_headers_is_refused() {
+    let dir = scratch("provenance");
+    let manifest = dataset(&dir.join("data"), 81, &[games(81, 3, |_| 0)]);
+    let text = std::fs::read_to_string(&manifest).expect("reads");
+    let edits = [
+        ("commit", hex(&[2; 20])),
+        ("version", "0.0.0-other".to_string()),
+        ("nodes", "4000".to_string()),
+        ("screen-nodes", "4000".to_string()),
+        ("hash", "8".to_string()),
+        ("random-plies", "7".to_string()),
+        ("window", "150".to_string()),
+        ("standard-share", "40".to_string()),
+        ("run-seeds", format!("{:016x}", 82)),
+    ];
+    let mut tried = Vec::new();
+    for (field, value) in edits {
+        let edited: Vec<String> = text
+            .lines()
+            .map(|l| {
+                if l.split('\t').next() == Some(field) {
+                    format!("{field}\t{value}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        let edited = edited.join("\n") + "\n";
+        let changed = edited != text;
+        std::fs::write(&manifest, edited).expect("writes");
+        let out = dir.join(format!("out-{field}"));
+        tried.push((
+            field,
+            changed,
+            convert(&[&manifest], &out, &["--shuffle-seed", "1"]),
+        ));
+    }
+    let removed: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.starts_with("window\t"))
+        .collect();
+    std::fs::write(&manifest, removed.join("\n") + "\n").expect("writes");
+    let (ok_removed, text_removed, _) = convert(
+        &[&manifest],
+        &dir.join("out-removed"),
+        &["--shuffle-seed", "1"],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    for (field, changed, (ok, out, units)) in tried {
+        assert!(changed, "{field} is not in the manifest");
+        assert!(
+            !ok && units.is_empty(),
+            "{field} edited was accepted: {out}"
+        );
+        assert!(
+            out.contains(&format!(": {field} ")) && out.contains("and the manifest says"),
+            "{field}: {out}"
+        );
+    }
+    assert!(
+        !ok_removed && text_removed.contains("names no window"),
+        "{text_removed}"
+    );
+}
+
+/// Two positions with the same pieces and side to move and different castling rights share the
+/// network's input and not a position key, so only the reading by input counts them.
+#[test]
+fn the_overlap_by_network_input_is_read_beside_the_key_overlap() {
+    let plies = [
+        "e2e4", "e7e5", "g1f3", "g8f6", "f3g1", "f6g8", "b1c3", "b8c6",
+    ];
+    let castles_kept = [
+        "c3b1", "c6b8", "g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1",
+    ];
+    let castles_lost = [
+        "c3b1", "c6b8", "e1e2", "e8e7", "e2e1", "e7e8", "g1f3", "g8f6", "f3g1",
+    ];
+    let chunk = vec![
+        scripted(0, &plies, &castles_kept),
+        scripted(1, &plies, &castles_lost),
+    ];
+    let dir = scratch("input-overlap");
+    let manifest = dataset(&dir.join("data"), 91, &[chunk]);
+    let (ok, text, _) = convert(&[&manifest], &dir.join("out"), &["--shuffle-seed", "1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    assert!(
+        text.contains("holdout positions whose key is also in training: 0"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "holdout positions whose network input (768 features and the side to move) is also in \
+             training: 1"
+        ),
+        "{text}"
+    );
 }
