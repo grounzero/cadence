@@ -317,23 +317,37 @@ fn extract_from_args(args: &[String]) -> Result<(), String> {
     }
     let train = train.ok_or("--train is required")?;
     let holdout = holdout.ok_or("--holdout is required")?;
-    let (train_path, holdout_path) = (Path::new(&train), Path::new(&holdout));
+    extract_to(
+        Path::new(input),
+        Path::new(&train),
+        Path::new(&holdout),
+        every,
+        &mut io::stdout().lock(),
+    )
+}
+
+/// `report` takes the statistics, so a test can make it fail.
+fn extract_to(
+    input: &Path,
+    train_path: &Path,
+    holdout_path: &Path,
+    every: u64,
+    report: &mut dyn Write,
+) -> Result<(), String> {
     let (train_temp, holdout_temp) = (stage_name(train_path)?, stage_name(holdout_path)?);
     distinct(&[
-        Path::new(input),
+        input,
         train_path,
         holdout_path,
         train_temp.as_path(),
         holdout_temp.as_path(),
     ])?;
-    let input = BufReader::new(File::open(input).map_err(|e| format!("{input}: {e}"))?);
+    let file = File::open(input).map_err(|e| format!("{}: {e}", input.display()))?;
     let mut train = Staged::create(train_path, train_temp)?;
     let mut holdout = Staged::create(holdout_path, holdout_temp)?;
-    let stats = extract::extract(input, &mut train, &mut holdout, every)?;
+    let stats = extract::extract(BufReader::new(file), &mut train, &mut holdout, every)?;
     publish(vec![train, holdout])?;
-    stats
-        .report(&mut io::stdout().lock())
-        .map_err(|e| e.to_string())
+    stats.report(report).map_err(|e| e.to_string())
 }
 
 /// Refused before anything is created: an output or a stage that is the input, or another output
@@ -557,9 +571,51 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        MAX_THREADS, Staged, USAGE, generate_with, provenance, publish_with, stage_name, workers,
+        MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, provenance,
+        publish_with, stage_name, workers,
     };
     use crate::tt::Table;
+
+    /// A change to the derivation changes every dataset, so it fails here first.
+    #[test]
+    fn a_game_seed_is_pinned_to_its_derivation() {
+        assert_eq!(game_seed(0, 0), 0xA706_DD2F_4D19_7E6F);
+        assert_eq!(game_seed(5, 3), 0x67E0_7EA6_E630_C1F5);
+    }
+
+    /// The report is written before anything is published, so a report that fails leaves neither
+    /// output nor a stage.
+    #[test]
+    fn a_report_that_cannot_be_written_publishes_nothing() {
+        let dir = std::env::temp_dir().join(format!("cadence-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let games = dir.join("games.txt");
+        let mut text = Vec::new();
+        generate(9, 2, 1, &mut text, &mut |_| {}).expect("a run into memory");
+        std::fs::write(&games, text).expect("writes");
+        let (train, held) = (dir.join("train.txt"), dir.join("held.txt"));
+        let refused = extract_to(&games, &train, &held, 10, &mut Closed);
+        let left = listed(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            refused.is_err(),
+            "a report nobody could read was taken as written"
+        );
+        assert_eq!(left, ["games.txt"]);
+    }
+
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
 
     #[test]
     fn workers_number_at_most_the_games_and_the_maximum() {
