@@ -20,7 +20,7 @@ say in the moves.
 
 | Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
 | --- | --- | --- | --- | --- |
-| [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-10 |
+| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) (measured on 0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-14 |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
 Estimates are from gauntlets against rated engines, not official
