@@ -6,17 +6,19 @@
 
 mod support;
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
-use cadence_core::{Move, PieceType, generate_legal, parse_uci};
+use cadence_core::{FenStyle, Move, PieceType, generate_legal, parse_uci};
 use cadence_engine::datagen::game::{Ending, Outcome, ending};
 use cadence_engine::datagen::opening::{self, RANDOM_PLIES, WINDOW};
 use cadence_engine::datagen::record::Record;
 use cadence_engine::datagen::{self, extract, game};
 use cadence_engine::position::Position;
+use cadence_engine::score;
 use cadence_engine::tt::Table;
+use cadence_engine::version::VERSION;
 
 fn table() -> Table {
     Table::new(datagen::HASH_MB).expect("a datagen table")
@@ -30,6 +32,25 @@ fn run(seed: u64, games: u64, threads: usize) -> Vec<u8> {
     let mut out = Vec::new();
     datagen::generate(seed, games, threads, &mut out, &mut |_| {}).expect("a run into memory");
     out
+}
+
+/// A run header for records built by hand rather than played.
+fn handmade(games: u64) -> String {
+    datagen::provenance(0, games).replacen(VERSION, "0.0.0-handmade", 1)
+}
+
+fn listed(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("lists")
+        .map(|e| {
+            e.expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 fn records(file: &[u8]) -> Vec<Record> {
@@ -241,10 +262,8 @@ fn extraction_holds_out_whole_games_by_number() {
     let (train, held, stats) = extract(&file, 4);
     let mut want_held = Vec::new();
     for r in records(&file) {
-        let one: Vec<u8> = [r.line().as_bytes(), b"\n"].concat();
-        let (lines, _, _) = extract(&one, 0);
         if r.number % 4 == 0 {
-            want_held.extend(positions(&lines).iter().map(ToString::to_string));
+            want_held.extend(kept(&r));
         }
     }
     assert_eq!(positions(&held), want_held);
@@ -254,6 +273,24 @@ fn extraction_holds_out_whole_games_by_number() {
     );
     assert_eq!(stats.train + stats.holdout, whole.train);
     assert_eq!(stats.games, 12);
+}
+
+/// What extraction keeps of a game, worked out here from the record alone.
+fn kept(record: &Record) -> Vec<String> {
+    let mut b = record.start();
+    for &m in &record.plies {
+        b.play(m);
+    }
+    let mut out = Vec::new();
+    for (ply, &(m, s)) in record.moves.iter().enumerate() {
+        let window = (extract::FIRST_PLY..=extract::LAST_PLY).contains(&ply);
+        if window && !b.in_check() && !m.is_noisy() && !score::is_mate(s) {
+            let fen = b.to_fen(FenStyle::Shredder);
+            out.push(format!("{fen} | {}", record.outcome.text()));
+        }
+        b.play(m);
+    }
+    out
 }
 
 #[test]
@@ -334,7 +371,9 @@ fn extraction_refuses_a_false_result_and_moves_after_the_end() {
     let mate = "f2f3:0 e7e5:0 g2g4:0 d8h4:0";
     let shuffle = "g1f3:0 g8f6:0 f3g1:0 f6g8:0";
     let repeated = format!("{shuffle} {shuffle}");
-    let record = |moves: &str, result: &str| format!("0 | 518 518 |  | {moves} | {result} | 0");
+    let record = |moves: &str, result: &str| {
+        format!("{}\n0 | 518 518 |  | {moves} | {result} | 0", handmade(1))
+    };
     let extracts = |line: &str| {
         let (mut train, mut holdout) = (Vec::new(), Vec::new());
         extract::extract(line.as_bytes(), &mut train, &mut holdout, 0).is_ok()
@@ -466,7 +505,8 @@ fn the_window_keeps_plies_eight_to_two_hundred_and_forty_inclusive() {
         .map(|m| format!("{}:0", m.to_uci_chess960()))
         .collect();
     let line = format!(
-        "0 | 518 518 | {} | {} | {} {} | 0\n",
+        "{}\n0 | 518 518 | {} | {} | {} {} | 0\n",
+        handmade(1),
         plies.join(" "),
         moves.join(" "),
         outcome.text(),
@@ -501,6 +541,65 @@ fn extraction_refuses_a_provenance_line_cut_short() {
     ] {
         assert!(extract_with(&cut).is_err(), "{cut}");
     }
+}
+
+fn extract_error(file: &str) -> String {
+    let (mut train, mut holdout) = (Vec::new(), Vec::new());
+    match extract::extract(file.as_bytes(), &mut train, &mut holdout, 0) {
+        Ok(_) => panic!("extracted:\n{file}"),
+        Err(e) => e,
+    }
+}
+
+/// Every record stands in a run, and a run holds every game it names by the next header and by the
+/// end; a comment that is not a header passes anywhere.
+#[test]
+fn extraction_refuses_a_record_outside_a_whole_run() {
+    let text = String::from_utf8(run(3, 2, 1)).expect("utf-8");
+    let [header, first, second] = text.lines().collect::<Vec<_>>()[..] else {
+        panic!("a header and two records: {text}");
+    };
+    let before = extract_error(&[first, header, first].join("\n"));
+    let want = "line 1: a record before any provenance line";
+    assert!(before.starts_with(want), "{before}");
+    let short = extract_error(&[header, first, header, first, second].join("\n"));
+    let want = "line 3: the run at line 1 names 2 games and holds 1";
+    assert!(short.starts_with(want), "{short}");
+    let end = extract_error(&[header, first].join("\n"));
+    assert!(
+        end.contains("the run at line 1 names 2 games and holds 1"),
+        "{end}"
+    );
+    let noted = ["# a note", header, first, second].join("\n");
+    let (mut train, mut holdout) = (Vec::new(), Vec::new());
+    extract::extract(noted.as_bytes(), &mut train, &mut holdout, 0).expect("a note first");
+}
+
+/// A run without a seed would repeat every other run's games, so it is refused and writes nothing.
+#[test]
+fn play_refuses_to_run_without_a_seed() {
+    let dir = std::env::temp_dir().join(format!("cadence-datagen-seed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let play = |seed: &[&str]| {
+        Command::new(support::binary())
+            .args(["datagen", "play", "--games", "2", "--out"])
+            .arg(dir.join("games.txt"))
+            .args(seed)
+            .output()
+            .expect("runs")
+    };
+    let refused = play(&[]);
+    let before = listed(&dir);
+    let ran = play(&["--seed", "7"]);
+    let after = listed(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let err = String::from_utf8_lossy(&refused.stderr);
+    assert!(err.contains("--seed is required"), "{err}");
+    assert_eq!(before, [] as [&str; 0], "written without a seed");
+    assert!(ran.status.success(), "{ran:?}");
+    assert_eq!(after, ["games.txt"]);
 }
 
 // Extraction's paths
@@ -600,4 +699,60 @@ fn extraction_publishes_neither_output_when_one_cannot_be() {
     assert_eq!(names(&left), ["games.txt", "held/", "train.txt"]);
     assert!(left[0].1 == games, "the input changed");
     assert!(left[2].1 == b"before\n", "the train output was published");
+}
+
+/// The report is written before the outputs are published, so an extraction whose report has
+/// nowhere to go publishes nothing. The pipe's reading end is closed before the child starts, or a
+/// child that wrote first would find a reader.
+#[test]
+fn extraction_publishes_nothing_when_its_report_cannot_be_written() {
+    let (dir, _) = scratch("extract-closed");
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let status = Command::new(support::binary())
+        .current_dir(&dir)
+        .args(["datagen", "extract", "games.txt", "--train", "train.txt"])
+        .args(["--holdout", "held.txt"])
+        .stdout(writer)
+        .stderr(Stdio::null())
+        .status()
+        .expect("runs");
+    let left = listed(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !status.success(),
+        "a report nobody read was taken as written"
+    );
+    assert_eq!(left, ["games.txt"], "published without its report");
+
+    let (dir, _) = scratch("extract-open");
+    let (ok, left) = extract_in(&dir, "games.txt --train train.txt --holdout held.txt");
+    assert!(ok, "{:?}", names(&left));
+    assert_eq!(names(&left), ["games.txt", "held.txt", "train.txt"]);
+}
+
+/// The usage answers a command line that does not parse, not work that failed.
+#[test]
+fn the_usage_is_printed_only_for_an_argument_error() {
+    let (dir, _) = scratch("extract-usage");
+    std::fs::write(
+        dir.join("bad.txt"),
+        "0 | 518 518 | e2e5 |  | 1-0 mate | 0\n",
+    )
+    .expect("writes");
+    let stderr = |args: &[&str]| {
+        let out = Command::new(support::binary())
+            .current_dir(&dir)
+            .arg("datagen")
+            .args(args)
+            .output()
+            .expect("runs");
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        String::from_utf8(out.stderr).expect("utf-8")
+    };
+    let argument = stderr(&["extract", "bad.txt", "--train", "t"]);
+    let work = stderr(&["extract", "bad.txt", "--train", "t", "--holdout", "h"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(argument.contains("usage:"), "{argument}");
+    assert!(!work.contains("usage:"), "{work}");
 }

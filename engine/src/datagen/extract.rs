@@ -12,7 +12,8 @@ use super::record::Record;
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
 
-/// The random plies not counted.
+/// Plies of the game proper skipped before the window opens. The random plies are not in a
+/// record's moves, so they are not among these.
 pub const FIRST_PLY: usize = 8;
 
 pub const LAST_PLY: usize = 240;
@@ -54,8 +55,8 @@ pub struct Stats {
 /// # Errors
 ///
 /// A record that does not parse or whose moves do not end as it says, an output that cannot be
-/// written, a file holding another number of games than its provenance lines name, or a game out
-/// of turn in its run.
+/// written, a record before any provenance line, a run not holding every game it names by the next
+/// provenance line or the end, or a game out of turn in its run.
 pub fn extract(
     input: impl BufRead,
     train: &mut dyn Write,
@@ -69,14 +70,22 @@ pub fn extract(
         ..Stats::default()
     };
     let mut named = None;
-    let mut run = None;
+    let mut run: Option<Run> = None;
     for (i, line) in input.lines().enumerate() {
-        let line = line.map_err(|e| format!("line {}: {e}", i + 1))?;
+        let at = |e: String| format!("line {}: {e}", i + 1);
+        let line = line.map_err(|e| at(e.to_string()))?;
         if line.starts_with('#') {
-            // Summed, so runs joined end to end are checked as one.
-            if let Some(n) = games_named(&line).map_err(|e| format!("line {}: {e}", i + 1))? {
+            if let Some(n) = games_named(&line).map_err(at)? {
+                if let Some(done) = &run {
+                    done.finished().map_err(at)?;
+                }
+                // Summed too, a second check that runs joined end to end hold every game.
                 named = Some(named.unwrap_or(0) + n);
-                run = Some(Run { games: n, due: 0 });
+                run = Some(Run {
+                    line: i + 1,
+                    games: n,
+                    due: 0,
+                });
             }
             writeln!(train, "{line}").map_err(|e| e.to_string())?;
             writeln!(holdout, "{line}").map_err(|e| e.to_string())?;
@@ -85,19 +94,22 @@ pub fn extract(
         if line.trim().is_empty() {
             continue;
         }
-        let record = Record::parse(&line).map_err(|e| format!("line {}: {e}", i + 1))?;
-        let replayed = replay(&record);
-        replayed.map_err(|e| format!("line {}: {e}", i + 1))?;
-        if let Some(run) = &mut run {
-            let admitted = run.admit(record.number);
-            admitted.map_err(|e| format!("line {}: {e}", i + 1))?;
-        }
+        let Some(current) = &mut run else {
+            return Err(at("a record before any provenance line".to_string()));
+        };
+        let record = Record::parse(&line).map_err(at)?;
+        replay(&record).map_err(at)?;
+        current.admit(record.number).map_err(at)?;
         let held = every > 0 && record.number % every == 0;
         if held {
             stats.holdout += positions(&record, &mut stats, holdout).map_err(|e| e.to_string())?;
         } else {
             stats.train += positions(&record, &mut stats, train).map_err(|e| e.to_string())?;
         }
+    }
+    if let Some(last) = &run {
+        last.finished()
+            .map_err(|e| format!("the end of the input: {e}"))?;
     }
     if let Some(n) = named
         && n != stats.games
@@ -128,15 +140,15 @@ fn replay(record: &Record) -> Result<(), String> {
     }
 }
 
-/// What a provenance line names, and the game due next under it.
+/// What a provenance line names, where it stands, and the game due next under it.
 struct Run {
+    line: usize,
     games: u64,
     due: u64,
 }
 
 impl Run {
-    /// From 0 in order, and no more than the line names: records before any provenance line are
-    /// held to nothing.
+    /// From 0 in order, and no more than the line names.
     fn admit(&mut self, number: u64) -> Result<(), String> {
         let (games, due) = (self.games, self.due);
         if due >= games {
@@ -147,6 +159,17 @@ impl Run {
         }
         self.due += 1;
         Ok(())
+    }
+
+    /// Every game the line names, read by the next provenance line and at the end.
+    fn finished(&self) -> Result<(), String> {
+        if self.due == self.games {
+            return Ok(());
+        }
+        Err(format!(
+            "the run at line {} names {} games and holds {}",
+            self.line, self.games, self.due
+        ))
     }
 }
 
