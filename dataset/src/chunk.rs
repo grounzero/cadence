@@ -6,30 +6,53 @@
 use cadence_core::Move;
 use cadence_core::mv::MoveList;
 
+use crate::crc32::crc32;
+
 pub const MAGIC: [u8; 4] = *b"CDG\0";
 pub const TRAILER_MAGIC: [u8; 4] = *b"CDT\0";
 pub const FORMAT_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 512;
 pub const TRAILER_LEN: usize = 20;
+
+/// A move whose search did not finish depth 1.
 pub const NO_SCORE: i16 = i16::MIN;
+
+/// Every real score lies within it, so none meets [`NO_SCORE`].
 pub const SCORE_LIMIT: i16 = 32_000;
+
+/// Both arrays drawn uniformly.
 pub const KIND_UNIFORM: u8 = 0;
+
+/// The standard array for both sides, by the run's share.
 pub const KIND_STANDARD: u8 = 1;
+
+/// The standard start's array number.
 pub const STANDARD_ARRAY: u16 = 518;
 
+/// The record's fields before its plies, its length field included.
+const FIXED: usize = 26;
+
+/// From bits 0 to 5, to bits 6 to 11, promotion bits 12 to 14 and castling bit 15, a castle
+/// spelled king-takes-rook. Its own encoding, so a change to the engine's `Move` cannot move it.
 #[must_use]
-pub fn encode_move(_m: Move) -> u16 {
-    0
+pub fn encode_move(m: Move) -> u16 {
+    let promotion = m.promotion_piece().map_or(0, |p| p.index() as u16 + 1);
+    m.from_sq().index() as u16
+        | (m.to_sq().index() as u16) << 6
+        | promotion << 12
+        | u16::from(m.is_castle()) << 15
 }
 
+/// The legal move these bits name, so a record that decodes is a game the rules allow.
 #[must_use]
-pub fn decode_move(_legal: &MoveList, _bits: u16) -> Option<Move> {
-    None
+pub fn decode_move(legal: &MoveList, bits: u16) -> Option<Move> {
+    legal.iter().find(|&m| encode_move(m) == bits)
 }
 
+/// `<run seed, 16 hex>-<chunk index, 6 digits>.cdg`.
 #[must_use]
-pub fn chunk_name(_run_seed: u64, _chunk_index: u32) -> String {
-    String::new()
+pub fn chunk_name(run_seed: u64, chunk_index: u32) -> String {
+    format!("{run_seed:016x}-{chunk_index:06}.cdg")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,25 +74,132 @@ pub struct Header {
     pub start_time: u64,
     pub net_sha256: [u8; 32],
     pub modified: u8,
+    /// Of the whole `cfg` feature string, which the 64-byte field cannot hold.
     pub cfg_sha256: [u8; 32],
 }
+
+/// Where each string field starts and how long it is.
+const VERSION_FIELD: (usize, usize) = (28, 32);
+const TARGET_FIELD: (usize, usize) = (60, 32);
+const FEATURES_FIELD: (usize, usize) = (92, 64);
+const HOST_FIELD: (usize, usize) = (186, 32);
+const MODIFIED_AT: usize = 258;
+const CFG_AT: usize = 259;
+const RESERVED_AT: usize = 291;
 
 impl Header {
     /// # Errors
     ///
-    /// Not yet.
+    /// A string too long for its field or not ASCII.
     pub fn encode(&self) -> Result<[u8; HEADER_LEN], String> {
-        Ok([0; HEADER_LEN])
+        let mut b = [0_u8; HEADER_LEN];
+        b[0..4].copy_from_slice(&MAGIC);
+        b[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        b[6..8].copy_from_slice(&(HEADER_LEN as u16).to_le_bytes());
+        b[8..28].copy_from_slice(&self.commit);
+        put_text(&mut b, VERSION_FIELD, "version", &self.version)?;
+        put_text(&mut b, TARGET_FIELD, "target", &self.target)?;
+        put_text(&mut b, FEATURES_FIELD, "features", &self.features)?;
+        b[156..160].copy_from_slice(&self.nodes.to_le_bytes());
+        b[160..164].copy_from_slice(&self.screen_nodes.to_le_bytes());
+        b[164..166].copy_from_slice(&self.hash_mb.to_le_bytes());
+        b[166] = self.random_plies;
+        b[167..169].copy_from_slice(&self.window.to_le_bytes());
+        b[169] = self.standard_share;
+        b[170..178].copy_from_slice(&self.run_seed.to_le_bytes());
+        b[178..182].copy_from_slice(&self.chunk_index.to_le_bytes());
+        b[182..186].copy_from_slice(&self.games_planned.to_le_bytes());
+        put_text(&mut b, HOST_FIELD, "host", &self.host)?;
+        b[218..226].copy_from_slice(&self.start_time.to_le_bytes());
+        b[226..258].copy_from_slice(&self.net_sha256);
+        b[MODIFIED_AT] = self.modified;
+        b[CFG_AT..RESERVED_AT].copy_from_slice(&self.cfg_sha256);
+        Ok(b)
     }
 
     /// # Errors
     ///
-    /// Not yet.
-    pub fn decode(_b: &[u8; HEADER_LEN]) -> Result<Header, String> {
-        Err("not built".to_string())
+    /// A magic, format version or header length not this format's, a string field that is not
+    /// NUL-padded ASCII, or a reserved byte that is not zero.
+    pub fn decode(b: &[u8; HEADER_LEN]) -> Result<Header, String> {
+        if b[0..4] != MAGIC {
+            return Err("not a chunk: the magic is wrong".to_string());
+        }
+        let version = u16_at(b, 4);
+        if version != FORMAT_VERSION {
+            return Err(format!("format version {version}, not {FORMAT_VERSION}"));
+        }
+        let length = u16_at(b, 6);
+        if usize::from(length) != HEADER_LEN {
+            return Err(format!("header length {length}, not {HEADER_LEN}"));
+        }
+        if b[RESERVED_AT..].iter().any(|&byte| byte != 0) {
+            return Err("a reserved header byte is not zero".to_string());
+        }
+        let mut commit = [0; 20];
+        commit.copy_from_slice(&b[8..28]);
+        let mut net_sha256 = [0; 32];
+        net_sha256.copy_from_slice(&b[226..258]);
+        let mut cfg_sha256 = [0; 32];
+        cfg_sha256.copy_from_slice(&b[CFG_AT..RESERVED_AT]);
+        Ok(Header {
+            commit,
+            version: get_text(b, VERSION_FIELD, "version")?,
+            target: get_text(b, TARGET_FIELD, "target")?,
+            features: get_text(b, FEATURES_FIELD, "features")?,
+            nodes: u32_at(b, 156),
+            screen_nodes: u32_at(b, 160),
+            hash_mb: u16_at(b, 164),
+            random_plies: b[166],
+            window: i16::from_le_bytes([b[167], b[168]]),
+            standard_share: b[169],
+            run_seed: u64_at(b, 170),
+            chunk_index: u32_at(b, 178),
+            games_planned: u32_at(b, 182),
+            host: get_text(b, HOST_FIELD, "host")?,
+            start_time: u64_at(b, 218),
+            net_sha256,
+            modified: b[MODIFIED_AT],
+            cfg_sha256,
+        })
     }
 }
 
+fn put_text(b: &mut [u8], (at, len): (usize, usize), name: &str, text: &str) -> Result<(), String> {
+    if !text.is_ascii() || text.len() > len || text.bytes().any(|c| c == 0) {
+        return Err(format!(
+            "the {name} `{text}` is not ASCII of at most {len} bytes"
+        ));
+    }
+    b[at..at + text.len()].copy_from_slice(text.as_bytes());
+    Ok(())
+}
+
+/// NUL-padded: the text ends at the first NUL and only NULs follow it.
+fn get_text(b: &[u8], (at, len): (usize, usize), name: &str) -> Result<String, String> {
+    let field = &b[at..at + len];
+    let end = field.iter().position(|&c| c == 0).unwrap_or(len);
+    if !field[..end].is_ascii() || field[end..].iter().any(|&c| c != 0) {
+        return Err(format!("the {name} field is not NUL-padded ASCII"));
+    }
+    Ok(String::from_utf8_lossy(&field[..end]).into_owned())
+}
+
+fn u16_at(b: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([b[at], b[at + 1]])
+}
+
+fn u32_at(b: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+fn u64_at(b: &[u8], at: usize) -> u64 {
+    let mut word = [0; 8];
+    word.copy_from_slice(&b[at..at + 8]);
+    u64::from_le_bytes(word)
+}
+
+/// One game: what replays it and labels its positions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameRecord {
     pub index: u32,
@@ -77,36 +207,174 @@ pub struct GameRecord {
     pub kind: u8,
     pub white: u16,
     pub black: u16,
+    /// Encoded by [`encode_move`].
     pub plies: Vec<u16>,
+    /// Each move encoded and its score from the side to move's view, or [`NO_SCORE`].
     pub moves: Vec<(u16, i16)>,
+    /// 0 White, 1 Black, 2 draw.
     pub outcome: u8,
+    /// 0 mate, 1 stalemate, 2 repetition, 3 fifty, 4 material.
     pub ending: u8,
+    /// Saturating.
     pub refused: u16,
 }
 
 impl GameRecord {
     /// # Errors
     ///
-    /// Not yet.
+    /// More random plies than a byte counts, or more moves than fit a record's length field.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        Ok(Vec::new())
+        let plies = u8::try_from(self.plies.len()).map_err(|_| "too many random plies")?;
+        let moves = u16::try_from(self.moves.len()).map_err(|_| "too many moves")?;
+        let length = FIXED - 2 + 2 * self.plies.len() + 4 * self.moves.len() + 4;
+        let length = u16::try_from(length).map_err(|_| "a record too long for its length field")?;
+        let mut b = Vec::with_capacity(2 + usize::from(length));
+        b.extend_from_slice(&length.to_le_bytes());
+        b.extend_from_slice(&self.index.to_le_bytes());
+        b.extend_from_slice(&self.seed.to_le_bytes());
+        b.push(self.kind);
+        b.extend_from_slice(&self.white.to_le_bytes());
+        b.extend_from_slice(&self.black.to_le_bytes());
+        b.push(plies);
+        b.extend_from_slice(&moves.to_le_bytes());
+        b.push(self.outcome);
+        b.push(self.ending);
+        b.extend_from_slice(&self.refused.to_le_bytes());
+        for ply in &self.plies {
+            b.extend_from_slice(&ply.to_le_bytes());
+        }
+        for (m, score) in &self.moves {
+            b.extend_from_slice(&m.to_le_bytes());
+            b.extend_from_slice(&score.to_le_bytes());
+        }
+        let crc = crc32(&b);
+        b.extend_from_slice(&crc.to_le_bytes());
+        Ok(b)
     }
 
+    /// The record at the start of `b`, and how many bytes it took.
+    ///
     /// # Errors
     ///
-    /// Not yet.
-    pub fn decode(_b: &[u8]) -> Result<(GameRecord, usize), String> {
-        Err("not built".to_string())
+    /// A length past the end of `b`, a CRC that does not hold, counts that disagree with the
+    /// length, or a field out of its range.
+    pub fn decode(b: &[u8]) -> Result<(GameRecord, usize), String> {
+        if b.len() < 2 {
+            return Err("a record's length runs past the end".to_string());
+        }
+        let total = 2 + usize::from(u16_at(b, 0));
+        if total > b.len() {
+            return Err("a record's length runs past the end".to_string());
+        }
+        if total < FIXED + 4 {
+            return Err("a record shorter than its fixed fields".to_string());
+        }
+        let stored = u32_at(b, total - 4);
+        if crc32(&b[..total - 4]) != stored {
+            return Err("a record whose CRC does not hold".to_string());
+        }
+        let (plies, moves) = (usize::from(b[19]), usize::from(u16_at(b, 20)));
+        if FIXED + 2 * plies + 4 * moves + 4 != total {
+            return Err("a record whose counts disagree with its length".to_string());
+        }
+        let mut record = GameRecord {
+            index: u32_at(b, 2),
+            seed: u64_at(b, 6),
+            kind: b[14],
+            white: u16_at(b, 15),
+            black: u16_at(b, 17),
+            plies: Vec::with_capacity(plies),
+            moves: Vec::with_capacity(moves),
+            outcome: b[22],
+            ending: b[23],
+            refused: u16_at(b, 24),
+        };
+        let mut at = FIXED;
+        for _ in 0..plies {
+            record.plies.push(u16_at(b, at));
+            at += 2;
+        }
+        for _ in 0..moves {
+            let score = i16::from_le_bytes([b[at + 2], b[at + 3]]);
+            record.moves.push((u16_at(b, at), score));
+            at += 4;
+        }
+        record.check()?;
+        Ok((record, total))
+    }
+
+    /// Every field inside its range, a score inside the limit or no score at all.
+    fn check(&self) -> Result<(), String> {
+        let index = self.index;
+        if self.kind > KIND_STANDARD {
+            return Err(format!("game {index}: start kind {}", self.kind));
+        }
+        if self.white >= 960 || self.black >= 960 {
+            return Err(format!(
+                "game {index}: arrays {} {}",
+                self.white, self.black
+            ));
+        }
+        if self.kind == KIND_STANDARD
+            && (self.white, self.black) != (STANDARD_ARRAY, STANDARD_ARRAY)
+        {
+            return Err(format!(
+                "game {index}: a standard start at arrays {} {}",
+                self.white, self.black
+            ));
+        }
+        if self.outcome > 2 || self.ending > 4 {
+            return Err(format!(
+                "game {index}: outcome {} ending {}",
+                self.outcome, self.ending
+            ));
+        }
+        if let Some((_, score)) = self
+            .moves
+            .iter()
+            .find(|&&(_, s)| s != NO_SCORE && !(-SCORE_LIMIT..=SCORE_LIMIT).contains(&s))
+        {
+            return Err(format!("game {index}: a score of {score}"));
+        }
+        Ok(())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Trailer {
     pub games: u32,
+    /// The moves of the game proper, summed over the chunk.
     pub plies: u64,
     pub header_crc: u32,
 }
 
+impl Trailer {
+    #[must_use]
+    pub fn encode(&self) -> [u8; TRAILER_LEN] {
+        let mut b = [0; TRAILER_LEN];
+        b[0..4].copy_from_slice(&TRAILER_MAGIC);
+        b[4..8].copy_from_slice(&self.games.to_le_bytes());
+        b[8..16].copy_from_slice(&self.plies.to_le_bytes());
+        b[16..20].copy_from_slice(&self.header_crc.to_le_bytes());
+        b
+    }
+
+    /// # Errors
+    ///
+    /// A trailer magic that is not this format's.
+    pub fn decode(b: &[u8; TRAILER_LEN]) -> Result<Trailer, String> {
+        if b[0..4] != TRAILER_MAGIC {
+            return Err("no trailer: the trailer magic is wrong".to_string());
+        }
+        Ok(Trailer {
+            games: u32_at(b, 4),
+            plies: u64_at(b, 8),
+            header_crc: u32_at(b, 16),
+        })
+    }
+}
+
+/// A complete chunk, read and held together.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
     pub header: Header,
@@ -115,24 +383,109 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    /// The header's bytes, then the records, then the trailer naming their counts and the header's
+    /// CRC.
+    ///
     /// # Errors
     ///
-    /// Not yet.
-    pub fn bytes(_header: &Header, _records: &[GameRecord]) -> Result<Vec<u8>, String> {
-        Ok(Vec::new())
+    /// A header or a record that cannot be encoded.
+    pub fn bytes(header: &Header, records: &[GameRecord]) -> Result<Vec<u8>, String> {
+        let head = header.encode()?;
+        let mut out = head.to_vec();
+        let mut plies = 0_u64;
+        for record in records {
+            out.extend_from_slice(&record.encode()?);
+            plies += record.moves.len() as u64;
+        }
+        let games = u32::try_from(records.len()).map_err(|_| "too many games")?;
+        let trailer = Trailer {
+            games,
+            plies,
+            header_crc: crc32(&head),
+        };
+        out.extend_from_slice(&trailer.encode());
+        Ok(out)
     }
 
     /// # Errors
     ///
-    /// Not yet.
-    pub fn read(_b: &[u8]) -> Result<Chunk, String> {
-        Err("not built".to_string())
+    /// Any part that does not decode, a trailer whose counts or header CRC disagree with what it
+    /// closes, more games than the header planned, indices not `0..count` in order, a record whose
+    /// random plies are not the header's count, or a byte after the trailer.
+    pub fn read(b: &[u8]) -> Result<Chunk, String> {
+        if b.len() < HEADER_LEN + TRAILER_LEN {
+            return Err("shorter than a header and a trailer".to_string());
+        }
+        let head: &[u8; HEADER_LEN] = b[..HEADER_LEN].try_into().map_err(|_| "no header")?;
+        let header = Header::decode(head)?;
+        let tail: &[u8; TRAILER_LEN] = b[b.len() - TRAILER_LEN..]
+            .try_into()
+            .map_err(|_| "no trailer")?;
+        let trailer = Trailer::decode(tail)?;
+        if trailer.header_crc != crc32(head) {
+            return Err("the header's CRC does not hold".to_string());
+        }
+        let body = &b[HEADER_LEN..b.len() - TRAILER_LEN];
+        let records = read_records(&header, body)?;
+        let plies: u64 = records.iter().map(|r| r.moves.len() as u64).sum();
+        if u64::from(trailer.games) != records.len() as u64 || trailer.plies != plies {
+            return Err(format!(
+                "the trailer counts {} games and {} plies, and the records {} and {plies}",
+                trailer.games,
+                trailer.plies,
+                records.len()
+            ));
+        }
+        if trailer.games > header.games_planned {
+            return Err(format!(
+                "{} games where the header plans {}",
+                trailer.games, header.games_planned
+            ));
+        }
+        Ok(Chunk {
+            header,
+            records,
+            trailer,
+        })
     }
 }
 
+/// Records end to end with nothing after the last, held to the header.
+fn read_records(header: &Header, mut body: &[u8]) -> Result<Vec<GameRecord>, String> {
+    let mut records = Vec::new();
+    while !body.is_empty() {
+        let (record, used) = GameRecord::decode(body)?;
+        let due = records.len();
+        if record.index as usize != due {
+            return Err(format!("game {} where game {due} is due", record.index));
+        }
+        if record.plies.len() != usize::from(header.random_plies) {
+            return Err(format!(
+                "game {due}: {} random plies where the header names {}",
+                record.plies.len(),
+                header.random_plies
+            ));
+        }
+        records.push(record);
+        body = &body[used..];
+    }
+    Ok(records)
+}
+
+/// The records a `.tmp` holds whole: each read while its length fits and its CRC holds, and the
+/// byte count they take, where a torn last record is cut.
 #[must_use]
-pub fn whole_records(_body: &[u8]) -> (Vec<GameRecord>, usize) {
-    (Vec::new(), 0)
+pub fn whole_records(body: &[u8]) -> (Vec<GameRecord>, usize) {
+    let mut records = Vec::new();
+    let mut at = 0;
+    while let Ok((record, used)) = GameRecord::decode(&body[at..]) {
+        if record.index as usize != records.len() {
+            break;
+        }
+        records.push(record);
+        at += used;
+    }
+    (records, at)
 }
 
 #[cfg(test)]
