@@ -42,6 +42,9 @@ version = "0.6.0"
 [[package]]
 name = "cadence-dataset"
 version = "0.6.0"
+dependencies = [
+ "cadence-core",
+]
 
 [[package]]
 name = "cadence-engine"

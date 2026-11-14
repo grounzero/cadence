@@ -4,5 +4,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod chunk;
 pub mod crc32;
 pub mod sha256;
