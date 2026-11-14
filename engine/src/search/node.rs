@@ -26,6 +26,10 @@ use crate::see;
 use crate::syzygy::Wdl;
 use crate::tt::Bound;
 
+/// The key does not carry the fifty-move clock, so from here a cutoff could rest on a line the draw
+/// has since cut short; only the entry's move is kept.
+const CUTOFF_CLOCK: u8 = 90;
+
 impl Search<'_> {
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
@@ -290,7 +294,7 @@ impl Search<'_> {
         let Some(hit) = self.tt.probe(key) else {
             return (Move::NULL, None, false);
         };
-        if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
+        if u32::from(hit.depth) < depth || board.halfmove_clock() >= CUTOFF_CLOCK {
             return (hit.mv, None, hit.pv);
         }
         let score = score::from_tt(hit.score, ply);

@@ -916,3 +916,20 @@ fn the_bench_records_the_table_size_it_ran_at() {
         "the summary does not name the table size: {out}"
     );
 }
+
+/// A cutoff written early in a fifty-move window is not trusted late in it, since the key does not
+/// carry the clock: at a halfmove clock of 98 a warm table scores what an empty one does.
+#[test]
+fn a_table_cutoff_is_refused_late_in_the_fifty_move_window() {
+    let early = "7k/8/8/8/8/8/8/KQ6 w - - 0 1";
+    let late = "7k/8/8/8/8/8/8/KQ6 w - - 98 1";
+    let warm = table(tt::DEFAULT_HASH_MB);
+    let _ = search_with(&mut support::position(early), 2, &warm);
+    let (_, on_warm, _) = search_with(&mut support::position(late), 2, &warm);
+    let empty = table(tt::DEFAULT_HASH_MB);
+    let (_, on_empty, _) = search_with(&mut support::position(late), 2, &empty);
+    assert_eq!(
+        on_warm, on_empty,
+        "at a clock of 98 the warm table scored {on_warm} and an empty one {on_empty}"
+    );
+}
