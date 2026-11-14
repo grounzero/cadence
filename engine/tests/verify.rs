@@ -282,6 +282,11 @@ fn the_manifest_is_written_last_and_only_whole() {
     let failed_left = dir.join("MANIFEST.tsv").exists();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "{stdout}");
+    assert_eq!(
+        stdout.contains("  not examined: each published name's durability"),
+        cfg!(not(unix)),
+        "{stdout}"
+    );
     assert!(
         stdout.contains("  not examined: the regeneration of every game"),
         "{stdout}"

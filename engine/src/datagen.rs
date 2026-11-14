@@ -24,6 +24,7 @@ use std::thread;
 use std::time::Instant;
 
 use cadence_core::rng::{Rng, splitmix64};
+use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 
 use crate::tt::Table;
 use crate::uci::SEARCH_STACK_BYTES;
@@ -367,12 +368,16 @@ fn run_from_args(args: &[String]) -> Result<(), Failure> {
     std::fs::create_dir_all(&settings.dir)
         .map_err(|e| Failure::Work(format!("{}: {e}", settings.dir.display())))?;
     let written = packed::run(&settings, &build, &packed::play);
-    let written = written.map_err(Failure::Work)?;
-    println!(
-        "stopped: chunks {} games uniform {} standard {}",
-        written.chunks, written.games[0], written.games[1]
-    );
-    Ok(())
+    if let Ok(written) = &written {
+        println!(
+            "stopped: chunks {} games uniform {} standard {}",
+            written.chunks, written.games[0], written.games[1]
+        );
+    }
+    if let Some(spot) = UNSYNCED {
+        println!("  not examined: {spot}");
+    }
+    written.map(|_| ()).map_err(Failure::Work)
 }
 
 #[cfg(feature = "packed-datagen")]
@@ -384,6 +389,9 @@ fn repair_from_args(args: &[String]) -> Result<(), Failure> {
     println!(
         "  not examined: the games themselves (repair checks lengths and CRCs; verify replays)"
     );
+    if let Some(spot) = UNSYNCED {
+        println!("  not examined: {spot}");
+    }
     println!("{}", report?);
     Ok(())
 }
@@ -424,7 +432,7 @@ fn verify_from_args(args: &[String]) -> Result<(), Failure> {
     }
     let checked = verify_paths(&paths, every, threads);
     let mut stdout = io::stdout().lock();
-    let unexamined = [
+    let mut unexamined = vec![
         "chunks in paths not given (verify reads only the paths it is given)".to_string(),
         match every {
             None => {
@@ -435,6 +443,9 @@ fn verify_from_args(args: &[String]) -> Result<(), Failure> {
             }
         },
     ];
+    if let (true, Some(spot)) = (manifest, UNSYNCED) {
+        unexamined.push(spot.to_string());
+    }
     let summaries = match checked {
         Ok(summaries) => summaries,
         Err(e) => {
@@ -651,6 +662,7 @@ fn extract_from_args(args: &[String]) -> Result<(), Failure> {
 /// What an extraction did not look at, said on every run however it ended.
 fn not_examined(stats: Option<&extract::Stats>) -> Vec<String> {
     let mut spots = vec!["duplicates in files not given (extract reads one input)".to_string()];
+    spots.extend(UNSYNCED.map(str::to_string));
     let foreign: Vec<&str> = stats
         .into_iter()
         .flat_map(|stats| stats.versions.iter().map(String::as_str))
@@ -809,21 +821,24 @@ impl Staged {
         })
     }
 
-    /// Written out and closed, which some platforms require of a file before it is renamed.
+    /// Written out, synced and closed, so its contents are durable before its name is published.
     fn close(&mut self) -> Result<(), String> {
         if let Some(file) = self.file.take() {
-            file.into_inner()
+            let file = file
+                .into_inner()
                 .map_err(|e| format!("{}: {}", self.temp.display(), e.error()))?;
+            file.sync_all()
+                .map_err(|e| format!("{}: {e}", self.temp.display()))?;
         }
         Ok(())
     }
 
     /// A file already at the destination is moved aside first, and every step is recorded so a
     /// later failure can undo it.
-    fn publish(&mut self, rename: &mut Rename<'_>, undo: &mut Vec<Undo>) -> Result<(), String> {
+    fn publish(&mut self, steps: &mut dyn Steps, undo: &mut Vec<Undo>) -> Result<(), String> {
         let failed = |e: io::Error| format!("{}: {e}", self.path.display());
         if self.path.symlink_metadata().is_err() {
-            rename(&self.temp, &self.path).map_err(failed)?;
+            durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
             self.published = true;
             undo.push(Undo::Remove(self.path.clone()));
             return Ok(());
@@ -832,12 +847,12 @@ impl Staged {
         if aside.symlink_metadata().is_ok() {
             return Err(format!("{}: already there", aside.display()));
         }
-        rename(&self.path, &aside).map_err(failed)?;
+        steps.rename(&self.path, &aside).map_err(failed)?;
         undo.push(Undo::Restore {
             aside,
             path: self.path.clone(),
         });
-        rename(&self.temp, &self.path).map_err(failed)?;
+        durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
         self.published = true;
         Ok(())
     }
@@ -877,20 +892,13 @@ enum Undo {
     Remove(PathBuf),
 }
 
-/// `rename_file` outside the tests, which put a failure where they choose.
-type Rename<'a> = dyn FnMut(&Path, &Path) -> io::Result<()> + 'a;
-
-fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
-    std::fs::rename(from, to)
-}
-
 fn publish(stages: Vec<Staged>) -> Result<(), String> {
-    publish_with(stages, &mut rename_file)
+    publish_with(stages, &mut Disk)
 }
 
 /// Every stage is written out and every destination checked before any is renamed, and a rename
 /// that fails undoes those before it, so the set is published whole or not at all.
-fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), String> {
+fn publish_with(mut stages: Vec<Staged>, steps: &mut dyn Steps) -> Result<(), String> {
     for stage in &mut stages {
         stage
             .close()
@@ -904,8 +912,8 @@ fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), 
     }
     let mut undo = Vec::new();
     for stage in &mut stages {
-        if let Err(e) = stage.publish(rename, &mut undo) {
-            return Err(roll_back(undo, rename, e));
+        if let Err(e) = stage.publish(steps, &mut undo) {
+            return Err(roll_back(undo, steps, e));
         }
     }
     for step in undo {
@@ -918,12 +926,12 @@ fn publish_with(mut stages: Vec<Staged>, rename: &mut Rename<'_>) -> Result<(), 
 
 /// Last step first, each tried whatever became of the one before, and any that fails named after
 /// `error`; only a roll back with none failing says nothing was published.
-fn roll_back(undo: Vec<Undo>, rename: &mut Rename<'_>, mut error: String) -> String {
+fn roll_back(undo: Vec<Undo>, steps: &mut dyn Steps, mut error: String) -> String {
     let mut whole = true;
     for step in undo.into_iter().rev() {
         match step {
             Undo::Restore { aside, path } => {
-                if let Err(e) = rename(&aside, &path) {
+                if let Err(e) = steps.rename(&aside, &path) {
                     let kept = format!("; {} kept as {}: {e}", path.display(), aside.display());
                     error.push_str(&kept);
                     whole = false;
@@ -950,6 +958,8 @@ mod tests {
     use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use cadence_dataset::durable::{Logged, Step};
 
     use super::{
         HASH_MB, MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, play,
@@ -1106,15 +1116,7 @@ mod tests {
             std::fs::write(&train, "train 1").expect("writes");
             std::fs::write(&holdout, "holdout 1").expect("writes");
             let stages = vec![staged(&train, "train 2"), staged(&holdout, "holdout 2")];
-            let mut calls = 0;
-            let mut rename = |from: &Path, to: &Path| {
-                calls += 1;
-                if calls == fail_at + 1 {
-                    return Err(io::Error::other("injected"));
-                }
-                std::fs::rename(from, to)
-            };
-            let published = publish_with(stages, &mut rename).is_ok();
+            let published = publish_with(stages, &mut Logged::failing_at(fail_at)).is_ok();
             assert_eq!(
                 listed(&dir),
                 ["holdout.txt", "train.txt"],
@@ -1130,6 +1132,29 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failed >= 2, "the second rename was never made to fail");
+    }
+
+    /// Each file's name is synced in its directory right after the rename that publishes it.
+    #[test]
+    fn each_published_file_has_its_directory_synced_after_its_rename() {
+        let dir = std::env::temp_dir().join(format!("cadence-synced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let (train, holdout) = (dir.join("train.txt"), dir.join("holdout.txt"));
+        let stages = vec![staged(&train, "train"), staged(&holdout, "holdout")];
+        let mut logged = Logged::default();
+        let published = publish_with(stages, &mut logged);
+        let _ = std::fs::remove_dir_all(&dir);
+        published.expect("publishes");
+        assert_eq!(
+            logged.steps,
+            [
+                Step::Rename(train),
+                Step::Sync(dir.clone()),
+                Step::Rename(holdout),
+                Step::Sync(dir)
+            ]
+        );
     }
 
     fn staged(path: &Path, text: &str) -> Staged {

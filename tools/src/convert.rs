@@ -18,6 +18,7 @@ use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_dataset::chunk::{Chunk, GameRecord, NO_SCORE, decode_move, game_key};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND};
+use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
@@ -52,16 +53,17 @@ pub struct Request {
 /// A command line that does not parse, or a conversion that fails; nothing is published then.
 pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let request = request_from(args).map_err(|e| format!("{e}\n{USAGE}"))?;
-    let converted = convert(&request, &mut |from, to| fs::rename(from, to));
+    let converted = convert(&request, &mut Disk);
     let mut stdout = io::stdout().lock();
-    let unexamined = [
+    let mut unexamined = vec![
         "the trainer's own reading of the records (the train crate's round trip)",
         "each game's ending and its regeneration (datagen verify's)",
     ];
+    unexamined.extend(UNSYNCED);
     let unit = match converted {
         Ok(unit) => unit,
         Err(e) => {
-            for spot in unexamined {
+            for spot in &unexamined {
                 let _ = writeln!(stdout, "  not examined: {spot}");
             }
             return Err(e);
@@ -282,17 +284,14 @@ struct Kept {
     holdout_keys: Vec<u64>,
 }
 
-/// The whole conversion up to its published unit's path; `rename` is the unit's last step, so a
-/// test can make it fail.
+/// The whole conversion up to its published unit's path; `steps` renames the unit and syncs, so a
+/// test can make the rename fail or read the order.
 ///
 /// # Errors
 ///
 /// Any refusal before a record is read, a duplicate game or chunk, a record that does not replay,
 /// or a file that cannot be written; nothing is published then.
-pub fn convert(
-    request: &Request,
-    rename: &mut dyn FnMut(&Path, &Path) -> io::Result<()>,
-) -> Result<PathBuf, String> {
+pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<PathBuf, String> {
     let sets = request
         .manifests
         .iter()
@@ -325,7 +324,7 @@ pub fn convert(
     shuffle(&mut kept.train, &mut rng);
     shuffle(&mut kept.holdout, &mut rng);
     let report = report(&sets, &counts, overlap);
-    publish(request, &sets, &counts, &kept, &report, rename)
+    publish(request, &sets, &counts, &kept, &report, steps)
 }
 
 /// Every chunk read and held together: no run seed and chunk index twice, and no game twice.
@@ -559,15 +558,16 @@ fn report(sets: &[Dataset], counts: &[[Counts; 2]], overlap: usize) -> String {
     text
 }
 
-/// Staged in a directory of its own, each file synced and the manifest last, then renamed whole to
-/// its version id; a failure before the rename publishes nothing.
+/// Staged in a directory of its own, each file synced and the manifest last, then the directory
+/// synced, renamed whole to its version id and its parent synced; a failure before the rename
+/// publishes nothing.
 fn publish(
     request: &Request,
     sets: &[Dataset],
     counts: &[[Counts; 2]],
     kept: &Kept,
     report: &str,
-    rename: &mut dyn FnMut(&Path, &Path) -> io::Result<()>,
+    steps: &mut dyn Steps,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
     let staging = request.out.join(format!(".staging-{}", std::process::id()));
@@ -594,7 +594,10 @@ fn publish(
         if unit.exists() {
             return Err(format!("{} already holds this unit", unit.display()));
         }
-        rename(&staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
+        steps
+            .sync_dir(&staging)
+            .map_err(|e| format!("{}: {e}", staging.display()))?;
+        durable::publish(steps, &staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
         Ok(unit)
     })();
     if staged.is_err() {
@@ -687,16 +690,16 @@ fn manifest(
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::path::PathBuf;
 
     use super::{BUCKETS, Request, bucket, convert, result_for_mover};
     use cadence_dataset::chunk::{Chunk, Header, chunk_name};
+    use cadence_dataset::durable::{Logged, Step};
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{DRAW, LOSS, WIN};
 
-    /// The unit is renamed whole into place, so a rename that fails leaves neither the unit nor its
-    /// staging behind.
+    /// A rename that fails leaves neither the unit nor its staging behind, and one that works has the
+    /// unit's entries synced before it and the unit's name synced after it.
     #[test]
     fn a_failed_rename_publishes_nothing() {
         let dir = std::env::temp_dir().join(format!("cadence-convert-unit-{}", std::process::id()));
@@ -743,16 +746,23 @@ mod tests {
             swing_cap: None,
             dedup: false,
         };
-        let failed = convert(&request, &mut |_, _| Err(io::Error::other("injected")));
+        let failed = convert(&request, &mut Logged::failing_at(0));
         let left: Vec<PathBuf> = std::fs::read_dir(&out)
             .expect("lists")
             .map(|e| e.expect("an entry").path())
             .collect();
-        let published = convert(&request, &mut |from, to| std::fs::rename(from, to));
+        let mut logged = Logged::default();
+        let published = convert(&request, &mut logged);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failed.is_err(), "a failed rename was taken as published");
         assert_eq!(left, [] as [PathBuf; 0]);
-        published.expect("the same request publishes once the rename works");
+        let unit = published.expect("the same request publishes once the rename works");
+        let staging = out.join(format!(".staging-{}", std::process::id()));
+        assert_eq!(
+            logged.steps,
+            [Step::Sync(staging), Step::Rename(unit), Step::Sync(out)],
+            "the unit's entries synced before its rename, and its name after"
+        );
     }
 
     #[test]

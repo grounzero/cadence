@@ -19,6 +19,7 @@ use cadence_dataset::chunk::{
     Trailer, chunk_name, encode_move, whole_records,
 };
 use cadence_dataset::crc32::crc32;
+use cadence_dataset::durable::{self, Disk, Steps};
 use cadence_dataset::sha256::{Sha256, hex, sha256};
 
 use super::game::{self, Ending, Outcome};
@@ -530,6 +531,7 @@ fn write_chunk(
     };
     sink.put(&trailer.encode())?;
     close(
+        &mut Disk,
         &settings.dir,
         sink.file,
         &tmp_path,
@@ -606,8 +608,16 @@ fn write_in_order(
     Ok(written)
 }
 
-/// Synced, its sidecar written, renamed into place, and the directory synced.
-fn close(dir: &Path, file: File, tmp: &Path, path: &Path, digest: [u8; 32]) -> Result<(), String> {
+/// Synced, its sidecar published, then renamed into place, each rename followed by a sync of the
+/// directory.
+fn close(
+    steps: &mut dyn Steps,
+    dir: &Path,
+    file: File,
+    tmp: &Path,
+    path: &Path,
+    digest: [u8; 32],
+) -> Result<(), String> {
     let failed = |e: io::Error| format!("{}: {e}", tmp.display());
     file.sync_all().map_err(failed)?;
     drop(file);
@@ -615,20 +625,15 @@ fn close(dir: &Path, file: File, tmp: &Path, path: &Path, digest: [u8; 32]) -> R
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let sidecar = dir.join(format!("{name}.sha256"));
-    fs::write(&sidecar, format!("{}  {name}\n", hex(&digest)))
-        .map_err(|e| format!("{}: {e}", sidecar.display()))?;
-    fs::rename(tmp, path).map_err(failed)?;
-    sync_dir(dir);
-    Ok(())
-}
-
-/// A directory opens for syncing on Unix only; elsewhere the rename stands as written.
-fn sync_dir(dir: &Path) {
-    if cfg!(unix)
-        && let Ok(handle) = File::open(dir)
-    {
-        let _ = handle.sync_all();
-    }
+    let partial = dir.join(format!("{name}.sha256.partial"));
+    let side_failed = |e: io::Error| format!("{}: {e}", sidecar.display());
+    let mut side = File::create(&partial).map_err(side_failed)?;
+    side.write_all(format!("{}  {name}\n", hex(&digest)).as_bytes())
+        .map_err(side_failed)?;
+    side.sync_all().map_err(side_failed)?;
+    drop(side);
+    durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
+    durable::publish(steps, tmp, path).map_err(failed)
 }
 
 fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header, String> {
@@ -791,10 +796,62 @@ pub fn repair(tmp: &Path) -> Result<String, String> {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    close(&dir, file, tmp, &path, sha256(&whole))?;
+    close(&mut Disk, &dir, file, tmp, &path, sha256(&whole))?;
     Ok(format!(
         "repaired {} kept {} games dropped {dropped} bytes",
         path.display(),
         records.len()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+
+    use cadence_dataset::durable::{Logged, Step};
+    use cadence_dataset::sha256::{hex, sha256};
+
+    use super::close;
+
+    /// The sidecar and then the chunk are each published by a rename, and the directory is synced
+    /// after each, so a crash cannot keep a name without its entry or lose one already reported.
+    #[test]
+    fn a_closed_chunk_and_its_sidecar_each_have_their_directory_synced() {
+        let dir = std::env::temp_dir().join(format!("cadence-close-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let (tmp, path) = (dir.join("x.cdg.tmp"), dir.join("x.cdg"));
+        std::fs::write(&tmp, b"chunk").expect("writes");
+        let file = File::options().write(true).open(&tmp).expect("opens");
+        let digest = sha256(b"chunk");
+        let mut logged = Logged::default();
+        let closed = close(&mut logged, &dir, file, &tmp, &path, digest);
+        let sidecar = std::fs::read_to_string(dir.join("x.cdg.sha256"));
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .expect("lists")
+            .map(|e| {
+                e.expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        left.sort_unstable();
+        let _ = std::fs::remove_dir_all(&dir);
+        closed.expect("closes");
+        assert_eq!(
+            sidecar.expect("a sidecar"),
+            format!("{}  x.cdg\n", hex(&digest))
+        );
+        assert_eq!(left, ["x.cdg", "x.cdg.sha256"]);
+        assert_eq!(
+            logged.steps,
+            [
+                Step::Rename(dir.join("x.cdg.sha256")),
+                Step::Sync(dir.clone()),
+                Step::Rename(path),
+                Step::Sync(dir)
+            ]
+        );
+    }
 }

@@ -7,5 +7,6 @@
 pub mod chunk;
 pub mod constants;
 pub mod crc32;
+pub mod durable;
 pub mod sha256;
 pub mod trainer;

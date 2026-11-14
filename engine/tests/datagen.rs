@@ -732,6 +732,11 @@ fn extraction_says_what_it_did_not_examine() {
     ] {
         assert!(stdout.contains(want), "{stdout}");
     }
+    assert_eq!(
+        stdout.contains("  not examined: each published name's durability"),
+        cfg!(not(unix)),
+        "{stdout}"
+    );
 }
 
 /// The converter reads mates by the dataset crate's bound, so it must be the search's.

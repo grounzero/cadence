@@ -193,6 +193,11 @@ fn the_shuffle_seed_decides_the_order_and_nothing_else() {
         text.contains("  not examined: the trainer's own reading"),
         "{text}"
     );
+    assert_eq!(
+        text.contains("  not examined: each published name's durability"),
+        cfg!(not(unix)),
+        "{text}"
+    );
 }
 
 /// What each filter drops is counted in the order the converter applies them, and what is left is
