@@ -482,3 +482,56 @@ impl Stats {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::record::Record;
+    use super::{BALANCE_CAP, PLY_BANDS, Stats, positions};
+    use crate::eval::PHASE_MAX;
+    use cadence_core::FenStyle;
+    use cadence_core::{generate_legal, parse_uci};
+
+    /// The Italian opening's eight plies, quiet moves to ply 8, then Bxe6 fxe6 and two quiet moves.
+    const LINE: &str = "1 | 518 518 | e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 | d2d3:1 d7d6:11 \
+        b1d2:21 c8e6:31 h2h3:41 h7h6:51 a2a4:61 a7a6:71 c4e6:81 f7e6:91 d1e2:101 d8d7:111 | \
+        1/2-1/2 repetition | 0";
+
+    /// The filter reads the move played from a position, not the one that reached it: before Bxe6 and
+    /// before fxe6 is dropped, and after fxe6, reached by a capture and left by a quiet move, is kept.
+    #[test]
+    fn a_position_is_judged_by_the_move_played_from_it() {
+        let record = Record::parse(LINE).expect("a record");
+        let mut stats = Stats {
+            phase: vec![0; PHASE_MAX as usize + 1],
+            balance: vec![0; 2 * BALANCE_CAP as usize + 1],
+            ply: vec![0; PLY_BANDS],
+            ..Stats::default()
+        };
+        let mut out = Vec::new();
+        let kept = positions(&record, &mut stats, &mut out).expect("writes");
+        let out = String::from_utf8(out).expect("utf-8");
+        let mut board = record.start();
+        for &m in &record.plies {
+            board.play(m);
+        }
+        let mut fens = Vec::new();
+        for &(m, _) in &record.moves {
+            fens.push(board.to_fen(FenStyle::Shredder));
+            let legal = generate_legal(&board);
+            assert_eq!(parse_uci(&legal, &m.to_uci_chess960()), Some(m));
+            board.play(m);
+        }
+        let written = |ply: usize| {
+            out.lines()
+                .any(|l| l.starts_with(&format!("{} |", fens[ply])))
+        };
+        assert_eq!((kept, stats.noisy, stats.outside), (2, 2, 8), "{out}");
+        assert!(!written(8), "kept the position Bxe6 is played from");
+        assert!(!written(9), "kept the position fxe6 is played from");
+        assert!(
+            written(10),
+            "dropped the position fxe6 reached, left by a quiet move"
+        );
+        assert!(written(11), "dropped a quiet position");
+    }
+}

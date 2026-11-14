@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cadence_core::chess960::dfrc_fen;
-use cadence_core::generate_legal;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
+use cadence_core::{generate_legal, parse_uci};
 use cadence_dataset::chunk::{Chunk, GameRecord, Header, NO_SCORE, chunk_name, encode_move};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND, RANDOM_PLIES};
 use cadence_dataset::sha256::{hex, sha256};
-use cadence_dataset::trainer::RECORD_LEN;
+use cadence_dataset::trainer::{DRAW, RECORD_LEN, encode};
 
 /// One fault planted in a dataset directory.
 type Fault = fn(&Path);
@@ -424,4 +424,68 @@ fn a_game_longer_than_the_search_stack_is_read_whole() {
         )),
         "{text}"
     );
+}
+
+/// The Italian opening's eight plies, quiet moves to ply 8, then Bxe6 fxe6 and two quiet moves.
+const PLIES: [&str; 8] = [
+    "e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5", "c2c3", "g8f6",
+];
+const MOVES: [&str; 12] = [
+    "d2d3", "d7d6", "b1d2", "c8e6", "h2h3", "h7h6", "a2a4", "a7a6", "c4e6", "f7e6", "d1e2", "d8d7",
+];
+
+/// The filter reads the move played from a position, not the one that reached it: before Bxe6 and
+/// before fxe6 is dropped, and after fxe6, reached by a capture and left by a quiet move, is kept.
+#[test]
+fn a_position_is_judged_by_the_move_played_from_it() {
+    let mut board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+    let mut plies = Vec::new();
+    for text in PLIES {
+        let m = parse_uci(&generate_legal(&board), text).expect("legal");
+        plies.push(encode_move(m));
+        board.play(m);
+    }
+    let (mut moves, mut before) = (Vec::new(), Vec::new());
+    for (ply, text) in MOVES.iter().enumerate() {
+        let m = parse_uci(&generate_legal(&board), text).expect("legal");
+        let score = i16::try_from(10 * ply + 1).expect("small");
+        assert!(!board.in_check(), "ply {ply} is in check");
+        before.push((m.is_noisy(), encode(&board, score, DRAW)));
+        moves.push((encode_move(m), score));
+        board.play(m);
+    }
+    let scripted = GameRecord {
+        index: 1,
+        seed: 7,
+        kind: 1,
+        white: 518,
+        black: 518,
+        plies,
+        moves,
+        outcome: 2,
+        ending: 3,
+        refused: 0,
+    };
+    let mut chunk = games(51, 1, |_| 0);
+    chunk.push(scripted);
+    let dir = scratch("judged");
+    let manifest = dataset(&dir.join("data"), 51, &[chunk]);
+    let (ok, text, units) = convert(&[&manifest], &dir.join("out"), &["--shuffle-seed", "1"]);
+    let train = units.first().map(|u| records(&u.join("train.bin")));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    let train = train.expect("a unit");
+    let kept = |ply: usize| train.contains(&before[ply].1.to_vec());
+    assert_eq!(
+        (8..12).map(|ply| before[ply].0).collect::<Vec<_>>(),
+        [true, true, false, false],
+        "Bxe6 and fxe6 are captures and the two after them are not"
+    );
+    assert!(!kept(8), "kept the position Bxe6 is played from");
+    assert!(!kept(9), "kept the position fxe6 is played from");
+    assert!(
+        kept(10),
+        "dropped the position fxe6 reached, left by a quiet move"
+    );
+    assert!(kept(11), "dropped a quiet position");
 }
