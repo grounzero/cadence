@@ -18,7 +18,7 @@ use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_dataset::chunk::{Chunk, GameRecord, NO_SCORE, decode_move, game_key};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND};
-use cadence_dataset::durable::{Disk, Steps};
+use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
@@ -55,14 +55,15 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let request = request_from(args).map_err(|e| format!("{e}\n{USAGE}"))?;
     let converted = convert(&request, &mut Disk);
     let mut stdout = io::stdout().lock();
-    let unexamined = [
+    let mut unexamined = vec![
         "the trainer's own reading of the records (the train crate's round trip)",
         "each game's ending and its regeneration (datagen verify's)",
     ];
+    unexamined.extend(UNSYNCED);
     let unit = match converted {
         Ok(unit) => unit,
         Err(e) => {
-            for spot in unexamined {
+            for spot in &unexamined {
                 let _ = writeln!(stdout, "  not examined: {spot}");
             }
             return Err(e);
@@ -557,8 +558,9 @@ fn report(sets: &[Dataset], counts: &[[Counts; 2]], overlap: usize) -> String {
     text
 }
 
-/// Staged in a directory of its own, each file synced and the manifest last, then renamed whole to
-/// its version id; a failure before the rename publishes nothing.
+/// Staged in a directory of its own, each file synced and the manifest last, then the directory
+/// synced, renamed whole to its version id and its parent synced; a failure before the rename
+/// publishes nothing.
 fn publish(
     request: &Request,
     sets: &[Dataset],
@@ -593,8 +595,9 @@ fn publish(
             return Err(format!("{} already holds this unit", unit.display()));
         }
         steps
-            .rename(&staging, &unit)
-            .map_err(|e| format!("{}: {e}", unit.display()))?;
+            .sync_dir(&staging)
+            .map_err(|e| format!("{}: {e}", staging.display()))?;
+        durable::publish(steps, &staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
         Ok(unit)
     })();
     if staged.is_err() {

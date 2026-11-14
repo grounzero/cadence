@@ -19,7 +19,7 @@ use cadence_dataset::chunk::{
     Trailer, chunk_name, encode_move, whole_records,
 };
 use cadence_dataset::crc32::crc32;
-use cadence_dataset::durable::{Disk, Steps};
+use cadence_dataset::durable::{self, Disk, Steps};
 use cadence_dataset::sha256::{Sha256, hex, sha256};
 
 use super::game::{self, Ending, Outcome};
@@ -608,7 +608,8 @@ fn write_in_order(
     Ok(written)
 }
 
-/// Synced, its sidecar written, renamed into place, and the directory synced.
+/// Synced, its sidecar published, then renamed into place, each rename followed by a sync of the
+/// directory.
 fn close(
     steps: &mut dyn Steps,
     dir: &Path,
@@ -624,20 +625,15 @@ fn close(
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let sidecar = dir.join(format!("{name}.sha256"));
-    fs::write(&sidecar, format!("{}  {name}\n", hex(&digest)))
-        .map_err(|e| format!("{}: {e}", sidecar.display()))?;
-    steps.rename(tmp, path).map_err(failed)?;
-    sync_dir(dir);
-    Ok(())
-}
-
-/// A directory opens for syncing on Unix only; elsewhere the rename stands as written.
-fn sync_dir(dir: &Path) {
-    if cfg!(unix)
-        && let Ok(handle) = File::open(dir)
-    {
-        let _ = handle.sync_all();
-    }
+    let partial = dir.join(format!("{name}.sha256.partial"));
+    let side_failed = |e: io::Error| format!("{}: {e}", sidecar.display());
+    let mut side = File::create(&partial).map_err(side_failed)?;
+    side.write_all(format!("{}  {name}\n", hex(&digest)).as_bytes())
+        .map_err(side_failed)?;
+    side.sync_all().map_err(side_failed)?;
+    drop(side);
+    durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
+    durable::publish(steps, tmp, path).map_err(failed)
 }
 
 fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header, String> {

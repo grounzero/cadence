@@ -3,11 +3,18 @@
 //! A rename that publishes a file, then a sync of the directory that holds it: a file's own sync
 //! makes its contents durable and not its name.
 
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// Where the directory sync is skipped, the "not examined" line that says so.
-pub const UNSYNCED: Option<&str> = None;
+pub const UNSYNCED: Option<&str> = if cfg!(unix) {
+    None
+} else {
+    Some(
+        "each published name's durability after a crash (Windows cannot open a directory to sync it)",
+    )
+};
 
 /// The two steps a publish takes, so a test can record the order they are taken in.
 pub trait Steps {
@@ -38,16 +45,24 @@ impl Steps for Disk {
 
 /// # Errors
 ///
-/// Not yet.
-pub fn sync_dir(_dir: &Path) -> io::Result<()> {
-    Ok(())
+/// Opening or syncing the directory, on Unix.
+pub fn sync_dir(dir: &Path) -> io::Result<()> {
+    if cfg!(unix) {
+        File::open(dir)?.sync_all()
+    } else {
+        // Windows cannot open a directory to sync it, so the sync is skipped and the tools say so.
+        Ok(())
+    }
 }
 
+/// Renamed into place, then the directory holding `to` synced.
+///
 /// # Errors
 ///
-/// Not yet.
+/// The rename's, or the sync's once the rename is made.
 pub fn publish(steps: &mut dyn Steps, from: &Path, to: &Path) -> io::Result<()> {
-    steps.rename(from, to)
+    steps.rename(from, to)?;
+    steps.sync_dir(parent(to))
 }
 
 /// The directory a path's entry is in, `.` for a bare name.

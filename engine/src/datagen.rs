@@ -24,7 +24,7 @@ use std::thread;
 use std::time::Instant;
 
 use cadence_core::rng::{Rng, splitmix64};
-use cadence_dataset::durable::{Disk, Steps};
+use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 
 use crate::tt::Table;
 use crate::uci::SEARCH_STACK_BYTES;
@@ -368,12 +368,16 @@ fn run_from_args(args: &[String]) -> Result<(), Failure> {
     std::fs::create_dir_all(&settings.dir)
         .map_err(|e| Failure::Work(format!("{}: {e}", settings.dir.display())))?;
     let written = packed::run(&settings, &build, &packed::play);
-    let written = written.map_err(Failure::Work)?;
-    println!(
-        "stopped: chunks {} games uniform {} standard {}",
-        written.chunks, written.games[0], written.games[1]
-    );
-    Ok(())
+    if let Ok(written) = &written {
+        println!(
+            "stopped: chunks {} games uniform {} standard {}",
+            written.chunks, written.games[0], written.games[1]
+        );
+    }
+    if let Some(spot) = UNSYNCED {
+        println!("  not examined: {spot}");
+    }
+    written.map(|_| ()).map_err(Failure::Work)
 }
 
 #[cfg(feature = "packed-datagen")]
@@ -385,6 +389,9 @@ fn repair_from_args(args: &[String]) -> Result<(), Failure> {
     println!(
         "  not examined: the games themselves (repair checks lengths and CRCs; verify replays)"
     );
+    if let Some(spot) = UNSYNCED {
+        println!("  not examined: {spot}");
+    }
     println!("{}", report?);
     Ok(())
 }
@@ -425,7 +432,7 @@ fn verify_from_args(args: &[String]) -> Result<(), Failure> {
     }
     let checked = verify_paths(&paths, every, threads);
     let mut stdout = io::stdout().lock();
-    let unexamined = [
+    let mut unexamined = vec![
         "chunks in paths not given (verify reads only the paths it is given)".to_string(),
         match every {
             None => {
@@ -436,6 +443,9 @@ fn verify_from_args(args: &[String]) -> Result<(), Failure> {
             }
         },
     ];
+    if let (true, Some(spot)) = (manifest, UNSYNCED) {
+        unexamined.push(spot.to_string());
+    }
     let summaries = match checked {
         Ok(summaries) => summaries,
         Err(e) => {
@@ -652,6 +662,7 @@ fn extract_from_args(args: &[String]) -> Result<(), Failure> {
 /// What an extraction did not look at, said on every run however it ended.
 fn not_examined(stats: Option<&extract::Stats>) -> Vec<String> {
     let mut spots = vec!["duplicates in files not given (extract reads one input)".to_string()];
+    spots.extend(UNSYNCED.map(str::to_string));
     let foreign: Vec<&str> = stats
         .into_iter()
         .flat_map(|stats| stats.versions.iter().map(String::as_str))
@@ -810,11 +821,14 @@ impl Staged {
         })
     }
 
-    /// Written out and closed, which some platforms require of a file before it is renamed.
+    /// Written out, synced and closed, so its contents are durable before its name is published.
     fn close(&mut self) -> Result<(), String> {
         if let Some(file) = self.file.take() {
-            file.into_inner()
+            let file = file
+                .into_inner()
                 .map_err(|e| format!("{}: {}", self.temp.display(), e.error()))?;
+            file.sync_all()
+                .map_err(|e| format!("{}: {e}", self.temp.display()))?;
         }
         Ok(())
     }
@@ -824,7 +838,7 @@ impl Staged {
     fn publish(&mut self, steps: &mut dyn Steps, undo: &mut Vec<Undo>) -> Result<(), String> {
         let failed = |e: io::Error| format!("{}: {e}", self.path.display());
         if self.path.symlink_metadata().is_err() {
-            steps.rename(&self.temp, &self.path).map_err(failed)?;
+            durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
             self.published = true;
             undo.push(Undo::Remove(self.path.clone()));
             return Ok(());
@@ -838,7 +852,7 @@ impl Staged {
             aside,
             path: self.path.clone(),
         });
-        steps.rename(&self.temp, &self.path).map_err(failed)?;
+        durable::publish(steps, &self.temp, &self.path).map_err(failed)?;
         self.published = true;
         Ok(())
     }
