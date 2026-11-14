@@ -104,7 +104,7 @@ jobs:
           fetch-depth: 0
 
       # A clone without the repository's tags, so the one tag it holds is the workspace version's.
-      - name: A scratch clone tagged at the workspace version, built clean and then with a file edited
+      - name: A scratch clone tagged at the workspace version, built clean, edited, a commit past the tag, and exported
         run: |
           set -eu
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"$/\1/p' Cargo.toml)
@@ -121,12 +121,26 @@ jobs:
           echo "at the tag $version: $got"
           [ "$got" = "Cadence $version" ] \
             || { echo "::error::a clean build at the tag $version calls itself $got"; exit 1; }
+          expect() {
+            got=$(named)
+            echo "$1: $got"
+            [ "$got" = "$2" ] || { echo "::error::$1, a build calls itself $got and not $2"; exit 1; }
+          }
+          short=$(git rev-parse HEAD | cut -c1-7)
           echo >> README.md
-          want="Cadence $version-dev-$(git rev-parse HEAD | cut -c1-7)"
-          got=$(named)
-          echo "with README.md edited: $got"
-          [ "$got" = "$want" ] \
-            || { echo "::error::an edited build at the tag calls itself $got and not $want"; exit 1; }
+          expect "with README.md edited at the tag" "Cadence $version-dev-$short-dirty"
+          git checkout --quiet -- README.md
+          git -c user.name=ci -c user.email=ci@localhost commit --quiet --allow-empty -m "past the tag"
+          short=$(git rev-parse HEAD | cut -c1-7)
+          expect "one commit past the tag" "Cadence $version-dev-$short"
+          echo >> README.md
+          expect "with README.md edited past the tag" "Cadence $version-dev-$short-dirty"
+          # An export has no repository to ask, so it names no commit.
+          export="$RUNNER_TEMP/export"
+          mkdir "$export"
+          git archive HEAD | tar -x -C "$export"
+          cd "$export"
+          expect "exported with git archive" "Cadence $version-dev-unknown"
 
   check:
     name: ${{ matrix.name }}
