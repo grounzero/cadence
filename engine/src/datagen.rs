@@ -85,7 +85,15 @@ pub fn generate(
     generate_with(seed, games, threads, AHEAD, out, progress, &line_for)
 }
 
-/// `line_for` makes a game's record line, so a test can hold a game back.
+/// What a worker sends the writer.
+enum Message {
+    Line(u64, String),
+    NoTable,
+    /// The game a worker was playing when it panicked, whose record will never arrive.
+    Panicked(u64),
+}
+
+/// `line_for` makes a game's record line, so a test can hold a game back or make one panic.
 fn generate_with(
     seed: u64,
     games: u64,
@@ -98,56 +106,139 @@ fn generate_with(
     writeln!(out, "{}", provenance(seed, games))?;
     let next = AtomicU64::new(0);
     let window = Window::new(ahead);
-    let (tx, rx) = mpsc::channel::<Option<(u64, String)>>();
+    let (tx, rx) = mpsc::channel::<Message>();
     thread::scope(|scope| {
         let _closing = Closing(&window);
+        let mut handles = Vec::new();
+        let mut result = Ok(());
         for _ in 0..workers(threads, games) {
             let tx = tx.clone();
-            let next = &next;
-            let window = &window;
-            // The stack a `go` gives its search, since these games are the same search.
-            let spawned = thread::Builder::new()
-                .stack_size(SEARCH_STACK_BYTES)
-                .spawn_scoped(scope, move || {
-                    let Some(tt) = Table::new(HASH_MB) else {
-                        let _ = tx.send(None);
-                        return;
-                    };
-                    loop {
-                        let number = next.fetch_add(1, Ordering::Relaxed);
-                        if number >= games || !window.wait_for(number) {
-                            return;
-                        }
-                        let line = line_for(number, &tt);
-                        if tx.send(Some((number, line))).is_err() {
-                            return;
-                        }
-                    }
-                });
-            if let Err(e) = spawned {
-                // The workers already started take no new game, so the scope ends soon.
-                next.store(games, Ordering::Relaxed);
-                return Err(e);
+            let (next, window) = (&next, &window);
+            match spawn_search(scope, move || work(next, window, games, &tx, line_for)) {
+                Ok(handle) => handles.push(handle),
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
             }
         }
         drop(tx);
-        // Records arrive in whatever order the workers finish, and leave in number order.
-        let mut pending = BTreeMap::new();
-        let mut wanted = 0;
-        for message in rx {
-            let Some((number, line)) = message else {
-                return Err(io::Error::other("a worker's table could not be allocated"));
-            };
-            pending.insert(number, line);
-            while let Some(line) = pending.remove(&wanted) {
-                writeln!(out, "{line}")?;
-                wanted += 1;
-                progress(wanted);
-            }
-            window.advance(wanted);
+        if result.is_ok() {
+            result = write_in_order(&rx, &window, out, progress);
         }
-        out.flush()
+        // Every worker is released and joined here, so a panic is this run's error and not a
+        // second panic at the scope's end.
+        next.store(games, Ordering::Relaxed);
+        window.close();
+        drop(rx);
+        let mut panic = None;
+        for handle in handles {
+            if let Err(payload) = handle.join() {
+                panic.get_or_insert_with(|| panic_text(payload.as_ref()));
+            }
+        }
+        match (result, panic) {
+            (Err(e), Some(text)) => Err(io::Error::other(format!("{e}: {text}"))),
+            (Ok(()), Some(text)) => Err(io::Error::other(format!("a worker panicked: {text}"))),
+            (result, None) => result,
+        }
     })
+}
+
+/// Games from `next` in number order, each started only inside the window.
+fn work(
+    next: &AtomicU64,
+    window: &Window,
+    games: u64,
+    tx: &mpsc::Sender<Message>,
+    line_for: &(dyn Fn(u64, &Table) -> String + Sync),
+) {
+    let Some(tt) = Table::new(HASH_MB) else {
+        let _ = tx.send(Message::NoTable);
+        return;
+    };
+    loop {
+        let number = next.fetch_add(1, Ordering::Relaxed);
+        if number >= games || !window.wait_for(number) {
+            return;
+        }
+        let playing = Playing { number, tx };
+        let line = line_for(number, &tt);
+        drop(playing);
+        if tx.send(Message::Line(number, line)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Held while a game is played, so a panic in it tells the writer which record will never come.
+struct Playing<'a> {
+    number: u64,
+    tx: &'a mpsc::Sender<Message>,
+}
+
+impl Drop for Playing<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            let _ = self.tx.send(Message::Panicked(self.number));
+        }
+    }
+}
+
+/// Records arrive in whatever order the workers finish, and leave in number order.
+fn write_in_order(
+    rx: &mpsc::Receiver<Message>,
+    window: &Window,
+    out: &mut dyn Write,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    let mut pending = BTreeMap::new();
+    let mut wanted = 0;
+    for message in rx {
+        match message {
+            Message::Line(number, line) => {
+                pending.insert(number, line);
+            }
+            Message::NoTable => {
+                return Err(io::Error::other("a worker's table could not be allocated"));
+            }
+            Message::Panicked(number) => {
+                return Err(io::Error::other(format!("game {number} panicked")));
+            }
+        }
+        while let Some(line) = pending.remove(&wanted) {
+            writeln!(out, "{line}")?;
+            wanted += 1;
+            progress(wanted);
+        }
+        window.advance(wanted);
+    }
+    out.flush()
+}
+
+/// A panic's message, where it carried one.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "no message".to_string()
+    }
+}
+
+/// Every thread that searches, on the stack a `go` gives its search.
+///
+/// # Errors
+///
+/// If the thread cannot be started.
+pub fn spawn_search<'scope, T: Send + 'scope>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    work: impl FnOnce() -> T + Send + 'scope,
+) -> io::Result<thread::ScopedJoinHandle<'scope, T>> {
+    thread::Builder::new()
+        .stack_size(SEARCH_STACK_BYTES)
+        .spawn_scoped(scope, work)
 }
 
 /// How far the workers may run ahead of the next record to be written.
@@ -634,10 +725,54 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, provenance,
-        publish_with, stage_name, workers,
+        HASH_MB, MAX_THREADS, Staged, USAGE, extract_to, game_seed, generate, generate_with, play,
+        provenance, publish_with, spawn_search, stage_name, workers,
     };
     use crate::tt::Table;
+
+    /// A game that panics ends the run with an error naming it, at one thread and at three, rather
+    /// than leaving the writer waiting for its record.
+    #[test]
+    fn a_panicking_game_ends_the_run_naming_it() {
+        for threads in [1, 3] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            thread::spawn(move || {
+                let line_for = |number: u64, _: &Table| {
+                    assert!(number != 3, "game 3 cannot be played");
+                    format!("game {number}")
+                };
+                let mut out = Vec::new();
+                let run = generate_with(1, 8, threads, 4, &mut out, &mut |_| {}, &line_for);
+                let _ = tx.send(run.map_err(|e| e.to_string()));
+            });
+            let ended = rx.recv_timeout(Duration::from_secs(30));
+            let run = ended.unwrap_or_else(|e| panic!("{threads} threads: no end: {e}"));
+            let error = run.expect_err("a run with a panicking game succeeded");
+            assert!(
+                error.contains("game 3 panicked"),
+                "{threads} threads: {error}"
+            );
+            assert!(
+                error.contains("cannot be played"),
+                "{threads} threads: {error}"
+            );
+        }
+        let line_for = |number: u64, _: &Table| format!("game {number}");
+        let mut out = Vec::new();
+        generate_with(1, 8, 3, 4, &mut out, &mut |_| {}, &line_for).expect("the control");
+    }
+
+    /// The helper gives a search the stack a `go` gives it, and the game is the same game.
+    #[test]
+    fn a_game_on_a_search_thread_is_the_game_played_here() {
+        let here = play(3, 1, &Table::new(HASH_MB).expect("a table"));
+        let there = thread::scope(|scope| {
+            let spawned =
+                spawn_search(scope, || play(3, 1, &Table::new(HASH_MB).expect("a table")));
+            spawned.expect("spawns").join().expect("joins")
+        });
+        assert_eq!(there, here);
+    }
 
     /// A change to the derivation changes every dataset, so it fails here first.
     #[test]

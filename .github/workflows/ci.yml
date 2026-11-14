@@ -301,6 +301,7 @@ jobs:
       # mistake that compiles tests out passes everything it left.
       - name: test
         shell: bash
+        timeout-minutes: 30
         run: |
           cargo test --locked --workspace --no-fail-fast $CONFIG_ARG 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
@@ -309,7 +310,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=770
+          floor=800
           [ "$passed" -ge "$floor" ] || { echo "::error::only $passed tests passed, under the floor of $floor"; exit 1; }
           # A floor far under the count would pass a run that lost a whole test file, so it is kept near.
           [ $((passed - 40)) -lt "$floor" ] \
@@ -403,6 +404,7 @@ jobs:
       # line only the counters print is skipped by name, and the counts are read against the list.
       - name: Engine tests against the release binary
         shell: bash
+        timeout-minutes: 30
         run: |
           bin="$PWD/target/release/cadence"
           if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -w "$bin.exe"); fi

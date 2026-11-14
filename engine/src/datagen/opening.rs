@@ -29,12 +29,24 @@ pub struct Opening {
     pub board: Position,
 }
 
-/// `None` if the random plies end the game or the screen refuses it.
+/// What screens a start, which a test replaces.
+type Probe<'a> = dyn Fn(&mut Position, &Table) -> Option<Score> + 'a;
+
+fn screen(board: &mut Position, tt: &Table) -> Option<Score> {
+    game::probe(board, SCREEN_NODES, tt)
+}
+
+/// `None` if the random plies end the game or the screen refuses it, as it does a probe that did not
+/// finish.
 ///
 /// # Panics
 ///
 /// If the drawn start does not parse.
 pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
+    draw_with(rng, tt, &screen)
+}
+
+fn draw_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>) -> Option<Opening> {
     let white = draw_array(rng);
     let black = draw_array(rng);
     let fen = dfrc_fen(white, black);
@@ -53,7 +65,7 @@ pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
     if game::ending(&board).is_some() {
         return None;
     }
-    let score = game::probe(&mut board, SCREEN_NODES, tt);
+    let score = probe(&mut board, tt)?;
     (score.abs() <= WINDOW).then_some(Opening {
         white,
         black,
@@ -64,9 +76,13 @@ pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
 
 /// Also returns how many were refused.
 pub fn next(rng: &mut Rng, tt: &Table) -> (Opening, u32) {
+    next_with(rng, tt, &screen)
+}
+
+fn next_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>) -> (Opening, u32) {
     let mut refused = 0;
     loop {
-        if let Some(opening) = draw(rng, tt) {
+        if let Some(opening) = draw_with(rng, tt, probe) {
             return (opening, refused);
         }
         refused += 1;
@@ -75,4 +91,32 @@ pub fn next(rng: &mut Rng, tt: &Table) -> (Opening, u32) {
 
 fn draw_array(rng: &mut Rng) -> u32 {
     u32::try_from(rng.below(ARRAYS as usize)).expect("below the array count")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use cadence_core::rng::Rng;
+
+    use super::{next_with, screen};
+    use crate::datagen::HASH_MB;
+    use crate::tt::Table;
+
+    /// A probe that does not finish refuses its start rather than reading as balanced.
+    #[test]
+    fn an_unfinished_probe_refuses_its_start() {
+        let tt = Table::new(HASH_MB).expect("a datagen table");
+        let calls = Cell::new(0);
+        let probe = |board: &mut _, tt: &Table| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                None
+            } else {
+                screen(board, tt)
+            }
+        };
+        let (_, refused) = next_with(&mut Rng::new(3), &tt, &probe);
+        assert_eq!(refused, 1, "the unfinished probe's start was taken");
+    }
 }
