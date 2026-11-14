@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `build.rs` emits the commit and the exact tag raw; the string is composed here, where it can be
-//! tested.
+//! `build.rs` emits the commit, the exact tag and the modified flag raw; the string is composed
+//! here, where it can be tested.
 
-/// Empty when HEAD is at no annotated tag naming the version, and `<version>-dirty` at one with the
-/// tree modified.
+/// Empty when HEAD is at no annotated tag naming the version.
 const TAG: &str = env!("CADENCE_TAG");
 
 /// The whole workspace's version.
@@ -25,21 +24,28 @@ pub const MODIFIED: bool = DIRTY.len() == 1 && DIRTY.as_bytes()[0] == b'1';
 /// The triple the build was compiled for.
 pub const TARGET: &str = env!("CADENCE_TARGET");
 
-/// The version half of the UCI `id name`.
-pub const VERSION: &str = if is_release(TAG, PACKAGE) {
+/// The version half of the UCI `id name`, the release only at the exact tag with a clean tree.
+pub const VERSION: &str = if is_release(TAG, PACKAGE) && !MODIFIED {
     PACKAGE
+} else if MODIFIED {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        "-dev-",
+        env!("CADENCE_COMMIT"),
+        "-dirty"
+    )
 } else {
     concat!(env!("CARGO_PKG_VERSION"), "-dev-", env!("CADENCE_COMMIT"))
 };
 
 /// What `VERSION` is composed as, here where each shape can be tested.
 #[must_use]
-pub fn version_of(package: &str, tag: &str, commit: &str, _modified: bool) -> String {
-    if is_release(tag, package) {
-        package.to_string()
-    } else {
-        format!("{package}-dev-{commit}")
+pub fn version_of(package: &str, tag: &str, commit: &str, modified: bool) -> String {
+    if is_release(tag, package) && !modified {
+        return package.to_string();
     }
+    let dirty = if modified { "-dirty" } else { "" };
+    format!("{package}-dev-{commit}{dirty}")
 }
 
 /// Exact equality: not a prefix test.
@@ -131,16 +137,18 @@ mod tests {
         }
     }
 
-    /// Either form opens with the package version.
+    /// Every form opens with the package version.
     #[test]
-    fn the_version_string_is_one_of_two_shapes() {
+    fn the_version_string_is_one_of_three_shapes() {
         assert!(
             VERSION.starts_with(PACKAGE),
             "{VERSION} does not open with {PACKAGE}"
         );
         let suffix = &VERSION[PACKAGE.len()..];
         assert!(
-            suffix.is_empty() || suffix == format!("-dev-{COMMIT}"),
+            suffix.is_empty()
+                || suffix == format!("-dev-{COMMIT}")
+                || suffix == format!("-dev-{COMMIT}-dirty"),
             "{VERSION} is neither the bare version nor a dev build of it"
         );
     }
