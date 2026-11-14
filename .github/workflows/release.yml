@@ -405,7 +405,7 @@ jobs:
             echo
             echo "Seven binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of bench.txt, which holds the bench count every binary was checked against, and of the install scripts. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
-            echo "The macOS binaries are not notarized. Clear the quarantine flag with \`xattr -d com.apple.quarantine <file>\`, or build from source."
+            echo "The macOS binaries are not notarized. Before running one, make it executable and clear its quarantine flag: \`chmod +x <file>\`, then \`xattr -d com.apple.quarantine <file>\`. Or build from source."
             echo
             echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. Where no binary fits or the check fails, as on an Intel Mac without AVX2, they build the release from source and hold the build to the same bench. Without \`--version\` they take the latest stable release, or while none is published they offer the newest pre-release; \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
             echo
