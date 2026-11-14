@@ -22,6 +22,9 @@ fn main() {
 
     println!("cargo::rustc-env=CADENCE_COMMIT={}", facts.commit);
     println!("cargo::rustc-env=CADENCE_TAG={}", facts.tag);
+    println!("cargo::rustc-env=CADENCE_COMMIT_FULL=");
+    println!("cargo::rustc-env=CADENCE_DIRTY=");
+    println!("cargo::rustc-env=CADENCE_TARGET=");
 }
 
 /// `commit` is never empty; `tag` is empty when HEAD is not at the annotated tag naming the version
