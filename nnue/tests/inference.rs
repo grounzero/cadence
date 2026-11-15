@@ -12,7 +12,7 @@ use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
 use cadence_nnue::{AccumulatorStack, LoadError, Network, Provenance};
 
 /// The digest of `corpus_outputs`, the same on every target, or a build computes another number.
-const DIGEST: u64 = 0x1305_0ad9_6fb1_9501;
+const DIGEST: u64 = 0xc222_483e_5258_62ef;
 
 fn net() -> Network {
     Network::seeded(0xc0de, Provenance::SelfPlay)
@@ -296,7 +296,7 @@ fn corpus_digest() -> u64 {
             let _ = board.make_move(m);
             let value = net.evaluate(&net.refresh(&board), board.side_to_move());
             let word = u64::from(value.cast_unsigned());
-            digest = cadence_core::rng::splitmix64(digest ^ word).1;
+            digest = cadence_core::rng::splitmix64(digest ^ word).0;
         }
     }
     digest

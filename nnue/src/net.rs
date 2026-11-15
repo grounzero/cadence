@@ -379,7 +379,7 @@ impl Network {
     pub fn seeded(seed: u64, provenance: Provenance) -> Network {
         let mut state = seed;
         let mut draw = |span: i16| {
-            let (next, out) = cadence_core::rng::splitmix64(state);
+            let (out, next) = cadence_core::rng::splitmix64(state);
             state = next;
             let span_u = u64::from(span.unsigned_abs()) * 2 + 1;
             i16::try_from(out % span_u).unwrap_or(0) - span
