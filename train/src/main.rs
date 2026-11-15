@@ -42,7 +42,35 @@ const COMMIT_FILE: &str = "trainer-commit";
 const USAGE: &str = "usage: cadence-train run --data FILE... --manifest FILE... --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
-       cadence-train book --in FILE --out FILE --seed HEX";
+       cadence-train book --in FILE --out FILE --seed HEX
+       cadence-train eval --checkpoint DIR --fens FILE";
+
+/// The network and its saved format, built the same way wherever a trainer is needed, so a
+/// checkpoint is read back by the definition that wrote it.
+macro_rules! recipe {
+    () => {
+        ValueTrainerBuilder::default()
+            .dual_perspective()
+            .optimiser(AdamW)
+            .inputs(Chess768)
+            .save_format(&[
+                SavedFormat::id("l0w").round().quantise::<i16>(QA as i16),
+                SavedFormat::id("l0b").round().quantise::<i16>(QA as i16),
+                SavedFormat::id("l1w").round().quantise::<i16>(QB as i16),
+                SavedFormat::id("l1b")
+                    .round()
+                    .quantise::<i16>((QA * QB) as i16),
+            ])
+            .loss_fn(|output, target| output.sigmoid().squared_error(target))
+            .build(|builder, stm_inputs, ntm_inputs| {
+                let l0 = builder.new_affine("l0", NUM_INPUTS, HIDDEN);
+                let l1 = builder.new_affine("l1", 2 * HIDDEN, 1);
+                let stm_hidden = l0.forward(stm_inputs).screlu();
+                let ntm_hidden = l0.forward(ntm_inputs).screlu();
+                l1.forward(stm_hidden.concat(ntm_hidden))
+            })
+    };
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,6 +78,7 @@ fn main() -> ExitCode {
         Some((command, rest)) if command == "run" => flags(rest).and_then(|f| run(&f)),
         Some((command, rest)) if command == "export" => flags(rest).and_then(|f| export(&f)),
         Some((command, rest)) if command == "book" => flags(rest).and_then(|f| book(&f)),
+        Some((command, rest)) if command == "eval" => flags(rest).and_then(|f| eval(&f)),
         _ => Err(USAGE.to_string()),
     };
     match done {
@@ -132,26 +161,7 @@ fn run(flags: &Flags) -> Result<(), String> {
     std::fs::write(&commit_file, format!("{COMMIT}\n"))
         .map_err(|e| format!("{}: {e}", commit_file.display()))?;
 
-    let mut trainer = ValueTrainerBuilder::default()
-        .dual_perspective()
-        .optimiser(AdamW)
-        .inputs(Chess768)
-        .save_format(&[
-            SavedFormat::id("l0w").round().quantise::<i16>(QA as i16),
-            SavedFormat::id("l0b").round().quantise::<i16>(QA as i16),
-            SavedFormat::id("l1w").round().quantise::<i16>(QB as i16),
-            SavedFormat::id("l1b")
-                .round()
-                .quantise::<i16>((QA * QB) as i16),
-        ])
-        .loss_fn(|output, target| output.sigmoid().squared_error(target))
-        .build(|builder, stm_inputs, ntm_inputs| {
-            let l0 = builder.new_affine("l0", NUM_INPUTS, HIDDEN);
-            let l1 = builder.new_affine("l1", 2 * HIDDEN, 1);
-            let stm_hidden = l0.forward(stm_inputs).screlu();
-            let ntm_hidden = l0.forward(ntm_inputs).screlu();
-            l1.forward(stm_hidden.concat(ntm_hidden))
-        });
+    let mut trainer = recipe!();
     let schedule = TrainingSchedule {
         net_id: id.to_string(),
         eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
@@ -270,5 +280,32 @@ fn book(flags: &Flags) -> Result<(), String> {
         read.results,
         manifest_path.display()
     );
+    Ok(())
+}
+
+/// The trainer's own output for each position, read back from a checkpoint the recipe saved, in
+/// centipawns: the reading any other forward pass over the same weights is held to.
+fn eval(flags: &Flags) -> Result<(), String> {
+    let checkpoint = one(flags, "--checkpoint")?;
+    let fens = one(flags, "--fens")?;
+    let text = std::fs::read_to_string(fens).map_err(|e| format!("{fens}: {e}"))?;
+    let state = Path::new(checkpoint).join("optimiser_state");
+    if !state.is_dir() {
+        return Err(format!(
+            "{} is not a checkpoint the trainer saved",
+            state.display()
+        ));
+    }
+    let positions: Vec<&str> = text
+        .lines()
+        .map(|line| line.split('[').next().unwrap_or(line).trim())
+        .filter(|fen| !fen.is_empty())
+        .collect();
+    let mut trainer = recipe!();
+    trainer.load_from_checkpoint(checkpoint);
+    let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
+    for fen in positions {
+        println!("{:.4}\t{fen}", trainer.eval(fen) * scale);
+    }
     Ok(())
 }
