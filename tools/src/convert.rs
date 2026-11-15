@@ -798,7 +798,7 @@ fn manifest(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{BUCKETS, Request, bucket, convert, result_for_mover};
+    use super::{BUCKETS, RECORD_LEN, Request, bucket, convert, input_key, result_for_mover};
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
     use cadence_core::position::Board;
@@ -961,6 +961,32 @@ mod tests {
     }
 
     /// White's result, turned to the side to move's.
+    /// Two records whose second and third words differ so that a fold adding a constant between
+    /// XORs would give them one key, as the first form of this key did, still get two.
+    #[test]
+    fn inputs_that_cancel_in_an_additive_fold_get_distinct_keys() {
+        let golden = 0x9E37_79B9_7F4A_7C15_u64;
+        let (first, second, third): (u64, u64, u64) = (
+            0x0123_4567_89ab_cdef,
+            0x0f0f_f0f0_0f0f_f0f0,
+            0x1111_2222_3333_4444,
+        );
+        let moved = third ^ 0x80;
+        let cancelled = second ^ third.wrapping_add(golden) ^ moved.wrapping_add(golden);
+        let record = |words: [u64; 3]| {
+            let mut r = [0_u8; RECORD_LEN];
+            for (i, w) in words.iter().enumerate() {
+                r[8 * i..8 * i + 8].copy_from_slice(&w.to_le_bytes());
+            }
+            r
+        };
+        let a = record([first, second, third]);
+        let b = record([first, cancelled, moved]);
+        assert_ne!(a, b);
+        assert_ne!(input_key(&a, false), input_key(&b, false));
+        assert_ne!(input_key(&a, false), input_key(&a, true));
+    }
+
     #[test]
     fn the_result_is_the_movers() {
         assert_eq!(result_for_mover(0, true), WIN);
