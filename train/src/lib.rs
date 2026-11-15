@@ -8,3 +8,4 @@
 pub mod book;
 pub mod data;
 pub mod export;
+pub mod validate;

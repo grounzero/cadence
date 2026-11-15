@@ -21,6 +21,20 @@ pub const BOOK_HEADER: &str = "# cadence book conversion, written by cadence-tra
 /// A manifest neither `cadence-tools convert` nor `cadence-train book` wrote, or one naming no
 /// training file or more than one.
 pub fn training_sha256(manifest: &str) -> Result<String, String> {
+    named(manifest, "train.bin", "records-sha256", "training file")
+}
+
+/// The SHA-256, in lowercase hex, of the one holdout split a manifest vouches for.
+///
+/// # Errors
+///
+/// As `training_sha256`, for the holdout split.
+pub fn holdout_sha256(manifest: &str) -> Result<String, String> {
+    named(manifest, "holdout.bin", "holdout-sha256", "holdout split")
+}
+
+/// The one hash a converter's manifest gives `file` and a book conversion's gives under `key`.
+fn named(manifest: &str, file: &str, key: &str, what: &str) -> Result<String, String> {
     let first = manifest.lines().next().unwrap_or_default();
     let named: Vec<&str> = if first == CONVERTED.trim_end() {
         manifest
@@ -28,7 +42,7 @@ pub fn training_sha256(manifest: &str) -> Result<String, String> {
             .filter_map(|line| {
                 let fields: Vec<&str> = line.split('\t').collect();
                 match fields.as_slice() {
-                    ["file", "train.bin", sha, ..] => Some(*sha),
+                    ["file", name, sha, ..] if *name == file => Some(*sha),
                     _ => None,
                 }
             })
@@ -36,7 +50,7 @@ pub fn training_sha256(manifest: &str) -> Result<String, String> {
     } else if first == BOOK_HEADER {
         manifest
             .lines()
-            .filter_map(|line| line.strip_prefix("records-sha256\t"))
+            .filter_map(|line| line.strip_prefix(key)?.strip_prefix('\t'))
             .collect()
     } else {
         return Err("not a manifest cadence-tools convert or cadence-train book wrote".to_string());
@@ -45,8 +59,8 @@ pub fn training_sha256(manifest: &str) -> Result<String, String> {
         [one] if one.len() == 64 && one.bytes().all(|b| b.is_ascii_hexdigit()) => {
             Ok(one.to_ascii_lowercase())
         }
-        [] => Err("the manifest names no training file".to_string()),
-        _ => Err("the manifest names no single, well-formed training file".to_string()),
+        [] => Err(format!("the manifest names no {what}")),
+        _ => Err(format!("the manifest names no single, well-formed {what}")),
     }
 }
 
@@ -98,4 +112,28 @@ pub fn verify(data: &[&Path], manifests: &[&Path]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The holdout file hashes to the holdout split one of the manifests names.
+///
+/// # Errors
+///
+/// As `verify`, for the holdout split.
+pub fn verify_holdout(holdout: &Path, manifests: &[&Path]) -> Result<(), String> {
+    let sha = file_sha256(holdout)?;
+    let mut named = Vec::new();
+    for manifest in manifests {
+        let text = std::fs::read_to_string(manifest)
+            .map_err(|e| format!("{}: {e}", manifest.display()))?;
+        let want = holdout_sha256(&text).map_err(|e| format!("{}: {e}", manifest.display()))?;
+        if want == sha {
+            return Ok(());
+        }
+        named.push(format!("{want} ({})", manifest.display()));
+    }
+    Err(format!(
+        "{}: SHA-256 {sha} is not the holdout split any manifest names: {}",
+        holdout.display(),
+        named.join(", ")
+    ))
 }

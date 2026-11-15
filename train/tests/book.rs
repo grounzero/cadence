@@ -91,7 +91,11 @@ fn anything_else_is_refused_by_line() {
         assert!(parse_line(&line).is_err(), "{line} parsed");
     }
     let text = format!("{START} [1.0]\n\n{START} [2.0]\n");
-    let refused = convert(&text, 1).expect_err("refused");
+    let refused = convert(&text, 1, 10).expect_err("refused");
+    assert!(
+        convert(&format!("{START} [1.0]\n"), 1, 1).is_err(),
+        "every 1 holds out everything"
+    );
     assert!(refused.starts_with("line 3: "), "{refused}");
 }
 
@@ -101,13 +105,19 @@ type Seen = (Vec<(usize, usize)>, i16, u8);
 #[test]
 fn the_trainer_reads_each_line_with_the_movers_result() {
     let (text, lines) = book(7, 3_000);
-    let (records, counts) = convert(&text, 0x2026_1115).expect("converts");
+    let (split, counts) = convert(&text, 0x2026_1115, 10).expect("converts");
     assert_eq!(counts.positions, 3_000);
+    assert_eq!((split.train.len(), split.holdout.len()), (2_700, 300));
+    let records: Vec<_> = split.train.iter().chain(&split.holdout).collect();
     let path: PathBuf =
         std::env::temp_dir().join(format!("cadence-book-{}.bin", std::process::id()));
     std::fs::write(
         &path,
-        records.iter().flatten().copied().collect::<Vec<u8>>(),
+        records
+            .iter()
+            .flat_map(|r| r.iter())
+            .copied()
+            .collect::<Vec<u8>>(),
     )
     .expect("writes");
     let mut meant: HashMap<Seen, Vec<Colour>> = HashMap::new();
@@ -161,13 +171,14 @@ fn the_trainer_reads_each_line_with_the_movers_result() {
 #[test]
 fn the_seed_decides_the_order_and_nothing_else() {
     let (text, _) = book(8, 500);
-    let (a, _) = convert(&text, 1).expect("converts");
-    let (b, _) = convert(&text, 1).expect("converts");
-    let (c, _) = convert(&text, 2).expect("converts");
+    let (a, _) = convert(&text, 1, 10).expect("converts");
+    let (b, _) = convert(&text, 1, 10).expect("converts");
+    let (c, _) = convert(&text, 2, 10).expect("converts");
     assert_eq!(a, b);
-    assert_ne!(a, c);
-    let (mut a, mut c) = (a, c);
-    a.sort_unstable();
-    c.sort_unstable();
-    assert_eq!(a, c);
+    assert_ne!(a.train, c.train);
+    for (mut x, mut y) in [(a.train, c.train), (a.holdout, c.holdout)] {
+        x.sort_unstable();
+        y.sort_unstable();
+        assert_eq!(x, y, "the same lines held out whatever the seed");
+    }
 }

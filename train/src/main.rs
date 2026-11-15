@@ -33,16 +33,24 @@ const FINAL_LR: f32 = INITIAL_LR * 0.3 * 0.3 * 0.3 * 0.3 * 0.3;
 const SAVE_RATE: usize = 10;
 const THREADS: usize = 2;
 const BATCH_QUEUE: usize = 32;
+/// Holdout positions each checkpoint's validation loss is read over; the trainer scores them one
+/// at a time, so this bounds what the reading costs.
+const VALIDATION_POSITIONS: usize = 20_000;
+/// The share of a book's lines held out, one in this many, as the converter holds out games.
+const BOOK_EVERY: usize = 10;
 
 const COMMIT: &str = env!("CADENCE_TRAIN_COMMIT");
 const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 /// Written beside the checkpoints, so an export names the commit that trained them, not its own.
 const COMMIT_FILE: &str = "trainer-commit";
 
-const USAGE: &str = "usage: cadence-train run --data FILE... --manifest FILE... --out DIR --id NAME
-           [--superbatches N] [--batches N] [--result-share F]
+const USAGE: &str =
+    "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
+           [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
+       cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
+           [--validation-positions N] [--result-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
-       cadence-train book --in FILE --out FILE --seed HEX
+       cadence-train book --in FILE --out FILE --seed HEX [--every N]
        cadence-train eval --checkpoint DIR --fens FILE";
 
 /// The network and its saved format, built the same way wherever a trainer is needed, so a
@@ -79,6 +87,7 @@ fn main() -> ExitCode {
         Some((command, rest)) if command == "export" => flags(rest).and_then(|f| export(&f)),
         Some((command, rest)) if command == "book" => flags(rest).and_then(|f| book(&f)),
         Some((command, rest)) if command == "eval" => flags(rest).and_then(|f| eval(&f)),
+        Some((command, rest)) if command == "validate" => flags(rest).and_then(|f| validate(&f)),
         _ => Err(USAGE.to_string()),
     };
     match done {
@@ -137,9 +146,12 @@ fn run(flags: &Flags) -> Result<(), String> {
         .map(|d| d.iter().map(Path::new).collect())
         .ok_or_else(|| format!("run needs --data\n{USAGE}"))?;
     cadence_train::data::verify(&data_paths, &manifests)?;
+    let holdout = Path::new(one(flags, "--holdout")?);
+    cadence_train::data::verify_holdout(holdout, &manifests)?;
     let superbatches = parsed(flags, "--superbatches", SUPERBATCHES)?;
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
+    let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
     if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
         return Err(format!(
             "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
@@ -192,6 +204,86 @@ fn run(flags: &Flags) -> Result<(), String> {
         &settings,
         &DirectSequentialDataLoader::new(&data),
     );
+    // Freed before the checkpoints are read back, each into a trainer of its own.
+    drop(trainer);
+    let save_rate = SAVE_RATE.min(superbatches);
+    let checkpoints: Vec<PathBuf> = (1..=superbatches)
+        .filter(|sb| sb % save_rate == 0 || *sb == superbatches)
+        .map(|sb| Path::new(out).join(format!("{id}-{sb}")))
+        .collect();
+    validation(&checkpoints, holdout, positions, result_share)
+}
+
+/// Each checkpoint's validation loss over the holdout, from the trainer's own forward pass, beside
+/// the training loss it logged for the same superbatch; a reading, not a gate.
+fn validate(flags: &Flags) -> Result<(), String> {
+    let checkpoints: Vec<PathBuf> = flags
+        .get("--checkpoint")
+        .map(|c| c.iter().map(PathBuf::from).collect())
+        .ok_or_else(|| format!("validate needs --checkpoint\n{USAGE}"))?;
+    let manifests: Vec<&Path> = flags
+        .get("--manifest")
+        .map(|m| m.iter().map(Path::new).collect())
+        .ok_or_else(|| format!("validate needs --manifest, the holdout's manifest\n{USAGE}"))?;
+    let holdout = Path::new(one(flags, "--holdout")?);
+    cadence_train::data::verify_holdout(holdout, &manifests)?;
+    let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
+    let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
+    validation(&checkpoints, holdout, positions, result_share)
+}
+
+/// The holdout's first `positions` records, scored by each checkpoint in a trainer of its own,
+/// since the trainer keeps the first weights it evaluates with.
+fn validation(
+    checkpoints: &[PathBuf],
+    holdout: &Path,
+    positions: usize,
+    result_share: f32,
+) -> Result<(), String> {
+    let bytes = std::fs::read(holdout).map_err(|e| format!("{}: {e}", holdout.display()))?;
+    let examples = bytes
+        .as_chunks::<{ cadence_dataset::trainer::RECORD_LEN }>()
+        .0
+        .iter()
+        .take(positions)
+        .map(cadence_train::validate::example)
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(|e| format!("{}: {e}", holdout.display()))?;
+    if examples.is_empty() {
+        return Err(format!("{} holds no record", holdout.display()));
+    }
+    if let Some(missing) = checkpoints
+        .iter()
+        .find(|c| !c.join("optimiser_state").is_dir())
+    {
+        return Err(format!(
+            "{} is not a checkpoint the trainer saved",
+            missing.display()
+        ));
+    }
+    let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
+    let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
+    for checkpoint in checkpoints {
+        let mut trainer = recipe!();
+        trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
+        let loss: f64 = examples
+            .iter()
+            .map(|e| cadence_train::validate::loss(trainer.eval(&e.fen), e, result_share, scale))
+            .sum::<f64>()
+            / f64::from(n);
+        let superbatch = checkpoint
+            .file_name()
+            .and_then(|name| name.to_string_lossy().rsplit('-').next()?.parse().ok());
+        let log = std::fs::read_to_string(checkpoint.join("log.txt")).unwrap_or_default();
+        let training = superbatch
+            .and_then(|sb| cadence_train::validate::training_loss(&log, sb))
+            .map_or_else(|| "not logged".to_string(), |t| format!("{t:.6}"));
+        println!(
+            "validation: {}: training loss {training}, validation loss {loss:.6} over {n} holdout \
+             positions",
+            checkpoint.display()
+        );
+    }
     Ok(())
 }
 
@@ -239,8 +331,10 @@ fn book(flags: &Flags) -> Result<(), String> {
     let seed_text = one(flags, "--seed")?;
     let seed =
         u64::from_str_radix(seed_text, 16).map_err(|_| format!("--seed {seed_text} is not hex"))?;
+    let every = parsed(flags, "--every", BOOK_EVERY)?;
     let manifest_path = PathBuf::from(format!("{}.manifest", out.display()));
-    for path in [&out, &manifest_path] {
+    let holdout_path = PathBuf::from(format!("{}.holdout", out.display()));
+    for path in [&out, &holdout_path, &manifest_path] {
         if path.exists() {
             return Err(format!(
                 "{} exists, and a conversion never replaces one",
@@ -250,16 +344,19 @@ fn book(flags: &Flags) -> Result<(), String> {
     }
     let bytes = std::fs::read(input).map_err(|e| format!("{input}: {e}"))?;
     let text = String::from_utf8(bytes.clone()).map_err(|e| format!("{input}: not UTF-8: {e}"))?;
-    let (records, read) = cadence_train::book::convert(&text, seed)?;
-    let flat: Vec<u8> = records.iter().flatten().copied().collect();
+    let (split, read) = cadence_train::book::convert(&text, seed, every)?;
+    let flat: Vec<u8> = split.train.iter().flatten().copied().collect();
+    let held: Vec<u8> = split.holdout.iter().flatten().copied().collect();
     std::fs::write(&out, &flat).map_err(|e| format!("{}: {e}", out.display()))?;
+    std::fs::write(&holdout_path, &held).map_err(|e| format!("{}: {e}", holdout_path.display()))?;
     let name = Path::new(input)
         .file_name()
         .map_or_else(|| input.into(), |n| n.to_string_lossy());
     let manifest = format!(
         "{BOOK_HEADER}\nsource\t{name}\nsource-sha256\t{}\nsource-bytes\t{}\npositions\t{}\n\
          white-to-move\t{}\nresults-loss-draw-win\t{} {} {}\nscore\tnone, written as 0\n\
-         shuffle-seed\t{seed:016x}\nrecords-sha256\t{}\nconverter-commit\t{COMMIT}\n\
+         shuffle-seed\t{seed:016x}\nholdout-every\t{every}\nrecords\t{}\nrecords-sha256\t{}\n\
+         holdout-records\t{}\nholdout-sha256\t{}\nconverter-commit\t{COMMIT}\n\
          converter-modified\t{DIRTY}\n",
         hex(&sha256(&bytes)),
         bytes.len(),
@@ -268,14 +365,20 @@ fn book(flags: &Flags) -> Result<(), String> {
         read.results[0],
         read.results[1],
         read.results[2],
+        split.train.len(),
         hex(&sha256(&flat)),
+        split.holdout.len(),
+        hex(&sha256(&held)),
     );
     std::fs::write(&manifest_path, manifest)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
     println!(
-        "{}: {} positions, {} with White to move, mover's results {:?}; manifest {}",
+        "{}: {} positions, {} held out in {}, {} with White to move, mover's results {:?}; \
+         manifest {}",
         out.display(),
         read.positions,
+        split.holdout.len(),
+        holdout_path.display(),
         read.white_to_move,
         read.results,
         manifest_path.display()

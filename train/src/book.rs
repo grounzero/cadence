@@ -40,13 +40,30 @@ pub fn parse_line(line: &str) -> Result<(Board, u8), String> {
     Ok((board, white))
 }
 
-/// Every line a record, shuffled from `seed` because the trainer's reader takes them in file order.
+/// The records a conversion writes: every `every`-th line held out for validation, the rest to
+/// train on, each shuffled from the seed because the trainer's reader takes them in file order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Split {
+    pub train: Vec<[u8; RECORD_LEN]>,
+    pub holdout: Vec<[u8; RECORD_LEN]>,
+}
+
+/// Every line a record, the `every`-th from the first held out.
 ///
 /// # Errors
 ///
-/// The first line `parse_line` refuses, by its number; blank lines are skipped.
-pub fn convert(text: &str, seed: u64) -> Result<(Vec<[u8; RECORD_LEN]>, Read), String> {
-    let mut records = Vec::new();
+/// An `every` below 2, or the first line `parse_line` refuses, by its number; blank lines are
+/// skipped and not counted.
+pub fn convert(text: &str, seed: u64, every: usize) -> Result<(Split, Read), String> {
+    if every < 2 {
+        return Err(format!(
+            "holding out every {every}th line leaves nothing to train on"
+        ));
+    }
+    let mut split = Split {
+        train: Vec::new(),
+        holdout: Vec::new(),
+    };
     let mut read = Read::default();
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
@@ -59,14 +76,21 @@ pub fn convert(text: &str, seed: u64) -> Result<(Vec<[u8; RECORD_LEN]>, Read), S
         } else {
             WIN - white
         };
-        records.push(encode(&board, 0, result));
+        let record = encode(&board, 0, result);
+        if read.positions % every as u64 == 0 {
+            split.holdout.push(record);
+        } else {
+            split.train.push(record);
+        }
         read.positions += 1;
         read.white_to_move += u64::from(to_move == Colour::White);
         read.results[usize::from(result)] += 1;
     }
     let mut rng = Rng::new(seed);
-    for i in (1..records.len()).rev() {
-        records.swap(i, rng.below(i + 1));
+    for records in [&mut split.train, &mut split.holdout] {
+        for i in (1..records.len()).rev() {
+            records.swap(i, rng.below(i + 1));
+        }
     }
-    Ok((records, read))
+    Ok((split, read))
 }
