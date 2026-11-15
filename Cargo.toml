@@ -1,6 +1,6 @@
 [workspace]
 members  = ["core", "dataset", "nnue", "engine", "tools"]
-exclude  = ["xtask"]
+exclude  = ["xtask", "train"]
 resolver = "3"
 
 [workspace.package]

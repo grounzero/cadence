@@ -144,10 +144,15 @@ cargo test --manifest-path xtask/Cargo.toml
 cargo xtask check-headers
 cargo xtask check-boundary
 cargo xtask check-changelog
+cargo fmt --manifest-path train/Cargo.toml -- --check
+cargo clippy --manifest-path train/Cargo.toml --all-targets -- -D warnings
+cargo build -p cadence-tools
+CADENCE_TOOLS=target/debug/cadence-tools cargo test --manifest-path train/Cargo.toml
 ```
 
 The second line runs the slow tests, the deep perft runs among them. The rest
-are CI's checks; `xtask` is a separate crate, so it has lines of its own.
+are CI's checks; `xtask` and `train` are separate crates, so they have lines of
+their own, and `train`'s tests run the `cadence-tools` built before them.
 
 ### Benchmark and perft
 
@@ -177,6 +182,8 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
 | `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. |
 | `cadence-tools forward --net FILE [--raw FILE] [--positions N] [--seed HEX]` | Scores at least 1,000 random legal positions with a net file's quantised evaluation and with an `f32` one written from the file alone, or from the trainer's unquantised weights with `--raw`, and passes when no position differs by more than 5 centipawns and the mean by no more than 1. |
+| `cadence-train run --data FILE... --out DIR --id NAME` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). It needs a GPU and the `cuda` feature. |
+| `cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE` | Writes one checkpoint as the file `EvalFile` loads, naming the data's manifest and the commit that trained it. |
 
 ### Git hooks
 
