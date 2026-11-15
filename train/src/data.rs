@@ -3,11 +3,12 @@
 //! Which files a run may train on: each must hash to the training file a manifest names, so a
 //! changed byte, a holdout split or another dataset's records are refused before training starts.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use cadence_dataset::sha256::{Sha256, hex};
+use cadence_dataset::sha256::{Sha256, hex, sha256};
 
 use crate::export::CONVERTED;
 
@@ -84,13 +85,22 @@ pub fn file_sha256(path: &Path) -> Result<String, String> {
     }
 }
 
-/// Every data file hashes to a training file one of the manifests names.
+/// Every data file hashes to a training file one of the manifests names, and no two to the same.
 ///
 /// # Errors
 ///
-/// An unreadable file or manifest, a manifest `training_sha256` refuses, or a data file whose
-/// SHA-256 no manifest names as its training file, with both sides spelled out.
+/// As `matched`.
 pub fn verify(data: &[&Path], manifests: &[&Path]) -> Result<(), String> {
+    matched(data, manifests).map(|_| ())
+}
+
+/// The manifests whose training file a data file hashes to, once each and in the order given.
+///
+/// # Errors
+///
+/// An unreadable file or manifest, a manifest `training_sha256` refuses, a data file whose SHA-256
+/// no manifest names as its training file, or two data files with the same records.
+pub fn matched<'a>(data: &[&Path], manifests: &[&'a Path]) -> Result<Vec<&'a Path>, String> {
     if manifests.is_empty() {
         return Err("no manifest, and a run trains only on files a manifest names".to_string());
     }
@@ -99,29 +109,39 @@ pub fn verify(data: &[&Path], manifests: &[&Path]) -> Result<(), String> {
         let text = std::fs::read_to_string(manifest)
             .map_err(|e| format!("{}: {e}", manifest.display()))?;
         let sha = training_sha256(&text).map_err(|e| format!("{}: {e}", manifest.display()))?;
-        named.push(format!("{sha} ({})", manifest.display()));
+        named.push(sha);
     }
+    let mut seen: Vec<(String, &Path)> = Vec::new();
+    let mut used = vec![false; manifests.len()];
     for path in data {
         let sha = file_sha256(path)?;
-        if !named.iter().any(|n| n.starts_with(&sha)) {
+        if let Some((_, earlier)) = seen.iter().find(|(s, _)| *s == sha) {
+            return Err(format!(
+                "{}: the same records as {} (SHA-256 {sha}), and a run reads each file once",
+                path.display(),
+                earlier.display()
+            ));
+        }
+        let Some(i) = named.iter().position(|n| *n == sha) else {
+            let listed: Vec<String> = named
+                .iter()
+                .zip(manifests)
+                .map(|(n, m)| format!("{n} ({})", m.display()))
+                .collect();
             return Err(format!(
                 "{}: SHA-256 {sha} is not the training file any manifest names: {}",
                 path.display(),
-                named.join(", ")
+                listed.join(", ")
             ));
-        }
+        };
+        used[i] = true;
+        seen.push((sha, path));
     }
-    Ok(())
-}
-
-/// The manifests whose training file a data file hashes to.
-///
-/// # Errors
-///
-/// As `verify`.
-pub fn matched<'a>(data: &[&Path], manifests: &[&'a Path]) -> Result<Vec<&'a Path>, String> {
-    verify(data, manifests)?;
-    Ok(manifests.to_vec())
+    Ok(manifests
+        .iter()
+        .zip(used)
+        .filter_map(|(m, u)| u.then_some(*m))
+        .collect())
 }
 
 /// The holdout file hashes to the holdout split one of the manifests names.
@@ -155,31 +175,54 @@ pub const VERIFIED_MANIFESTS: &str = "verified-manifests";
 /// Written beside the checkpoints, so an export names the commit that trained them, not its own.
 pub const COMMIT_FILE: &str = "trainer-commit";
 
-/// A run's directory holds no other run's record.
+/// A run's directory holds no other run's record, since a second run would overwrite the first's.
 ///
 /// # Errors
 ///
-/// Every directory, until one is checked.
+/// A directory holding `COMMIT_FILE` or `VERIFIED_MANIFESTS`.
 pub fn fresh_run(out: &Path) -> Result<(), String> {
-    Err(format!("{}: unchecked", out.display()))
+    for name in [COMMIT_FILE, VERIFIED_MANIFESTS] {
+        if out.join(name).exists() {
+            return Err(format!(
+                "{} holds another run's {name}, and a run never shares its directory",
+                out.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Writes `VERIFIED_MANIFESTS` in `out` for the manifests the run verified.
 ///
 /// # Errors
 ///
-/// None, until it writes.
+/// An unreadable manifest, or a file that cannot be written.
 pub fn record_manifests(out: &Path, manifests: &[&Path]) -> Result<(), String> {
-    let _ = (out, manifests);
-    Ok(())
+    let mut text = String::new();
+    for manifest in manifests {
+        let _ = writeln!(text, "{}\t{}", file_sha256(manifest)?, manifest.display());
+    }
+    let path = out.join(VERIFIED_MANIFESTS);
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The manifest an export names is one the run in `run` verified.
 ///
 /// # Errors
 ///
-/// None, until the record is read.
+/// No `VERIFIED_MANIFESTS` in `run`, or a manifest it does not list.
 pub fn verify_export(run: &Path, manifest: &[u8]) -> Result<(), String> {
-    let _ = (run, manifest);
-    Ok(())
+    let path = run.join(VERIFIED_MANIFESTS);
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let sha = hex(&sha256(manifest));
+    if text
+        .lines()
+        .any(|line| line.split('\t').next() == Some(sha.as_str()))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "the manifest, SHA-256 {sha}, is not one the run verified, as {} lists them",
+        path.display()
+    ))
 }
