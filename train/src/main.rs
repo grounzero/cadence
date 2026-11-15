@@ -20,6 +20,7 @@ use cadence_core::features::NUM_INPUTS;
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
 use cadence_nnue::{HIDDEN, Provenance};
+use cadence_train::data::BOOK_HEADER;
 
 const SUPERBATCHES: usize = 40;
 const BATCH_SIZE: usize = 16_384;
@@ -38,10 +39,7 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 /// Written beside the checkpoints, so an export names the commit that trained them, not its own.
 const COMMIT_FILE: &str = "trainer-commit";
 
-/// The first line of a book conversion's manifest, which the net's header hashes with the rest.
-const BOOK_MANIFEST: &str = "# cadence book conversion, written by cadence-train book";
-
-const USAGE: &str = "usage: cadence-train run --data FILE [--data FILE]... --out DIR --id NAME
+const USAGE: &str = "usage: cadence-train run --data FILE... --manifest FILE... --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
        cadence-train book --in FILE --out FILE --seed HEX";
@@ -98,6 +96,18 @@ fn parsed<T: std::str::FromStr>(flags: &Flags, name: &str, default: T) -> Result
 }
 
 fn run(flags: &Flags) -> Result<(), String> {
+    // Before anything is built: a run trains only on the files its manifests name.
+    let manifests: Vec<&Path> = flags
+        .get("--manifest")
+        .map(|m| m.iter().map(Path::new).collect())
+        .ok_or_else(|| {
+            format!("run needs --manifest, the manifest of the data it trains on\n{USAGE}")
+        })?;
+    let data_paths: Vec<&Path> = flags
+        .get("--data")
+        .map(|d| d.iter().map(Path::new).collect())
+        .ok_or_else(|| format!("run needs --data\n{USAGE}"))?;
+    cadence_train::data::verify(&data_paths, &manifests)?;
     let superbatches = parsed(flags, "--superbatches", SUPERBATCHES)?;
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
@@ -237,7 +247,7 @@ fn book(flags: &Flags) -> Result<(), String> {
         .file_name()
         .map_or_else(|| input.into(), |n| n.to_string_lossy());
     let manifest = format!(
-        "{BOOK_MANIFEST}\nsource\t{name}\nsource-sha256\t{}\nsource-bytes\t{}\npositions\t{}\n\
+        "{BOOK_HEADER}\nsource\t{name}\nsource-sha256\t{}\nsource-bytes\t{}\npositions\t{}\n\
          white-to-move\t{}\nresults-loss-draw-win\t{} {} {}\nscore\tnone, written as 0\n\
          shuffle-seed\t{seed:016x}\nrecords-sha256\t{}\nconverter-commit\t{COMMIT}\n\
          converter-modified\t{DIRTY}\n",
