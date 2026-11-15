@@ -127,3 +127,70 @@ fn too_few_positions_or_a_short_raw_file_is_refused() {
         "{cut_text}"
     );
 }
+
+/// The engine's own scores at random positions, as the trainer's evaluation would print them, each
+/// shifted by `shift` centipawns.
+fn trainer_file(net: &Network, shift: f64) -> String {
+    let mut rng = cadence_core::rng::Rng::new(77);
+    let mut out = String::new();
+    for _ in 0..200 {
+        let mut board =
+            cadence_core::position::Board::from_fen(cadence_core::START_FEN).expect("a start");
+        for _ in 0..rng.below(60) {
+            let legal = cadence_core::generate_legal(&board);
+            let Some(&m) = legal.as_slice().get(rng.below(legal.len().max(1))) else {
+                break;
+            };
+            board.play(m);
+        }
+        let cp = f64::from(net.evaluate(&net.refresh(&board), board.side_to_move())) + shift;
+        let fen = board.to_fen(cadence_core::FenStyle::XFen);
+        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{cp:.4}\t{fen}\n"));
+    }
+    out
+}
+
+/// The trainer's own outputs are compared with the reference over the raw weights at the same
+/// positions, so a reference that has drifted from the trainer shows as distance, not as a pass.
+#[test]
+fn the_reference_is_measured_against_the_trainers_own_outputs() {
+    let dir = scratch("against");
+    let seeded = Network::seeded(5, Provenance::SelfPlay);
+    let file = seeded.to_bytes();
+    let net = write(&dir, "net.cdnn", &file);
+    let exact = write(&dir, "raw.bin", &raw(&file, |_, w| w));
+    let same = write(&dir, "same.txt", trainer_file(&seeded, 0.0).as_bytes());
+    let off = write(&dir, "off.txt", trainer_file(&seeded, 50.0).as_bytes());
+    let (ok, close) = forward(&["--net", &net, "--raw", &exact, "--against", &same]);
+    assert!(ok, "{close}");
+    assert!(
+        close.contains("against the trainer's own evaluation of 200 positions"),
+        "{close}"
+    );
+    assert!(
+        close.contains("integer path max |delta| 0.000 cp"),
+        "{close}"
+    );
+    let reference_max = |text: &str| -> f64 {
+        let at = text
+            .find("reference max |delta| ")
+            .expect("a reference reading")
+            + 22;
+        text[at..]
+            .split(' ')
+            .next()
+            .expect("a number")
+            .parse()
+            .expect("a number")
+    };
+    assert!(reference_max(&close) < 1.0, "{close}");
+    let (ok, far) = forward(&["--net", &net, "--raw", &exact, "--against", &off]);
+    assert!(ok, "{far}");
+    assert!((reference_max(&far) - 50.0).abs() < 1.0, "{far}");
+    let (ok, refused) = forward(&["--net", &net, "--against", &same]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !ok && refused.contains("--against needs --raw"),
+        "{refused}"
+    );
+}
