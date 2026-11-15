@@ -176,6 +176,7 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
 | `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. |
+| `cadence-tools forward --net FILE [--raw FILE] [--positions N] [--seed HEX]` | Scores at least 1,000 random legal positions with a net file's quantised evaluation and with an `f32` one written from the file alone, or from the trainer's unquantised weights with `--raw`, and passes when no position differs by more than 5 centipawns and the mean by no more than 1. |
 
 ### Git hooks
 
