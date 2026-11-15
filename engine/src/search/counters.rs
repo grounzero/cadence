@@ -12,6 +12,7 @@ use super::{Limits, NODE_PUBLISH_INTERVAL, Search};
 use crate::conthist::{self, ContinuationHistory, OFFSETS};
 use crate::eval;
 use crate::history::{self, History};
+use crate::position::Position;
 use crate::score::{self, Score};
 use crate::tt::Bound;
 
@@ -103,12 +104,20 @@ pub(super) struct Stats {
     pub(super) probcut_exchanges: Counter,
     pub(super) quiescence_exchanges: Counter,
     pub(super) evasion_exchanges: Counter,
+    /// Every static reading, the net's or the handcrafted one's, so a timing can price it per node.
+    pub(super) static_evals: Counter,
 }
 
 impl Search<'_> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.run.nodes
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn static_evals(&self) -> u64 {
+        self.stats.static_evals.get()
     }
 
     #[cfg(feature = "counters")]
@@ -450,7 +459,7 @@ impl Search<'_> {
     /// scored against.
     pub(super) fn corrected_eval(
         &mut self,
-        board: &Board,
+        board: &Position,
         in_check: bool,
         pawn_key: u64,
         side: Colour,
@@ -460,7 +469,15 @@ impl Search<'_> {
         }
         let correction = self.heuristics.corrhist.correction(pawn_key, side);
         self.stats.corrhist_applied.add_if(correction != 0);
-        Some(eval::evaluate_cached(board, &mut self.pawns) + correction)
+        Some(self.static_eval(board) + correction)
+    }
+
+    /// The net's score where the position carries one, the handcrafted evaluation's otherwise.
+    pub(super) fn static_eval(&mut self, board: &Position) -> Score {
+        self.stats.static_evals.add_one();
+        board
+            .net_eval()
+            .unwrap_or_else(|| eval::evaluate_cached(board, &mut self.pawns))
     }
 
     /// Disqualified: no static reading, a decided score, a noisy or absent best move, or a bound

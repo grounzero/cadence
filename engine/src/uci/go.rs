@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
+use cadence_nnue::Network;
 
 use super::say::say;
 use super::{Running, Session};
@@ -62,7 +63,7 @@ impl Session {
         let root_filter = search_moves(&tokens, &generate_legal(&board));
         // Owed whatever happens next, so spelled before anything can fail to start.
         let fallback = first_answer(&board, &root_filter, self.chess960);
-        let tables = self.tables.clone();
+        let (tables, net) = (self.tables.clone(), self.active_net());
         let chess960 = self.chess960;
         let level = self.level();
         let multipv = self.multipv;
@@ -87,7 +88,7 @@ impl Session {
                     let go_on = || probing_allowed(&stop, received, hard);
                     let (root_filter, decided, rank) =
                         tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
-                    let mut pos = Position::new(board);
+                    let mut pos = position_for(board, net);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
                     let (best, pv) = if threads == 1 {
                         let mut out = std::io::stdout();
@@ -240,7 +241,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         .into();
     let mut helpers = Vec::with_capacity(threads.saturating_sub(1));
     for worker_index in 1..threads {
-        let mut helper_board = Position::new(board.duplicate());
+        let mut helper_board = board.fork();
         let helper_stop = Arc::clone(stop);
         let helper_ponder_hit = Arc::clone(ponder_hit);
         let helper_tt = Arc::clone(tt);
@@ -395,4 +396,12 @@ fn ponder_move(board: &mut Position, best: Move, pv: &[Move], chess960: bool) ->
         .then(|| to_uci(reply, &legal, chess960));
     board.unmake_move(best);
     spelled
+}
+
+/// Scored by the net where one is active, by the handcrafted evaluation otherwise.
+fn position_for(board: Board, net: Option<Arc<Network>>) -> Position {
+    match net {
+        Some(net) => Position::with_net(board, net),
+        None => Position::new(board),
+    }
 }

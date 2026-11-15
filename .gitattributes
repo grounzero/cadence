@@ -1,2 +1,4 @@
 # Checked out as LF on every platform: the hooks fail on a CR after their shebang.
 * text=auto eol=lf
+# The embedded net is weights, never text, so no platform rewrites a byte of it.
+nnue/net.cdnn -text

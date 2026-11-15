@@ -8,6 +8,7 @@ use std::thread::JoinHandle;
 
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
+use cadence_nnue::Network;
 
 use crate::level;
 use crate::syzygy::{self, Tables};
@@ -62,12 +63,23 @@ pub struct Session {
     /// Loaded on `setoption` and handed to each search; `None` probes nothing.
     tables: Option<Arc<Tables>>,
     syzygy_path: String,
+    nnue: NetOptions,
     probe_limit: usize,
     /// Until `stop`, `position`, the next `go`, or shutdown joins it; it may already have finished.
     search: Option<Running>,
     /// Why the last `position` command failed, until a valid one clears it; every `go` meanwhile
     /// answers `bestmove 0000` and searches nothing.
     refused: Option<String>,
+}
+
+/// `Use NNUE`, `EvalFile` and the net that file loaded.
+#[derive(Default)]
+struct NetOptions {
+    /// Off by default, so the handcrafted evaluation scores every search until it is set.
+    on: bool,
+    file: String,
+    /// Loaded and checked on `setoption`; `None` until a file loads.
+    net: Option<Arc<Network>>,
 }
 
 struct Running {
@@ -103,6 +115,7 @@ impl Session {
             move_overhead: time::MOVE_OVERHEAD_MS,
             tables: None,
             syzygy_path: String::new(),
+            nnue: NetOptions::default(),
             probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
             refused: None,
@@ -197,6 +210,12 @@ impl Session {
                     time::MOVE_OVERHEAD_MS
                 ));
                 say(format_args!("option name Clear Hash type button"));
+                say(format_args!(
+                    "option name Use NNUE type check default false"
+                ));
+                say(format_args!(
+                    "option name EvalFile type string default <empty>"
+                ));
                 say(format_args!(
                     "option name SyzygyPath type string default <empty>"
                 ));
