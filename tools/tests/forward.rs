@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `cadence-tools forward` on seeded nets: it passes a file against itself and its own exact
-//! weights, and fails weights that differ, so a pass is a reading and not a default.
+//! `cadence-tools forward` on seeded nets: the net file decides, against an f32 pass over the file
+//! itself, and the trainer's raw weights are a reading that decides nothing either way.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,16 +71,19 @@ fn a_net_agrees_with_its_file_and_its_unquantised_weights() {
     let (ok, text) = forward(&["--net", &net, "--raw", &exact]);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "{text}");
-    assert_eq!(text.matches(", PASS (bounds 5 and 1)").count(), 2, "{text}");
+    assert_eq!(text.matches(", PASS (bounds 5 and 1)").count(), 1, "{text}");
     assert!(
         text.contains("against the net file, 1000 positions"),
         "{text}"
     );
+    assert!(text.contains("decides nothing: max"), "{text}");
+    assert!(text.contains("within the bounds"), "{text}");
 }
 
-/// One output weight a tenth larger in the raw file moves every position it reaches.
+/// Output weights a tenth larger in the raw file move every position they reach, which the reading
+/// reports and the exit ignores.
 #[test]
-fn weights_that_differ_fail() {
+fn raw_weights_that_differ_are_reported_and_decide_nothing() {
     let dir = scratch("differ");
     let file = Network::seeded(5, Provenance::SelfPlay).to_bytes();
     let net = write(&dir, "net.cdnn", &file);
@@ -96,13 +99,14 @@ fn weights_that_differ_fail() {
     let wrong = write(&dir, "raw.bin", &wrong);
     let (ok, text) = forward(&["--net", &net, "--raw", &wrong]);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(!ok, "{text}");
+    assert!(ok, "{text}");
     assert!(
         text.contains("against the net file, 1000 positions"),
         "{text}"
     );
     assert!(text.contains(", PASS (bounds"), "{text}");
-    assert!(text.contains(", FAIL (bounds"), "{text}");
+    assert!(text.contains("outside the bounds"), "{text}");
+    assert!(!text.contains("FAIL"), "{text}");
 }
 
 #[test]
