@@ -3,9 +3,13 @@
 //! A checkpoint laid out as the trainer saves it, exported and loaded by the engine: the weights
 //! arrive unchanged, and each fault the export refuses is named.
 
+use std::path::Path;
+use std::process::Command;
+
 use cadence_dataset::sha256::sha256;
 use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
 use cadence_nnue::{LoadError, Network, Provenance};
+use cadence_train::data::{COMMIT_FILE, record_manifests};
 use cadence_train::export::{CONVERTED, ExportError, PADDING, export};
 
 const TRAINER: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -83,4 +87,50 @@ fn each_fault_is_refused_by_name() {
         attempt(&output, Provenance::SelfPlay, TRAINER, &manifest()),
         Some(ExportError::Load(LoadError::OutputWeight { .. }))
     ));
+}
+
+/// The command reads the record its run wrote beside the checkpoints: trained against manifest A,
+/// a checkpoint exports with A and is refused with B, and nothing is written.
+#[test]
+fn an_export_refuses_a_manifest_its_run_did_not_verify() {
+    let dir = std::env::temp_dir().join(format!("cadence-export-verified-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("checkpoints");
+    let saved = run.join("net-10");
+    std::fs::create_dir_all(&saved).expect("a checkpoint directory");
+    std::fs::write(saved.join("quantised.bin"), checkpoint()).expect("writes");
+    std::fs::write(run.join(COMMIT_FILE), format!("{TRAINER}\n")).expect("writes");
+    let (a, b) = (dir.join("a.tsv"), dir.join("b.tsv"));
+    std::fs::write(&a, manifest()).expect("writes");
+    std::fs::write(
+        &b,
+        format!("{CONVERTED}converter-commit\t{}\n", "f".repeat(40)),
+    )
+    .expect("writes");
+    record_manifests(&run, &[&a]).expect("records");
+    let export = |manifest: &Path, out: &Path| {
+        let done = Command::new(env!("CARGO_BIN_EXE_cadence-train"))
+            .arg("export")
+            .arg("--checkpoint")
+            .arg(&saved)
+            .arg("--manifest")
+            .arg(manifest)
+            .args(["--provenance", "self-play", "--out"])
+            .arg(out)
+            .output()
+            .expect("cadence-train runs");
+        (
+            done.status.success(),
+            String::from_utf8_lossy(&done.stderr).into_owned(),
+        )
+    };
+    let (ok, text) = export(&b, &dir.join("b.cdnn"));
+    assert!(
+        !ok && text.contains("is not one the run verified"),
+        "{text}"
+    );
+    assert!(!dir.join("b.cdnn").exists());
+    let (ok, text) = export(&a, &dir.join("a.cdnn"));
+    assert!(ok, "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

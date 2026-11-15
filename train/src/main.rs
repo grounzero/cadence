@@ -20,7 +20,7 @@ use cadence_core::features::NUM_INPUTS;
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
 use cadence_nnue::{HIDDEN, Provenance};
-use cadence_train::data::BOOK_HEADER;
+use cadence_train::data::{BOOK_HEADER, COMMIT_FILE};
 
 const SUPERBATCHES: usize = 40;
 const BATCH_SIZE: usize = 16_384;
@@ -41,8 +41,6 @@ const BOOK_EVERY: usize = 10;
 
 const COMMIT: &str = env!("CADENCE_TRAIN_COMMIT");
 const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
-/// Written beside the checkpoints, so an export names the commit that trained them, not its own.
-const COMMIT_FILE: &str = "trainer-commit";
 
 const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
@@ -145,9 +143,12 @@ fn run(flags: &Flags) -> Result<(), String> {
         .get("--data")
         .map(|d| d.iter().map(Path::new).collect())
         .ok_or_else(|| format!("run needs --data\n{USAGE}"))?;
-    cadence_train::data::verify(&data_paths, &manifests)?;
+    let verified = cadence_train::data::matched(&data_paths, &manifests)?;
     let holdout = Path::new(one(flags, "--holdout")?);
-    cadence_train::data::verify_holdout(holdout, &manifests)?;
+    cadence_train::data::verify_holdout(holdout, &verified)
+        .map_err(|e| format!("{e}, and only a manifest naming a --data file counts"))?;
+    let out = one(flags, "--out")?;
+    cadence_train::data::fresh_run(Path::new(out))?;
     let superbatches = parsed(flags, "--superbatches", SUPERBATCHES)?;
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
@@ -161,7 +162,6 @@ fn run(flags: &Flags) -> Result<(), String> {
         .get("--data")
         .map(|d| d.iter().map(String::as_str).collect())
         .ok_or_else(|| format!("run needs --data\n{USAGE}"))?;
-    let out = one(flags, "--out")?;
     let id = one(flags, "--id")?;
     if COMMIT.len() != 40 || DIRTY != "0" {
         return Err(format!(
@@ -172,6 +172,7 @@ fn run(flags: &Flags) -> Result<(), String> {
     let commit_file = Path::new(out).join(COMMIT_FILE);
     std::fs::write(&commit_file, format!("{COMMIT}\n"))
         .map_err(|e| format!("{}: {e}", commit_file.display()))?;
+    cadence_train::data::record_manifests(Path::new(out), &verified)?;
 
     let mut trainer = recipe!();
     let schedule = TrainingSchedule {
@@ -303,14 +304,13 @@ fn export(flags: &Flags) -> Result<(), String> {
     }
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
     let quantised = read(&checkpoint.join("quantised.bin"))?;
-    let commit_file = checkpoint
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(COMMIT_FILE);
+    let run = checkpoint.parent().unwrap_or(Path::new("."));
+    let commit_file = run.join(COMMIT_FILE);
     let trainer = String::from_utf8_lossy(&read(&commit_file)?)
         .trim()
         .to_string();
     let manifest = read(Path::new(manifest_path))?;
+    cadence_train::data::verify_export(run, &manifest)?;
     let net = cadence_train::export::export(&quantised, provenance, &trainer, &manifest)
         .map_err(|e| e.to_string())?;
     std::fs::write(&out, net.to_bytes()).map_err(|e| format!("{}: {e}", out.display()))?;

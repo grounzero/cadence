@@ -8,7 +8,10 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use cadence_train::data::{BOOK_HEADER, training_sha256, verify};
+use cadence_train::data::{
+    BOOK_HEADER, COMMIT_FILE, VERIFIED_MANIFESTS, matched, record_manifests, training_sha256,
+    verify, verify_export, verify_holdout,
+};
 use cadence_train::export::CONVERTED;
 use common::{convert_unit, dataset, games, scratch};
 
@@ -135,5 +138,135 @@ fn run_refuses_before_it_builds_a_trainer() {
     assert!(!ok && text.contains("is not the training file"), "{text}");
     assert!(!text.contains("Training Preamble"), "{text}");
     assert!(!dir.join("checkpoints").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `cadence-train run` with these arguments: whether it succeeded, and what it printed.
+fn train(args: &[&std::ffi::OsStr]) -> (bool, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_cadence-train"))
+        .arg("run")
+        .args(args)
+        .output()
+        .expect("cadence-train runs");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+/// A file passed twice, or two files holding the same records, would be trained on twice.
+#[test]
+fn the_same_records_twice_are_refused() {
+    let dir = scratch("same-records");
+    let (a, _) = two_units(&dir);
+    let (train_a, manifest_a) = (a.join("train.bin"), a.join("MANIFEST.tsv"));
+    let copy = dir.join("copy.bin");
+    std::fs::copy(&train_a, &copy).expect("copies");
+    for second in [&train_a, &copy] {
+        let refused = verify(&[&train_a, second], &[&manifest_a]).expect_err("the same records");
+        assert!(refused.contains("the same records as"), "{refused}");
+    }
+    let (ok, text) = train(&[
+        "--data".as_ref(),
+        train_a.as_os_str(),
+        "--data".as_ref(),
+        copy.as_os_str(),
+        "--manifest".as_ref(),
+        manifest_a.as_os_str(),
+    ]);
+    assert!(!ok && text.contains("the same records as"), "{text}");
+    assert!(!text.contains("Training Preamble"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The holdout is checked only against a manifest the training data matched, so another
+/// dataset's holdout is refused even beside its own manifest.
+#[test]
+fn the_holdout_is_the_training_datas_own() {
+    let dir = scratch("own-holdout");
+    let (a, b) = two_units(&dir);
+    let (manifest_a, manifest_b) = (a.join("MANIFEST.tsv"), b.join("MANIFEST.tsv"));
+    let verified =
+        matched(&[&a.join("train.bin")], &[&manifest_a, &manifest_b]).expect("matches A");
+    assert_eq!(verified, vec![manifest_a.as_path()]);
+    assert_eq!(verify_holdout(&a.join("holdout.bin"), &verified), Ok(()));
+    assert!(verify_holdout(&b.join("holdout.bin"), &verified).is_err());
+    let (ok, text) = train(&[
+        "--data".as_ref(),
+        a.join("train.bin").as_os_str(),
+        "--manifest".as_ref(),
+        manifest_a.as_os_str(),
+        "--manifest".as_ref(),
+        manifest_b.as_os_str(),
+        "--holdout".as_ref(),
+        b.join("holdout.bin").as_os_str(),
+        "--out".as_ref(),
+        dir.join("checkpoints").as_os_str(),
+        "--id".as_ref(),
+        "refused".as_ref(),
+    ]);
+    assert!(
+        !ok && text.contains("only a manifest naming a --data file counts"),
+        "{text}"
+    );
+    assert!(!dir.join("checkpoints").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A second run in one directory would overwrite the first's record of what trained its
+/// checkpoints; `--superbatches 0` stops the command if the check does not.
+#[test]
+fn a_run_never_shares_its_directory() {
+    let dir = scratch("shared-directory");
+    let (a, _) = two_units(&dir);
+    let used = dir.join("checkpoints");
+    for name in [COMMIT_FILE, VERIFIED_MANIFESTS] {
+        let _ = std::fs::remove_dir_all(&used);
+        std::fs::create_dir_all(&used).expect("a directory");
+        std::fs::write(used.join(name), "an earlier run\n").expect("writes");
+        let (ok, text) = train(&[
+            "--data".as_ref(),
+            a.join("train.bin").as_os_str(),
+            "--manifest".as_ref(),
+            a.join("MANIFEST.tsv").as_os_str(),
+            "--holdout".as_ref(),
+            a.join("holdout.bin").as_os_str(),
+            "--out".as_ref(),
+            used.as_os_str(),
+            "--id".as_ref(),
+            "refused".as_ref(),
+            "--superbatches".as_ref(),
+            "0".as_ref(),
+        ]);
+        assert!(
+            !ok && text.contains("never shares its directory"),
+            "{name}: {text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What a run records beside its checkpoints admits each manifest it verified and nothing else.
+#[test]
+fn an_export_names_only_a_manifest_its_run_verified() {
+    let dir = scratch("verified-manifests");
+    let (a, b) = two_units(&dir);
+    let (manifest_a, manifest_b) = (a.join("MANIFEST.tsv"), b.join("MANIFEST.tsv"));
+    let run = dir.join("checkpoints");
+    std::fs::create_dir_all(&run).expect("a directory");
+    let read = |path: &Path| std::fs::read(path).expect("reads");
+    assert!(
+        verify_export(&run, &read(&manifest_a)).is_err(),
+        "no record"
+    );
+    record_manifests(&run, &[&manifest_a]).expect("records");
+    assert_eq!(verify_export(&run, &read(&manifest_a)), Ok(()));
+    let refused = verify_export(&run, &read(&manifest_b)).expect_err("B was not verified");
+    assert!(refused.contains("is not one the run verified"), "{refused}");
+    let mut changed = read(&manifest_a);
+    changed.push(b'\n');
+    assert!(verify_export(&run, &changed).is_err(), "a byte added");
     let _ = std::fs::remove_dir_all(&dir);
 }
