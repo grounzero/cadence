@@ -175,3 +175,86 @@ fn a_search_leaves_the_accumulators_at_the_root() {
         assert_eq!(pos.net_eval(), fresh, "{fen}");
     }
 }
+
+/// Deep enough that the first search's table changes the second search's tree when it survives.
+const SWITCH_GO: &str = "go depth 7";
+const ONE_THREAD: &str = "setoption name Threads value 1";
+const ON: &str = "setoption name Use NNUE value true";
+const OFF: &str = "setoption name Use NNUE value false";
+
+/// Every iteration line but its clock, node counts included, and the `bestmove` line.
+fn outcome(lines: &[String]) -> (Vec<String>, String) {
+    (searched(lines), lines.last().cloned().unwrap_or_default())
+}
+
+/// `setup`, a search, `switch`, then the same search again, in one session on one thread.
+fn after_switch(setup: &[&str], switch: &[&str]) -> (Vec<String>, String) {
+    let position = format!("position fen {FEN}");
+    let mut e = Engine::spawn();
+    e.send(ONE_THREAD);
+    for line in setup {
+        e.send(line);
+    }
+    e.send(&position);
+    e.send(SWITCH_GO);
+    let _ = e.read_until("bestmove ");
+    for line in switch {
+        e.send(line);
+    }
+    e.send(&position);
+    e.send(SWITCH_GO);
+    let lines = e.read_until("bestmove ");
+    e.quit();
+    outcome(&lines)
+}
+
+/// The same search from an empty table, with `setup` choosing the evaluator.
+fn fresh(setup: &[&str]) -> (Vec<String>, String) {
+    let position = format!("position fen {FEN}");
+    let mut lines = vec![ONE_THREAD];
+    lines.extend_from_slice(setup);
+    lines.push(&position);
+    outcome(&Engine::go(&lines, SWITCH_GO))
+}
+
+/// The table holds scores, so turning the net on or off must leave none of the other evaluator's.
+#[test]
+fn toggling_use_nnue_searches_as_a_fresh_table_does() {
+    let file = net_file(
+        "toggle",
+        &Network::seeded(7, Provenance::SelfPlay).to_bytes(),
+    );
+    let load = format!("setoption name EvalFile value {}", file.display());
+    let to_net = after_switch(&[&load], &[ON]);
+    let to_handcrafted = after_switch(&[&load, ON], &[OFF]);
+    let fresh_net = fresh(&[&load, ON]);
+    let fresh_handcrafted = fresh(&[]);
+    let _ = std::fs::remove_file(file);
+    assert_eq!(to_net.0.len(), 7);
+    assert_eq!(to_net, fresh_net, "handcrafted, then the net");
+    assert_eq!(
+        to_handcrafted, fresh_handcrafted,
+        "the net, then handcrafted"
+    );
+}
+
+/// Another net scores the same positions differently, so loading one empties the table too.
+#[test]
+fn replacing_the_net_searches_as_a_fresh_table_does() {
+    let a = net_file(
+        "replace-a",
+        &Network::seeded(7, Provenance::SelfPlay).to_bytes(),
+    );
+    let b = net_file(
+        "replace-b",
+        &Network::seeded(8, Provenance::SelfPlay).to_bytes(),
+    );
+    let load_a = format!("setoption name EvalFile value {}", a.display());
+    let load_b = format!("setoption name EvalFile value {}", b.display());
+    let switched = after_switch(&[&load_a, ON], &[&load_b]);
+    let fresh_b = fresh(&[&load_b, ON]);
+    let _ = std::fs::remove_file(a);
+    let _ = std::fs::remove_file(b);
+    assert_eq!(switched.0.len(), 7);
+    assert_eq!(switched, fresh_b, "net a, then net b");
+}

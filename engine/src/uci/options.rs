@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use cadence_core::MAX_MOVES;
+use cadence_dataset::sha256::sha256;
 use cadence_nnue::Network;
 
 use super::say::say;
@@ -70,13 +71,17 @@ impl Session {
         } else if name.eq_ignore_ascii_case("SyzygyPath") {
             self.set_syzygy_path(path);
         } else if name.eq_ignore_ascii_case("Use NNUE") {
+            let before = self.evaluator();
             if value.eq_ignore_ascii_case("true") {
                 self.nnue.on = true;
             } else if value.eq_ignore_ascii_case("false") {
                 self.nnue.on = false;
             }
+            self.evaluator_changed(before);
         } else if name.eq_ignore_ascii_case("EvalFile") {
+            let before = self.evaluator();
             self.set_eval_file(path);
+            self.evaluator_changed(before);
         } else if name.eq_ignore_ascii_case("SyzygyProbeLimit") {
             self.set_probe_limit(&value);
         } else if let Some(param) = tune::find(&name) {
@@ -193,14 +198,19 @@ impl Session {
             value.to_string()
         };
         self.nnue.net = None;
+        self.nnue.key = None;
         if self.nnue.file.is_empty() {
             return;
         }
         let loaded = std::fs::read(&self.nnue.file)
             .map_err(|e| e.to_string())
-            .and_then(|bytes| Network::from_bytes(&bytes).map_err(|e| e.to_string()));
+            .and_then(|bytes| {
+                Network::from_bytes(&bytes)
+                    .map(|net| (net, sha256(&bytes)))
+                    .map_err(|e| e.to_string())
+            });
         match loaded {
-            Ok(net) => {
+            Ok((net, key)) => {
                 say(format_args!(
                     "info string EvalFile: {} loaded, provenance {}, trainer {}",
                     self.nnue.file,
@@ -208,11 +218,27 @@ impl Session {
                     net.trainer()
                 ));
                 self.nnue.net = Some(Arc::new(net));
+                self.nnue.key = Some(key);
             }
             Err(e) => say(format_args!(
                 "info string EvalFile: {}: {e}",
                 self.nnue.file
             )),
+        }
+    }
+
+    /// What scores a search: `None` for the handcrafted evaluation, else the net's file digest.
+    fn evaluator(&self) -> Option<[u8; 32]> {
+        self.nnue
+            .key
+            .filter(|_| self.nnue.on && self.nnue.net.is_some())
+    }
+
+    /// The table holds scores, so another evaluator starts from an empty one, as `ucinewgame` does.
+    fn evaluator_changed(&mut self, before: Option<[u8; 32]>) {
+        if self.evaluator() != before {
+            self.stop_search();
+            self.tt.clear();
         }
     }
 
