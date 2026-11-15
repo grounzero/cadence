@@ -17,7 +17,7 @@ use bullet_lib::trainer::settings::LocalSettings;
 use bullet_lib::value::ValueTrainerBuilder;
 use bullet_lib::value::loader::DirectSequentialDataLoader;
 use cadence_core::features::NUM_INPUTS;
-use cadence_dataset::sha256::hex;
+use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
 use cadence_nnue::{HIDDEN, Provenance};
 
@@ -38,14 +38,20 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 /// Written beside the checkpoints, so an export names the commit that trained them, not its own.
 const COMMIT_FILE: &str = "trainer-commit";
 
+/// The first line of a book conversion's manifest, which the net's header hashes with the rest.
+const BOOK_MANIFEST: &str = "# cadence book conversion, written by cadence-train book";
+
 const USAGE: &str = "usage: cadence-train run --data FILE [--data FILE]... --out DIR --id NAME
-       cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE";
+           [--superbatches N] [--batches N] [--result-share F]
+       cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
+       cadence-train book --in FILE --out FILE --seed HEX";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let done = match args.split_first() {
         Some((command, rest)) if command == "run" => flags(rest).and_then(|f| run(&f)),
         Some((command, rest)) if command == "export" => flags(rest).and_then(|f| export(&f)),
+        Some((command, rest)) if command == "book" => flags(rest).and_then(|f| book(&f)),
         _ => Err(USAGE.to_string()),
     };
     match done {
@@ -80,7 +86,26 @@ fn one<'a>(flags: &'a Flags, name: &str) -> Result<&'a str, String> {
     }
 }
 
+/// A flag's value parsed, or `default` when the flag is absent.
+fn parsed<T: std::str::FromStr>(flags: &Flags, name: &str, default: T) -> Result<T, String> {
+    match flags.get(name).map(Vec::as_slice) {
+        None => Ok(default),
+        Some([value]) => value
+            .parse()
+            .map_err(|_| format!("{name} {value} does not parse")),
+        Some(_) => Err(format!("{name} is given more than once")),
+    }
+}
+
 fn run(flags: &Flags) -> Result<(), String> {
+    let superbatches = parsed(flags, "--superbatches", SUPERBATCHES)?;
+    let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
+    let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
+    if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
+        return Err(format!(
+            "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
+        ));
+    }
     let data: Vec<&str> = flags
         .get("--data")
         .map(|d| d.iter().map(String::as_str).collect())
@@ -122,19 +147,19 @@ fn run(flags: &Flags) -> Result<(), String> {
         eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
         steps: TrainingSteps {
             batch_size: BATCH_SIZE,
-            batches_per_superbatch: BATCHES_PER_SUPERBATCH,
+            batches_per_superbatch: batches,
             start_superbatch: 1,
-            end_superbatch: SUPERBATCHES,
+            end_superbatch: superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL {
-            value: RESULT_SHARE,
+            value: result_share,
         },
         lr_scheduler: lr::CosineDecayLR {
             initial_lr: INITIAL_LR,
             final_lr: FINAL_LR,
-            final_superbatch: SUPERBATCHES,
+            final_superbatch: superbatches,
         },
-        save_rate: SAVE_RATE,
+        save_rate: SAVE_RATE.min(superbatches),
     };
     let settings = LocalSettings {
         threads: THREADS,
@@ -183,6 +208,57 @@ fn export(flags: &Flags) -> Result<(), String> {
         net.provenance(),
         net.trainer(),
         hex(&net.manifest())
+    );
+    Ok(())
+}
+
+/// A tuning set's text to the trainer's records, with a manifest the exported net's header hashes.
+fn book(flags: &Flags) -> Result<(), String> {
+    let input = one(flags, "--in")?;
+    let out = PathBuf::from(one(flags, "--out")?);
+    let seed_text = one(flags, "--seed")?;
+    let seed =
+        u64::from_str_radix(seed_text, 16).map_err(|_| format!("--seed {seed_text} is not hex"))?;
+    let manifest_path = PathBuf::from(format!("{}.manifest", out.display()));
+    for path in [&out, &manifest_path] {
+        if path.exists() {
+            return Err(format!(
+                "{} exists, and a conversion never replaces one",
+                path.display()
+            ));
+        }
+    }
+    let bytes = std::fs::read(input).map_err(|e| format!("{input}: {e}"))?;
+    let text = String::from_utf8(bytes.clone()).map_err(|e| format!("{input}: not UTF-8: {e}"))?;
+    let (records, read) = cadence_train::book::convert(&text, seed)?;
+    let flat: Vec<u8> = records.iter().flatten().copied().collect();
+    std::fs::write(&out, &flat).map_err(|e| format!("{}: {e}", out.display()))?;
+    let name = Path::new(input)
+        .file_name()
+        .map_or_else(|| input.into(), |n| n.to_string_lossy());
+    let manifest = format!(
+        "{BOOK_MANIFEST}\nsource\t{name}\nsource-sha256\t{}\nsource-bytes\t{}\npositions\t{}\n\
+         white-to-move\t{}\nresults-loss-draw-win\t{} {} {}\nscore\tnone, written as 0\n\
+         shuffle-seed\t{seed:016x}\nrecords-sha256\t{}\nconverter-commit\t{COMMIT}\n\
+         converter-modified\t{DIRTY}\n",
+        hex(&sha256(&bytes)),
+        bytes.len(),
+        read.positions,
+        read.white_to_move,
+        read.results[0],
+        read.results[1],
+        read.results[2],
+        hex(&sha256(&flat)),
+    );
+    std::fs::write(&manifest_path, manifest)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    println!(
+        "{}: {} positions, {} with White to move, mover's results {:?}; manifest {}",
+        out.display(),
+        read.positions,
+        read.white_to_move,
+        read.results,
+        manifest_path.display()
     );
     Ok(())
 }

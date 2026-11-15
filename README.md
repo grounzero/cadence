@@ -182,8 +182,9 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
 | `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. |
 | `cadence-tools forward --net FILE [--raw FILE] [--positions N] [--seed HEX]` | Scores at least 1,000 random legal positions with a net file's quantised evaluation and with an `f32` one written from the same file, and passes when no position differs by more than 5 centipawns and the mean by no more than 1. `--raw` also compares the trainer's unquantised weights, a reading for training time that decides nothing. |
-| `cadence-train run --data FILE... --out DIR --id NAME` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). It needs a GPU and the `cuda` feature. |
+| `cadence-train run --data FILE... --out DIR --id NAME [--superbatches N] [--batches N] [--result-share F]` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target three quarters result and one quarter score. It needs a GPU and the `cuda` feature. |
 | `cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE` | Writes one checkpoint as the file `EvalFile` loads, naming the data's manifest and the commit that trained it. |
+| `cadence-train book --in FILE --out FILE --seed HEX` | Turns a tuning set's text, one position a line as a FEN and White's result in brackets, into the trainer's records, scored zero and shuffled from the seed, with a manifest beside them that an export hashes into the net's header. |
 
 ### Git hooks
 
