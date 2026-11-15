@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use cadence_core::MAX_MOVES;
+use cadence_nnue::Network;
 
 use super::say::say;
 use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, Session};
@@ -68,6 +69,14 @@ impl Session {
             self.tt.clear();
         } else if name.eq_ignore_ascii_case("SyzygyPath") {
             self.set_syzygy_path(path);
+        } else if name.eq_ignore_ascii_case("Use NNUE") {
+            if value.eq_ignore_ascii_case("true") {
+                self.nnue.on = true;
+            } else if value.eq_ignore_ascii_case("false") {
+                self.nnue.on = false;
+            }
+        } else if name.eq_ignore_ascii_case("EvalFile") {
+            self.set_eval_file(path);
         } else if name.eq_ignore_ascii_case("SyzygyProbeLimit") {
             self.set_probe_limit(&value);
         } else if let Some(param) = tune::find(&name) {
@@ -173,6 +182,48 @@ impl Session {
             value.to_string()
         };
         self.load_tables();
+    }
+
+    /// Empty, or `<empty>`, unloads the net; a file the loader refuses leaves none, and says why.
+    fn set_eval_file(&mut self, value: &str) {
+        let value = value.trim();
+        self.nnue.file = if value.eq_ignore_ascii_case("<empty>") {
+            String::new()
+        } else {
+            value.to_string()
+        };
+        self.nnue.net = None;
+        if self.nnue.file.is_empty() {
+            return;
+        }
+        let loaded = std::fs::read(&self.nnue.file)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| Network::from_bytes(&bytes).map_err(|e| e.to_string()));
+        match loaded {
+            Ok(net) => {
+                say(format_args!(
+                    "info string EvalFile: {} loaded, provenance {}, trainer {}",
+                    self.nnue.file,
+                    net.provenance(),
+                    net.trainer()
+                ));
+                self.nnue.net = Some(Arc::new(net));
+            }
+            Err(e) => say(format_args!(
+                "info string EvalFile: {}: {e}",
+                self.nnue.file
+            )),
+        }
+    }
+
+    /// The net a `go` scores with: only when `Use NNUE` is on and a net loaded.
+    pub(super) fn active_net(&self) -> Option<Arc<Network>> {
+        if self.nnue.on && self.nnue.net.is_none() {
+            say(format_args!(
+                "info string Use NNUE is on and no net is loaded; the handcrafted evaluation scores this search"
+            ));
+        }
+        self.nnue.net.clone().filter(|_| self.nnue.on)
     }
 
     /// Clamped, not refused, for [`Session::set_hash`]'s reason; zero turns probing off.

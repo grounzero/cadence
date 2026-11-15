@@ -13,6 +13,10 @@ const HEADER: &str = "// SPDX-License-Identifier: GPL-3.0-or-later";
 /// `__pycache__` embeds the compiling machine's absolute paths.
 const SKIP_DIRS: &[&str] = &[".git", "target", "__pycache__"];
 
+/// The embedded net's one path: its weights read as stray characters, and its loader checks its
+/// header.
+const NET_FILE: &str = "nnue/net.cdnn";
+
 const HOOKS: &[&str] = &["commit-msg", "pre-commit"];
 
 /// The SPRT worker's `-T`: the figure depends on concurrency, so it is measured at the
@@ -36,6 +40,7 @@ const BOUNDARY_NOT_EXAMINED: &[&str] = &[
     "files git ignores, which a whole-tree read leaves out as not source",
     "commit messages (.githooks/check-message-metadata reads them)",
     "exact names from outside this tree (a list of them here would inventory what is withheld)",
+    "nnue/net.cdnn, the embedded net, whose weights are not text",
 ];
 
 /// Added to [`BOUNDARY_NOT_EXAMINED`] when only the index is read.
@@ -637,10 +642,12 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
     Ok(out)
 }
 
-/// The directories nothing reads as source.
+/// The net by its exact path only, so a copy anywhere else is read as text and refused.
 fn not_source(rel: &str) -> bool {
-    rel.split('/')
-        .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store")
+    rel == NET_FILE
+        || rel
+            .split('/')
+            .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store")
 }
 
 /// The files git would show as the tree: tracked or untracked but never ignored, so a table
@@ -1463,9 +1470,6 @@ mod tests {
 
     /// `cargo test --workspace` does not reach this crate; CI runs these from its own manifest.
     const NOT_ALLOWED: &str = "core/src/lib.rs";
-
-    /// The embedded net's one path.
-    const NET_FILE: &str = "nnue/net.cdnn";
 
     #[test]
     fn the_net_is_skipped_at_its_one_path_and_nowhere_else() {
