@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod convert;
+mod forward;
 mod magics;
 
 use std::process::ExitCode;
@@ -19,6 +20,10 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
         "convert",
         "datasets of packed chunks to the trainer's position records, published as one unit",
     ),
+    (
+        "forward",
+        "a net file's quantised evaluation against an f32 one over random legal positions",
+    ),
 ];
 
 fn main() -> ExitCode {
@@ -26,6 +31,7 @@ fn main() -> ExitCode {
     let result = match args.get(1).map(String::as_str) {
         Some("magics") => magics::run(&args[2..]),
         Some("convert") => convert::run(&args[2..]),
+        Some("forward") => forward::run(&args[2..]),
         Some(other) => Err(format!("unknown subcommand `{other}`")),
         None => Err("no subcommand".to_string()),
     };
