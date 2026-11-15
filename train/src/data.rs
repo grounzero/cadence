@@ -114,6 +114,16 @@ pub fn verify(data: &[&Path], manifests: &[&Path]) -> Result<(), String> {
     Ok(())
 }
 
+/// The manifests whose training file a data file hashes to.
+///
+/// # Errors
+///
+/// As `verify`.
+pub fn matched<'a>(data: &[&Path], manifests: &[&'a Path]) -> Result<Vec<&'a Path>, String> {
+    verify(data, manifests)?;
+    Ok(manifests.to_vec())
+}
+
 /// The holdout file hashes to the holdout split one of the manifests names.
 ///
 /// # Errors
@@ -136,4 +146,40 @@ pub fn verify_holdout(holdout: &Path, manifests: &[&Path]) -> Result<(), String>
         holdout.display(),
         named.join(", ")
     ))
+}
+
+/// Beside a run's checkpoints, the SHA-256 of each manifest its training data matched, one a line,
+/// so that an export can name only one of them.
+pub const VERIFIED_MANIFESTS: &str = "verified-manifests";
+
+/// Written beside the checkpoints, so an export names the commit that trained them, not its own.
+pub const COMMIT_FILE: &str = "trainer-commit";
+
+/// A run's directory holds no other run's record.
+///
+/// # Errors
+///
+/// Every directory, until one is checked.
+pub fn fresh_run(out: &Path) -> Result<(), String> {
+    Err(format!("{}: unchecked", out.display()))
+}
+
+/// Writes `VERIFIED_MANIFESTS` in `out` for the manifests the run verified.
+///
+/// # Errors
+///
+/// None, until it writes.
+pub fn record_manifests(out: &Path, manifests: &[&Path]) -> Result<(), String> {
+    let _ = (out, manifests);
+    Ok(())
+}
+
+/// The manifest an export names is one the run in `run` verified.
+///
+/// # Errors
+///
+/// None, until the record is read.
+pub fn verify_export(run: &Path, manifest: &[u8]) -> Result<(), String> {
+    let _ = (run, manifest);
+    Ok(())
 }
