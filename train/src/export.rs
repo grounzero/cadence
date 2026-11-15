@@ -12,6 +12,9 @@ use cadence_nnue::{LoadError, Network, Provenance};
 /// The trainer pads every quantised file to a multiple of this many bytes.
 pub const PADDING: usize = 64;
 
+/// What the pinned trainer pads with, repeated from the first byte after the weights.
+pub const FILL: &[u8; 6] = b"bullet";
+
 /// The first line of every manifest the converter writes, which a self-play net's data must have.
 pub const CONVERTED: &str = "# cadence conversion manifest, written by cadence-tools convert\n";
 
@@ -36,7 +39,9 @@ impl fmt::Display for ExportError {
                     "{got} bytes where a padded checkpoint of this shape is {want}"
                 )
             }
-            ExportError::Padding => write!(f, "the padding after the weights is not zero"),
+            ExportError::Padding => {
+                write!(f, "the padding after the weights is not the trainer's fill")
+            }
             ExportError::NotConverted => write!(
                 f,
                 "a self-play net's manifest is one cadence-tools convert wrote, and this is not"
@@ -50,8 +55,8 @@ impl fmt::Display for ExportError {
 ///
 /// # Errors
 ///
-/// A checkpoint of the wrong length or with padding that is not zero, a self-play claim for data
-/// the converter did not write, or anything `Network::from_payload` refuses.
+/// A checkpoint of the wrong length or with padding that is not the trainer's fill, a self-play
+/// claim for data the converter did not write, or anything `Network::from_payload` refuses.
 pub fn export(
     quantised: &[u8],
     provenance: Provenance,
@@ -66,7 +71,7 @@ pub fn export(
         });
     }
     let (payload, pad) = quantised.split_at(PAYLOAD_LEN);
-    if pad.iter().any(|&b| b != 0) {
+    if pad.iter().zip(FILL.iter().cycle()).any(|(b, f)| b != f) {
         return Err(ExportError::Padding);
     }
     if provenance == Provenance::SelfPlay && !manifest.starts_with(CONVERTED.as_bytes()) {

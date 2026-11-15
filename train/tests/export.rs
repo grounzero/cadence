@@ -10,10 +10,14 @@ use cadence_train::export::{CONVERTED, ExportError, PADDING, export};
 
 const TRAINER: &str = "0123456789abcdef0123456789abcdef01234567";
 
-/// The weights of a seeded net in the trainer's order, zero-padded as it pads a saved file.
+/// The weights of a seeded net in the trainer's order, padded as the pinned trainer pads a saved
+/// file: its name repeated from the first byte past the weights.
 fn checkpoint() -> Vec<u8> {
     let mut bytes = Network::seeded(3, Provenance::SelfPlay).to_bytes()[HEADER_LEN..].to_vec();
-    bytes.resize(PAYLOAD_LEN.next_multiple_of(PADDING), 0);
+    let fill = b"bullet";
+    for i in 0..PAYLOAD_LEN.next_multiple_of(PADDING) - PAYLOAD_LEN {
+        bytes.push(fill[i % fill.len()]);
+    }
     bytes
 }
 
@@ -54,6 +58,13 @@ fn each_fault_is_refused_by_name() {
     assert_eq!(
         attempt(&padded, Provenance::SelfPlay, TRAINER, &manifest()),
         Some(ExportError::Padding)
+    );
+    let mut zeroed = saved.clone();
+    zeroed[PAYLOAD_LEN..].fill(0);
+    assert_eq!(
+        attempt(&zeroed, Provenance::SelfPlay, TRAINER, &manifest()),
+        Some(ExportError::Padding),
+        "the pinned trainer never pads with zeros"
     );
     assert_eq!(
         attempt(&saved, Provenance::SelfPlay, TRAINER, b"a list of files\n"),
