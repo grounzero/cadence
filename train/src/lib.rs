@@ -6,4 +6,5 @@
 #![forbid(unsafe_code)]
 
 pub mod book;
+pub mod data;
 pub mod export;
