@@ -48,7 +48,12 @@ impl Network {
 /// To the nearest whole, halves away from zero, so a score and its negation round alike; `d` is
 /// positive.
 fn round_div(n: i64, d: i64) -> i64 {
-    n / d
+    let half = d / 2;
+    if n >= 0 {
+        (n + half) / d
+    } else {
+        (n - half) / d
+    }
 }
 
 fn layer(sums: &[i16; HIDDEN], weights: &[i16; HIDDEN]) -> i32 {
