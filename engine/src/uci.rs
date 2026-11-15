@@ -80,6 +80,8 @@ struct NetOptions {
     file: String,
     /// Loaded and checked on `setoption`; `None` until a file loads.
     net: Option<Arc<Network>>,
+    /// The SHA-256 of the file `net` came from, which tells one net from another.
+    key: Option<[u8; 32]>,
 }
 
 struct Running {
