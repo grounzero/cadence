@@ -5,6 +5,8 @@
 
 use core::fmt;
 
+use cadence_dataset::sha256::sha256;
+use cadence_nnue::net::PAYLOAD_LEN;
 use cadence_nnue::{LoadError, Network, Provenance};
 
 /// The trainer pads every quantised file to a multiple of this many bytes.
@@ -48,17 +50,27 @@ impl fmt::Display for ExportError {
 ///
 /// # Errors
 ///
-/// Every checkpoint, until the export is written.
+/// A checkpoint of the wrong length or with padding that is not zero, a self-play claim for data
+/// the converter did not write, or anything `Network::from_payload` refuses.
 pub fn export(
     quantised: &[u8],
     provenance: Provenance,
     trainer: &str,
     manifest: &[u8],
 ) -> Result<Network, ExportError> {
-    drop(provenance);
-    let _ = (trainer, manifest);
-    Err(ExportError::Length {
-        want: 0,
-        got: quantised.len(),
-    })
+    let want = PAYLOAD_LEN.next_multiple_of(PADDING);
+    if quantised.len() != want {
+        return Err(ExportError::Length {
+            want,
+            got: quantised.len(),
+        });
+    }
+    let (payload, pad) = quantised.split_at(PAYLOAD_LEN);
+    if pad.iter().any(|&b| b != 0) {
+        return Err(ExportError::Padding);
+    }
+    if provenance == Provenance::SelfPlay && !manifest.starts_with(CONVERTED.as_bytes()) {
+        return Err(ExportError::NotConverted);
+    }
+    Network::from_payload(payload, provenance, trainer, sha256(manifest)).map_err(ExportError::Load)
 }

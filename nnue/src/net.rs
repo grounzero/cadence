@@ -142,6 +142,25 @@ struct Origin {
     manifest: [u8; 32],
 }
 
+/// A name the field cannot hold is written so that `read_header` refuses it.
+fn write_header(origin: &Origin) -> [u8; HEADER_LEN] {
+    let mut out = [0; HEADER_LEN];
+    out[..4].copy_from_slice(&MAGIC);
+    out[4..6].copy_from_slice(&FORMAT.to_le_bytes());
+    for (_, at, value) in ARCHITECTURE {
+        out[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    out[ACTIVATION_AT] = SCRELU;
+    let name = origin.provenance.to_string();
+    out[PROVENANCE_LEN_AT] = u8::try_from(name.len()).unwrap_or(0);
+    out[TRAINER].copy_from_slice(&origin.trainer);
+    out[MANIFEST].copy_from_slice(&origin.manifest);
+    let field = &mut out[PROVENANCE];
+    let n = name.len().min(field.len());
+    field[..n].copy_from_slice(&name.as_bytes()[..n]);
+    out
+}
+
 fn read_header(h: &[u8; HEADER_LEN]) -> Result<Origin, LoadError> {
     let word = |at: usize| u16::from_le_bytes([h[at], h[at + 1]]);
     if h[..4] != MAGIC {
@@ -253,23 +272,31 @@ impl Network {
         Ok(net)
     }
 
-    /// A trainer's weights in file order, behind a header naming where they came from.
+    /// A trainer's weights in file order, behind a header naming where they came from, loaded and
+    /// checked as a file is.
     ///
     /// # Errors
     ///
-    /// Every payload, until the header is written for one.
+    /// As `from_bytes`: a payload of the wrong length, a trainer commit or provenance the header
+    /// cannot hold, or weights that could overflow.
     pub fn from_payload(
         payload: &[u8],
         provenance: Provenance,
         trainer: &str,
         manifest: [u8; 32],
     ) -> Result<Network, LoadError> {
-        drop(provenance);
-        let _ = (trainer, manifest);
-        Err(LoadError::Length {
-            want: PAYLOAD_LEN,
-            got: payload.len(),
-        })
+        let trainer: [u8; 40] = trainer
+            .as_bytes()
+            .try_into()
+            .map_err(|_| LoadError::Trainer)?;
+        let origin = Origin {
+            provenance,
+            trainer,
+            manifest,
+        };
+        let mut bytes = write_header(&origin).to_vec();
+        bytes.extend_from_slice(payload);
+        Network::from_bytes(&bytes)
     }
 
     /// The loader for any net that generates data: `from_bytes`, and a self-play provenance.
@@ -304,20 +331,7 @@ impl Network {
     /// The file `from_bytes` reads, for a net built in memory.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = vec![0; HEADER_LEN];
-        out[..4].copy_from_slice(&MAGIC);
-        out[4..6].copy_from_slice(&FORMAT.to_le_bytes());
-        for (_, at, value) in ARCHITECTURE {
-            out[at..at + 2].copy_from_slice(&value.to_le_bytes());
-        }
-        out[ACTIVATION_AT] = SCRELU;
-        let name = self.origin.provenance.to_string();
-        out[PROVENANCE_LEN_AT] = u8::try_from(name.len()).unwrap_or(0);
-        out[TRAINER].copy_from_slice(&self.origin.trainer);
-        out[MANIFEST].copy_from_slice(&self.origin.manifest);
-        let field = &mut out[PROVENANCE];
-        let n = name.len().min(field.len());
-        field[..n].copy_from_slice(&name.as_bytes()[..n]);
+        let mut out = write_header(&self.origin).to_vec();
         out.reserve(PAYLOAD_LEN);
         let words = self
             .weights
