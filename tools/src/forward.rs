@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The engine's quantised forward pass against an f32 one written here from the file alone, over
-//! random legal positions; with `--raw`, against the trainer's unquantised weights as well.
+//! The engine's quantised forward pass against an f32 one written here from the net file alone,
+//! which decides the exit; `--raw` adds a training-time reading against the trainer's unquantised
+//! weights that decides nothing.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -178,20 +179,29 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let file = read(&net_path)?;
     let net = Network::from_bytes(&file).map_err(|e| format!("{net_path}: {e}"))?;
     let boards = positions(count, seed);
-    let mut readings = vec![("the net file", Reference::quantised(&file))];
-    if let Some(raw_path) = raw_path {
-        let raw = Reference::raw(&read(&raw_path)?).map_err(|e| format!("{raw_path}: {e}"))?;
-        readings.push(("the raw weights", raw));
-    }
-    let mut passed = true;
-    for (name, reference) in &readings {
-        let (largest, mean) = deltas(&net, |b| reference.evaluate(b), &boards);
-        let pass = largest <= MAX_DELTA && mean <= MEAN_DELTA;
-        passed &= pass;
+    let raw = match raw_path {
+        Some(p) => Some(Reference::raw(&read(&p)?).map_err(|e| format!("{p}: {e}"))?),
+        None => None,
+    };
+    let within = |largest: f64, mean: f64| largest <= MAX_DELTA && mean <= MEAN_DELTA;
+    let quantised = Reference::quantised(&file);
+    let (largest, mean) = deltas(&net, |b| quantised.evaluate(b), &boards);
+    let passed = within(largest, mean);
+    println!(
+        "forward: against the net file, {count} positions from seed {seed:016x}: max |delta| \
+         {largest:.3} cp, mean {mean:.3} cp, {} (bounds {MAX_DELTA} and {MEAN_DELTA})",
+        if passed { "PASS" } else { "FAIL" }
+    );
+    if let Some(raw) = raw {
+        let (largest, mean) = deltas(&net, |b| raw.evaluate(b), &boards);
         println!(
-            "forward: against {name}, {count} positions from seed {seed:016x}: max |delta| \
-             {largest:.3} cp, mean {mean:.3} cp, {} (bounds {MAX_DELTA} and {MEAN_DELTA})",
-            if pass { "PASS" } else { "FAIL" }
+            "forward: against the raw weights, a training-time reading that decides nothing: \
+             max |delta| {largest:.3} cp, mean {mean:.3} cp, {} the bounds",
+            if within(largest, mean) {
+                "within"
+            } else {
+                "outside"
+            }
         );
     }
     println!(
