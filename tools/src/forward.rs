@@ -25,7 +25,7 @@ const DEFAULT_SEED: u64 = 0x2026_1115_f0f0_0001;
 /// Random plies from each start, so the positions run from the opening into the middlegame.
 const LONGEST_WALK: usize = 120;
 
-const USAGE: &str = "forward --net FILE [--raw FILE] [--positions N] [--seed HEX]";
+const USAGE: &str = "forward --net FILE [--raw FILE [--against FILE]] [--positions N] [--seed HEX]";
 
 /// Weights in the file's order, as numbers in the units the trained network used.
 struct Reference {
@@ -147,6 +147,62 @@ pub fn deltas(net: &Network, reference: impl Fn(&Board) -> f64, boards: &[Board]
     (largest, total / f64::from(n.max(1)))
 }
 
+/// The trainer's own outputs, one `centipawns<TAB>FEN` a line, against the raw weights' reference
+/// and the net file's integer path at the same positions; a reading, which decides nothing.
+///
+/// # Errors
+///
+/// A line that is not a number, a tab and a FEN the board accepts.
+fn against(net: &Network, raw: &Reference, text: &str) -> Result<String, String> {
+    let (mut n, mut raw_sum, mut raw_max, mut net_sum, mut net_max) =
+        (0_u32, 0.0, 0.0_f64, 0.0, 0.0_f64);
+    let mut worst = (0.0_f64, String::new());
+    for (i, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+    {
+        let (cp, fen) = line
+            .split_once('\t')
+            .ok_or_else(|| format!("line {}: no tab", i + 1))?;
+        let trainer: f64 = cp
+            .trim()
+            .parse()
+            .map_err(|_| format!("line {}: `{cp}`", i + 1))?;
+        let board = Board::from_fen(fen.trim()).map_err(|e| format!("line {}: {e:?}", i + 1))?;
+        let reference = raw.evaluate(&board);
+        let engine = f64::from(net.evaluate(&net.refresh(&board), board.side_to_move()));
+        let (dr, dn) = ((trainer - reference).abs(), (trainer - engine).abs());
+        if dr > worst.0 {
+            worst = (
+                dr,
+                format!(
+                    "{} (trainer {trainer:.2} cp, reference {reference:.2} cp)",
+                    fen.trim()
+                ),
+            );
+        }
+        raw_max = raw_max.max(dr);
+        net_max = net_max.max(dn);
+        raw_sum += dr;
+        net_sum += dn;
+        n += 1;
+    }
+    if n == 0 {
+        return Err("no positions".to_string());
+    }
+    let count = f64::from(n);
+    Ok(format!(
+        "forward: against the trainer's own evaluation of {n} positions, a reading that decides \
+         nothing: the raw weights' reference max |delta| {raw_max:.3} cp, mean {:.3} cp; the net \
+         file's integer path max |delta| {net_max:.3} cp, mean {:.3} cp\n  largest reference \
+         difference: {}",
+        raw_sum / count,
+        net_sum / count,
+        worst.1
+    ))
+}
+
 /// # Errors
 ///
 /// A missing or unreadable file, one the engine refuses, fewer than [`MIN_POSITIONS`], or a flag
@@ -154,6 +210,7 @@ pub fn deltas(net: &Network, reference: impl Fn(&Board) -> f64, boards: &[Board]
 pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let (mut net_path, mut raw_path, mut count, mut seed) =
         (None, None, MIN_POSITIONS, DEFAULT_SEED);
+    let mut against_path = None;
     let mut words = args.iter();
     while let Some(flag) = words.next() {
         let value = words
@@ -162,6 +219,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         match flag.as_str() {
             "--net" => net_path = Some(value.clone()),
             "--raw" => raw_path = Some(value.clone()),
+            "--against" => against_path = Some(value.clone()),
             "--positions" => count = value.parse().map_err(|_| format!("--positions {value}"))?,
             "--seed" => {
                 seed = u64::from_str_radix(value, 16).map_err(|_| format!("--seed {value}"))?;
@@ -183,6 +241,16 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         Some(p) => Some(Reference::raw(&read(&p)?).map_err(|e| format!("{p}: {e}"))?),
         None => None,
     };
+    if let Some(path) = against_path {
+        let raw = raw
+            .as_ref()
+            .ok_or("--against needs --raw, the unquantised weights the trainer evaluated")?;
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+        println!(
+            "{}",
+            against(&net, raw, &text).map_err(|e| format!("{path}: {e}"))?
+        );
+    }
     let within = |largest: f64, mean: f64| largest <= MAX_DELTA && mean <= MEAN_DELTA;
     let quantised = Reference::quantised(&file);
     let (largest, mean) = deltas(&net, |b| quantised.evaluate(b), &boards);
