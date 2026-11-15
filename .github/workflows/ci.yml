@@ -537,6 +537,20 @@ jobs:
           rustc --version --verbose
           cargo --version
 
+      # The trainer brings AGPL-3.0 and GPL-3.0 loaders, accepted on the condition that only this crate
+      # depends on them, so no workspace crate may reach one by any kind of dependency on any target.
+      - name: No workspace crate reaches the trainer or its loaders
+        run: |
+          tree=$(cargo tree --locked --workspace --all-features --target all -e normal,build,dev --prefix none)
+          for crate in cadence-core cadence-engine cadence-nnue; do
+            printf '%s\n' "$tree" | grep -q "^$crate v" || { echo "::error::$crate is not in the tree read"; exit 1; }
+          done
+          if printf '%s\n' "$tree" | grep -E '^(bullet[-_a-z]*|montyformat|sfbinpack) v'; then
+            echo "::error::a workspace crate depends on the trainer or one of its loaders"
+            exit 1
+          fi
+          echo "$(printf '%s\n' "$tree" | sort -u | wc -l) distinct crates read; none is the trainer's"
+
       - name: fmt and clippy
         run: |
           cargo fmt --manifest-path train/Cargo.toml -- --check

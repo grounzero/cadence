@@ -109,6 +109,8 @@ dependencies = [
  "cadence-core",
  "cadence-dataset",
  "cadence-nnue",
+ "montyformat",
+ "sfbinpack",
 ]
 
 [[package]]
