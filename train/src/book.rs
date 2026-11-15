@@ -40,12 +40,20 @@ pub fn parse_line(line: &str) -> Result<(Board, u8), String> {
     Ok((board, white))
 }
 
+/// The records a conversion writes: lines held out for validation, and the rest to train on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Split {
+    pub train: Vec<[u8; RECORD_LEN]>,
+    pub holdout: Vec<[u8; RECORD_LEN]>,
+}
+
 /// Every line a record, shuffled from `seed` because the trainer's reader takes them in file order.
 ///
 /// # Errors
 ///
 /// The first line `parse_line` refuses, by its number; blank lines are skipped.
-pub fn convert(text: &str, seed: u64) -> Result<(Vec<[u8; RECORD_LEN]>, Read), String> {
+pub fn convert(text: &str, seed: u64, every: usize) -> Result<(Split, Read), String> {
+    let _ = every;
     let mut records = Vec::new();
     let mut read = Read::default();
     for (i, line) in text.lines().enumerate() {
@@ -68,5 +76,11 @@ pub fn convert(text: &str, seed: u64) -> Result<(Vec<[u8; RECORD_LEN]>, Read), S
     for i in (1..records.len()).rev() {
         records.swap(i, rng.below(i + 1));
     }
-    Ok((records, read))
+    Ok((
+        Split {
+            train: records,
+            holdout: Vec::new(),
+        },
+        read,
+    ))
 }

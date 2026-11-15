@@ -99,3 +99,22 @@ pub fn verify(data: &[&Path], manifests: &[&Path]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The SHA-256 of the one holdout split a manifest vouches for.
+///
+/// # Errors
+///
+/// None, until manifests are read for it.
+pub fn holdout_sha256(manifest: &str) -> Result<String, String> {
+    Ok(format!("{} bytes unread", manifest.len()))
+}
+
+/// The holdout file hashes to the holdout split one of the manifests names.
+///
+/// # Errors
+///
+/// Every holdout, until one is checked.
+pub fn verify_holdout(holdout: &Path, manifests: &[&Path]) -> Result<(), String> {
+    let _ = manifests;
+    Err(format!("{}: unchecked", holdout.display()))
+}

@@ -137,6 +137,8 @@ fn run(flags: &Flags) -> Result<(), String> {
         .map(|d| d.iter().map(Path::new).collect())
         .ok_or_else(|| format!("run needs --data\n{USAGE}"))?;
     cadence_train::data::verify(&data_paths, &manifests)?;
+    let holdout = Path::new(one(flags, "--holdout")?);
+    cadence_train::data::verify_holdout(holdout, &manifests)?;
     let superbatches = parsed(flags, "--superbatches", SUPERBATCHES)?;
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
@@ -250,8 +252,8 @@ fn book(flags: &Flags) -> Result<(), String> {
     }
     let bytes = std::fs::read(input).map_err(|e| format!("{input}: {e}"))?;
     let text = String::from_utf8(bytes.clone()).map_err(|e| format!("{input}: not UTF-8: {e}"))?;
-    let (records, read) = cadence_train::book::convert(&text, seed)?;
-    let flat: Vec<u8> = records.iter().flatten().copied().collect();
+    let (split, read) = cadence_train::book::convert(&text, seed, 10)?;
+    let flat: Vec<u8> = split.train.iter().flatten().copied().collect();
     std::fs::write(&out, &flat).map_err(|e| format!("{}: {e}", out.display()))?;
     let name = Path::new(input)
         .file_name()
