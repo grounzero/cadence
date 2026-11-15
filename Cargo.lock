@@ -53,6 +53,7 @@ dependencies = [
  "cadence-core",
  "cadence-dataset",
  "cadence-engine",
+ "cadence-nnue",
  "shakmaty",
  "shakmaty-syzygy",
 ]
@@ -60,6 +61,9 @@ dependencies = [
 [[package]]
 name = "cadence-nnue"
 version = "0.6.0"
+dependencies = [
+ "cadence-core",
+]
 
 [[package]]
 name = "cadence-tools"

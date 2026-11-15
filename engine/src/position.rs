@@ -4,9 +4,13 @@
 //! stack once there is a net.
 
 use core::ops::Deref;
+use std::sync::Arc;
 
 use cadence_core::position::Board;
 use cadence_core::{DirtyPieces, Move};
+use cadence_nnue::Network;
+
+use crate::score::Score;
 
 /// No `DerefMut`: the methods below are the only way to move the position, which keeps a second
 /// cursor beside it honest.
@@ -20,6 +24,18 @@ impl Position {
         Position { board }
     }
 
+    /// Scored by the handcrafted evaluation until the net's half is built.
+    #[must_use]
+    pub fn with_net(board: Board, net: Arc<Network>) -> Position {
+        drop(net);
+        Position::new(board)
+    }
+
+    #[must_use]
+    pub fn fork(&self) -> Position {
+        Position::new(self.board.duplicate())
+    }
+
     #[must_use]
     pub fn board(&self) -> &Board {
         &self.board
@@ -28,6 +44,16 @@ impl Position {
     #[must_use]
     pub fn into_board(self) -> Board {
         self.board
+    }
+
+    #[must_use]
+    pub fn net_eval(&self) -> Option<Score> {
+        None
+    }
+
+    #[must_use]
+    pub fn net_ply(&self) -> Option<usize> {
+        None
     }
 
     /// The returned changes are for the accumulator, once there is one.

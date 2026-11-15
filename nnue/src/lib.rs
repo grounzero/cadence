@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Reserved for the network's inference, and empty. It forbids `unsafe`, as every crate here does.
+//! The network's quantised inference: the accumulator a search updates move by move and the output
+//! layer read from it, one portable integer source compiled for each target with no `unsafe`.
 
-#![no_std]
 #![forbid(unsafe_code)]
+
+pub mod accumulator;
+pub mod eval;
+pub mod net;
+
+pub use accumulator::{Accumulator, AccumulatorStack};
+pub use net::{HIDDEN, LoadError, Network, Provenance};

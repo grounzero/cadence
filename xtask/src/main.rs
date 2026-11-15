@@ -625,10 +625,7 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
             let mut paths = staged_changes(root)?;
             paths.sort();
             for rel in paths {
-                let skipped = rel
-                    .split('/')
-                    .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store");
-                if skipped {
+                if not_source(&rel) {
                     continue;
                 }
                 let text = String::from_utf8_lossy(&git(root, &["show", &format!(":{rel}")])?)
@@ -638,6 +635,12 @@ fn boundary_inputs(root: &Path, source: Source) -> Result<Vec<(String, String)>,
         }
     }
     Ok(out)
+}
+
+/// The directories nothing reads as source.
+fn not_source(rel: &str) -> bool {
+    rel.split('/')
+        .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store")
 }
 
 /// The files git would show as the tree: tracked or untracked but never ignored, so a table
@@ -657,10 +660,7 @@ fn working_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
     };
     Ok(nul_separated(&listed)
         .into_iter()
-        .filter(|rel| {
-            !rel.split('/')
-                .any(|p| SKIP_DIRS.contains(&p) || p == ".DS_Store")
-        })
+        .filter(|rel| !not_source(rel))
         .map(|rel| root.join(rel))
         .filter(|path| path.is_file())
         .collect())
@@ -1463,6 +1463,42 @@ mod tests {
 
     /// `cargo test --workspace` does not reach this crate; CI runs these from its own manifest.
     const NOT_ALLOWED: &str = "core/src/lib.rs";
+
+    /// The embedded net's one path.
+    const NET_FILE: &str = "nnue/net.cdnn";
+
+    #[test]
+    fn the_net_is_skipped_at_its_one_path_and_nowhere_else() {
+        assert!(not_source(NET_FILE));
+        for rel in [
+            "nnue/net.cdnn.old",
+            "nnue/nets/net.cdnn",
+            "engine/net.cdnn",
+            "net.cdnn",
+            "nnue/src/net.rs",
+        ] {
+            assert!(!not_source(rel), "{rel} skipped");
+        }
+    }
+
+    /// The skip is printed, and the path is kept from line-ending normalisation on every platform.
+    #[test]
+    fn the_net_skip_is_stated_and_its_path_is_not_text() {
+        assert!(
+            BOUNDARY_NOT_EXAMINED
+                .iter()
+                .any(|s| s.starts_with(&format!("{NET_FILE},"))),
+            "the skip is not listed"
+        );
+        let attributes = std::fs::read_to_string(repo_root().join(".gitattributes"))
+            .expect("read .gitattributes");
+        assert!(
+            attributes
+                .lines()
+                .any(|l| l.split_whitespace().eq([NET_FILE, "-text"])),
+            "no `{NET_FILE} -text` line in .gitattributes"
+        );
+    }
 
     /// In a worktree `.git` is a file holding an absolute path.
     #[test]
