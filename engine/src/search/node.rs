@@ -30,6 +30,16 @@ use crate::tt::Bound;
 /// has since cut short; only the entry's move is kept.
 const CUTOFF_CLOCK: u8 = 90;
 
+/// Once a line from a node can reach the fifty-move draw, which the key does not carry, its entry
+/// is stored at depth 0, where no probe cuts with the score, and only its move is used.
+fn stored_depth(board: &Board, depth: u32) -> u32 {
+    if u32::from(board.halfmove_clock()) + depth >= 100 {
+        0
+    } else {
+        depth
+    }
+}
+
 impl Search<'_> {
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
@@ -226,7 +236,7 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
-        self.store(key, ply, depth, best, best_move, bound);
+        self.store(key, ply, stored_depth(board, depth), best, best_move, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
