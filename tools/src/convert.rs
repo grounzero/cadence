@@ -561,7 +561,7 @@ fn input_key(record: &[u8; RECORD_LEN], white_to_move: bool) -> u64 {
         w.copy_from_slice(&record[i..i + 8]);
         u64::from_le_bytes(w)
     };
-    let mix = |x: u64| splitmix64(x).1;
+    let mix = |x: u64| splitmix64(x).0;
     mix(word(0) ^ mix(word(8) ^ mix(word(16) ^ u64::from(white_to_move))))
 }
 
