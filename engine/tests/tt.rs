@@ -933,3 +933,20 @@ fn a_table_cutoff_is_refused_late_in_the_fifty_move_window() {
         "at a clock of 98 the warm table scored {on_warm} and an empty one {on_empty}"
     );
 }
+
+/// The other way round: a score the fifty-move draw cut short late in a window is not reused early
+/// in one, so at a clock of 0 a table warmed at a clock of 98 scores what an empty one does.
+#[test]
+fn a_score_cut_short_by_the_fifty_move_rule_is_not_reused_early_in_the_window() {
+    let early = "7k/8/8/8/8/8/8/KQ6 w - - 0 1";
+    let late = "7k/8/8/8/8/8/8/KQ6 w - - 98 1";
+    let warm = table(tt::DEFAULT_HASH_MB);
+    let _ = search_with(&mut support::position(late), 2, &warm);
+    let (_, on_warm, _) = search_with(&mut support::position(early), 2, &warm);
+    let empty = table(tt::DEFAULT_HASH_MB);
+    let (_, on_empty, _) = search_with(&mut support::position(early), 2, &empty);
+    assert_eq!(
+        on_warm, on_empty,
+        "at a clock of 0 the table warmed at 98 scored {on_warm} and an empty one {on_empty}"
+    );
+}
