@@ -522,6 +522,31 @@ jobs:
     defaults: *check-defaults
     steps: *check-steps
 
+  # The trainer and everything it brings are kept out of the workspace, so no step above reaches this
+  # crate. Its tests are what the first training run waits on: the feature index against the trainer's,
+  # a checkpoint's export, and the converter's file read back by the trainer.
+  train:
+    name: the train crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+          cargo --version
+
+      - name: fmt and clippy
+        run: |
+          cargo fmt --manifest-path train/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path train/Cargo.toml --all-targets -- -D warnings
+
+      - name: The agreement tests, the round trip running the converter built here
+        run: |
+          cargo build --locked -p cadence-tools
+          CADENCE_TOOLS="$PWD/target/debug/cadence-tools" cargo test --locked --manifest-path train/Cargo.toml
+
   # What a change elsewhere can break in the installers' surroundings, so it runs on every change: the
   # workspace version both installers name, the README's options and the worker setup's tests.
   installer-checks:

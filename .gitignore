@@ -1,5 +1,6 @@
 /target
 /xtask/target
+/train/target
 **/*.rs.bk
 .DS_Store
 __pycache__/

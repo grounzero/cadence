@@ -253,6 +253,25 @@ impl Network {
         Ok(net)
     }
 
+    /// A trainer's weights in file order, behind a header naming where they came from.
+    ///
+    /// # Errors
+    ///
+    /// Every payload, until the header is written for one.
+    pub fn from_payload(
+        payload: &[u8],
+        provenance: Provenance,
+        trainer: &str,
+        manifest: [u8; 32],
+    ) -> Result<Network, LoadError> {
+        drop(provenance);
+        let _ = (trainer, manifest);
+        Err(LoadError::Length {
+            want: PAYLOAD_LEN,
+            got: payload.len(),
+        })
+    }
+
     /// The loader for any net that generates data: `from_bytes`, and a self-play provenance.
     ///
     /// # Errors
