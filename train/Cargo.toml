@@ -1,0 +1,39 @@
+# Not a workspace member (root Cargo.toml `exclude`s it), so the trainer and everything it brings
+# stay out of the engine's dependency graph. Its tests run from this manifest, in CI's own job.
+[package]
+name         = "cadence-train"
+version      = "0.0.0"
+description  = "The recipe that trains Cadence's network, and the checks that the trainer reads what Cadence writes"
+edition      = "2024"
+rust-version = "1.99"
+license      = "GPL-3.0-or-later"
+publish      = false
+
+[[bin]]
+name = "cadence-train"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned by version and revision both, so a moved tag or a republished crate cannot change the recipe.
+bullet_lib     = { git = "https://github.com/jw1912/bullet", rev = "5d70177680437b7c0ddf958bd4722d95afa78b0c", version = "=1.0.0" }
+bullet-trainer = { git = "https://github.com/jw1912/bullet", rev = "5d70177680437b7c0ddf958bd4722d95afa78b0c", version = "=0.1.0" }
+bulletformat   = "=1.8.0"
+# Not used here: named only to pin them, since they are bullet's copyleft loaders (AGPL-3.0 and GPL-3.0)
+# and CI refuses any path to them from the workspace.
+montyformat = "=0.9.2"
+sfbinpack   = "=0.6.5"
+cadence-core    = { path = "../core" }
+cadence-dataset = { path = "../dataset" }
+cadence-nnue    = { path = "../nnue" }
+
+[features]
+# The rented GPU's backend; without it the trainer builds on a mock device that trains nothing.
+cuda = ["bullet_lib/cuda", "bullet-trainer/cuda"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+cast_sign_loss           = "allow"

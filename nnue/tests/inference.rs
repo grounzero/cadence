@@ -96,6 +96,33 @@ fn each_header_fault_is_refused() {
     assert_eq!(edit(64, 0xff), None, "the manifest is any 32 bytes");
 }
 
+/// A trainer's weights behind a header built for them load as the file would, and a commit or a
+/// provenance the header cannot hold is refused.
+#[test]
+fn a_payload_loads_behind_the_header_it_is_given() {
+    let file = net().to_bytes();
+    let payload = &file[HEADER_LEN..];
+    let trainer = "0123456789abcdef0123456789abcdef01234567";
+    let loaded = Network::from_payload(payload, Provenance::SelfPlay, trainer, [7; 32]);
+    let loaded = loaded.expect("a payload loads");
+    assert_eq!(&loaded.to_bytes()[HEADER_LEN..], payload);
+    assert_eq!(loaded.trainer(), trainer);
+    assert_eq!(loaded.manifest(), [7; 32]);
+    let refused = |payload: &[u8], provenance, trainer| {
+        Network::from_payload(payload, provenance, trainer, [0; 32]).err()
+    };
+    assert_eq!(
+        refused(payload, Provenance::SelfPlay, "abc"),
+        Some(LoadError::Trainer)
+    );
+    let long = Provenance::External("x".repeat(33));
+    assert_eq!(refused(payload, long, trainer), Some(LoadError::Provenance));
+    assert!(matches!(
+        refused(&payload[1..], Provenance::SelfPlay, trainer),
+        Some(LoadError::Length { .. })
+    ));
+}
+
 /// The loader every data generator uses takes a self-play net and refuses any other, even one a
 /// letter away from the self-play spelling.
 #[test]

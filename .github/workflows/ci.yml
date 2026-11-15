@@ -340,7 +340,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=830
+          floor=850
           [ "$passed" -ge "$floor" ] || { echo "::error::only $passed tests passed, under the floor of $floor"; exit 1; }
           # A floor far under the count would pass a run that lost a whole test file, so it is kept near.
           [ $((passed - 40)) -lt "$floor" ] \
@@ -521,6 +521,45 @@ jobs:
     env: *check-env
     defaults: *check-defaults
     steps: *check-steps
+
+  # The trainer and everything it brings are kept out of the workspace, so no step above reaches this
+  # crate. Its tests are what the first training run waits on: the feature index against the trainer's,
+  # a checkpoint's export, and the converter's file read back by the trainer.
+  train:
+    name: the train crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+          cargo --version
+
+      # The trainer brings AGPL-3.0 and GPL-3.0 loaders, accepted on the condition that only this crate
+      # depends on them, so no workspace crate may reach one by any kind of dependency on any target.
+      - name: No workspace crate reaches the trainer or its loaders
+        run: |
+          tree=$(cargo tree --locked --workspace --all-features --target all -e normal,build,dev --prefix none)
+          for crate in cadence-core cadence-engine cadence-nnue; do
+            printf '%s\n' "$tree" | grep -q "^$crate v" || { echo "::error::$crate is not in the tree read"; exit 1; }
+          done
+          if printf '%s\n' "$tree" | grep -E '^(bullet[-_a-z]*|montyformat|sfbinpack) v'; then
+            echo "::error::a workspace crate depends on the trainer or one of its loaders"
+            exit 1
+          fi
+          echo "$(printf '%s\n' "$tree" | sort -u | wc -l) distinct crates read; none is the trainer's"
+
+      - name: fmt and clippy
+        run: |
+          cargo fmt --manifest-path train/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path train/Cargo.toml --all-targets -- -D warnings
+
+      - name: The agreement tests, the round trip running the converter built here
+        run: |
+          cargo build --locked -p cadence-tools
+          CADENCE_TOOLS="$PWD/target/debug/cadence-tools" cargo test --locked --manifest-path train/Cargo.toml
 
   # What a change elsewhere can break in the installers' surroundings, so it runs on every change: the
   # workspace version both installers name, the README's options and the worker setup's tests.
