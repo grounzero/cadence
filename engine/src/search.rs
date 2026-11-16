@@ -168,6 +168,8 @@ struct Heuristics {
     corrhist: CorrectionHistory,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
     evals: [Option<Score>; MAX_PLY],
+    /// What each ply's `evals` added to the static reading, which the update takes back off.
+    corrections: [Score; MAX_PLY],
 }
 
 impl Heuristics {
@@ -179,6 +181,7 @@ impl Heuristics {
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
             evals: [None; MAX_PLY],
+            corrections: [0; MAX_PLY],
         }
     }
 
@@ -188,6 +191,7 @@ impl Heuristics {
         self.conthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
+        self.corrections = [0; MAX_PLY];
         self.corrhist.clear();
     }
 }
