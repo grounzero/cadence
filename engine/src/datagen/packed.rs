@@ -774,6 +774,8 @@ impl Status {
 }
 
 /// A `.tmp` cut to the records it holds whole, closed as its chunk, and what was kept and dropped.
+/// The cut is written to a file beside it and renamed over it only once it reads back whole, so a
+/// repair that stops partway leaves the `.tmp` as it was.
 ///
 /// # Errors
 ///
@@ -810,17 +812,26 @@ pub fn repair_with(steps: &mut dyn Steps, tmp: &Path) -> Result<String, String> 
     };
     whole.extend_from_slice(&trailer.encode());
     Chunk::read(&whole).map_err(|e| format!("{name}: the repaired chunk does not read: {e}"))?;
-    let mut file = File::options()
-        .write(true)
-        .truncate(true)
-        .open(tmp)
-        .map_err(|e| format!("{name}: {e}"))?;
-    file.write_all(&whole).map_err(|e| format!("{name}: {e}"))?;
+    let partial = PathBuf::from(format!("{name}.partial"));
+    let failed = |e: io::Error| format!("{}: {e}", partial.display());
+    let mut written = File::create(&partial).map_err(failed)?;
+    written.write_all(&whole).map_err(failed)?;
+    written.sync_all().map_err(failed)?;
+    drop(written);
+    if fs::read(&partial).map_err(failed)? != whole {
+        return Err(failed(io::Error::other("does not read back as written")));
+    }
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let notes = close(steps, &dir, file, tmp, &path, sha256(&whole))?;
+    let replaced = durable::publish(steps, &partial, tmp).map_err(failed)?;
+    let mut notes: Vec<String> = replaced.note(tmp).into_iter().collect();
+    let file = File::options()
+        .write(true)
+        .open(tmp)
+        .map_err(|e| format!("{name}: {e}"))?;
+    notes.extend(close(steps, &dir, file, tmp, &path, sha256(&whole))?);
     let mut report = format!(
         "repaired {} kept {} games dropped {dropped} bytes",
         path.display(),
