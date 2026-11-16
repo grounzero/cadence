@@ -4,7 +4,7 @@
 //! key carries the square exactly where one is. A pinned capturer is what a pawn's attack misreads.
 
 use cadence_core::position::Board;
-use cadence_core::{FenStyle, START_FEN, generate_legal, parse_uci};
+use cadence_core::{FenStyle, Move, START_FEN, generate_legal, parse_uci};
 
 /// White's b-pawn attacks c6, but taking there opens the fifth rank from h5 to the king on a5.
 const PINNED: &str = "7k/8/8/KPp4r/8/8/8/8 w - c6 0 2";
@@ -89,7 +89,7 @@ fn the_key_carries_the_square_exactly_where_a_capture_is_legal() {
                 }
                 if b.ep_square().is_some() {
                     let fen = b.to_fen(FenStyle::Shredder);
-                    let takes = legal.iter().any(|m| m.is_en_passant());
+                    let takes = legal.iter().any(Move::is_en_passant);
                     let differs = b.key() != board(&without_square(&fen)).key();
                     assert_eq!(differs, takes, "{fen}");
                     takes_seen += usize::from(takes);
