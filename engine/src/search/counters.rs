@@ -463,11 +463,13 @@ impl Search<'_> {
         in_check: bool,
         pawn_key: u64,
         side: Colour,
+        ply: usize,
     ) -> Option<Score> {
         if in_check {
             return None;
         }
         let correction = self.heuristics.corrhist.correction(pawn_key, side);
+        self.heuristics.corrections[ply] = correction;
         self.stats.corrhist_applied.add_if(correction != 0);
         Some(self.static_eval(board) + correction)
     }
@@ -508,9 +510,12 @@ impl Search<'_> {
             Bound::Upper => best < eval,
         };
         if usable {
+            // The static reading's whole error: measured against the corrected one, a slot settles
+            // at half of an error the search repeats.
+            let raw = eval - self.heuristics.corrections[ply];
             self.heuristics
                 .corrhist
-                .update(pawn_key, side, best - eval, depth);
+                .update(pawn_key, side, best - raw, depth);
             self.stats.corrhist_updates.add_one();
         }
     }
@@ -656,7 +661,7 @@ mod tests {
         let error = 200;
         let searched = search.static_eval(&pos) + error;
         for _ in 0..400 {
-            search.heuristics.evals[0] = search.corrected_eval(&pos, false, key, side);
+            search.heuristics.evals[0] = search.corrected_eval(&pos, false, key, side, 0);
             search.remember_correction(key, side, 0, searched, quiet, Bound::Exact, 64);
         }
         let learned = search.heuristics.corrhist.correction(key, side);
