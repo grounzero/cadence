@@ -25,7 +25,7 @@ pub enum ExportError {
         got: usize,
     },
     Padding,
-    /// A self-play provenance claimed for data whose manifest the converter did not write.
+    /// A self-play or canary claim for data whose manifest the converter did not write.
     NotConverted,
     Load(LoadError),
 }
@@ -44,7 +44,7 @@ impl fmt::Display for ExportError {
             }
             ExportError::NotConverted => write!(
                 f,
-                "a self-play net's manifest is one cadence-tools convert wrote, and this is not"
+                "a self-play or canary net needs a manifest cadence-tools convert wrote"
             ),
             ExportError::Load(e) => write!(f, "the engine's loader refuses it: {e}"),
         }
@@ -55,8 +55,8 @@ impl fmt::Display for ExportError {
 ///
 /// # Errors
 ///
-/// A checkpoint of the wrong length or with padding that is not the trainer's fill, a self-play
-/// claim for data the converter did not write, or anything `Network::from_payload` refuses.
+/// A checkpoint of the wrong length or with padding that is not the trainer's fill, a self-play or
+/// canary claim for data the converter did not write, or anything `Network::from_payload` refuses.
 pub fn export(
     quantised: &[u8],
     provenance: Provenance,
@@ -74,7 +74,8 @@ pub fn export(
     if pad.iter().zip(FILL.iter().cycle()).any(|(b, f)| b != f) {
         return Err(ExportError::Padding);
     }
-    if provenance == Provenance::SelfPlay && !manifest.starts_with(CONVERTED.as_bytes()) {
+    let self_play_data = matches!(provenance, Provenance::SelfPlay | Provenance::Canary);
+    if self_play_data && !manifest.starts_with(CONVERTED.as_bytes()) {
         return Err(ExportError::NotConverted);
     }
     Network::from_payload(payload, provenance, trainer, sha256(manifest)).map_err(ExportError::Load)

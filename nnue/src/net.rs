@@ -220,6 +220,8 @@ fn read_header(h: &[u8; HEADER_LEN]) -> Result<Origin, LoadError> {
     let name: String = name.iter().map(|&b| char::from(b)).collect();
     let provenance = if name == SELF_PLAY {
         Provenance::SelfPlay
+    } else if name == CANARY {
+        Provenance::Canary
     } else {
         Provenance::External(name)
     };
@@ -311,11 +313,13 @@ impl Network {
     ///
     /// # Errors
     ///
-    /// As `from_bytes`, and `LoadError::NotSelfPlay` for a net trained on an external dataset.
+    /// As `from_bytes`, `LoadError::Canary` for a canary net, and `LoadError::NotSelfPlay` for a
+    /// net trained on an external dataset.
     pub fn for_datagen(bytes: &[u8]) -> Result<Network, LoadError> {
         let net = Network::from_bytes(bytes)?;
         match &net.origin.provenance {
-            Provenance::SelfPlay | Provenance::Canary => Ok(net),
+            Provenance::SelfPlay => Ok(net),
+            Provenance::Canary => Err(LoadError::Canary),
             Provenance::External(name) => Err(LoadError::NotSelfPlay(name.clone())),
         }
     }

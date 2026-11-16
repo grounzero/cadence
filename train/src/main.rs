@@ -293,6 +293,7 @@ fn export(flags: &Flags) -> Result<(), String> {
     let manifest_path = one(flags, "--manifest")?;
     let provenance = match one(flags, "--provenance")? {
         "self-play" => Provenance::SelfPlay,
+        "canary" => Provenance::Canary,
         name => Provenance::External(name.to_string()),
     };
     let out = PathBuf::from(one(flags, "--out")?);
