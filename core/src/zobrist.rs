@@ -55,12 +55,12 @@ const fn build() -> Tables {
     while i < 4 {
         // Even indices are king side, whose standard rook stands on the h-file.
         let standard = if i % 2 == 0 { 7 } else { 0 };
-        let mut f = 0;
-        while f < 8 {
+        let mut file = 0;
+        while file < 8 {
             let (k, s) = splitmix64(state);
-            rook[i][f] = if f == standard { 0 } else { k };
+            rook[i][file] = if file == standard { 0 } else { k };
             state = s;
-            f += 1;
+            file += 1;
         }
         i += 1;
     }
