@@ -203,7 +203,7 @@ fn the_shuffle_seed_decides_the_order_and_nothing_else() {
 }
 
 /// What each filter drops is counted in the order the converter applies them, and what is left is
-/// what the outputs hold; the holdout is every tenth game by index within its chunk.
+/// what the outputs hold; the holdout is every tenth game by its number in the run.
 #[test]
 fn every_position_is_counted_by_the_filter_that_dropped_it() {
     let dir = scratch("filters");

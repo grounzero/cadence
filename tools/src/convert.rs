@@ -444,8 +444,8 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
 }
 
 /// A game's place in its run, from its chunk's place and its own within the chunk.
-fn game_number(_header: &Header, index: u32) -> u64 {
-    u64::from(index)
+fn game_number(header: &Header, index: u32) -> u64 {
+    u64::from(header.chunk_index) * u64::from(header.games_planned) + u64::from(index)
 }
 
 /// Games of the more common kind dropped from the end until the standard share is the one asked,
@@ -751,7 +751,7 @@ fn manifest(
     let _ = writeln!(text, "shuffle-seed\t{:016x}", request.shuffle_seed);
     let _ = writeln!(
         text,
-        "holdout\tgame index modulo {} within its chunk",
+        "holdout\tgame number in its run modulo {}",
         request.every
     );
     let share = request
