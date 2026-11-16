@@ -108,14 +108,14 @@ fn an_export_refuses_a_manifest_its_run_did_not_verify() {
     )
     .expect("writes");
     record_manifests(&run, &[&a]).expect("records");
-    let export = |manifest: &Path, out: &Path| {
+    let export = |manifest: &Path, out: &Path, provenance: &str| {
         let done = Command::new(env!("CARGO_BIN_EXE_cadence-train"))
             .arg("export")
             .arg("--checkpoint")
             .arg(&saved)
             .arg("--manifest")
             .arg(manifest)
-            .args(["--provenance", "self-play", "--out"])
+            .args(["--provenance", provenance, "--out"])
             .arg(out)
             .output()
             .expect("cadence-train runs");
@@ -124,13 +124,30 @@ fn an_export_refuses_a_manifest_its_run_did_not_verify() {
             String::from_utf8_lossy(&done.stderr).into_owned(),
         )
     };
-    let (ok, text) = export(&b, &dir.join("b.cdnn"));
+    let (ok, text) = export(&b, &dir.join("b.cdnn"), "self-play");
     assert!(
         !ok && text.contains("is not one the run verified"),
         "{text}"
     );
     assert!(!dir.join("b.cdnn").exists());
-    let (ok, text) = export(&a, &dir.join("a.cdnn"));
+    let (ok, text) = export(&a, &dir.join("a.cdnn"), "self-play");
     assert!(ok, "{text}");
+    let (ok, text) = export(&a, &dir.join("c.cdnn"), "canary");
+    let canary = std::fs::read(dir.join("c.cdnn"));
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    let canary = canary.expect("written");
+    let canary = Network::from_bytes(&canary).expect("loads");
+    assert_eq!(*canary.provenance(), Provenance::Canary);
+}
+
+/// A canary net is exported only from data the converter wrote, as a self-play net is.
+#[test]
+fn a_canary_exports_only_from_converted_data() {
+    let saved = checkpoint();
+    let refused = export(&saved, Provenance::Canary, TRAINER, b"not converted\n");
+    assert_eq!(refused.err(), Some(ExportError::NotConverted));
+    let net = export(&saved, Provenance::Canary, TRAINER, &manifest()).expect("exports");
+    let back = Network::from_bytes(&net.to_bytes()).expect("loads");
+    assert_eq!(*back.provenance(), Provenance::Canary);
 }

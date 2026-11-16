@@ -123,6 +123,17 @@ fn a_payload_loads_behind_the_header_it_is_given() {
     ));
 }
 
+/// A canary net is trained on self-play data and still names itself, so it is never taken for the
+/// net it rehearses, and it may not generate data.
+#[test]
+fn a_canary_net_names_itself_and_may_not_generate_data() {
+    let bytes = Network::seeded(1, Provenance::Canary).to_bytes();
+    let back = Network::from_bytes(&bytes).expect("a canary net loads");
+    assert_eq!(*back.provenance(), Provenance::Canary);
+    assert_eq!(back.provenance().to_string(), "canary");
+    assert_eq!(Network::for_datagen(&bytes).err(), Some(LoadError::Canary));
+}
+
 /// The loader every data generator uses takes a self-play net and refuses any other, even one a
 /// letter away from the self-play spelling.
 #[test]

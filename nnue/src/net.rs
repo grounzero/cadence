@@ -42,6 +42,7 @@ const MANIFEST: core::ops::Range<usize> = 64..96;
 /// ASCII without spaces, zero-padded: `self-play`, or the external dataset's name.
 const PROVENANCE: core::ops::Range<usize> = 96..HEADER_LEN;
 const SELF_PLAY: &str = "self-play";
+const CANARY: &str = "canary";
 
 /// At most 32 pieces stand on a board, so no lane ever sums more feature weights than this.
 const MAX_ACTIVE: usize = 32;
@@ -50,6 +51,9 @@ const MAX_ACTIVE: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Provenance {
     SelfPlay,
+    /// A short run on self-play data that rehearses the pipeline, named apart so it is never taken
+    /// for the net it rehearses; it never generates data.
+    Canary,
     /// Trained on the named dataset, as the one-time validation net is; it never generates data.
     External(String),
 }
@@ -58,6 +62,7 @@ impl fmt::Display for Provenance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Provenance::SelfPlay => f.write_str(SELF_PLAY),
+            Provenance::Canary => f.write_str(CANARY),
             Provenance::External(name) => f.write_str(name),
         }
     }
@@ -82,6 +87,8 @@ pub enum LoadError {
     Provenance,
     /// A net that loads but may not generate data, named by its provenance.
     NotSelfPlay(String),
+    /// A canary net, which loads but may not generate data.
+    Canary,
     /// A lane whose bias and 32 largest weights could leave `i16`.
     Lane {
         lane: usize,
@@ -113,6 +120,7 @@ impl fmt::Display for LoadError {
             LoadError::Reserved => write!(f, "the header's reserved bytes are not zero"),
             LoadError::Trainer => write!(f, "the trainer commit is not 40 lowercase hex digits"),
             LoadError::Provenance => write!(f, "the provenance is not 1 to 32 ASCII characters"),
+            LoadError::Canary => write!(f, "a canary net, which may not generate data"),
             LoadError::NotSelfPlay(name) => {
                 write!(
                     f,
@@ -212,6 +220,8 @@ fn read_header(h: &[u8; HEADER_LEN]) -> Result<Origin, LoadError> {
     let name: String = name.iter().map(|&b| char::from(b)).collect();
     let provenance = if name == SELF_PLAY {
         Provenance::SelfPlay
+    } else if name == CANARY {
+        Provenance::Canary
     } else {
         Provenance::External(name)
     };
@@ -303,11 +313,13 @@ impl Network {
     ///
     /// # Errors
     ///
-    /// As `from_bytes`, and `LoadError::NotSelfPlay` for a net trained on an external dataset.
+    /// As `from_bytes`, `LoadError::Canary` for a canary net, and `LoadError::NotSelfPlay` for a
+    /// net trained on an external dataset.
     pub fn for_datagen(bytes: &[u8]) -> Result<Network, LoadError> {
         let net = Network::from_bytes(bytes)?;
         match &net.origin.provenance {
             Provenance::SelfPlay => Ok(net),
+            Provenance::Canary => Err(LoadError::Canary),
             Provenance::External(name) => Err(LoadError::NotSelfPlay(name.clone())),
         }
     }
