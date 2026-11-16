@@ -4,6 +4,7 @@
 //! the key names the rook; a standard layout's rooks add nothing, which keeps every standard key.
 
 use cadence_core::position::Board;
+use cadence_core::types::File;
 use cadence_core::{CastlingRights, START_FEN, Square, zobrist};
 
 /// White may castle queenside, with the rook on a1 in the first and the rook on b1 in the second.
@@ -20,6 +21,26 @@ fn rights_held_by_different_rooks_are_different_keys() {
     assert_eq!(a.recompute_key(), a.key());
     assert_eq!(b.recompute_key(), b.key());
     assert_ne!(a.key(), b.key());
+}
+
+/// Each right's rook off its standard file is a key of its own, and on it adds nothing.
+#[test]
+fn a_rook_key_is_zero_on_the_standard_file_alone() {
+    let mut seen = Vec::new();
+    for right in 0..4 {
+        let standard = if right % 2 == 0 { File::H } else { File::A };
+        for file in File::ALL {
+            let key = zobrist::castling_rook(right, file);
+            assert_eq!(key == 0, file == standard, "right {right}, file {file:?}");
+            if key != 0 {
+                seen.push(key);
+            }
+        }
+    }
+    let count = seen.len();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), count, "two rook keys are equal");
 }
 
 /// The pieces and the rights set alone, as every key was before the rooks were named.

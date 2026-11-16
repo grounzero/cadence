@@ -112,11 +112,12 @@ impl Board {
                 board.put_piece(p, sq);
             }
         }
+        let castling = board.castling_key(setup.rights);
         let st = &mut board.states[0];
         st.rights = setup.rights;
         st.ep = setup.ep;
         st.halfmove = setup.halfmove;
-        st.key ^= zobrist::castling(setup.rights);
+        st.key ^= castling;
         if setup.stm as u8 == Colour::Black as u8 {
             st.key ^= zobrist::side();
         }
@@ -164,7 +165,7 @@ impl Board {
         if self.stm as u8 == Colour::Black as u8 {
             key ^= zobrist::side();
         }
-        key ^= zobrist::castling(self.state().rights);
+        key ^= self.castling_key(self.state().rights);
         if let Some(ep) = self.state().ep.get() {
             key ^= self.ep_key(ep, self.stm);
         }
@@ -572,8 +573,9 @@ impl Board {
             .rights
             .masked(self.layout.update_mask[from.index()] & self.layout.update_mask[to.index()]);
         if rights != old.rights {
+            let change = self.castling_key(old.rights) ^ self.castling_key(rights);
             let st = self.state_mut();
-            st.key ^= zobrist::castling(old.rights) ^ zobrist::castling(rights);
+            st.key ^= change;
             st.rights = rights;
         }
 
@@ -771,6 +773,20 @@ impl Board {
         } else {
             0
         }
+    }
+
+    /// The rights set and each right's rook, which tells two Chess960 layouts with the same pieces
+    /// and rights bits apart.
+    fn castling_key(&self, rights: CastlingRights) -> u64 {
+        let mut key = zobrist::castling(rights);
+        for (i, rook) in self.layout.rook_from.iter().enumerate() {
+            if let Some(rook) = rook.get()
+                && rights.bits() & (1 << i) != 0
+            {
+                key ^= zobrist::castling_rook(i, rook.file());
+            }
+        }
+        key
     }
 
     fn compute_check_info(&mut self) {

@@ -15,6 +15,7 @@ struct Tables {
     side: u64,
     castling: [u64; 16],
     ep: [u64; 8],
+    rook: [[u64; 8]; 4],
 }
 
 const fn build() -> Tables {
@@ -49,11 +50,26 @@ const fn build() -> Tables {
         state = s;
         i += 1;
     }
+    let mut rook = [[0u64; 8]; 4];
+    let mut i = 0;
+    while i < 4 {
+        // Even indices are king side, whose standard rook stands on the h-file.
+        let standard = if i % 2 == 0 { 7 } else { 0 };
+        let mut f = 0;
+        while f < 8 {
+            let (k, s) = splitmix64(state);
+            rook[i][f] = if f == standard { 0 } else { k };
+            state = s;
+            f += 1;
+        }
+        i += 1;
+    }
     Tables {
         piece,
         side,
         castling,
         ep,
+        rook,
     }
 }
 
@@ -77,6 +93,14 @@ pub fn side() -> u64 {
 #[must_use]
 pub fn castling(rights: CastlingRights) -> u64 {
     TABLES.castling[rights.zobrist_index()]
+}
+
+/// The file of the rook right `right` belongs to, indexed as `castling::ci` indexes the rights.
+/// Zero on a standard layout's file, so a standard position keys its rights set alone.
+#[inline]
+#[must_use]
+pub fn castling_rook(right: usize, file: File) -> u64 {
+    TABLES.rook[right][file.index()]
 }
 
 /// Only when a capture is available.
