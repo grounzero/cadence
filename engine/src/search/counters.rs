@@ -600,9 +600,10 @@ mod tests {
 
     use crate::conthist;
     use crate::history;
+    use crate::position::Position;
     use crate::search::Search;
     use crate::search::node::Searched;
-    use crate::tt::Table;
+    use crate::tt::{Bound, Table};
 
     /// The one externally visible thing `Threads` above one changes; asserted directly because a
     /// search shows it only when helpers get scheduled.
@@ -635,6 +636,34 @@ mod tests {
         search.publish_nodes();
         assert_eq!(slots[0].load(Ordering::Relaxed), 7);
         assert_eq!(search.reported_nodes(), 130, "publishing changes no total");
+    }
+
+    /// A slot folds toward the error it observes, so an error the search repeats at a node is
+    /// learned whole and not in part.
+    #[test]
+    fn a_repeated_static_error_is_learned_whole() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let fen = "4k3/pppp4/8/8/8/8/PPPP4/4K3 w - - 0 1";
+        let board = Board::from_fen(fen).expect("a position");
+        let quiet = generate_legal(&board)
+            .iter()
+            .find(|m| !m.is_noisy())
+            .expect("a quiet move");
+        let pos = Position::new(board);
+        let (key, side) = (pos.pawn_key(), pos.side_to_move());
+        let error = 200;
+        let searched = search.static_eval(&pos) + error;
+        for _ in 0..400 {
+            search.heuristics.evals[0] = search.corrected_eval(&pos, false, key, side);
+            search.remember_correction(key, side, 0, searched, quiet, Bound::Exact, 64);
+        }
+        let learned = search.heuristics.corrhist.correction(key, side);
+        assert!(
+            (error - 2..=error).contains(&learned),
+            "learned {learned} of a repeated error of {error}"
+        );
     }
 
     /// A cutoff after a quiet move the node searched and one it gave up, read in the entries
