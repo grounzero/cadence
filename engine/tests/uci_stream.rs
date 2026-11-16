@@ -150,7 +150,9 @@ impl Stream {
         self.gos += 1;
         let after = searched.line.command();
         if let Some(late) = late {
-            return Err(format!("bestmove {late:?} past its deadline after `{after}`"));
+            return Err(format!(
+                "bestmove {late:?} past its deadline after `{after}`"
+            ));
         }
         let (said, info) = lines.split_last().expect("read_until ends on the match");
         for line in info {
@@ -187,7 +189,9 @@ impl Stream {
         let legal = generate_legal(&board);
         match parse_uci(&legal, reply) {
             Some(r) if to_uci(r, &legal, false) == reply => Ok(()),
-            _ => Err(format!("ponder {reply} is not legal after {mv}, after `{after}`")),
+            _ => Err(format!(
+                "ponder {reply} is not legal after {mv}, after `{after}`"
+            )),
         }
     }
 
