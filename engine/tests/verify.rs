@@ -312,3 +312,33 @@ fn the_manifest_is_written_last_and_only_whole() {
         "a manifest was written over a failing chunk"
     );
 }
+
+/// Chunks of one commit and settings built for another target, with other target features or under
+/// another configuration are not one dataset, so the manifest refuses the mix.
+#[test]
+fn the_manifest_refuses_chunks_of_different_builds() {
+    let dir = scratch("builds");
+    let path = written(&dir, SEED);
+    let first = check(&path, None);
+    let _ = std::fs::remove_dir_all(&dir);
+    let first = first.expect("verifies");
+    let edits: [(&str, Edit); 3] = [
+        ("target", |h| h.target = "other".to_string()),
+        ("features", |h| h.features = "+other".to_string()),
+        ("configuration", |h| h.cfg_sha256 = [1; 32]),
+    ];
+    for (field, edit) in edits {
+        let mut other = first.clone();
+        other.name = "other".to_string();
+        edit(&mut other.header);
+        let mixed = verify::manifest(&[first.clone(), other]);
+        assert!(
+            mixed.is_err_and(|e| e.contains("different builds")),
+            "chunks of another {field} were listed together"
+        );
+    }
+    let mut same = first.clone();
+    same.name = "same".to_string();
+    let one_build = verify::manifest(&[first, same]);
+    one_build.expect("one build's chunks are listed");
+}

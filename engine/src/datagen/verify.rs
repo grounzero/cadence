@@ -253,13 +253,16 @@ pub fn chunk_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
 ///
 /// # Errors
 ///
-/// Chunks that disagree about their commit, version or settings, which are not one dataset.
+/// Chunks that disagree about their commit, version, build or settings, which are not one dataset.
 pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
     let first = summaries.first().ok_or("no chunk to list")?;
     let settings = |h: &Header| {
         (
             h.commit,
             h.version.clone(),
+            h.target.clone(),
+            h.features.clone(),
+            h.cfg_sha256,
             h.nodes,
             h.screen_nodes,
             h.hash_mb,
