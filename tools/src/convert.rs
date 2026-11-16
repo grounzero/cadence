@@ -285,6 +285,8 @@ fn check_listing(set: &Dataset) -> Result<(), String> {
 struct Game {
     dataset: usize,
     chunk: String,
+    /// Its place in its run, which the holdout is taken by.
+    number: u64,
     record: GameRecord,
 }
 
@@ -432,12 +434,18 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
                 games.push(Game {
                     dataset,
                     chunk: name.clone(),
+                    number: game_number(&chunk.header, record.index),
                     record,
                 });
             }
         }
     }
     Ok(games)
+}
+
+/// A game's place in its run, from its chunk's place and its own within the chunk.
+fn game_number(_header: &Header, index: u32) -> u64 {
+    u64::from(index)
 }
 
 /// Games of the more common kind dropped from the end until the standard share is the one asked,
@@ -487,7 +495,7 @@ fn positions(
         board.play(m);
     }
     counts.games += 1;
-    let held = request.every > 0 && record.index.is_multiple_of(request.every);
+    let held = request.every > 0 && game.number.is_multiple_of(u64::from(request.every));
     let mut decided = false;
     let mut this_game = BTreeSet::new();
     for (ply, &(bits, score)) in record.moves.iter().enumerate() {
@@ -798,7 +806,9 @@ fn manifest(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{BUCKETS, RECORD_LEN, Request, bucket, convert, input_key, result_for_mover};
+    use super::{
+        BUCKETS, RECORD_LEN, Request, bucket, convert, game_number, input_key, result_for_mover,
+    };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
     use cadence_core::position::Board;
@@ -808,12 +818,9 @@ mod tests {
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{DRAW, LOSS, WIN};
 
-    /// Two short games in a chunk of `dir`, its sidecar and manifest, and the request that converts
-    /// them to `dir/out`.
-    fn fixture(dir: &Path) -> Request {
-        let _ = std::fs::remove_dir_all(dir);
-        std::fs::create_dir_all(dir).expect("a scratch directory");
-        let header = Header {
+    /// The header of chunk 0 of run 1, planned at two games.
+    fn test_header() -> Header {
+        Header {
             commit: [1; 20],
             version: "0.0.0-test".to_string(),
             target: "test".to_string(),
@@ -832,7 +839,15 @@ mod tests {
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [0; 32],
-        };
+        }
+    }
+
+    /// Two short games in a chunk of `dir`, its sidecar and manifest, and the request that converts
+    /// them to `dir/out`.
+    fn fixture(dir: &Path) -> Request {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).expect("a scratch directory");
+        let header = test_header();
         let games = [short_game(0, 3), short_game(1, 4)];
         let bytes = Chunk::bytes(&header, &games).expect("a chunk");
         let (name, digest) = (chunk_name(1, 0), hex(&sha256(&bytes)));
@@ -994,5 +1009,26 @@ mod tests {
         assert_eq!(result_for_mover(1, false), WIN);
         assert_eq!(result_for_mover(1, true), LOSS);
         assert_eq!(result_for_mover(2, true), DRAW);
+    }
+
+    /// A game's number is its place in the run whatever size the run's chunks are, so the holdout
+    /// takes every tenth game of the run and not every tenth of each chunk.
+    #[test]
+    fn a_games_number_is_its_place_in_the_run_at_any_chunk_size() {
+        for chunk_games in [1_u32, 5, 1_000] {
+            let games = 2 * chunk_games.max(10);
+            let numbers: Vec<u64> = (0..games)
+                .map(|g| {
+                    let header = Header {
+                        chunk_index: g / chunk_games,
+                        games_planned: chunk_games,
+                        ..test_header()
+                    };
+                    game_number(&header, g % chunk_games)
+                })
+                .collect();
+            let first_wrong = numbers.iter().zip(0..).position(|(&n, g)| n != g);
+            assert_eq!(first_wrong, None, "chunks of {chunk_games}");
+        }
     }
 }
