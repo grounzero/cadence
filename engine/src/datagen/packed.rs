@@ -780,6 +780,15 @@ impl Status {
 /// A path not ending `.tmp`, a file whose header is not a chunk's, or a file that cannot be
 /// rewritten.
 pub fn repair(tmp: &Path) -> Result<String, String> {
+    repair_with(&mut Disk, tmp)
+}
+
+/// As `repair`, with its renames and directory syncs taken through `steps`.
+///
+/// # Errors
+///
+/// As `repair`'s, and any rename or sync `steps` fails.
+pub fn repair_with(steps: &mut dyn Steps, tmp: &Path) -> Result<String, String> {
     let name = tmp.to_string_lossy();
     let Some(final_name) = name.strip_suffix(".tmp") else {
         return Err(format!("{name}: not a .tmp"));
@@ -811,7 +820,7 @@ pub fn repair(tmp: &Path) -> Result<String, String> {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let notes = close(&mut Disk, &dir, file, tmp, &path, sha256(&whole))?;
+    let notes = close(steps, &dir, file, tmp, &path, sha256(&whole))?;
     let mut report = format!(
         "repaired {} kept {} games dropped {dropped} bytes",
         path.display(),
