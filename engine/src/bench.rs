@@ -14,7 +14,6 @@ use cadence_core::position::Board;
 use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::Table;
-use crate::tune::Tunables;
 use crate::uci::SEARCH_STACK_BYTES;
 
 /// What the STC preset passes.
@@ -84,8 +83,6 @@ fn search_positions() -> Report {
         let mut pos = Position::new(board);
         let mut search = Search::new(&stop, &tt);
         search.set_limits(Limits::depth(DEPTH));
-        // Never a setting: a tunable that reached here would make the count depend on an option.
-        search.set_tunables(Tunables::DEFAULT);
         let best = search.run(&mut pos, &mut std::io::sink());
         nodes += search.nodes();
         lines.push(Line {

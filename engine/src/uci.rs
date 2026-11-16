@@ -57,7 +57,8 @@ pub struct Session {
     /// SPRT plays.
     ponder: bool,
     threads: usize,
-    /// Handed to every search a `go` starts and to nothing else.
+    /// A net's set, handed to every search a `go` starts and to nothing else; the handcrafted
+    /// evaluation's search reads its own, frozen.
     tunables: Tunables,
     move_overhead: u64,
     /// Loaded on `setoption` and handed to each search; `None` probes nothing.

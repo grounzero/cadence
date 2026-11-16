@@ -474,6 +474,13 @@ fn a_setting_in_a_session_cannot_reach_bench() {
     assert_ne!(moved.nodes(), plain.nodes());
 }
 
+/// The handcrafted evaluation's set, which a change to a net's defaults must leave where it is.
+#[test]
+fn the_handcrafted_set_holds_its_frozen_values() {
+    assert_eq!(Tunables::HCE.get(Tunable::ReverseFutilityMargin), 150);
+    assert_eq!(Tunables::HCE.get(Tunable::LmpMultiplier), 500);
+}
+
 /// Bench, datagen and every `go` build their searches apart, so the frozen set is held where the
 /// search starts and not by each caller.
 #[test]

@@ -75,6 +75,12 @@ impl Position {
         })
     }
 
+    /// Which parameter set the search reads follows this.
+    #[must_use]
+    pub fn scored_by_net(&self) -> bool {
+        self.inference.is_some()
+    }
+
     /// Plies the accumulators stand above their root, which every search must leave at zero.
     #[must_use]
     pub fn net_ply(&self) -> Option<usize> {
