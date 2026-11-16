@@ -92,8 +92,8 @@ struct Stream {
 }
 
 /// When an answer is late for a command sent now that leaves the search `ms` milliseconds.
-fn deadline(ms: u64) -> Option<Instant> {
-    Some(Instant::now() + Duration::from_millis(ms) + SLACK)
+fn deadline(ms: u64) -> Instant {
+    Instant::now() + Duration::from_millis(ms) + SLACK
 }
 
 /// The clock of the side to move, which a search may spend and no more.
@@ -346,7 +346,7 @@ impl Stream {
                     let (go, clock) = self.bounded_go();
                     let next = self.searched(None);
                     self.send(&go);
-                    self.answer(&next, clock.and_then(deadline))?;
+                    self.answer(&next, clock.map(deadline))?;
                     self.ready()?;
                 }
                 7 => {
@@ -370,14 +370,14 @@ impl Stream {
         match self.rng.below(8) {
             0 | 1 => {
                 self.send("stop");
-                self.finish(&searched, deadline(0))?;
+                self.finish(&searched, Some(deadline(0)))?;
             }
             // A second `go` stops the first, which answers before the second starts.
             2 => {
                 let (go, clock) = self.bounded_go();
                 let next = self.searched(None);
                 self.send(&go);
-                let (stopped, then) = (deadline(0), clock.and_then(deadline));
+                let (stopped, then) = (Some(deadline(0)), clock.map(deadline));
                 self.running = None;
                 self.answer(&searched, stopped)?;
                 self.answer(&next, then)?;
@@ -385,7 +385,7 @@ impl Stream {
             }
             3 => {
                 self.send("ucinewgame");
-                self.finish(&searched, deadline(0))?;
+                self.finish(&searched, Some(deadline(0)))?;
             }
             4 => self.ready()?,
             // A `position` stops the search, which answers before the board changes.
@@ -393,20 +393,20 @@ impl Stream {
                 self.current = self.random_line();
                 let command = self.current.command();
                 self.send(&command);
-                self.finish(&searched, deadline(0))?;
+                self.finish(&searched, Some(deadline(0)))?;
             }
             6 => {
                 let (command, stops) = self.option();
                 self.send(&command);
                 if stops {
-                    self.finish(&searched, deadline(0))?;
+                    self.finish(&searched, Some(deadline(0)))?;
                 }
             }
             // Only a ponder takes the hit; an infinite search goes on until it is stopped.
             _ => {
                 self.send("ponderhit");
                 if let Some(ms) = searched.hit_clock {
-                    self.finish(&searched, deadline(ms))?;
+                    self.finish(&searched, Some(deadline(ms)))?;
                 }
             }
         }
@@ -453,7 +453,7 @@ fn stream(
             return Ok(counts);
         }
         s.send("stop");
-        s.finish(&searched, deadline(0))?;
+        s.finish(&searched, Some(deadline(0)))?;
     }
     s.ready()?;
     let counts = (s.gos, s.readies);
