@@ -10,10 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+use cadence_core::features::NUM_INPUTS;
 use cadence_core::position::Board;
 use cadence_engine::position::Position;
+use cadence_engine::score::MAX_EVAL;
 use cadence_engine::search::Limits;
-use cadence_nnue::{Network, Provenance};
+use cadence_nnue::{AccumulatorStack, HIDDEN, Network, Provenance};
 use support::Engine;
 
 const FEN: &str = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3";
@@ -173,6 +175,35 @@ fn a_search_leaves_the_accumulators_at_the_root() {
         let _ = search.run(&mut pos, &mut std::io::sink());
         assert_eq!(pos.net_ply(), Some(0), "{fen}");
         assert_eq!(pos.net_eval(), fresh, "{fen}");
+    }
+}
+
+/// Every lane at the activation's ceiling and every output weight `weight`: the load check passes
+/// it, and it scores far past the evaluation's range.
+fn extreme(weight: i16) -> Network {
+    let words: Vec<i16> = std::iter::repeat_n(0, NUM_INPUTS * HIDDEN)
+        .chain(std::iter::repeat_n(255, HIDDEN))
+        .chain(std::iter::repeat_n(weight, 2 * HIDDEN))
+        .chain([0])
+        .collect();
+    let payload: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    Network::from_payload(&payload, Provenance::SelfPlay, &"0".repeat(40), [0; 32])
+        .expect("the load check passes it")
+}
+
+/// A net scoring far past the evaluation's range is held strictly inside it, as the handcrafted
+/// evaluation is, so no net score reaches a mate or a tablebase score.
+#[test]
+fn an_extreme_net_is_held_strictly_inside_the_evaluation_range() {
+    for weight in [64, -64] {
+        let net = Arc::new(extreme(weight));
+        let board = Board::from_fen(FEN).expect("a position");
+        let stack = AccumulatorStack::new(&net, &board);
+        let raw = net.evaluate(stack.current(), board.side_to_move());
+        let held = Position::with_net(board, Arc::clone(&net)).net_eval();
+        assert!(raw.abs() > MAX_EVAL, "the plant scores {raw}");
+        let held = held.expect("the net scores");
+        assert!(held > -MAX_EVAL && held < MAX_EVAL, "held at {held}");
     }
 }
 
