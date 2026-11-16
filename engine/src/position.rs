@@ -64,14 +64,14 @@ impl Position {
         self.board
     }
 
-    /// `None` where the handcrafted evaluation scores the position; held inside the evaluation's
-    /// range, below every mate score.
+    /// `None` where the handcrafted evaluation scores the position; held strictly inside the
+    /// evaluation's range, as that evaluation is, below every mate and tablebase score.
     #[must_use]
     pub fn net_eval(&self) -> Option<Score> {
         self.inference.as_ref().map(|i| {
             i.net
                 .evaluate(i.stack.current(), self.board.side_to_move())
-                .clamp(-MAX_EVAL, MAX_EVAL)
+                .clamp(-MAX_EVAL + 1, MAX_EVAL - 1)
         })
     }
 
