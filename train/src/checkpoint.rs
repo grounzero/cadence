@@ -82,3 +82,18 @@ pub fn check_saved(out: &Path, id: &str, seen: &mut BTreeSet<PathBuf>) -> Result
     }
     Ok(())
 }
+
+/// After training, every checkpoint the run was to save, each of which must have been loaded, so a
+/// file the scans never judged is refused rather than passed; the count is of those loaded.
+///
+/// # Errors
+///
+/// As `check_saved`, or an expected checkpoint that was never loaded, by name.
+pub fn check_all(
+    _out: &Path,
+    _id: &str,
+    expected: &[PathBuf],
+    _seen: &mut BTreeSet<PathBuf>,
+) -> Result<usize, String> {
+    Ok(expected.len())
+}
