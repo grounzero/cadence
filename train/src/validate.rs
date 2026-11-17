@@ -3,7 +3,13 @@
 //! Validation loss from the trainer's own forward pass: each holdout record read back as a position
 //! the trainer can be asked about, scored against the target its training run used.
 
+use cadence_core::position::Board;
 use cadence_dataset::trainer::RECORD_LEN;
+use cadence_nnue::net::PAYLOAD_LEN;
+use cadence_nnue::{AccumulatorStack, Network, Provenance};
+
+/// A trainer commit for a load that names none, since a checkpoint is not yet given one.
+const UNNAMED: &str = "0000000000000000000000000000000000000000";
 
 /// One holdout record: its position with the side to move as White, which is how a record stores
 /// it, and that side's score and result.
@@ -90,6 +96,54 @@ pub fn loss(output: f32, example: &Example, result_share: f32, scale: f32) -> f6
         + (1.0 - share) * sigmoid(f64::from(example.score) / f64::from(scale));
     let difference = sigmoid(f64::from(output)) - target;
     difference * difference
+}
+
+/// How far a quantised checkpoint's loss may sit from the trainer's own over the same positions,
+/// as a share of the trainer's: rounding moves it far less, and a misread export far more.
+pub const QUANTISED_MARGIN: f64 = 0.02;
+
+/// Added to the margin, so a loss near zero is not held to the rounding of its own arithmetic.
+pub const QUANTISED_FLOOR: f64 = 1e-6;
+
+/// The loss of a checkpoint's quantised weights over `examples`, scored by the engine's own integer
+/// evaluation, held to `QUANTISED_MARGIN` of the trainer's loss `trainer` over the same examples.
+///
+/// # Errors
+///
+/// Weights the engine's loader refuses, a position that does not parse, or a loss outside the bar.
+pub fn quantised_check(
+    quantised: &[u8],
+    examples: &[Example],
+    result_share: f32,
+    scale: f32,
+    trainer: f64,
+) -> Result<f64, String> {
+    let payload = quantised
+        .get(..PAYLOAD_LEN)
+        .ok_or("shorter than a net's weights")?;
+    let unnamed = Provenance::External("checkpoint".to_string());
+    let net = Network::from_payload(payload, unnamed, UNNAMED, [0; 32])
+        .map_err(|e| format!("the engine's loader refuses it: {e}"))?;
+    let mut sum = 0.0;
+    for example in examples {
+        let board = Board::from_fen(&example.fen).map_err(|e| format!("{}: {e:?}", example.fen))?;
+        let stack = AccumulatorStack::new(&net, &board);
+        let cp = net.evaluate(stack.current(), board.side_to_move());
+        let output = (f64::from(cp) / f64::from(scale)) as f32;
+        sum += loss(output, example, result_share, scale);
+    }
+    let n = u32::try_from(examples.len())
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or("no example to score")?;
+    let loss = sum / f64::from(n);
+    if (loss - trainer).abs() > QUANTISED_MARGIN * trainer + QUANTISED_FLOOR {
+        return Err(format!(
+            "the quantised loss {loss:.6} is outside {QUANTISED_MARGIN} of the trainer's \
+             {trainer:.6}, so the export may be misread"
+        ));
+    }
+    Ok(loss)
 }
 
 /// The mean of a checkpoint's logged training losses for its own superbatch, from the
