@@ -10,14 +10,14 @@ use crate::net::{HIDDEN, Network, QA, QB, SCALE};
 
 impl Network {
     /// The fast form, multiplying the clamped activation by its weight in `i16` and widening only
-    /// the second product, which the load check keeps exact.
+    /// the second product, which the load check keeps exact; the two perspectives add in `i64`.
     #[must_use]
     pub fn evaluate(&self, acc: &Accumulator, stm: Colour) -> i32 {
         let us = &acc.sums[stm.index()];
         let them = &acc.sums[stm.flip().index()];
-        let sum = layer(us, &self.output[0]) + layer(them, &self.output[1]);
+        let sum = i64::from(layer(us, &self.output[0])) + i64::from(layer(them, &self.output[1]));
         let value = round_div(
-            (i64::from(sum / QA) + i64::from(self.output_bias)) * i64::from(SCALE),
+            (sum / i64::from(QA) + i64::from(self.output_bias)) * i64::from(SCALE),
             i64::from(QA * QB),
         );
         i32::try_from(value).unwrap_or_else(|_| unreachable!("the load check bounds the sum"))
