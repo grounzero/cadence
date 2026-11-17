@@ -4,10 +4,17 @@
 //! a run stops at the first checkpoint the engine could not load.
 
 use std::collections::BTreeSet;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use cadence_core::features::NUM_INPUTS;
-use cadence_nnue::HIDDEN;
+use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
+use cadence_nnue::{HIDDEN, Provenance};
+
+use crate::export::{PADDING, export};
+
+/// A trainer commit for a load that names none, since a checkpoint is not yet given one.
+const UNNAMED: &str = "0000000000000000000000000000000000000000";
 
 /// Beside the checkpoints, each one's name and the summed magnitude of its quantised output
 /// weights, one a line, in the order they were saved.
@@ -34,6 +41,44 @@ pub fn output_sum(payload: &[u8]) -> u64 {
 ///
 /// The first checkpoint the engine's loader refuses, by name, or a file that cannot be read or
 /// written.
-pub fn check_saved(_out: &Path, _id: &str, _seen: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+pub fn check_saved(out: &Path, id: &str, seen: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+    let whole = PAYLOAD_LEN.next_multiple_of(PADDING);
+    let mut saved = Vec::new();
+    for entry in std::fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))? {
+        let dir = entry.map_err(|e| format!("{}: {e}", out.display()))?.path();
+        let superbatch = dir.file_name().and_then(|n| {
+            n.to_str()?
+                .strip_prefix(id)?
+                .strip_prefix('-')?
+                .parse()
+                .ok()
+        });
+        if let Some(superbatch) = superbatch.filter(|_: &usize| !seen.contains(&dir)) {
+            saved.push((superbatch, dir));
+        }
+    }
+    saved.sort();
+    for (_, dir) in saved {
+        let file = dir.join("quantised.bin");
+        if std::fs::metadata(&file).map_or(true, |m| m.len() != whole as u64) {
+            continue;
+        }
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let unnamed = Provenance::External("checkpoint".to_string());
+        let net = export(&bytes, unnamed, UNNAMED, b"")
+            .map_err(|e| format!("{}: {e}, so the run is stopped", dir.display()))?;
+        let name = dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let line = format!("{name}\t{}\n", output_sum(&net.to_bytes()[HEADER_LEN..]));
+        let sums = out.join(OUTPUT_SUMS);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&sums)
+            .and_then(|mut f| f.write_all(line.as_bytes()))
+            .map_err(|e| format!("{}: {e}", sums.display()))?;
+        seen.insert(dir);
+    }
     Ok(())
 }
