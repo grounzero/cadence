@@ -373,15 +373,18 @@ impl Network {
                 return Err(LoadError::Lane { lane, bound });
             }
         }
-        let mut sum = 0_i64;
-        for (index, &weight) in self.output.iter().flatten().enumerate() {
-            if !(-127..=127).contains(&weight) {
-                return Err(LoadError::OutputWeight { index, weight });
+        for (perspective, weights) in self.output.iter().enumerate() {
+            let mut sum = 0_i64;
+            for (i, &weight) in weights.iter().enumerate() {
+                if !(-127..=127).contains(&weight) {
+                    let index = perspective * HIDDEN + i;
+                    return Err(LoadError::OutputWeight { index, weight });
+                }
+                sum += i64::from(QA * QA) * i64::from(weight).abs();
             }
-            sum += i64::from(QA * QA) * i64::from(weight).abs();
-        }
-        if sum > i64::from(i32::MAX) {
-            return Err(LoadError::OutputSum { bound: sum });
+            if sum > i64::from(i32::MAX) {
+                return Err(LoadError::OutputSum { bound: sum });
+            }
         }
         Ok(())
     }
