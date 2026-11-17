@@ -48,19 +48,19 @@ fn save(out: &Path, name: &str, bytes: &[u8]) {
     std::fs::write(out.join(name).join("quantised.bin"), bytes).expect("writes");
 }
 
-/// Every output weight at 70 is inside the trainer's clip and the loader's range for one weight,
-/// and sums past the loader's bound, so the scan refuses that checkpoint by name.
+/// An output weight of 128 is outside the loader's range for one, so the scan refuses that
+/// checkpoint by name after recording the one before it.
 #[test]
 fn a_checkpoint_the_loader_refuses_stops_the_run() {
     let out = scratch("refused");
     let good = padded(&Network::seeded(3, Provenance::SelfPlay).to_bytes()[HEADER_LEN..]);
     save(&out, "net-10", &good);
-    save(&out, "net-20", &outputs_at(70));
+    save(&out, "net-20", &outputs_at(128));
     let mut seen = BTreeSet::new();
     let checked = check_saved(&out, "net", &mut seen);
     let sums = std::fs::read_to_string(out.join(OUTPUT_SUMS));
     let _ = std::fs::remove_dir_all(&out);
-    assert_eq!(output_sum(&outputs_at(70)), 70 * 2 * HIDDEN as u64);
+    assert_eq!(output_sum(&outputs_at(128)), 128 * 2 * HIDDEN as u64);
     let error = checked.expect_err("a checkpoint the loader refuses passed");
     assert!(error.contains("net-20"), "{error}");
     let want = format!("net-10\t{}\n", output_sum(&good));

@@ -155,8 +155,9 @@ fn only_a_self_play_net_may_generate_data() {
     );
 }
 
-/// Each bound the load check holds is refused one past it: a lane whose 32 largest weights and
-/// bias could leave `i16`, an output weight of 128, and an output sum past `i32`.
+/// Each bound the load check holds is refused one past it, a lane whose 32 largest weights and
+/// bias could leave `i16` and an output weight of 128; every output weight at 127 loads and scores
+/// as the reference does, since the two perspectives add in `i64`.
 #[test]
 fn a_net_that_could_overflow_is_refused() {
     let good = net().to_bytes();
@@ -188,10 +189,14 @@ fn a_net_that_could_overflow_is_refused() {
     for i in 0..2 * hidden {
         set(&mut sum, output + i, 127);
     }
-    assert!(matches!(
-        Network::from_bytes(&sum),
-        Err(LoadError::OutputSum { .. })
-    ));
+    let widest = Network::from_bytes(&sum).expect("every output weight at 127 loads");
+    let board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+    let stack = AccumulatorStack::new(&widest, &board);
+    let stm = board.side_to_move();
+    assert_eq!(
+        widest.evaluate(stack.current(), stm),
+        widest.evaluate_reference(stack.current(), stm)
+    );
 }
 
 /// After every move and every unmake of random DFRC games, the incremental stack equals a full
