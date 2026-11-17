@@ -80,15 +80,25 @@ pub fn example(record: &[u8; RECORD_LEN]) -> Result<Example, String> {
     })
 }
 
+#[must_use]
+pub fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// The target a training run aims at: `result_share` of it from the game's result, the rest from
+/// the score scaled and squashed.
+#[must_use]
+pub fn target(example: &Example, result_share: f32, scale: f32) -> f64 {
+    let share = f64::from(result_share);
+    share * f64::from(example.result) / 2.0
+        + (1.0 - share) * sigmoid(f64::from(example.score) / f64::from(scale))
+}
+
 /// The trainer's loss for one example: the output's sigmoid against the same blend of result and
 /// scaled score the training run aimed at, squared.
 #[must_use]
 pub fn loss(output: f32, example: &Example, result_share: f32, scale: f32) -> f64 {
-    let sigmoid = |x: f64| 1.0 / (1.0 + (-x).exp());
-    let share = f64::from(result_share);
-    let target = share * f64::from(example.result) / 2.0
-        + (1.0 - share) * sigmoid(f64::from(example.score) / f64::from(scale));
-    let difference = sigmoid(f64::from(output)) - target;
+    let difference = sigmoid(f64::from(output)) - target(example, result_share, scale);
     difference * difference
 }
 
