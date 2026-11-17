@@ -860,7 +860,8 @@ mod tests {
         let manifest = dir.join("MANIFEST.tsv");
         let provenance = format!(
             "commit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\nhash\t16\n\
-             random-plies\t8\nwindow\t200\nstandard-share\t50\nrun-seeds\t{:016x}\n",
+             random-plies\t8\nwindow\t200\nstandard-share\t50\nchunk-games\t2\n\
+             run-seeds\t{:016x}\n",
             hex(&[1; 20]),
             1
         );
