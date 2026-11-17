@@ -220,6 +220,7 @@ fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String>
         ("random-plies", h.random_plies.to_string()),
         ("window", h.window.to_string()),
         ("standard-share", h.standard_share.to_string()),
+        ("chunk-games", h.games_planned.to_string()),
         ("run-seeds", format!("{:016x}", h.run_seed)),
     ];
     for (field, have) in fields {
@@ -860,7 +861,8 @@ mod tests {
         let manifest = dir.join("MANIFEST.tsv");
         let provenance = format!(
             "commit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\nhash\t16\n\
-             random-plies\t8\nwindow\t200\nstandard-share\t50\nrun-seeds\t{:016x}\n",
+             random-plies\t8\nwindow\t200\nstandard-share\t50\nchunk-games\t2\n\
+             run-seeds\t{:016x}\n",
             hex(&[1; 20]),
             1
         );

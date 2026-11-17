@@ -5,9 +5,12 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use bullet_lib::game::inputs::Chess768;
 use bullet_lib::nn::optimiser::AdamW;
@@ -38,6 +41,8 @@ const BATCH_QUEUE: usize = 32;
 const VALIDATION_POSITIONS: usize = 20_000;
 /// The share of a book's lines held out, one in this many, as the converter holds out games.
 const BOOK_EVERY: usize = 10;
+/// How often the run's directory is read for a checkpoint saved since the last read.
+const WATCH_EVERY: Duration = Duration::from_secs(5);
 
 const COMMIT: &str = env!("CADENCE_TRAIN_COMMIT");
 const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
@@ -175,6 +180,11 @@ fn run(flags: &Flags) -> Result<(), String> {
     cadence_train::data::record_manifests(Path::new(out), &verified)?;
     cadence_train::data::record_result_share(Path::new(out), result_share)?;
 
+    let stop = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let (stop, out, id) = (Arc::clone(&stop), PathBuf::from(out), id.to_string());
+        std::thread::spawn(move || watch(&out, &id, &stop))
+    };
     let mut trainer = recipe!();
     let schedule = TrainingSchedule {
         net_id: id.to_string(),
@@ -208,16 +218,37 @@ fn run(flags: &Flags) -> Result<(), String> {
     );
     // Freed before the checkpoints are read back, each into a trainer of its own.
     drop(trainer);
+    stop.store(true, Ordering::Relaxed);
+    let mut seen = watcher
+        .join()
+        .map_err(|_| "the checkpoint watcher panicked".to_string())?;
     let save_rate = SAVE_RATE.min(superbatches);
     let checkpoints: Vec<PathBuf> = (1..=superbatches)
         .filter(|sb| sb % save_rate == 0 || *sb == superbatches)
         .map(|sb| Path::new(out).join(format!("{id}-{sb}")))
         .collect();
+    let checked =
+        cadence_train::checkpoint::check_all(Path::new(out), id, &checkpoints, &mut seen)?;
+    println!("checkpoints: {checked} loaded as an export would load them, every one the run saved");
     validation(&checkpoints, holdout, positions, result_share, result_share)
 }
 
+/// Loads each checkpoint as it is saved and ends the process at the first the engine's loader
+/// refuses, since every step after it trains a net that cannot ship.
+fn watch(out: &Path, id: &str, stop: &AtomicBool) -> BTreeSet<PathBuf> {
+    let mut seen = BTreeSet::new();
+    while !stop.load(Ordering::Relaxed) {
+        if let Err(e) = cadence_train::checkpoint::check_saved(out, id, &mut seen) {
+            eprintln!("cadence-train: {e}");
+            std::process::exit(1);
+        }
+        std::thread::sleep(WATCH_EVERY);
+    }
+    seen
+}
+
 /// Each checkpoint's validation loss over the holdout, from the trainer's own forward pass, beside
-/// the training loss it logged for the same superbatch; a reading, not a gate.
+/// the training loss it logged for the same superbatch, and its quantised weights' loss held to it.
 fn validate(flags: &Flags) -> Result<(), String> {
     let checkpoints: Vec<PathBuf> = flags
         .get("--checkpoint")
@@ -301,6 +332,7 @@ fn validation(
     saved(checkpoints)?;
     let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
     let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
+    let mut misread = Vec::new();
     for checkpoint in checkpoints {
         let mut trainer = recipe!();
         trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
@@ -316,12 +348,25 @@ fn validation(
         let training = superbatch
             .and_then(|sb| cadence_train::validate::training_loss(&log, sb))
             .map_or_else(|| "not logged".to_string(), |t| format!("{t:.6}"));
+        let file = checkpoint.join("quantised.bin");
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let held =
+            cadence_train::validate::quantised_check(&bytes, &examples, result_share, scale, loss);
+        let quantised = held
+            .as_ref()
+            .map_or_else(|_| "outside the bar".to_string(), |q| format!("{q:.6}"));
         println!(
-            "validation: {}: training loss {training}, validation loss {loss:.6} over {n} holdout \
-             positions, {}",
+            "validation: {}: training loss {training}, validation loss {loss:.6}, quantised \
+             {quantised} over {n} holdout positions, {}",
             checkpoint.display(),
             cadence_train::validate::score_note(result_share, run_share)
         );
+        if let Err(e) = held {
+            misread.push(format!("{}: {e}", checkpoint.display()));
+        }
+    }
+    if !misread.is_empty() {
+        return Err(misread.join("\n"));
     }
     Ok(())
 }
