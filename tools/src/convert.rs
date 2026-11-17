@@ -343,9 +343,25 @@ struct Kept {
     holdout: Vec<[u8; RECORD_LEN]>,
     train_keys: BTreeSet<u64>,
     holdout_keys: Vec<u64>,
-    /// By network input, a reading only: sorted once every position is kept.
-    train_inputs: Vec<u64>,
-    holdout_inputs: Vec<u64>,
+    /// By start kind and network input, a reading only: each sorted once every position is kept.
+    train_inputs: [Vec<u64>; 2],
+    holdout_inputs: [Vec<u64>; 2],
+}
+
+/// One start kind's positions read by network input, its holdout against both kinds' training.
+#[derive(Clone, Copy, Debug, Default)]
+struct ByInput {
+    train: usize,
+    holdout: usize,
+    overlap: usize,
+    /// Positions in a split beyond the first with their input.
+    train_repeats: usize,
+    holdout_repeats: usize,
+}
+
+/// Entries of a sorted list beyond the first of each value.
+fn repeats(sorted: &[u64]) -> usize {
+    sorted.windows(2).filter(|w| w[0] == w[1]).count()
 }
 
 /// The whole conversion up to its published unit's path; `steps` renames the unit and syncs, so a
@@ -392,16 +408,24 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
         .iter()
         .filter(|k| kept.train_keys.contains(k))
         .count();
-    kept.train_inputs.sort_unstable();
-    let input_overlap = kept
-        .holdout_inputs
-        .iter()
-        .filter(|k| kept.train_inputs.binary_search(k).is_ok())
-        .count();
+    for inputs in kept.train_inputs.iter_mut().chain(&mut kept.holdout_inputs) {
+        inputs.sort_unstable();
+    }
+    let in_training = |k: &u64| kept.train_inputs.iter().any(|t| t.binary_search(k).is_ok());
+    let by_input: [ByInput; 2] = std::array::from_fn(|kind| {
+        let (train, holdout) = (&kept.train_inputs[kind], &kept.holdout_inputs[kind]);
+        ByInput {
+            train: train.len(),
+            holdout: holdout.len(),
+            overlap: holdout.iter().filter(|k| in_training(k)).count(),
+            train_repeats: repeats(train),
+            holdout_repeats: repeats(holdout),
+        }
+    });
     let mut rng = Rng::new(request.shuffle_seed);
     shuffle(&mut kept.train, &mut rng);
     shuffle(&mut kept.holdout, &mut rng);
-    let report = report(&sets, &counts, overlap, input_overlap);
+    let report = report(&sets, &counts, overlap, &by_input);
     publish(request, &sets, &counts, &kept, &report, steps)
 }
 
@@ -539,15 +563,16 @@ fn positions(
                 counts.plies[band] += 1;
                 counts.zeros[band] += u64::from(score == 0);
                 counts.scores[bucket(score)] += 1;
+                let kind = usize::from(record.kind);
                 if held {
                     kept.holdout.push(bytes);
                     kept.holdout_keys.push(key);
-                    kept.holdout_inputs.push(input);
+                    kept.holdout_inputs[kind].push(input);
                     counts.holdout += 1;
                 } else {
                     kept.train.push(bytes);
                     kept.train_keys.insert(key);
-                    kept.train_inputs.push(input);
+                    kept.train_inputs[kind].push(input);
                     counts.train += 1;
                 }
             }
@@ -598,7 +623,7 @@ fn report(
     sets: &[Dataset],
     counts: &[[Counts; 2]],
     overlap: usize,
-    input_overlap: usize,
+    by_input: &[ByInput; 2],
 ) -> String {
     let mut text = String::new();
     for (set, kinds) in sets.iter().zip(counts) {
@@ -660,11 +685,24 @@ fn report(
         text,
         "holdout positions whose key is also in training: {overlap}"
     );
+    let input_overlap: usize = by_input.iter().map(|b| b.overlap).sum();
     let _ = writeln!(
         text,
         "holdout positions whose network input (768 features and the side to move) is also in \
          training: {input_overlap}"
     );
+    for (name, b) in ["uniform", "standard"].iter().zip(by_input) {
+        let _ = writeln!(
+            text,
+            "{name} holdout positions whose network input is also in training: {} of {}",
+            b.overlap, b.holdout
+        );
+        let _ = writeln!(
+            text,
+            "{name} repeats by network input within training {} of {}, within holdout {} of {}",
+            b.train_repeats, b.train, b.holdout_repeats, b.holdout
+        );
+    }
     text
 }
 
