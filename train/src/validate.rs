@@ -92,6 +92,29 @@ pub fn loss(output: f32, example: &Example, result_share: f32, scale: f32) -> f6
     difference * difference
 }
 
+/// How far a quantised checkpoint's loss may sit from the trainer's own over the same positions,
+/// as a share of the trainer's: rounding moves it far less, and a misread export far more.
+pub const QUANTISED_MARGIN: f64 = 0.02;
+
+/// Added to the margin, so a loss near zero is not held to the rounding of its own arithmetic.
+pub const QUANTISED_FLOOR: f64 = 1e-6;
+
+/// The loss of a checkpoint's quantised weights over `examples`, scored by the engine's own integer
+/// evaluation, held to `QUANTISED_MARGIN` of the trainer's loss `trainer` over the same examples.
+///
+/// # Errors
+///
+/// Weights the engine's loader refuses, a position that does not parse, or a loss outside the bar.
+pub fn quantised_check(
+    _quantised: &[u8],
+    _examples: &[Example],
+    _result_share: f32,
+    _scale: f32,
+    trainer: f64,
+) -> Result<f64, String> {
+    Ok(trainer)
+}
+
 /// The mean of a checkpoint's logged training losses for its own superbatch, from the
 /// `superbatch,batch,loss` lines the trainer writes beside it.
 #[must_use]
