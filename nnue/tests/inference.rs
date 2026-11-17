@@ -5,6 +5,7 @@
 //! one digest every target's build must print.
 
 use cadence_core::chess960::dfrc_fen;
+use cadence_core::mv::parse_uci;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_core::{FenStyle, Move, generate_legal};
@@ -228,6 +229,45 @@ fn incremental_updates_equal_a_refresh() {
         castles > 0 && promotions > 0,
         "{castles} castles and {promotions} promotions"
     );
+}
+
+/// A position, a move in it, and the kind of move it must be.
+type Case = (&'static str, &'static str, fn(Move) -> bool);
+
+/// A Chess960 castle whose king and rook swap squares, an en passant capture and a promotion, each
+/// updated from its parent and compared with a refresh from both perspectives.
+#[test]
+fn a_swapping_castle_en_passant_and_a_promotion_update_as_a_refresh() {
+    let net = net();
+    let cases: [Case; 3] = [
+        ("4k3/8/8/8/8/8/8/2RK3R w C - 0 1", "d1c1", Move::is_castle),
+        (
+            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+            "e5d6",
+            Move::is_en_passant,
+        ),
+        (
+            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+            "a7a8q",
+            Move::is_promotion,
+        ),
+    ];
+    for (fen, uci, kind) in cases {
+        let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+        let legal = generate_legal(&board);
+        let m = parse_uci(&legal, uci).unwrap_or_else(|| panic!("{uci} is not legal in {fen}"));
+        assert!(kind(m), "{uci} in {fen} is not the case it stands for");
+        let parent = net.refresh(&board);
+        let dirty = board.make_move(m);
+        let updated = net.update(&parent, &dirty);
+        let fresh = net.refresh(&board);
+        for (persp, side) in [(0, "White"), (1, "Black")] {
+            assert_eq!(
+                updated.sums[persp], fresh.sums[persp],
+                "{uci} in {fen}, {side}'s perspective"
+            );
+        }
+    }
 }
 
 #[test]
