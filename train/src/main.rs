@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bullet_lib::game::inputs::Chess768;
-use bullet_lib::nn::optimiser::AdamW;
+use bullet_lib::nn::optimiser::{AdamW, AdamWParams};
 use bullet_lib::trainer::save::SavedFormat;
 use bullet_lib::trainer::schedule::{TrainingSchedule, TrainingSteps, lr, wdl};
 use bullet_lib::trainer::settings::LocalSettings;
@@ -50,6 +50,7 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
+           [--output-clip F]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
@@ -185,6 +186,16 @@ fn run(flags: &Flags) -> Result<(), String> {
         std::thread::spawn(move || watch(&out, &id, &stop))
     };
     let mut trainer = recipe!();
+    // A trial of clipping the output layer alone, so its quantised sum stays inside the loader's.
+    if flags.contains_key("--output-clip") {
+        let clip: f32 = parsed(flags, "--output-clip", 1.98)?;
+        let params = AdamWParams {
+            min_weight: -clip,
+            max_weight: clip,
+            ..AdamWParams::default()
+        };
+        trainer.optimiser.set_params_for_weight("l1w", params);
+    }
     let schedule = TrainingSchedule {
         net_id: id.to_string(),
         eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
