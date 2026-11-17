@@ -87,15 +87,23 @@ pub fn example(record: &[u8; RECORD_LEN]) -> Result<Example, String> {
 ///
 /// A given share outside [0, 1].
 pub fn score_share(run: f32, given: Option<f32>) -> Result<f32, String> {
-    let _ = given;
-    Ok(run)
+    match given {
+        Some(share) if !(0.0..=1.0).contains(&share) => {
+            Err(format!("--score-share {share} is outside [0, 1]"))
+        }
+        Some(share) => Ok(share),
+        None => Ok(run),
+    }
 }
 
 /// What a validation line says of the share its loss was scored at, and whether it is the run's.
 #[must_use]
 pub fn score_note(scored: f32, run: f32) -> String {
-    let _ = (scored, run);
-    String::new()
+    if scored.to_bits() == run.to_bits() {
+        format!("scored at result share {scored}, the run's")
+    } else {
+        format!("scored at result share {scored}, not the run's {run}")
+    }
 }
 
 /// The trainer's loss for one example: the output's sigmoid against the same blend of result and

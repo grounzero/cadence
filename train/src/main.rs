@@ -46,7 +46,7 @@ const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
-           [--validation-positions N] [--result-share F]
+           [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
        cadence-train book --in FILE --out FILE --seed HEX [--every N]
        cadence-train eval --checkpoint DIR --fens FILE";
@@ -213,7 +213,7 @@ fn run(flags: &Flags) -> Result<(), String> {
         .filter(|sb| sb % save_rate == 0 || *sb == superbatches)
         .map(|sb| Path::new(out).join(format!("{id}-{sb}")))
         .collect();
-    validation(&checkpoints, holdout, positions, result_share)
+    validation(&checkpoints, holdout, positions, result_share, result_share)
 }
 
 /// Each checkpoint's validation loss over the holdout, from the trainer's own forward pass, beside
@@ -250,7 +250,17 @@ fn validate(flags: &Flags) -> Result<(), String> {
             return Err("the checkpoints' runs recorded different result shares".to_string());
         }
     }
-    validation(&checkpoints, holdout, positions, result_share)
+    let score = match flags.get("--score-share").map(Vec::as_slice) {
+        None => None,
+        Some([value]) => Some(
+            value
+                .parse()
+                .map_err(|_| format!("--score-share {value} does not parse"))?,
+        ),
+        Some(_) => return Err("--score-share is given more than once".to_string()),
+    };
+    let scored = cadence_train::validate::score_share(result_share, score)?;
+    validation(&checkpoints, holdout, positions, scored, result_share)
 }
 
 /// Each directory is one the trainer saved a checkpoint in.
@@ -274,6 +284,7 @@ fn validation(
     holdout: &Path,
     positions: usize,
     result_share: f32,
+    run_share: f32,
 ) -> Result<(), String> {
     let bytes = std::fs::read(holdout).map_err(|e| format!("{}: {e}", holdout.display()))?;
     let examples = bytes
@@ -307,8 +318,9 @@ fn validation(
             .map_or_else(|| "not logged".to_string(), |t| format!("{t:.6}"));
         println!(
             "validation: {}: training loss {training}, validation loss {loss:.6} over {n} holdout \
-             positions",
-            checkpoint.display()
+             positions, {}",
+            checkpoint.display(),
+            cadence_train::validate::score_note(result_share, run_share)
         );
     }
     Ok(())
