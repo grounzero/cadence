@@ -8,7 +8,7 @@ use std::process::Command;
 
 use cadence_dataset::sha256::sha256;
 use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
-use cadence_nnue::{LoadError, Network, Provenance};
+use cadence_nnue::{AnyNetwork, LoadError, Network, Provenance, WIDE};
 use cadence_train::data::{COMMIT_FILE, record_manifests};
 use cadence_train::export::{CONVERTED, ExportError, PADDING, export};
 
@@ -150,4 +150,23 @@ fn a_canary_exports_only_from_converted_data() {
     let net = export(&saved, Provenance::Canary, TRAINER, &manifest()).expect("exports");
     let back = Network::from_bytes(&net.to_bytes()).expect("loads");
     assert_eq!(*back.provenance(), Provenance::Canary);
+}
+
+/// A checkpoint of the wide width exports to a file the engine loads at that width, its weights
+/// unchanged.
+#[test]
+fn a_wide_checkpoint_exports_at_its_width() {
+    let mut saved =
+        Network::<WIDE>::generate(3, Provenance::SelfPlay).to_bytes()[HEADER_LEN..].to_vec();
+    let payload = saved.len();
+    let fill = b"bullet";
+    for i in 0..payload.next_multiple_of(PADDING) - payload {
+        saved.push(fill[i % fill.len()]);
+    }
+    let net = export(&saved, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
+    assert_eq!(net.hidden(), WIDE);
+    let file = net.to_bytes();
+    let back = AnyNetwork::for_datagen(&file).expect("the engine loads it at its width");
+    assert_eq!(back.hidden(), WIDE);
+    assert_eq!(&file[HEADER_LEN..], &saved[..payload]);
 }
