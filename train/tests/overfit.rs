@@ -6,7 +6,8 @@
 use std::collections::BTreeSet;
 
 use cadence_train::overfit::{
-    BLEND_GAP, MEMORISED, SYNTHETIC_POSITIONS, constant_loss, real_bar, synthetic, synthetic_bar,
+    BLEND_GAP, MEMORISED, SYNTHETIC_POSITIONS, constant_loss, real_reading, synthetic,
+    synthetic_bar,
 };
 use cadence_train::validate::{Example, example};
 
@@ -69,13 +70,15 @@ fn outputs_at_the_stated_reading_pass_and_at_the_swapped_reading_fail() {
     assert!(refused.is_err(), "the swapped reading passed");
 }
 
+/// The real part is a reading and not a bar: the trained loss, the best constant guess's and
+/// their ratio, said to be a reading.
 #[test]
-fn the_real_bar_holds_the_trained_loss_to_its_share_of_the_constant_guess() {
-    real_bar(0.06, 0.1).expect("0.6 of the constant guess passes");
-    assert!(
-        real_bar(0.08, 0.1).is_err(),
-        "0.8 of the constant guess passed"
-    );
+fn the_real_part_reads_the_trained_loss_against_the_constant_guess() {
+    let reading = real_reading(0.06, 0.1);
+    assert!(reading.contains("0.060000"), "{reading}");
+    assert!(reading.contains("0.100000"), "{reading}");
+    assert!(reading.contains("ratio 0.600"), "{reading}");
+    assert!(reading.contains("a reading, not a bar"), "{reading}");
 }
 
 /// With the result alone, three results' targets are 0, 1/2 and 1, whose mean squared deviation

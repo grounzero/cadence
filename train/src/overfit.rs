@@ -147,6 +147,12 @@ pub fn real_bar(trained: f64, constant: f64) -> Result<(), String> {
     ))
 }
 
+/// The real part's reading: the trained loss, the best constant guess's and their ratio.
+#[must_use]
+pub fn real_reading(_trained: f64, _constant: f64) -> String {
+    String::new()
+}
+
 /// The first `n` records across `data` in order, decoded.
 ///
 /// # Errors
