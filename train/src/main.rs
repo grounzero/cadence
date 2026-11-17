@@ -173,6 +173,7 @@ fn run(flags: &Flags) -> Result<(), String> {
     std::fs::write(&commit_file, format!("{COMMIT}\n"))
         .map_err(|e| format!("{}: {e}", commit_file.display()))?;
     cadence_train::data::record_manifests(Path::new(out), &verified)?;
+    cadence_train::data::record_result_share(Path::new(out), result_share)?;
 
     let mut trainer = recipe!();
     let schedule = TrainingSchedule {
@@ -229,8 +230,41 @@ fn validate(flags: &Flags) -> Result<(), String> {
     let holdout = Path::new(one(flags, "--holdout")?);
     cadence_train::data::verify_holdout(holdout, &manifests)?;
     let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
-    let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
+    let given = match flags.get("--result-share").map(Vec::as_slice) {
+        None => None,
+        Some([value]) => Some(
+            value
+                .parse()
+                .map_err(|_| format!("--result-share {value} does not parse"))?,
+        ),
+        Some(_) => return Err("--result-share is given more than once".to_string()),
+    };
+    saved(&checkpoints)?;
+    let mut shares = checkpoints.iter().map(|c| {
+        let run = c.parent().unwrap_or(Path::new("."));
+        cadence_train::data::run_result_share(run, given)
+    });
+    let result_share = shares.next().ok_or("no checkpoint")??;
+    for share in shares {
+        if share?.to_bits() != result_share.to_bits() {
+            return Err("the checkpoints' runs recorded different result shares".to_string());
+        }
+    }
     validation(&checkpoints, holdout, positions, result_share)
+}
+
+/// Each directory is one the trainer saved a checkpoint in.
+fn saved(checkpoints: &[PathBuf]) -> Result<(), String> {
+    match checkpoints
+        .iter()
+        .find(|c| !c.join("optimiser_state").is_dir())
+    {
+        Some(missing) => Err(format!(
+            "{} is not a checkpoint the trainer saved",
+            missing.display()
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The holdout's first `positions` records, scored by each checkpoint in a trainer of its own,
@@ -253,15 +287,7 @@ fn validation(
     if examples.is_empty() {
         return Err(format!("{} holds no record", holdout.display()));
     }
-    if let Some(missing) = checkpoints
-        .iter()
-        .find(|c| !c.join("optimiser_state").is_dir())
-    {
-        return Err(format!(
-            "{} is not a checkpoint the trainer saved",
-            missing.display()
-        ));
-    }
+    saved(checkpoints)?;
     let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
     let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
     for checkpoint in checkpoints {

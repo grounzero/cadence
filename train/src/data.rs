@@ -184,8 +184,9 @@ pub const RESULT_SHARE_FILE: &str = "result-share";
 /// # Errors
 ///
 /// A file that cannot be written.
-pub fn record_result_share(_out: &Path, _share: f32) -> Result<(), String> {
-    Ok(())
+pub fn record_result_share(out: &Path, share: f32) -> Result<(), String> {
+    let path = out.join(RESULT_SHARE_FILE);
+    std::fs::write(&path, format!("{share}\n")).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The result share the run in `run` recorded, which a share given on the command line must equal.
@@ -193,17 +194,34 @@ pub fn record_result_share(_out: &Path, _share: f32) -> Result<(), String> {
 /// # Errors
 ///
 /// No share recorded in `run`, one that does not parse, or a given share that differs from it.
-pub fn run_result_share(_run: &Path, given: Option<f32>) -> Result<f32, String> {
-    Ok(given.unwrap_or(0.75))
+pub fn run_result_share(run: &Path, given: Option<f32>) -> Result<f32, String> {
+    let path = run.join(RESULT_SHARE_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "{}: {e}, so the run's result share is not known",
+            path.display()
+        )
+    })?;
+    let recorded: f32 = text
+        .trim()
+        .parse()
+        .map_err(|_| format!("{}: {} is not a share", path.display(), text.trim()))?;
+    match given {
+        Some(share) if share.to_bits() != recorded.to_bits() => Err(format!(
+            "--result-share {share} differs from the {recorded} the run recorded in {}",
+            path.display()
+        )),
+        _ => Ok(recorded),
+    }
 }
 
 /// A run's directory holds no other run's record, since a second run would overwrite the first's.
 ///
 /// # Errors
 ///
-/// A directory holding `COMMIT_FILE` or `VERIFIED_MANIFESTS`.
+/// A directory holding `COMMIT_FILE`, `VERIFIED_MANIFESTS` or `RESULT_SHARE_FILE`.
 pub fn fresh_run(out: &Path) -> Result<(), String> {
-    for name in [COMMIT_FILE, VERIFIED_MANIFESTS] {
+    for name in [COMMIT_FILE, VERIFIED_MANIFESTS, RESULT_SHARE_FILE] {
         if out.join(name).exists() {
             return Err(format!(
                 "{} holds another run's {name}, and a run never shares its directory",
