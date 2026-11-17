@@ -221,12 +221,14 @@ fn run(flags: &Flags) -> Result<(), String> {
     let mut seen = watcher
         .join()
         .map_err(|_| "the checkpoint watcher panicked".to_string())?;
-    cadence_train::checkpoint::check_saved(Path::new(out), id, &mut seen)?;
     let save_rate = SAVE_RATE.min(superbatches);
     let checkpoints: Vec<PathBuf> = (1..=superbatches)
         .filter(|sb| sb % save_rate == 0 || *sb == superbatches)
         .map(|sb| Path::new(out).join(format!("{id}-{sb}")))
         .collect();
+    let checked =
+        cadence_train::checkpoint::check_all(Path::new(out), id, &checkpoints, &mut seen)?;
+    println!("checkpoints: {checked} loaded as an export would load them, every one the run saved");
     validation(&checkpoints, holdout, positions, result_share)
 }
 

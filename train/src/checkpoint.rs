@@ -90,10 +90,17 @@ pub fn check_saved(out: &Path, id: &str, seen: &mut BTreeSet<PathBuf>) -> Result
 ///
 /// As `check_saved`, or an expected checkpoint that was never loaded, by name.
 pub fn check_all(
-    _out: &Path,
-    _id: &str,
+    out: &Path,
+    id: &str,
     expected: &[PathBuf],
-    _seen: &mut BTreeSet<PathBuf>,
+    seen: &mut BTreeSet<PathBuf>,
 ) -> Result<usize, String> {
+    check_saved(out, id, seen)?;
+    if let Some(missing) = expected.iter().find(|c| !seen.contains(*c)) {
+        return Err(format!(
+            "{}: never loaded, its quantised.bin missing or not a whole checkpoint's length",
+            missing.display()
+        ));
+    }
     Ok(expected.len())
 }
