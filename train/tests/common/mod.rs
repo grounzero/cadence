@@ -118,7 +118,8 @@ pub fn dataset(dir: &Path, run_seed: u64, chunks: &[Vec<GameRecord>]) -> PathBuf
     let text = format!(
         "# cadence dataset manifest\ncommit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\n\
          hash\t16\nrandom-plies\t{RANDOM_PLIES}\nwindow\t200\nstandard-share\t50\n\
-         run-seeds\t{run_seed:016x}\nchunk\tsha256\tgames\tplies\tuniform\tstandard\n{rows}",
+         chunk-games\t1000\nrun-seeds\t{run_seed:016x}\n\
+         chunk\tsha256\tgames\tplies\tuniform\tstandard\n{rows}",
         hex(&[1; 20])
     );
     std::fs::write(&manifest, text).expect("writes");
