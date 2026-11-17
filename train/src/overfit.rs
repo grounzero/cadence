@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The overfit test's sets and bars: a small consistent set the recipe must memorise at the result
-//! share's own meaning, and a real set whose loss must fall well below the best constant guess.
+//! The overfit test's set and bar: a small consistent set the recipe must memorise at the result
+//! share's own meaning, beside a reading of how far a real set's loss falls below a constant guess.
 
 use std::collections::BTreeSet;
 use std::io::Read as _;
@@ -24,9 +24,6 @@ pub const MEMORISED: f64 = 0.02;
 /// How far, on average, the memorised outputs must sit from the reading with the shares swapped,
 /// so the trainer's meaning of the result share is the one the recipe states.
 pub const BLEND_GAP: f64 = 0.1;
-
-/// The trained loss on real data as a share of the best constant guess's loss, at most.
-pub const REAL_RATIO: f64 = 0.7;
 
 /// Records the constant guess is read over, from the start of the data.
 pub const REAL_SAMPLE: usize = 100_000;
@@ -132,25 +129,15 @@ pub fn constant_loss(examples: &[Example], result_share: f32, scale: f32) -> f64
     mean(squares, targets.len())
 }
 
-/// The real part's bar.
-///
-/// # Errors
-///
-/// A trained loss above `REAL_RATIO` of the constant guess's, with both.
-pub fn real_bar(trained: f64, constant: f64) -> Result<(), String> {
-    if trained <= REAL_RATIO * constant {
-        return Ok(());
-    }
-    Err(format!(
-        "the trained loss {trained:.6} is above {REAL_RATIO} of the best constant guess's \
-         {constant:.6}"
-    ))
-}
-
-/// The real part's reading: the trained loss, the best constant guess's and their ratio.
+/// The real part's reading: the trained loss, the best constant guess's and their ratio, which
+/// stays a reading until real self-play data has measured what a good net reaches.
 #[must_use]
-pub fn real_reading(_trained: f64, _constant: f64) -> String {
-    String::new()
+pub fn real_reading(trained: f64, constant: f64) -> String {
+    format!(
+        "real data trained to {trained:.6}, the best constant guess {constant:.6}, ratio {:.3}; a \
+         reading, not a bar, until the canary's data measures one",
+        trained / constant
+    )
 }
 
 /// The first `n` records across `data` in order, decoded.

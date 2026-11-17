@@ -361,11 +361,11 @@ fn short_schedule(
     }
 }
 
-/// The overfit test before a full run: the synthetic set memorised at the stated result share,
-/// then with `--data`, real data's loss well below the best constant guess's; a failure stops here.
+/// The overfit test before a full run: the synthetic set memorised at the stated result share, which
+/// fails the run, then with `--data` a reading of real data's loss against a constant guess's.
 fn overfit(flags: &Flags) -> Result<(), String> {
     use cadence_train::overfit::{
-        REAL_SAMPLE, constant_loss, first_records, real_bar, synthetic, synthetic_bar,
+        REAL_SAMPLE, constant_loss, first_records, real_reading, synthetic, synthetic_bar,
     };
     let out = PathBuf::from(one(flags, "--out")?);
     let real: Option<Vec<String>> = match (flags.get("--data"), flags.get("--manifest")) {
@@ -443,14 +443,11 @@ fn overfit(flags: &Flags) -> Result<(), String> {
         let paths: Vec<&Path> = data.iter().map(Path::new).collect();
         let sample = first_records(&paths, REAL_SAMPLE)?;
         let constant = constant_loss(&sample, RESULT_SHARE, scale);
-        match real_bar(logged, constant) {
-            Ok(()) => println!(
-                "overfit: real data trained to {logged:.6}, against {constant:.6} for the best \
-                 constant guess over {} records",
-                sample.len()
-            ),
-            Err(e) => failed.push(e),
-        }
+        println!(
+            "overfit: {} over {} records",
+            real_reading(logged, constant),
+            sample.len()
+        );
     }
     if failed.is_empty() {
         Ok(())
