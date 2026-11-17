@@ -7,11 +7,42 @@ use cadence_dataset::sha256::sha256;
 use cadence_nnue::Network;
 
 use super::say::say;
-use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, Session};
+use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, NetOptions, Session};
 use crate::level;
 use crate::syzygy::{MAX_PROBE_LIMIT, Tables};
 use crate::tt::{self, Table};
 use crate::tune::{self, Param};
+
+impl NetOptions {
+    /// Scoring with the net in `bytes` by default, the net the build ships; empty bytes ship none.
+    pub(super) fn shipping(bytes: &[u8]) -> NetOptions {
+        let shipped = Network::shipped(bytes).map(|loaded| {
+            loaded
+                .map(|net| (Arc::new(net), sha256(bytes)))
+                .map_err(|e| e.to_string())
+        });
+        let mut options = NetOptions {
+            shipped,
+            ..NetOptions::default()
+        };
+        options.on = options.ships();
+        options.restore_shipped();
+        options
+    }
+
+    /// Whether the build ships a net its loader took.
+    pub(super) fn ships(&self) -> bool {
+        matches!(self.shipped, Some(Ok(_)))
+    }
+
+    /// The shipped net in place of any file's, or no net where the build ships none.
+    fn restore_shipped(&mut self) {
+        (self.net, self.key) = match &self.shipped {
+            Some(Ok((net, key))) => (Some(Arc::clone(net)), Some(*key)),
+            _ => (None, None),
+        };
+    }
+}
 
 impl Session {
     /// `name` and `value` delimit names and values, which may contain spaces. A path is kept as
@@ -189,7 +220,8 @@ impl Session {
         self.load_tables();
     }
 
-    /// Empty, or `<empty>`, unloads the net; a file the loader refuses leaves none, and says why.
+    /// Empty, or `<empty>`, returns to the net the build ships, or to none where it ships none; a
+    /// file the loader refuses does the same, and says why.
     fn set_eval_file(&mut self, value: &str) {
         let value = value.trim();
         self.nnue.file = if value.eq_ignore_ascii_case("<empty>") {
@@ -197,8 +229,7 @@ impl Session {
         } else {
             value.to_string()
         };
-        self.nnue.net = None;
-        self.nnue.key = None;
+        self.nnue.restore_shipped();
         if self.nnue.file.is_empty() {
             return;
         }
