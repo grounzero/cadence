@@ -147,6 +147,27 @@ fn parsed<T: std::str::FromStr>(flags: &Flags, name: &str, default: T) -> Result
     }
 }
 
+/// `--hidden`, which is one of the two widths the engine reads.
+fn width_flag(flags: &Flags) -> Result<usize, String> {
+    let hidden = parsed(flags, "--hidden", HIDDEN)?;
+    if hidden == HIDDEN || hidden == WIDE {
+        Ok(hidden)
+    } else {
+        Err(format!(
+            "--hidden {hidden}, where the engine reads {HIDDEN} or {WIDE}\n{USAGE}"
+        ))
+    }
+}
+
+/// The optimiser's defaults with every weight held to `clip` either way.
+fn clipped(clip: f32) -> AdamWParams {
+    AdamWParams {
+        min_weight: -clip,
+        max_weight: clip,
+        ..AdamWParams::default()
+    }
+}
+
 fn run(flags: &Flags) -> Result<(), String> {
     // Before anything is built: a run trains only on the files its manifests name.
     let manifests: Vec<&Path> = flags
@@ -169,15 +190,10 @@ fn run(flags: &Flags) -> Result<(), String> {
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
     let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
-    let hidden = parsed(flags, "--hidden", HIDDEN)?;
+    let hidden = width_flag(flags)?;
     if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
         return Err(format!(
             "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
-        ));
-    }
-    if hidden != HIDDEN && hidden != WIDE {
-        return Err(format!(
-            "--hidden {hidden}, where the engine reads {HIDDEN} or {WIDE}\n{USAGE}"
         ));
     }
     let data: Vec<&str> = flags
@@ -205,12 +221,9 @@ fn run(flags: &Flags) -> Result<(), String> {
     let mut trainer = recipe!(hidden);
     // The wide net's output layer is clipped tighter, so that its quantised sum loads.
     if let Some(clip) = cadence_train::export::output_clip(hidden) {
-        let params = AdamWParams {
-            min_weight: -clip,
-            max_weight: clip,
-            ..AdamWParams::default()
-        };
-        trainer.optimiser.set_params_for_weight("l1w", params);
+        trainer
+            .optimiser
+            .set_params_for_weight("l1w", clipped(clip));
     }
     let schedule = TrainingSchedule {
         net_id: id.to_string(),

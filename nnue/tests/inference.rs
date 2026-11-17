@@ -15,8 +15,8 @@ use cadence_nnue::{AccumulatorStack, AnyNetwork, HIDDEN, LoadError, Network, Pro
 
 /// The digest of `corpus_outputs`, the same on every target, or a build computes another number.
 const DIGEST: u64 = 0xc222_483e_5258_62ef;
-/// The same corpus scored by the wide seeded net.
-const WIDE_DIGEST: u64 = 0;
+/// The same corpus scored by the wide seeded net, read alike on every CI leg.
+const WIDE_DIGEST: u64 = 0x8fc8_6648_262e_67a0;
 
 fn net() -> Network {
     Network::seeded(0xc0de, Provenance::SelfPlay)
