@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bullet_lib::game::inputs::Chess768;
-use bullet_lib::nn::optimiser::AdamW;
+use bullet_lib::nn::optimiser::{AdamW, AdamWParams};
 use bullet_lib::trainer::save::SavedFormat;
 use bullet_lib::trainer::schedule::{TrainingSchedule, TrainingSteps, lr, wdl};
 use bullet_lib::trainer::settings::LocalSettings;
@@ -22,7 +22,7 @@ use bullet_lib::value::loader::DirectSequentialDataLoader;
 use cadence_core::features::NUM_INPUTS;
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
-use cadence_nnue::{HIDDEN, Provenance};
+use cadence_nnue::{HIDDEN, Provenance, WIDE};
 use cadence_train::data::{BOOK_HEADER, COMMIT_FILE};
 
 const SUPERBATCHES: usize = 40;
@@ -57,6 +57,7 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
+           [--hidden 256|512]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
@@ -64,10 +65,11 @@ const USAGE: &str =
        cadence-train overfit --out DIR [--data FILE... --manifest FILE...]
        cadence-train eval --checkpoint DIR --fens FILE";
 
-/// The network and its saved format, built the same way wherever a trainer is needed, so a
-/// checkpoint is read back by the definition that wrote it.
+/// The network at `$hidden` units a perspective and its saved format, built the same way wherever
+/// a trainer is needed, so a checkpoint is read back by the definition that wrote it.
 macro_rules! recipe {
-    () => {
+    ($hidden:expr) => {{
+        let hidden: usize = $hidden;
         ValueTrainerBuilder::default()
             .dual_perspective()
             .optimiser(AdamW)
@@ -81,14 +83,14 @@ macro_rules! recipe {
                     .quantise::<i16>((QA * QB) as i16),
             ])
             .loss_fn(|output, target| output.sigmoid().squared_error(target))
-            .build(|builder, stm_inputs, ntm_inputs| {
-                let l0 = builder.new_affine("l0", NUM_INPUTS, HIDDEN);
-                let l1 = builder.new_affine("l1", 2 * HIDDEN, 1);
+            .build(move |builder, stm_inputs, ntm_inputs| {
+                let l0 = builder.new_affine("l0", NUM_INPUTS, hidden);
+                let l1 = builder.new_affine("l1", 2 * hidden, 1);
                 let stm_hidden = l0.forward(stm_inputs).screlu();
                 let ntm_hidden = l0.forward(ntm_inputs).screlu();
                 l1.forward(stm_hidden.concat(ntm_hidden))
             })
-    };
+    }};
 }
 
 fn main() -> ExitCode {
@@ -167,9 +169,15 @@ fn run(flags: &Flags) -> Result<(), String> {
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
     let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
+    let hidden = parsed(flags, "--hidden", HIDDEN)?;
     if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
         return Err(format!(
             "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
+        ));
+    }
+    if hidden != HIDDEN && hidden != WIDE {
+        return Err(format!(
+            "--hidden {hidden}, where the engine reads {HIDDEN} or {WIDE}\n{USAGE}"
         ));
     }
     let data: Vec<&str> = flags
@@ -192,9 +200,18 @@ fn run(flags: &Flags) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let watcher = {
         let (stop, out, id) = (Arc::clone(&stop), PathBuf::from(out), id.to_string());
-        std::thread::spawn(move || watch(&out, &id, &stop))
+        std::thread::spawn(move || watch(&out, &id, hidden, &stop))
     };
-    let mut trainer = recipe!();
+    let mut trainer = recipe!(hidden);
+    // The wide net's output layer is clipped tighter, so that its quantised sum loads.
+    if let Some(clip) = cadence_train::export::output_clip(hidden) {
+        let params = AdamWParams {
+            min_weight: -clip,
+            max_weight: clip,
+            ..AdamWParams::default()
+        };
+        trainer.optimiser.set_params_for_weight("l1w", params);
+    }
     let schedule = TrainingSchedule {
         net_id: id.to_string(),
         eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
@@ -237,17 +254,17 @@ fn run(flags: &Flags) -> Result<(), String> {
         .map(|sb| Path::new(out).join(format!("{id}-{sb}")))
         .collect();
     let checked =
-        cadence_train::checkpoint::check_all(Path::new(out), id, &checkpoints, &mut seen)?;
+        cadence_train::checkpoint::check_all(Path::new(out), id, hidden, &checkpoints, &mut seen)?;
     println!("checkpoints: {checked} loaded as an export would load them, every one the run saved");
     validation(&checkpoints, holdout, positions, result_share, result_share)
 }
 
 /// Loads each checkpoint as it is saved and ends the process at the first the engine's loader
 /// refuses, since every step after it trains a net that cannot ship.
-fn watch(out: &Path, id: &str, stop: &AtomicBool) -> BTreeSet<PathBuf> {
+fn watch(out: &Path, id: &str, hidden: usize, stop: &AtomicBool) -> BTreeSet<PathBuf> {
     let mut seen = BTreeSet::new();
     while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = cadence_train::checkpoint::check_saved(out, id, &mut seen) {
+        if let Err(e) = cadence_train::checkpoint::check_saved(out, id, hidden, &mut seen) {
             eprintln!("cadence-train: {e}");
             std::process::exit(1);
         }
@@ -343,7 +360,7 @@ fn validation(
     let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
     let mut misread = Vec::new();
     for checkpoint in checkpoints {
-        let mut trainer = recipe!();
+        let mut trainer = recipe!(width(checkpoint)?);
         trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
         let loss: f64 = examples
             .iter()
@@ -488,7 +505,7 @@ fn overfit(flags: &Flags) -> Result<(), String> {
         .map(cadence_train::validate::example)
         .collect::<Result<Vec<_>, String>>()?;
     let mut failed = Vec::new();
-    let mut trainer = recipe!();
+    let mut trainer = recipe!(HIDDEN);
     let schedule = short_schedule("synthetic", SYNTHETIC_SUPERBATCHES, SYNTHETIC_BATCHES);
     let path = file.to_string_lossy().into_owned();
     trainer.run(
@@ -509,7 +526,7 @@ fn overfit(flags: &Flags) -> Result<(), String> {
     }
     if let Some(data) = real {
         let data: Vec<&str> = data.iter().map(String::as_str).collect();
-        let mut trainer = recipe!();
+        let mut trainer = recipe!(HIDDEN);
         let schedule = short_schedule("real", REAL_SUPERBATCHES, REAL_BATCHES);
         trainer.run(
             &schedule,
@@ -601,6 +618,23 @@ fn book(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+/// The width a saved checkpoint was trained at, from its quantised file's length.
+fn width(checkpoint: &Path) -> Result<usize, String> {
+    let file = checkpoint.join("quantised.bin");
+    let len = std::fs::metadata(&file)
+        .map_err(|e| format!("{}: {e}", file.display()))?
+        .len();
+    usize::try_from(len)
+        .ok()
+        .and_then(cadence_train::export::width_of)
+        .ok_or_else(|| {
+            format!(
+                "{}: {len} bytes, a checkpoint of neither width",
+                file.display()
+            )
+        })
+}
+
 /// The trainer's own output for each position, read back from a checkpoint the recipe saved, in
 /// centipawns: the reading any other forward pass over the same weights is held to.
 fn eval(flags: &Flags) -> Result<(), String> {
@@ -619,7 +653,7 @@ fn eval(flags: &Flags) -> Result<(), String> {
         .map(|line| line.split('[').next().unwrap_or(line).trim())
         .filter(|fen| !fen.is_empty())
         .collect();
-    let mut trainer = recipe!();
+    let mut trainer = recipe!(width(Path::new(checkpoint))?);
     trainer.load_from_checkpoint(checkpoint);
     let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
     for fen in positions {

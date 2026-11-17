@@ -5,8 +5,8 @@
 
 use cadence_core::position::Board;
 use cadence_dataset::trainer::RECORD_LEN;
-use cadence_nnue::net::PAYLOAD_LEN;
-use cadence_nnue::{AccumulatorStack, Network, Provenance};
+use cadence_nnue::net::payload_len;
+use cadence_nnue::{AccumulatorStack, HIDDEN, LoadError, Network, Provenance, WIDE};
 
 /// A trainer commit for a load that names none, since a checkpoint is not yet given one.
 const UNNAMED: &str = "0000000000000000000000000000000000000000";
@@ -154,20 +154,21 @@ pub fn quantised_check(
     scale: f32,
     trainer: f64,
 ) -> Result<f64, String> {
-    let payload = quantised
-        .get(..PAYLOAD_LEN)
-        .ok_or("shorter than a net's weights")?;
     let unnamed = Provenance::External("checkpoint".to_string());
-    let net = Network::from_payload(payload, unnamed, UNNAMED, [0; 32])
-        .map_err(|e| format!("the engine's loader refuses it: {e}"))?;
-    let mut sum = 0.0;
-    for example in examples {
-        let board = Board::from_fen(&example.fen).map_err(|e| format!("{}: {e:?}", example.fen))?;
-        let stack = AccumulatorStack::new(&net, &board);
-        let cp = net.evaluate(stack.current(), board.side_to_move());
-        let output = (f64::from(cp) / f64::from(scale)) as f32;
-        sum += loss(output, example, result_share, scale);
-    }
+    let refused = |e: LoadError| format!("the engine's loader refuses it: {e}");
+    let sum = if quantised.len() >= payload_len(WIDE) {
+        let payload = &quantised[..payload_len(WIDE)];
+        let net =
+            Network::<WIDE>::load_payload(payload, unnamed, UNNAMED, [0; 32]).map_err(refused)?;
+        quantised_sum(&net, examples, result_share, scale)?
+    } else {
+        let payload = quantised
+            .get(..payload_len(HIDDEN))
+            .ok_or("shorter than a net's weights")?;
+        let net =
+            Network::<HIDDEN>::load_payload(payload, unnamed, UNNAMED, [0; 32]).map_err(refused)?;
+        quantised_sum(&net, examples, result_share, scale)?
+    };
     let n = u32::try_from(examples.len())
         .ok()
         .filter(|&n| n > 0)
@@ -180,6 +181,24 @@ pub fn quantised_check(
         ));
     }
     Ok(loss)
+}
+
+/// The summed loss of `net`'s own integer evaluation over `examples`.
+fn quantised_sum<const H: usize>(
+    net: &Network<H>,
+    examples: &[Example],
+    result_share: f32,
+    scale: f32,
+) -> Result<f64, String> {
+    let mut sum = 0.0;
+    for example in examples {
+        let board = Board::from_fen(&example.fen).map_err(|e| format!("{}: {e:?}", example.fen))?;
+        let stack = AccumulatorStack::new(net, &board);
+        let cp = net.evaluate(stack.current(), board.side_to_move());
+        let output = (f64::from(cp) / f64::from(scale)) as f32;
+        sum += loss(output, example, result_share, scale);
+    }
+    Ok(sum)
 }
 
 /// The mean of a checkpoint's logged training losses for its own superbatch, from the
