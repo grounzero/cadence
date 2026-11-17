@@ -85,8 +85,11 @@ struct NetOptions {
     /// The SHA-256 of the bytes `net` came from, which tells one net from another.
     key: Option<[u8; 32]>,
     /// `None` where the build ships no net, else that net and its digest, or why it was refused.
-    shipped: Option<Result<(Arc<Network>, [u8; 32]), String>>,
+    shipped: Option<Result<Shipped, String>>,
 }
+
+/// The net a build ships and the SHA-256 of its bytes.
+type Shipped = (Arc<Network>, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,

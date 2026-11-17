@@ -189,7 +189,7 @@ fn only_a_self_play_net_ships() {
 #[test]
 fn the_embedded_net_is_none_or_a_self_play_net_this_build_loads() {
     match Network::shipped(EMBEDDED) {
-        None => assert!(EMBEDDED.is_empty()),
+        None => assert_eq!(EMBEDDED, b""),
         Some(Ok(shipped)) => assert_eq!(shipped.to_bytes(), EMBEDDED),
         Some(Err(e)) => panic!("the embedded net is refused: {e}"),
     }
