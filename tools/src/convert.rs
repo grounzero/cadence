@@ -220,6 +220,7 @@ fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String>
         ("random-plies", h.random_plies.to_string()),
         ("window", h.window.to_string()),
         ("standard-share", h.standard_share.to_string()),
+        ("chunk-games", h.games_planned.to_string()),
         ("run-seeds", format!("{:016x}", h.run_seed)),
     ];
     for (field, have) in fields {

@@ -269,6 +269,7 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
             h.random_plies,
             h.window,
             h.standard_share,
+            h.games_planned,
         )
     };
     if let Some(other) = summaries
@@ -303,6 +304,7 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
         "random-plies\t{}\nwindow\t{}\nstandard-share\t{}",
         h.random_plies, h.window, h.standard_share
     );
+    let _ = writeln!(text, "chunk-games\t{}", h.games_planned);
     let _ = writeln!(text, "run-seeds\t{}", seeds.join(" "));
     let _ = writeln!(text, "chunk\tsha256\tgames\tplies\tuniform\tstandard");
     for s in summaries {
