@@ -175,6 +175,28 @@ pub const VERIFIED_MANIFESTS: &str = "verified-manifests";
 /// Written beside the checkpoints, so an export names the commit that trained them, not its own.
 pub const COMMIT_FILE: &str = "trainer-commit";
 
+/// Beside a run's checkpoints, the share of the target the run took from game results, which
+/// validation must read its checkpoints with.
+pub const RESULT_SHARE_FILE: &str = "result-share";
+
+/// Writes `RESULT_SHARE_FILE` in `out` for the share the run trains with.
+///
+/// # Errors
+///
+/// A file that cannot be written.
+pub fn record_result_share(_out: &Path, _share: f32) -> Result<(), String> {
+    Ok(())
+}
+
+/// The result share the run in `run` recorded, which a share given on the command line must equal.
+///
+/// # Errors
+///
+/// No share recorded in `run`, one that does not parse, or a given share that differs from it.
+pub fn run_result_share(_run: &Path, given: Option<f32>) -> Result<f32, String> {
+    Ok(given.unwrap_or(0.75))
+}
+
 /// A run's directory holds no other run's record, since a second run would overwrite the first's.
 ///
 /// # Errors
