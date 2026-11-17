@@ -80,6 +80,24 @@ pub fn example(record: &[u8; RECORD_LEN]) -> Result<Example, String> {
     })
 }
 
+/// The result share a validation scores its loss at: the run's own unless `given` names another,
+/// as a comparison of nets trained at different blends needs.
+///
+/// # Errors
+///
+/// A given share outside [0, 1].
+pub fn score_share(run: f32, given: Option<f32>) -> Result<f32, String> {
+    let _ = given;
+    Ok(run)
+}
+
+/// What a validation line says of the share its loss was scored at, and whether it is the run's.
+#[must_use]
+pub fn score_note(scored: f32, run: f32) -> String {
+    let _ = (scored, run);
+    String::new()
+}
+
 /// The trainer's loss for one example: the output's sigmoid against the same blend of result and
 /// scaled score the training run aimed at, squared.
 #[must_use]

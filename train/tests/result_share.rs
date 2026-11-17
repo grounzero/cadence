@@ -6,6 +6,7 @@
 mod common;
 
 use cadence_train::data::{record_result_share, run_result_share};
+use cadence_train::validate::{score_note, score_share};
 use common::scratch;
 
 /// Validation reads the share its run recorded; a run that recorded none, or a share given that
@@ -31,4 +32,30 @@ fn validation_reads_the_result_share_its_run_recorded() {
     );
     assert!(none.is_err(), "a run that recorded no share was read");
     assert!(given.is_err(), "a given share stood in for a run's record");
+}
+
+/// A loss may be scored at a share other than the run's, as comparing nets trained at different
+/// blends needs, and each line says which share it was scored at and whether that is the run's.
+#[test]
+fn a_loss_may_be_scored_at_another_share_and_says_which() {
+    assert_eq!(
+        score_share(0.75, None).map(|s| s.to_string()),
+        Ok("0.75".to_string())
+    );
+    assert_eq!(
+        score_share(0.75, Some(0.5)).map(|s| s.to_string()),
+        Ok("0.5".to_string())
+    );
+    assert!(
+        score_share(0.75, Some(1.5)).is_err(),
+        "a share past 1 was taken"
+    );
+    assert_eq!(
+        score_note(0.75, 0.75),
+        "scored at result share 0.75, the run's"
+    );
+    assert_eq!(
+        score_note(0.5, 0.75),
+        "scored at result share 0.5, not the run's 0.75"
+    );
 }
