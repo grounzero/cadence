@@ -9,7 +9,7 @@ use cadence_core::mv::parse_uci;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_core::{FenStyle, Move, generate_legal};
-use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
+use cadence_nnue::net::{EMBEDDED, HEADER_LEN, PAYLOAD_LEN};
 use cadence_nnue::{AccumulatorStack, LoadError, Network, Provenance};
 
 /// The digest of `corpus_outputs`, the same on every target, or a build computes another number.
@@ -153,6 +153,46 @@ fn only_a_self_play_net_may_generate_data() {
         Network::for_datagen(&near).err(),
         Some(LoadError::NotSelfPlay("self-plax".to_string()))
     );
+}
+
+/// No bytes ship no net, and a self-play net ships exactly as its file loads.
+#[test]
+fn a_build_ships_a_self_play_net_or_none() {
+    assert!(Network::shipped(&[]).is_none());
+    let bytes = net().to_bytes();
+    let shipped = Network::shipped(&bytes)
+        .expect("bytes ship a net")
+        .expect("a self-play net ships");
+    assert_eq!(shipped.to_bytes(), bytes);
+}
+
+/// A canary net, or one trained on an external dataset, is refused as the net a build ships.
+#[test]
+fn only_a_self_play_net_ships() {
+    let canary = Network::seeded(1, Provenance::Canary).to_bytes();
+    assert_eq!(
+        Network::shipped(&canary).map(Result::err),
+        Some(Some(LoadError::Canary))
+    );
+    let validation = Provenance::External("lichess-big3-resolved".to_string());
+    let external = Network::seeded(1, validation).to_bytes();
+    assert_eq!(
+        Network::shipped(&external).map(Result::err),
+        Some(Some(LoadError::NotSelfPlay(
+            "lichess-big3-resolved".to_string()
+        )))
+    );
+}
+
+/// The file this build reads in ships no net, or a self-play net of this build's architecture
+/// whose weights pass the load check, so a refused one fails here before any binary ships it.
+#[test]
+fn the_embedded_net_is_none_or_a_self_play_net_this_build_loads() {
+    match Network::shipped(EMBEDDED) {
+        None => assert_eq!(EMBEDDED, b""),
+        Some(Ok(shipped)) => assert_eq!(shipped.to_bytes(), EMBEDDED),
+        Some(Err(e)) => panic!("the embedded net is refused: {e}"),
+    }
 }
 
 /// Each bound the load check holds is refused one past it, a lane whose 32 largest weights and

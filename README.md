@@ -93,8 +93,8 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
-| `Use NNUE` | off | Score positions with the network `EvalFile` loaded, instead of the handcrafted evaluation. No network ships yet, so it does nothing until a file is loaded. |
-| `EvalFile` | empty | A network file to load. A file for another network shape, or one whose weights could overflow, is refused with the reason. |
+| `Use NNUE` | off | Score positions with a network instead of the handcrafted evaluation: the one `EvalFile` loaded, or else the one built into the engine. No network is built in yet, so it does nothing until a file is loaded; a build with one built in starts with this on. |
+| `EvalFile` | empty | A network file to use in place of the built-in one, which emptying this restores. A file for another network shape, or one whose weights could overflow, is refused with the reason and leaves the built-in network, if there is one. |
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
 | `reverse_futility_margin`, `lmp_multiplier` | 150, 0.500 | Search constants offered to tuners (50 to 300, 0 to 2). Leave them alone for play. |
 
