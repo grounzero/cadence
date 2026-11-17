@@ -668,3 +668,52 @@ fn the_overlap_by_network_input_is_read_beside_the_key_overlap() {
         "{text}"
     );
 }
+
+/// The overlap by network input and the repeats within each split are read by start kind: a
+/// holdout game repeats one of its positions and shares three with training, while the uniform
+/// game shares one of its two.
+#[test]
+fn the_overlap_and_the_repeats_are_read_by_start_kind() {
+    let plies = [
+        "e2e4", "e7e5", "g1f3", "g8f6", "f3g1", "f6g8", "b1c3", "b8c6",
+    ];
+    let shuffle = |a: [&'static str; 4], b: [&'static str; 4]| [a, b].concat();
+    let c_knights = ["c3b1", "c6b8", "b1c3", "b8c6"];
+    let g_knights = ["g1f3", "g8f6", "f3g1", "f6g8"];
+    let a_knights = ["c3a4", "c6a5", "a4c3", "a5c6"];
+    let e_knights = ["g1e2", "g8e7", "e2g1", "e7g8"];
+    let game = |index: u32, kind: u8, filler: Vec<&str>, kept: &[&str]| {
+        let moves: Vec<&str> = filler.iter().chain(kept).copied().collect();
+        let mut record = scripted(index, &plies, &moves);
+        record.kind = kind;
+        record
+    };
+    let standard = vec![
+        game(
+            0,
+            1,
+            shuffle(c_knights, c_knights),
+            &["g1f3", "g8f6", "f3g1", "f6g8", "g1f3"],
+        ),
+        game(1, 1, shuffle(g_knights, g_knights), &["g1f3"]),
+        game(2, 1, shuffle(c_knights, g_knights), &["g1f3", "g8f6"]),
+        game(3, 1, shuffle(g_knights, c_knights), &["a2a3"]),
+    ];
+    let uniform = vec![
+        game(0, 0, shuffle(a_knights, a_knights), &["h2h3", "h7h6"]),
+        game(1, 0, shuffle(e_knights, e_knights), &["d2d3"]),
+    ];
+    let dir = scratch("overlap-by-kind");
+    let manifest = dataset(&dir.join("data"), 93, &[standard, uniform]);
+    let (ok, text, _) = convert(&[&manifest], &dir.join("out"), &["--shuffle-seed", "1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    for line in [
+        "standard holdout positions whose network input is also in training: 3 of 5",
+        "standard repeats by network input within training 2 of 4, within holdout 1 of 5",
+        "uniform holdout positions whose network input is also in training: 1 of 2",
+        "uniform repeats by network input within training 0 of 1, within holdout 0 of 2",
+    ] {
+        assert!(text.contains(line), "no `{line}` in\n{text}");
+    }
+}
