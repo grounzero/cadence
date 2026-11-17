@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The pinned trainer's weight clip against the engine's loader: it keeps each weight and each
-//! accumulator lane inside the loader's bounds, and not the sum of the output weights.
+//! The pinned trainer's weight clip against the engine's loader: it keeps each weight, each
+//! accumulator lane and each perspective's output sum inside the loader's bounds.
 
 use bullet_lib::nn::optimiser::AdamWParams;
 use cadence_nnue::HIDDEN;
@@ -37,15 +37,17 @@ fn the_clip_holds_each_weight_and_lane_inside_the_loader() {
     assert!(lane <= i64::from(i16::MAX), "a lane could reach {lane}");
 }
 
-/// Every output weight at the clip sums past the loader's `i32` bound, so the clip alone does not
-/// make a checkpoint exportable.
+/// Every output weight at the clip keeps one perspective's sum inside `i32`, which the loader
+/// bounds, while both together pass it, which is why the evaluation adds them in `i64`.
 #[test]
-fn the_clip_does_not_hold_the_output_sum() {
+fn the_clip_holds_each_perspectives_output_sum() {
     let clip = AdamWParams::default().max_weight;
-    let weights = i64::try_from(2 * HIDDEN).expect("a count");
-    let sum = weights * quantised(clip, QB) * i64::from(QA * QA);
+    let weights = i64::try_from(HIDDEN).expect("a count");
+    let one = weights * quantised(clip, QB) * i64::from(QA * QA);
+    assert!(one <= i64::from(i32::MAX), "one perspective reaches {one}");
     assert!(
-        sum > i64::from(i32::MAX),
-        "the clip bounds the sum at {sum}"
+        2 * one > i64::from(i32::MAX),
+        "both together fit i32 at {}",
+        2 * one
     );
 }
