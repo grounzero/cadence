@@ -216,7 +216,7 @@ fn run(flags: &Flags) -> Result<(), String> {
 }
 
 /// Each checkpoint's validation loss over the holdout, from the trainer's own forward pass, beside
-/// the training loss it logged for the same superbatch; a reading, not a gate.
+/// the training loss it logged for the same superbatch, and its quantised weights' loss held to it.
 fn validate(flags: &Flags) -> Result<(), String> {
     let checkpoints: Vec<PathBuf> = flags
         .get("--checkpoint")
@@ -264,6 +264,7 @@ fn validation(
     }
     let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
     let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
+    let mut misread = Vec::new();
     for checkpoint in checkpoints {
         let mut trainer = recipe!();
         trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
@@ -279,11 +280,24 @@ fn validation(
         let training = superbatch
             .and_then(|sb| cadence_train::validate::training_loss(&log, sb))
             .map_or_else(|| "not logged".to_string(), |t| format!("{t:.6}"));
+        let file = checkpoint.join("quantised.bin");
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let held =
+            cadence_train::validate::quantised_check(&bytes, &examples, result_share, scale, loss);
+        let quantised = held
+            .as_ref()
+            .map_or_else(|_| "outside the bar".to_string(), |q| format!("{q:.6}"));
         println!(
-            "validation: {}: training loss {training}, validation loss {loss:.6} over {n} holdout \
-             positions",
+            "validation: {}: training loss {training}, validation loss {loss:.6}, quantised \
+             {quantised} over {n} holdout positions",
             checkpoint.display()
         );
+        if let Err(e) = held {
+            misread.push(format!("{}: {e}", checkpoint.display()));
+        }
+    }
+    if !misread.is_empty() {
+        return Err(misread.join("\n"));
     }
     Ok(())
 }
