@@ -14,17 +14,20 @@ use cadence_engine::search::Limits;
 use support::table;
 
 /// Middlegames whose best move changes between iterations, so some stops land after a change.
-const FENS: [&str; 5] = [
+const FENS: [&str; 8] = [
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
     "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
     "rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6",
     "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
     "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14",
+    "r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQ - 0 8",
+    "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 0 4",
+    "r1b2rk1/2q1bppp/p2p1n2/1p2p3/3nP3/1BN1BN2/PPP2PPP/R2QR1K1 w - - 0 13",
 ];
 
-/// Limits growing by a fifth from 2,000 nodes, so stops fall at every depth from the first
+/// Limits growing by a tenth from 2,000 nodes, so stops fall densely at every depth from the first
 /// aspirated one to about the tenth.
-const LIMITS: usize = 24;
+const LIMITS: usize = 48;
 
 struct Stopped {
     fen: &'static str,
@@ -60,7 +63,7 @@ fn stopped() -> &'static [Stopped] {
                 if let Some(run) = stop_at(fen, nodes) {
                     runs.push(run);
                 }
-                nodes += nodes / 5;
+                nodes += nodes / 10;
             }
         }
         runs
@@ -89,57 +92,44 @@ fn stop_at(fen: &'static str, nodes: u64) -> Option<Stopped> {
     })
 }
 
+/// The first half of the rule, seen where it changes the move: a stopped iteration whose move beat
+/// its window's floor is played, its line with it.
 #[test]
-fn an_unfinished_iteration_s_move_is_played_only_where_it_beat_its_floor() {
-    let runs = stopped();
+fn a_stopped_search_plays_the_unfinished_move_where_it_beat_the_floor() {
+    let proven: Vec<&Stopped> = stopped().iter().filter(|run| run.proven()).collect();
     assert!(
-        !runs.is_empty(),
-        "no limit stopped an iteration after one completed"
+        proven.iter().any(|run| run.unfinished.0 != run.completed),
+        "no stop of {} proved a move the completed iteration did not play",
+        stopped().len()
     );
-    for run in runs {
-        let (fen, nodes) = (run.fen, run.nodes);
-        let expected = if run.proven() {
-            run.unfinished.0
-        } else {
-            run.completed
-        };
+    for run in proven {
         assert_eq!(
-            run.played, expected,
-            "{fen} at {nodes} nodes: unfinished {:?}, completed {:?}",
-            run.unfinished, run.completed
+            run.played, run.unfinished.0,
+            "{} at {} nodes: completed {:?}",
+            run.fen, run.nodes, run.completed
         );
-        assert_eq!(run.pv.first(), Some(&run.played), "{fen} at {nodes} nodes");
+        assert_eq!(run.pv.first(), Some(&run.played), "{}", run.fen);
     }
 }
 
-/// The rule is not inert on this sample: some stop plays a move the completed iteration did not.
+/// The second half, seen where it decides: a move that finished at or under the floor is a fail
+/// low's bound, so the completed iteration's move is kept, its line with it.
 #[test]
-fn some_stop_plays_a_proven_move_the_completed_iteration_did_not() {
-    let changed = stopped()
-        .iter()
-        .filter(|run| run.proven() && run.played != run.completed)
-        .count();
+fn a_stopped_search_keeps_the_finished_move_where_the_unfinished_one_did_not_beat_the_floor() {
+    let refused: Vec<&Stopped> = stopped().iter().filter(|run| !run.proven()).collect();
     assert!(
-        changed > 0,
-        "no stop of {} played a proven new move",
-        stopped().len()
-    );
-}
-
-/// The case the floor is for: a move finished under it, which is a bound and not a score.
-#[test]
-fn some_stop_refuses_a_move_that_finished_under_its_floor() {
-    let refused: Vec<&Stopped> = stopped().iter().filter(|run| run.unproven()).collect();
-    assert!(
-        !refused.is_empty(),
-        "no stop of {} fell in a fail low",
+        refused
+            .iter()
+            .any(|run| run.unproven() && run.unfinished.0 != run.completed),
+        "no stop of {} fell in a fail low on a move the completed iteration did not play",
         stopped().len()
     );
     for run in refused {
         assert_eq!(
             run.played, run.completed,
-            "{} at {} nodes",
-            run.fen, run.nodes
+            "{} at {} nodes: unfinished {:?}",
+            run.fen, run.nodes, run.unfinished
         );
+        assert_eq!(run.pv.first(), Some(&run.played), "{}", run.fen);
     }
 }
