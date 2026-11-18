@@ -29,7 +29,10 @@ const SUPERBATCHES: usize = 40;
 const BATCH_SIZE: usize = 16_384;
 const BATCHES_PER_SUPERBATCH: usize = 6_104;
 /// The share of the target the game's result supplies, the search's score supplying the rest.
-const RESULT_SHARE: f32 = 0.75;
+const RESULT_SHARE: f32 = 0.5;
+/// The overfit test's share, away from a half: its blend check reads the swapped share, which at
+/// a half is the same target.
+const OVERFIT_SHARE: f32 = 0.75;
 const INITIAL_LR: f32 = 0.001;
 /// Five steps of 0.3 below the first rate by the last superbatch, decayed along a cosine.
 const FINAL_LR: f32 = INITIAL_LR * 0.3 * 0.3 * 0.3 * 0.3 * 0.3;
@@ -417,7 +420,7 @@ fn export(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
-/// The recipe's schedule shortened, saving once at its end.
+/// The recipe's schedule shortened for the overfit test, at its share, saving once at its end.
 fn short_schedule(
     id: &str,
     superbatches: usize,
@@ -433,7 +436,7 @@ fn short_schedule(
             end_superbatch: superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL {
-            value: RESULT_SHARE,
+            value: OVERFIT_SHARE,
         },
         lr_scheduler: lr::CosineDecayLR {
             initial_lr: INITIAL_LR,
@@ -499,7 +502,7 @@ fn overfit(flags: &Flags) -> Result<(), String> {
     // Only after training: the trainer keeps the first weights it evaluates with.
     let outputs: Vec<f32> = examples.iter().map(|e| trainer.eval(&e.fen)).collect();
     drop(trainer);
-    match synthetic_bar(&outputs, &examples, RESULT_SHARE, scale) {
+    match synthetic_bar(&outputs, &examples, OVERFIT_SHARE, scale) {
         Ok(r) => println!(
             "overfit: the synthetic set is memorised, {:.4} at worst from its target and {:.4} on \
              average from the swapped reading",
@@ -525,7 +528,7 @@ fn overfit(flags: &Flags) -> Result<(), String> {
             .ok_or_else(|| format!("{} logs no loss for its last superbatch", log.display()))?;
         let paths: Vec<&Path> = data.iter().map(Path::new).collect();
         let sample = first_records(&paths, REAL_SAMPLE)?;
-        let constant = constant_loss(&sample, RESULT_SHARE, scale);
+        let constant = constant_loss(&sample, OVERFIT_SHARE, scale);
         println!(
             "overfit: {} over {} records",
             real_reading(logged, constant),
