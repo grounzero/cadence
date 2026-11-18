@@ -2232,9 +2232,8 @@ mod tests {
         std::fs::write(root.join("bench.txt"), "100\n").unwrap();
         std::fs::write(root.join("handcrafted-bench.txt"), "200\n").unwrap();
         git(&root, &["add", "bench.txt", "handcrafted-bench.txt"]).unwrap();
-        let passes = |message: &str| {
-            hook_passes_at("check-bench-declaration", message, &root, None)
-        };
+        let passes =
+            |message: &str| hook_passes_at("check-bench-declaration", message, &root, None);
         assert!(!passes("Fix a search bug\n\nBench: 100\n"), "undeclared");
         assert!(
             !passes("Fix a search bug\n\nBench: 100\nHandcrafted: 201\n"),
