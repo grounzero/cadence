@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, Search};
 use cadence_engine::score::{MATE, Score};
+use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
     Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, STABILITY_CALLS,
     STABILITY_SCALE, another_iteration_fits, budget, drop_scale, soft_for_drop, soft_for_run,
@@ -1328,7 +1328,10 @@ fn a_larger_fall_never_gets_less() {
     for fall in 0..400 {
         let scale = drop_scale(&[100, 100, 100, 100, 100 - fall]);
         assert!(scale >= last, "a fall of {fall} got {scale} after {last}");
-        assert!((1000..=DROP_SCALE_MAX).contains(&scale), "{scale} at a fall of {fall}");
+        assert!(
+            (1000..=DROP_SCALE_MAX).contains(&scale),
+            "{scale} at a fall of {fall}"
+        );
         last = scale;
     }
 }
@@ -1345,7 +1348,11 @@ fn the_stretched_budget_stays_under_the_hard_one() {
                 for scale in [1000, 1001, 1200, DROP_SCALE_MAX] {
                     let soft = soft_for_drop(&l, b, b.soft, scale);
                     assert!(soft >= b.soft.min(b.hard), "{scale} shortened {time}+{inc}");
-                    assert!(soft <= b.hard, "{scale} at {time}+{inc}: {soft} over {}", b.hard);
+                    assert!(
+                        soft <= b.hard,
+                        "{scale} at {time}+{inc}: {soft} over {}",
+                        b.hard
+                    );
                 }
             }
         }
@@ -1365,7 +1372,11 @@ fn a_movetime_is_not_stretched() {
     for spec in ["movetime 200", "wtime 60000 btime 60000 movetime 500"] {
         let l = limits(spec);
         let b = budget(&l, Colour::White).expect("a movetime gives a budget");
-        assert_eq!(soft_for_drop(&l, b, b.soft, DROP_SCALE_MAX), b.soft, "`{spec}`");
+        assert_eq!(
+            soft_for_drop(&l, b, b.soft, DROP_SCALE_MAX),
+            b.soft,
+            "`{spec}`"
+        );
     }
 }
 
