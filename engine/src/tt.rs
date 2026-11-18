@@ -289,6 +289,12 @@ impl Table {
                 if depth < hit.depth && bound != Bound::Exact {
                     return;
                 }
+                // A fail-low names no move that reached alpha, so the move the entry held stays.
+                if bound == Bound::Upper && !hit.mv.is_null() {
+                    let kept = Entry::new(hit.mv, score, depth, bound, generation, pv);
+                    slot.write(key, kept);
+                    return;
+                }
                 slot.write(key, fresh);
                 return;
             }
