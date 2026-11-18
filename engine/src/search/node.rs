@@ -1155,8 +1155,8 @@ mod tests {
         (Position::new(root), m)
     }
 
-    /// The mate left out: no call below the verification makes it and its value is no mate, where
-    /// the same node searched plainly at the verification's depth finds it.
+    /// The mate left out: no call below the verification makes it and its value is undecided,
+    /// where the same node searched plainly at the verification's depth finds it.
     #[test]
     fn the_verification_never_searches_the_move_it_leaves_out() {
         let stop = AtomicBool::new(false);
@@ -1165,7 +1165,7 @@ mod tests {
         let (mut board, mate) = position_and_move(BACK_RANK, "a1a8");
         search.root_depth = 9;
         let v = search.singular(&mut board, 9, 1, mate, 1_000, Expected::Cut);
-        assert!(!score::is_mate(v), "{v}");
+        assert!(!score::is_decisive(v), "{v}");
         let below = at(&search, 2);
         assert!(below.len() > 3, "too few moves searched");
         assert!(
@@ -1179,7 +1179,7 @@ mod tests {
         search.root_depth = 9;
         let at_depth = verification_depth(9);
         let v = search.negamax(&mut board, at_depth, 1, 999, 1_000, Expected::Cut);
-        assert!(score::is_mate(v), "the control found no mate: {v}");
+        assert!(score::is_decisive(v), "the control found no mate: {v}");
         assert!(at(&search, 2).iter().any(|c| c.moved == mate));
     }
 
