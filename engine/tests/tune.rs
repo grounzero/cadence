@@ -29,6 +29,18 @@ const DEPTH: u32 = 8;
 /// A net's search at `DEPTH` costs a subprocess many times the handcrafted one's.
 const NET_DEPTH: u32 = 6;
 
+/// One past the deepest node the singular question is asked at by default, which `NET_DEPTH` is
+/// too shallow to reach.
+const SINGULAR_NET_DEPTH: u32 = 9;
+
+/// Where `p` acts on a net's search.
+fn net_depth(p: &Param) -> u32 {
+    match p.tunable {
+        Tunable::SingularDepth | Tunable::SingularMargin => SINGULAR_NET_DEPTH,
+        _ => NET_DEPTH,
+    }
+}
+
 /// A tunable spelled like one of these would be answered by the wrong handler.
 const FIXED_OPTIONS: [&str; 5] = ["UCI_Chess960", "Hash", "Threads", "MultiPV", "Ponder"];
 
@@ -99,10 +111,14 @@ fn nodes_after(setup: &[&str]) -> u64 {
 
 /// The same with the seeded net scoring, at `NET_DEPTH`.
 fn net_nodes_after(setup: &[&str]) -> u64 {
+    net_nodes_at(setup, NET_DEPTH)
+}
+
+fn net_nodes_at(setup: &[&str], depth: u32) -> u64 {
     let net = net_options();
     let mut lines: Vec<&str> = net.iter().map(String::as_str).collect();
     lines.extend_from_slice(setup);
-    nodes_at(&lines, NET_DEPTH)
+    nodes_at(&lines, depth)
 }
 
 /// Of the last iteration line at `depth`.
@@ -365,11 +381,17 @@ fn a_malformed_value_is_refused_and_the_search_is_untouched() {
 /// A declared, accepted option that reaches nothing is the failure a tune cannot report.
 #[test]
 fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
-    let untouched = net_nodes_after(&[]);
+    let untouched = |depth| net_nodes_at(&[], depth);
+    let (shallow, deep) = (untouched(NET_DEPTH), untouched(SINGULAR_NET_DEPTH));
     for p in PARAMS {
+        let untouched = if net_depth(p) == NET_DEPTH {
+            shallow
+        } else {
+            deep
+        };
         for end in [p.min, p.max] {
             let set = format!("setoption name {} value {}", p.name, p.spell(end));
-            let nodes = net_nodes_after(&[&set]);
+            let nodes = net_nodes_at(&[&set], net_depth(p));
             assert_ne!(nodes, untouched, "`{set}` searched the default tree");
         }
     }
@@ -482,6 +504,8 @@ fn a_setting_in_a_session_cannot_reach_bench() {
 fn the_handcrafted_set_holds_its_frozen_values() {
     assert_eq!(Tunables::HCE.get(Tunable::ReverseFutilityMargin), 150);
     assert_eq!(Tunables::HCE.get(Tunable::LmpMultiplier), 500);
+    assert_eq!(Tunables::HCE.get(Tunable::SingularDepth), 8);
+    assert_eq!(Tunables::HCE.get(Tunable::SingularMargin), 2);
 }
 
 /// Bench, datagen and every `go` build their searches apart, so the frozen set is held where the

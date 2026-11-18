@@ -7,7 +7,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::search::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
+use crate::search::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN, SINGULAR_DEPTH, SINGULAR_MARGIN};
 
 /// The search reads integers only, so a float is converted once, here.
 pub const MILLI: i32 = 1000;
@@ -17,6 +17,8 @@ pub const MILLI: i32 = 1000;
 pub enum Tunable {
     ReverseFutilityMargin,
     LmpMultiplier,
+    SingularDepth,
+    SingularMargin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +37,8 @@ pub struct Param {
     pub name: &'static str,
     pub kind: Kind,
     pub default: i32,
-    /// What the handcrafted evaluation's search reads, `0.6.0`'s value and never tuned.
+    /// What the handcrafted evaluation's search reads, never tuned: `0.6.0`'s value, or the default
+    /// a parameter added since was introduced with.
     pub hce: i32,
     pub min: i32,
     pub max: i32,
@@ -66,6 +69,28 @@ pub const PARAMS: &[Param] = &[
         min: 0,
         max: 2 * MILLI,
         c_end: 0.1,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::SingularDepth,
+        name: "singular_depth",
+        kind: Kind::Int,
+        default: SINGULAR_DEPTH,
+        hce: SINGULAR_DEPTH,
+        min: 4,
+        max: 12,
+        c_end: 1.0,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::SingularMargin,
+        name: "singular_margin",
+        kind: Kind::Int,
+        default: SINGULAR_MARGIN,
+        hce: SINGULAR_MARGIN,
+        min: 1,
+        max: 8,
+        c_end: 0.5,
         r_end: 0.002,
     },
 ];

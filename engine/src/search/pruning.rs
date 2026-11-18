@@ -168,6 +168,28 @@ impl Search<'_> {
         true
     }
 
+    /// The excluded move first, then the margin, then the count, each passing over a move before
+    /// it is made.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the node's own values, which each helper of the node takes separately"
+    )]
+    pub(super) fn skipped(
+        &mut self,
+        board: &Board,
+        ply: usize,
+        futile: bool,
+        give_up: Option<usize>,
+        m: Move,
+        killers: [Move; 2],
+        index: usize,
+        quiet_index: usize,
+    ) -> bool {
+        m == self.excluded[ply]
+            || self.futile(board, futile, m, index)
+            || self.given_up(board, give_up, m, killers, quiet_index)
+    }
+
     /// `gives_check` last, as in [`Search::futile`].
     pub(super) fn given_up(
         &mut self,

@@ -53,4 +53,9 @@ pub struct Call {
     pub open: bool,
     /// The move into it: `Move::NULL` at the first ply recorded and below the null move.
     pub moved: Move,
+    /// The extensions its line has taken above it.
+    pub extensions: u32,
+    /// How many verifications enclose it; the first call of each is its node searched again, at
+    /// the node's own ply.
+    pub verifying: u32,
 }
