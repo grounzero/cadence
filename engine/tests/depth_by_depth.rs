@@ -95,5 +95,7 @@ fn counted(depth: u32) -> String {
         s.history_reduced_less(),
         s.history_reduced_more(),
     );
-    format!("{counts}\n  {moves}\n  {cuts}\n  by depth 1..15 {by_depth:?}\n  by ply 0..39 {by_ply:?}")
+    format!(
+        "{counts}\n  {moves}\n  {cuts}\n  by depth 1..15 {by_depth:?}\n  by ply 0..39 {by_ply:?}"
+    )
 }
