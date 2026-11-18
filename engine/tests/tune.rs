@@ -89,9 +89,12 @@ fn net_options() -> [String; 2] {
     ]
 }
 
-/// Of the handcrafted evaluation's search from `MIDDLEGAME` at `DEPTH`, after `setup`.
+/// Of the handcrafted evaluation's search from `MIDDLEGAME` at `DEPTH`, after `setup`; switched to
+/// explicitly, since a build that ships a net scores with it by default.
 fn nodes_after(setup: &[&str]) -> u64 {
-    nodes_at(setup, DEPTH)
+    let mut lines = vec!["setoption name Use NNUE value false"];
+    lines.extend_from_slice(setup);
+    nodes_at(&lines, DEPTH)
 }
 
 /// The same with the seeded net scoring, at `NET_DEPTH`.
