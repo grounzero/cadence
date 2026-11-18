@@ -59,6 +59,9 @@ impl Stopped {
     }
 }
 
+/// Steps of a four-hundredth of the limit that found a fail low, walked until the fail low ends.
+const SCAN: u64 = 80;
+
 /// Searched once and shared, since every gate here reads the same stops.
 fn stopped() -> &'static [Stopped] {
     static RUNS: OnceLock<Vec<Stopped>> = OnceLock::new();
@@ -68,13 +71,33 @@ fn stopped() -> &'static [Stopped] {
             let mut nodes = 2_000u64;
             for _ in 0..LIMITS {
                 if let Some(run) = stop_at(fen, nodes) {
+                    let unproven = run.unproven();
                     runs.push(run);
+                    if unproven {
+                        scan_fail_low(fen, nodes, &mut runs);
+                    }
                 }
                 nodes += nodes / 10;
             }
         }
         runs
     })
+}
+
+/// A later move overtakes a failed first one only briefly before the window is reopened, which
+/// limits a tenth apart step over. Small steps on from a stop inside the fail low find it.
+fn scan_fail_low(fen: &'static str, from: u64, runs: &mut Vec<Stopped>) {
+    let step = (from / 400).max(16);
+    for k in 1..=SCAN {
+        let Some(run) = stop_at(fen, from + k * step) else {
+            return;
+        };
+        let unproven = run.unproven();
+        runs.push(run);
+        if !unproven {
+            return;
+        }
+    }
 }
 
 /// `None` where the limit fell inside the first iteration, where no completed move stands.
