@@ -6,9 +6,10 @@
 [![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
 Cadence is a UCI chess engine written in Rust, for standard chess, Chess960
-and double Chess960 (DFRC), using a classical alpha-beta search and a
-hand-written evaluation tuned on its own games, with no neural network. It
-reads Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
+and double Chess960 (DFRC), using a classical alpha-beta search and a neural
+network evaluation (NNUE) trained on positions from its own games, which are
+not published; its hand-written evaluation stays behind an option. It reads
+Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
 crates, which with the crates they use are its only outside dependencies.
 
 You can play it on Lichess as the bot
@@ -93,7 +94,7 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
-| `Use NNUE` | off | Score positions with a network instead of the handcrafted evaluation: the one `EvalFile` loaded, or else the one built into the engine. No network is built in yet, so it does nothing until a file is loaded; a build with one built in starts with this on. |
+| `Use NNUE` | on | Score positions with a network instead of the handcrafted evaluation: the one `EvalFile` loaded, or else the one built into the engine. Off plays with the handcrafted evaluation. |
 | `EvalFile` | empty | A network file to use in place of the built-in one, which emptying this restores. A file for another network shape, or one whose weights could overflow, is refused with the reason and leaves the built-in network, if there is one. |
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
 | `reverse_futility_margin`, `lmp_multiplier` | 150, 0.500 | Search constants offered to tuners (50 to 300, 0 to 2). Leave them alone for play. |

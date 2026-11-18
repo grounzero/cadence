@@ -643,8 +643,13 @@ fn castling_bestmove_is_spelled_per_the_option() {
             // would turn on whether depth one had finished.
             let option = format!("setoption name UCI_Chess960 value {value}");
             let position = format!("position fen {fen}");
+            // The handcrafted king table is what makes these castles the choice at depth one.
             let (_, lines) = Engine::go_within(
-                &[option.as_str(), position.as_str()],
+                &[
+                    "setoption name Use NNUE value false",
+                    option.as_str(),
+                    position.as_str(),
+                ],
                 "go depth 1",
                 support::SUBPROCESS_TIMEOUT,
             );
