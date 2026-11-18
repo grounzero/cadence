@@ -392,6 +392,13 @@ impl Search<'_> {
             .count()
     }
 
+    /// The best fully searched move of an iteration a limit stopped after one completed, its score
+    /// and the floor of the window it was searched in.
+    #[must_use]
+    pub fn unfinished_iteration(&self) -> Option<(Move, Score, Score)> {
+        self.run.unfinished
+    }
+
     /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {

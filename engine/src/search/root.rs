@@ -72,12 +72,12 @@ impl Search<'_> {
             // Each line skips the moves the lines before it took.
             let wanted = self.multipv.min(root_moves.len());
             self.run.lines.clear();
-            let mut partial = (root_moves[0], -INFINITE);
+            let mut partial = (root_moves[0], -INFINITE, -INFINITE);
             for _ in 0..wanted {
-                let (best, score) =
+                let (best, score, floor) =
                     self.aspirate(board, (&legal, &root_moves), depth, out, previous);
                 if self.run.aborted {
-                    partial = (best, score);
+                    partial = (best, score, floor);
                     break;
                 }
                 self.keep_line(best, score);
@@ -93,11 +93,13 @@ impl Search<'_> {
                         self.run.score = line.score;
                         self.run.pv.extend_from_slice(&line.pv);
                     } else {
-                        let (best, score) = partial;
+                        let (best, score, _) = partial;
                         self.run.best = best;
                         self.run.score = if score == -INFINITE { ABORTED } else { score };
                         self.run.pv.push(best);
                     }
+                } else {
+                    self.keep_unfinished(partial);
                 }
                 break;
             }
@@ -190,8 +192,14 @@ impl Search<'_> {
         self.run.pv.extend_from_slice(&line.pv);
     }
 
+    /// Recorded for the gates where a completed iteration's move stands.
+    fn keep_unfinished(&mut self, partial: (Move, Score, Score)) {
+        self.run.unfinished = Some(partial);
+    }
+
     /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded
-    /// above by the first, so a window centred on the previous best would fail low on them.
+    /// above by the first, so a window centred on the previous best would fail low on them. The
+    /// third value is the floor of the window the returned move was searched in.
     fn aspirate(
         &mut self,
         board: &mut Position,
@@ -199,11 +207,12 @@ impl Search<'_> {
         depth: u32,
         out: &mut dyn Write,
         previous: Option<Score>,
-    ) -> (Move, Score) {
+    ) -> (Move, Score, Score) {
         let centre = previous
             .filter(|&p| self.multipv == 1 && depth >= ASPIRATION_DEPTH && !score::is_decisive(p));
         let Some(centre) = centre else {
-            return self.search_root(board, root, depth, out, -INFINITE, INFINITE);
+            let (best, score) = self.search_root(board, root, depth, out, -INFINITE, INFINITE);
+            return (best, score, -INFINITE);
         };
         let mut delta = ASPIRATION_DELTA;
         let mut alpha = centre.saturating_sub(delta).max(-INFINITE);
@@ -211,7 +220,7 @@ impl Search<'_> {
         loop {
             let (best, score) = self.search_root(board, root, depth, out, alpha, beta);
             if self.run.aborted {
-                return (best, score);
+                return (best, score, alpha);
             }
             // A decided score or one past the evaluation's range opens that side fully.
             let wider = delta.saturating_mul(2);
@@ -233,7 +242,7 @@ impl Search<'_> {
                     far
                 };
             } else {
-                return (best, score);
+                return (best, score, alpha);
             }
             delta = wider;
         }
