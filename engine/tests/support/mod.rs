@@ -147,7 +147,9 @@ pub fn netted(fen: &str) -> cadence_engine::position::Position {
 
 fn shipped_net() -> std::sync::Arc<cadence_nnue::Network> {
     let shipped = cadence_nnue::Network::shipped(cadence_nnue::net::EMBEDDED);
-    let net = shipped.expect("a shipped net").expect("the shipped net loads");
+    let net = shipped
+        .expect("a shipped net")
+        .expect("the shipped net loads");
     std::sync::Arc::new(net)
 }
 
