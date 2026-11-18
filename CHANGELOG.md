@@ -19,6 +19,13 @@ result.
 
 ## [Unreleased]
 
+### Changed
+
+- Tools: `datagen run` plays its games, the opening screen included, with
+  the network built into the engine, and every chunk's header names that
+  network's SHA-256. `datagen verify` regenerates such a chunk with it and
+  refuses a chunk naming another network.
+
 ## [0.7.0-rc.1] - 2026-11-18
 
 A release candidate for 0.7.0, and the first version to play with a neural

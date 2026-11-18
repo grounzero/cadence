@@ -6,12 +6,14 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cadence_core::chess960::dfrc_fen;
 use cadence_core::generate_legal;
 use cadence_core::position::Board;
 use cadence_dataset::chunk::{Chunk, GameRecord, Header, chunk_name, decode_move};
 use cadence_dataset::sha256::{hex, sha256};
+use cadence_nnue::Network;
 
 use super::extract::{BALANCE_CAP, balance};
 use super::game::{Ending, Outcome, ending};
@@ -43,12 +45,17 @@ pub struct Summary {
 }
 
 /// Every check on one chunk; `replay_every` regenerates each game whose index it divides, so game 0
-/// is always among them.
+/// is always among them. A header naming a net regenerates with `net`, the one this build ships.
 ///
 /// # Errors
 ///
 /// The first check that fails, naming the chunk and, for a game, its index.
-pub fn chunk(path: &Path, replay_every: Option<u32>, tt: &Table) -> Result<Summary, String> {
+pub fn chunk(
+    path: &Path,
+    replay_every: Option<u32>,
+    tt: &Table,
+    net: Option<&Arc<Network>>,
+) -> Result<Summary, String> {
     let name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -57,7 +64,12 @@ pub fn chunk(path: &Path, replay_every: Option<u32>, tt: &Table) -> Result<Summa
     let digest = hex(&sha256(&bytes));
     sidecar(path, &name, &digest).map_err(at)?;
     let read = Chunk::read(&bytes).map_err(at)?;
-    built_here(&read.header).map_err(at)?;
+    built_here(&read.header, packed::shipped_net_sha256()).map_err(at)?;
+    let player = if read.header.net_sha256 == [0; 32] {
+        None
+    } else {
+        Some(net.ok_or_else(|| at("the header names a network and none was loaded".to_string()))?)
+    };
     let expected = chunk_name(read.header.run_seed, read.header.chunk_index);
     if name != expected {
         return Err(at(format!("its header names it {expected}")));
@@ -87,7 +99,7 @@ pub fn chunk(path: &Path, replay_every: Option<u32>, tt: &Table) -> Result<Summa
         }
         replay(record, &mut summary).map_err(game)?;
         if replay_every.is_some_and(|n| n > 0 && record.index.is_multiple_of(n)) {
-            let again = packed::play(seed, record.index, read.header.standard_share, tt);
+            let again = packed::play(seed, record.index, read.header.standard_share, tt, player);
             let (stored, regenerated) = (
                 record.encode().map_err(game)?,
                 again.encode().map_err(game)?,
@@ -114,7 +126,7 @@ fn sidecar(path: &Path, name: &str, digest: &str) -> Result<(), String> {
 }
 
 /// The settings that shaped the games are this build's, and the build was a clean, known commit.
-fn built_here(header: &Header) -> Result<(), String> {
+fn built_here(header: &Header, shipped: [u8; 32]) -> Result<(), String> {
     let built: [(&str, i64, i64); 5] = [
         (
             "nodes",
@@ -151,10 +163,16 @@ fn built_here(header: &Header) -> Result<(), String> {
             header.standard_share
         ));
     }
-    if header.net_sha256 != [0; 32] {
-        return Err(
-            "the header names a network, and the handcrafted evaluation has none".to_string(),
-        );
+    if header.net_sha256 != [0; 32] && header.net_sha256 != shipped {
+        let ships = if shipped == [0; 32] {
+            "none".to_string()
+        } else {
+            hex(&shipped)
+        };
+        return Err(format!(
+            "the header names network {} and this build ships {ships}",
+            hex(&header.net_sha256)
+        ));
     }
     if header.commit == [0; 20] {
         return Err("the header names no commit".to_string());
