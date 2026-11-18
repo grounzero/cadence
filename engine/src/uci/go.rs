@@ -314,7 +314,7 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
     say(format_args!(
         "info string search thread {worker_index} given {:?} {:?} filter {:?} probes {}",
         search.limits(),
-        search.tunables(),
+        search.given_tunables(),
         search.root_filter(),
         search.probes()
     ));
