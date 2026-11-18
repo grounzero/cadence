@@ -218,6 +218,8 @@ impl Search<'_> {
                         self.table.update(ply, m);
                     }
                     if alpha >= beta {
+                        super::spread_add(if i == 0 { 104 } else { 105 });
+                        super::spread_add(if gives_check { 106 } else { 107 });
                         remember_killer(&mut self.heuristics.killers[ply], m);
                         // A move the margin or the count gave up was never played, so it is
                         // passed over rather than debited.

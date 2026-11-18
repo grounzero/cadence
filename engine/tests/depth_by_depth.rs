@@ -71,6 +71,13 @@ fn counted(depth: u32) -> String {
         at(99),
         at(103)
     );
+    let cuts = format!(
+        "cut by first {} by later {} by a check {} by a quiet move {}",
+        at(104),
+        at(105),
+        at(106),
+        at(107)
+    );
     let counts = format!(
         "depth {depth} best {best:?} nodes {} evals {} iir {} lmr {} lmr_re {} null {}/{} rfp {} fut {} lmp {} probcut {}/{} hist_less {} hist_more {}",
         s.nodes(),
@@ -88,5 +95,5 @@ fn counted(depth: u32) -> String {
         s.history_reduced_less(),
         s.history_reduced_more(),
     );
-    format!("{counts}\n  {moves}\n  by depth 1..15 {by_depth:?}\n  by ply 0..39 {by_ply:?}")
+    format!("{counts}\n  {moves}\n  {cuts}\n  by depth 1..15 {by_depth:?}\n  by ply 0..39 {by_ply:?}")
 }
