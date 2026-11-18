@@ -145,7 +145,7 @@ impl Search<'_> {
         }
         // Before any move is made: the history row read here and per move below is the mover's.
         let us = board.side_to_move();
-        let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
+        let (killers, mut picker, held) = self.order(board, &mut legal, tt_move, us, ply);
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts.
@@ -221,8 +221,7 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
-        let mv = move_to_store(bound, &legal, tt_move, best_move);
-        self.store(key, ply, depth, best, mv, bound);
+        self.store(key, ply, depth, best, kept(bound, held, best_move), bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
@@ -234,8 +233,9 @@ impl Search<'_> {
         tt_move: Move,
         us: Colour,
         ply: usize,
-    ) -> ([Move; 2], Picker) {
+    ) -> ([Move; 2], Picker, Move) {
         let ordered = usize::from(order_first(legal, tt_move));
+        let held = if ordered == 1 { tt_move } else { Move::NULL };
         let killers = self.heuristics.killers[ply];
         let mut continuation = [None; OFFSETS.len()];
         for (row, &offset) in continuation.iter_mut().zip(OFFSETS.iter()) {
@@ -256,7 +256,7 @@ impl Search<'_> {
             &tables,
             &mut self.slots[ply],
         );
-        (killers, picker)
+        (killers, picker, held)
     }
 
     /// Every descent into `negamax` makes its move here, so a child's frames are its path's.
@@ -635,10 +635,10 @@ fn unless_stalemate(board: &Board, value: Score) -> Score {
     }
 }
 
-/// The move a node stores beside its bound. A table move outside `legal` came from another
-/// position under the same key, so it is never kept.
-fn move_to_store(bound: Bound, legal: &MoveList, tt_move: Move, best_move: Move) -> Move {
-    let _ = (bound, legal, tt_move);
+/// The move a node stores beside its bound, where `held` is the table's move this node found legal,
+/// or null.
+fn kept(bound: Bound, held: Move, best_move: Move) -> Move {
+    let _ = (bound, held);
     best_move
 }
 
@@ -827,23 +827,36 @@ mod tests {
         }
     }
 
-    /// A fail-low names no move that reached alpha, so the table's move this node read stays. A node
-    /// with no legal table move, or one that raised alpha, stores its own best.
+    /// A fail-low names no move that reached alpha, so the table's move this node read stays. A
+    /// node with no legal table move, or one that raised alpha, stores its own best.
     #[test]
     fn a_fail_low_keeps_the_table_move_it_read() {
         let board = Board::from_fen(FAIL_LOW_FEN).expect("a position");
         let legal = generate_legal(&board);
         let held = parse_uci(&legal, "c4a6").expect("a legal move");
         let best = parse_uci(&legal, "b1c3").expect("a legal move");
-        let store = |bound, tt_move| super::move_to_store(bound, &legal, tt_move, best);
-        assert_eq!(store(Bound::Upper, held), held);
-        assert_eq!(store(Bound::Upper, Move::NULL), best);
-        assert_eq!(store(Bound::Lower, held), best);
-        assert_eq!(store(Bound::Exact, held), best);
-        // A move no piece here can make, as another position under the same key would leave.
+        assert_eq!(super::kept(Bound::Upper, held, best), held);
+        assert_eq!(super::kept(Bound::Upper, Move::NULL, best), best);
+        assert_eq!(super::kept(Bound::Lower, held, best), best);
+        assert_eq!(super::kept(Bound::Exact, held, best), best);
+    }
+
+    /// A table move the position cannot play came from another position under the same key, so the
+    /// node holds none and a fail-low stores its own best.
+    #[test]
+    fn a_table_move_the_position_cannot_play_is_never_held() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        let board = Board::from_fen(FAIL_LOW_FEN).expect("a position");
+        let us = board.side_to_move();
+        let mut legal = generate_legal(&board);
+        let held = parse_uci(&legal, "c4a6").expect("a legal move");
+        assert_eq!(search.order(&board, &mut legal, held, us, 1).2, held);
         let foreign = Move::from_bits(11 * 64);
         assert!(!legal.contains(foreign), "the foreign move is legal here");
-        assert_eq!(store(Bound::Upper, foreign), best);
+        let (_, _, none) = search.order(&board, &mut legal, foreign, us, 1);
+        assert_eq!(none, Move::NULL);
     }
 
     /// A hand-built middlegame where the bishop on c4 can be given away on a6.
