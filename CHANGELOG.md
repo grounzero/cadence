@@ -19,6 +19,52 @@ result.
 
 ## [Unreleased]
 
+## [0.7.0-rc.1] - 2026-11-18
+
+A release candidate for 0.7.0, and the first version to play with a neural
+network evaluation.
+
+### Added
+
+- Evaluation: a neural network (NNUE), trained on positions from Cadence's
+  own games, scores positions, and the engine is built with it inside.
+  `Use NNUE`, on by default, plays with the handcrafted evaluation when
+  switched off, and `EvalFile` loads another network file in place of the
+  built-in one.
+- Tools: `datagen run`, `datagen repair` and `datagen verify`, built only
+  with the `packed-datagen` feature, write games as packed chunks, close a
+  chunk a killed run left, and check chunks against their sidecars and the
+  build's settings, regenerating every Nth game.
+- Tools: `cadence-tools convert` turns datasets of packed chunks into the
+  trainer's records, and `cadence-tools forward` compares a network file's
+  quantised evaluation with an `f32` one.
+- Training: `cadence-train`, a third binary from `train/`, outside the
+  workspace, trains the network with bullet, exports a checkpoint as the
+  file `EvalFile` loads and reads a checkpoint's validation loss.
+- Tests: CI stresses the UCI loop at one thread and at four.
+
+### Changed
+
+- Search: the transposition table is cleared when the evaluation in use
+  changes.
+- Version: a build from a modified tree adds `-dirty` to its version.
+- Tools: `datagen play` needs its seed, `datagen extract` checks its input
+  for repeated seeds and games and an edited header, a move with no
+  finished search is recorded with no score, and a run ends on a panic.
+  Each file datagen publishes is followed by a sync of its directory, and
+  a sync that fails is reported.
+- The README gives the macOS steps for a downloaded binary and lists
+  0.6.0's strength.
+
+Test 83, for the network: +445.58 (between +395.93 and +511.52), a
+self-play estimate against the build before it at the short control, from
+a sequential test stopped at its first crossing, so it leans high. At 40
+seconds plus 0.4, test 84: +458.10 (between +419.67 and +505.70). In
+Chess960 and double Chess960 at the short control, test 85: +448.95
+(between +398.90 and +515.67). This was a non-regression test, which asks
+only whether the network costs strength there, and it passed at 392 games.
+They are not a rating.
+
 ## [0.6.0] - 2026-11-13
 
 Everything since 0.5.23, published first as four release candidates, each
@@ -577,7 +623,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.6.0...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...main
+[0.7.0-rc.1]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0-rc.1
 [0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
