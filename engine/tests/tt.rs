@@ -928,29 +928,11 @@ fn fail_low_position() -> (u64, Move, Move) {
     (board.key(), moves[0], moves[1])
 }
 
-/// A fail-low says no move here reached alpha, so the move an earlier search found good stays
-/// beside the new bound.
+/// The table stores the move it is given whatever the bound, so the node decides which move a
+/// fail-low keeps.
 #[test]
-fn a_fail_low_store_keeps_the_move_the_entry_held() {
+fn a_fail_low_store_keeps_the_move_it_is_given() {
     let (key, held, other) = fail_low_position();
-    let t = one_bucket();
-    t.new_search();
-    t.store(key, held, 50, 6, Bound::Lower, false);
-    t.store(key, other, -20, 7, Bound::Upper, false);
-    let hit = t.probe(key).expect("still there");
-    assert_eq!(
-        (hit.mv, hit.score, hit.depth, hit.bound),
-        (held, -20, 7, Bound::Upper)
-    );
-    t.store(key, other, 80, 8, Bound::Lower, false);
-    assert_eq!(t.probe(key).expect("still there").mv, other);
-}
-
-/// Where the entry holds no move, or there is no entry, a fail-low store keeps the move it was
-/// given.
-#[test]
-fn a_fail_low_store_with_no_move_held_keeps_its_own() {
-    let (key, held, _) = fail_low_position();
     let t = one_bucket();
     t.new_search();
     t.store(key, held, -10, 5, Bound::Upper, false);
@@ -960,4 +942,6 @@ fn a_fail_low_store_with_no_move_held_keeps_its_own() {
     t.store(key, Move::NULL, 0, 5, Bound::Upper, false);
     t.store(key, held, -10, 6, Bound::Upper, false);
     assert_eq!(t.probe(key).expect("stored").mv, held);
+    t.store(key, other, -20, 7, Bound::Upper, false);
+    assert_eq!(t.probe(key).expect("stored").mv, other);
 }

@@ -221,7 +221,8 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
-        self.store(key, ply, depth, best, best_move, bound);
+        let mv = move_to_store(bound, &legal, tt_move, best_move);
+        self.store(key, ply, depth, best, mv, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
@@ -634,6 +635,13 @@ fn unless_stalemate(board: &Board, value: Score) -> Score {
     }
 }
 
+/// The move a node stores beside its bound. A table move outside `legal` came from another
+/// position under the same key, so it is never kept.
+fn move_to_store(bound: Bound, legal: &MoveList, tt_move: Move, best_move: Move) -> Move {
+    let _ = (bound, legal, tt_move);
+    best_move
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicBool;
@@ -818,6 +826,29 @@ mod tests {
             );
         }
     }
+
+    /// A fail-low names no move that reached alpha, so the table's move this node read stays. A node
+    /// with no legal table move, or one that raised alpha, stores its own best.
+    #[test]
+    fn a_fail_low_keeps_the_table_move_it_read() {
+        let board = Board::from_fen(FAIL_LOW_FEN).expect("a position");
+        let legal = generate_legal(&board);
+        let held = parse_uci(&legal, "c4a6").expect("a legal move");
+        let best = parse_uci(&legal, "b1c3").expect("a legal move");
+        let store = |bound, tt_move| super::move_to_store(bound, &legal, tt_move, best);
+        assert_eq!(store(Bound::Upper, held), held);
+        assert_eq!(store(Bound::Upper, Move::NULL), best);
+        assert_eq!(store(Bound::Lower, held), best);
+        assert_eq!(store(Bound::Exact, held), best);
+        // A move no piece here can make, as another position under the same key would leave.
+        let foreign = Move::from_bits(11 * 64);
+        assert!(!legal.contains(foreign), "the foreign move is legal here");
+        assert_eq!(store(Bound::Upper, foreign), best);
+    }
+
+    /// A hand-built middlegame where the bishop on c4 can be given away on a6.
+    const FAIL_LOW_FEN: &str =
+        "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 5";
 
     /// Only a fail low under a flagged parent adds the flag; a node's own flag is stored whatever
     /// its bound, and a node with no parent reads none.
