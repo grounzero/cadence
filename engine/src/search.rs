@@ -198,7 +198,8 @@ impl Heuristics {
 /// `begin`.
 struct Run {
     nodes: u64,
-    /// The iteration's partial result is discarded unless it is the first.
+    /// An unfinished iteration's result stands if it is the first, or if its move beat its window's
+    /// floor.
     aborted: bool,
     completed_depth: u32,
     best: Move,
@@ -216,6 +217,9 @@ struct Run {
     /// What a level samples among; separate from `lines`, which an aborted iteration leaves
     /// partial.
     accepted: Vec<RootLine>,
+    /// Where a limit stops an iteration after one completed: its best fully searched move, that
+    /// move's score and the floor of the window it was searched in.
+    unfinished: Option<(Move, Score, Score)>,
 }
 
 impl Run {
@@ -232,6 +236,7 @@ impl Run {
             roots: Vec::new(),
             lines: Vec::new(),
             accepted: Vec::new(),
+            unfinished: None,
         }
     }
 
@@ -247,6 +252,7 @@ impl Run {
         self.roots.clear();
         self.lines.clear();
         self.accepted.clear();
+        self.unfinished = None;
     }
 }
 
