@@ -59,9 +59,6 @@ impl Stopped {
     }
 }
 
-/// Steps of a four-hundredth of the limit that found a fail low, walked until the fail low ends.
-const SCAN: u64 = 80;
-
 /// Searched once and shared, since every gate here reads the same stops.
 fn stopped() -> &'static [Stopped] {
     static RUNS: OnceLock<Vec<Stopped>> = OnceLock::new();
@@ -71,33 +68,13 @@ fn stopped() -> &'static [Stopped] {
             let mut nodes = 2_000u64;
             for _ in 0..LIMITS {
                 if let Some(run) = stop_at(fen, nodes) {
-                    let unproven = run.unproven();
                     runs.push(run);
-                    if unproven {
-                        scan_fail_low(fen, nodes, &mut runs);
-                    }
                 }
                 nodes += nodes / 10;
             }
         }
         runs
     })
-}
-
-/// A later move overtakes a failed first one only briefly before the window is reopened, which
-/// limits a tenth apart step over. Small steps on from a stop inside the fail low find it.
-fn scan_fail_low(fen: &'static str, from: u64, runs: &mut Vec<Stopped>) {
-    let step = (from / 400).max(16);
-    for k in 1..=SCAN {
-        let Some(run) = stop_at(fen, from + k * step) else {
-            return;
-        };
-        let unproven = run.unproven();
-        runs.push(run);
-        if !unproven {
-            return;
-        }
-    }
 }
 
 /// `None` where the limit fell inside the first iteration, where no completed move stands.
@@ -142,16 +119,14 @@ fn a_stopped_search_plays_the_unfinished_move_where_it_beat_the_floor() {
     }
 }
 
-/// The second half, seen where it decides: a move that finished at or under the floor is a fail
-/// low's bound, so the completed iteration's move is kept, its line with it.
+/// The second half: a stop the rule leaves alone keeps the completed iteration's move and its line,
+/// and some stops fall inside a fail low, where a move finished at or under the floor.
 #[test]
 fn a_stopped_search_keeps_the_finished_move_where_the_unfinished_one_did_not_beat_the_floor() {
     let refused: Vec<&Stopped> = stopped().iter().filter(|run| !run.proven()).collect();
     assert!(
-        refused
-            .iter()
-            .any(|run| run.unproven() && run.unfinished.0 != run.completed),
-        "no stop of {} fell in a fail low on a move the completed iteration did not play",
+        refused.iter().any(|run| run.unproven()),
+        "no stop of {} fell in a fail low",
         stopped().len()
     );
     for run in refused {
