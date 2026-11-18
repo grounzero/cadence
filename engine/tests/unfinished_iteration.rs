@@ -104,11 +104,9 @@ fn an_unfinished_iteration_s_move_is_played_only_where_it_beat_its_floor() {
             run.completed
         };
         assert_eq!(
-            run.played,
-            expected,
+            run.played, expected,
             "{fen} at {nodes} nodes: unfinished {:?}, completed {:?}",
-            run.unfinished,
-            run.completed
+            run.unfinished, run.completed
         );
         assert_eq!(run.pv.first(), Some(&run.played), "{fen} at {nodes} nodes");
     }
@@ -139,11 +137,9 @@ fn some_stop_refuses_a_move_that_finished_under_its_floor() {
     );
     for run in refused {
         assert_eq!(
-            run.played,
-            run.completed,
+            run.played, run.completed,
             "{} at {} nodes",
-            run.fen,
-            run.nodes
+            run.fen, run.nodes
         );
     }
 }
