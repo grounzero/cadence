@@ -35,6 +35,11 @@ const BUCKET: i32 = 100;
 const SPAN: i32 = 2_000;
 const BUCKETS: usize = (2 * SPAN / BUCKET) as usize + 2;
 
+/// A kind's games may repeat an earlier game from another seed up to one in this many, where chance
+/// gives standard starts about one in sixty thousand at two million games, rising with the count.
+/// Past it the seeds are suspect and the conversion refuses.
+const REPEAT_BAR: u64 = 1_000;
+
 /// The unit published, and the line reporting it when the sync after its rename failed.
 #[derive(Debug)]
 pub struct Converted {
@@ -370,8 +375,8 @@ fn repeats(sorted: &[u64]) -> usize {
 ///
 /// # Errors
 ///
-/// Any refusal before a record is read, a duplicate game or chunk, a record that does not replay,
-/// or a file that cannot be written; nothing is published then.
+/// Any refusal before a record is read, a copied game or chunk, repeats past `REPEAT_BAR`, a record
+/// that does not replay, or a file that cannot be written; nothing is published then.
 pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, String> {
     let sets = request
         .manifests
@@ -381,7 +386,7 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
     for set in &sets {
         check_listing(set)?;
     }
-    let games = read_games(&sets)?;
+    let (games, repeated) = read_games(&sets)?;
     let chosen = subsample(&games, request.standard_share);
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
     let mut kept = Kept::default();
@@ -426,14 +431,23 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
     let mut rng = Rng::new(request.shuffle_seed);
     shuffle(&mut kept.train, &mut rng);
     shuffle(&mut kept.holdout, &mut rng);
-    let report = report(&sets, &counts, overlap, &by_input);
+    let report = report(&sets, &counts, &repeated, overlap, &by_input);
     publish(request, &sets, &counts, &kept, &report, steps)
 }
 
-/// Every chunk read and held together: no run seed and chunk index twice, and no game twice.
-fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
+/// Games of one start kind read, and those dropped as repeating an earlier game from another seed.
+#[derive(Clone, Copy, Debug, Default)]
+struct Repeats {
+    read: u64,
+    dropped: u64,
+}
+
+/// Every chunk read and held together: no run seed and chunk index twice, and no game copied. A
+/// game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
+fn read_games(sets: &[Dataset]) -> Result<(Vec<Game>, [Repeats; 2]), String> {
     let mut chunks: BTreeMap<(u64, u32), String> = BTreeMap::new();
-    let mut keys: BTreeMap<[u8; 16], (String, u32)> = BTreeMap::new();
+    let mut keys: BTreeMap<[u8; 16], (String, u32, u64)> = BTreeMap::new();
+    let mut repeats = [Repeats::default(); 2];
     let mut games = Vec::new();
     for (dataset, set) in sets.iter().enumerate() {
         for (name, _) in &set.chunks {
@@ -449,13 +463,19 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
             }
             for record in chunk.records {
                 let key = game_key(&record);
-                if let Some((first, index)) = keys.get(&key) {
-                    return Err(format!(
-                        "{name} game {} is the same game as {first} game {index}",
-                        record.index
-                    ));
+                let kind = &mut repeats[usize::from(record.kind)];
+                kind.read += 1;
+                if let Some((first, index, seed)) = keys.get(&key) {
+                    if *seed == record.seed {
+                        return Err(format!(
+                            "{name} game {} is the same game as {first} game {index}",
+                            record.index
+                        ));
+                    }
+                    kind.dropped += 1;
+                    continue;
                 }
-                keys.insert(key, (name.clone(), record.index));
+                keys.insert(key, (name.clone(), record.index, record.seed));
                 games.push(Game {
                     dataset,
                     chunk: name.clone(),
@@ -465,7 +485,16 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
             }
         }
     }
-    Ok(games)
+    for (name, kind) in ["uniform", "standard"].iter().zip(&repeats) {
+        if kind.dropped * REPEAT_BAR > kind.read {
+            return Err(format!(
+                "{} of {} {name} games repeat an earlier game from another seed, more than one in \
+                 {REPEAT_BAR}",
+                kind.dropped, kind.read
+            ));
+        }
+    }
+    Ok((games, repeats))
 }
 
 /// A game's place in its run, from its chunk's place and its own within the chunk.
@@ -623,10 +652,18 @@ fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
 fn report(
     sets: &[Dataset],
     counts: &[[Counts; 2]],
+    repeats: &[Repeats; 2],
     overlap: usize,
     by_input: &[ByInput; 2],
 ) -> String {
     let mut text = String::new();
+    for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
+        let _ = writeln!(
+            text,
+            "{name} games repeating an earlier game from another seed, dropped: {} of {}",
+            kind.dropped, kind.read
+        );
+    }
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "dataset {}", set.manifest.display());
         for (name, c) in ["uniform", "standard"].iter().zip(kinds) {
