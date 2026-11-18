@@ -85,6 +85,8 @@ impl Search<'_> {
             return self.quiesce(board, ply, alpha, beta);
         }
         self.visit(ply);
+        super::spread_add(depth.min(31) as usize);
+        super::spread_add(32 + ply.min(63));
         self.table.clear(ply);
         // At every node, so that `nodes N` stops at N and not at N plus a subtree.
         if self.out_of_time() {
@@ -178,6 +180,11 @@ impl Search<'_> {
             let gives_check = board.in_check();
             let ext = extension(gives_check, ply + 1, self.root_depth);
             let child = depth - 1 + ext;
+            super::spread_add(if ext > 0 { 96 } else { 102 });
+            if i == 0 {
+                super::spread_add(100);
+                super::spread_add(if gives_check { 99 } else { 103 });
+            }
             // The first move gets the node's own window; every later one is asked the null-window
             // question first.
             let mut score = if i == 0 {
@@ -192,6 +199,7 @@ impl Search<'_> {
             // None at or above beta, which is the bound already returned, and none at a null-window
             // node.
             if i > 0 && !self.run.aborted && score > alpha && score < beta {
+                super::spread_add(97);
                 score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
             }
             board.unmake_move(m);

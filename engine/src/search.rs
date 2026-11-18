@@ -19,6 +19,26 @@ use crate::tt::{Bound, Table};
 use crate::tune::Tunables;
 
 mod counters;
+
+thread_local! {
+    /// A scratch reading of where a search's nodes sit; nothing decides on it.
+    static SPREAD: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn spread_add(slot: usize) {
+    SPREAD.with_borrow_mut(|v| {
+        if v.len() <= slot {
+            v.resize(slot + 1, 0);
+        }
+        v[slot] += 1;
+    });
+}
+
+/// The reading since the last call, on this thread.
+#[must_use]
+pub fn spread_take() -> Vec<u64> {
+    SPREAD.take()
+}
 mod depth;
 mod expected;
 mod limits;
