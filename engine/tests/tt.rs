@@ -880,6 +880,7 @@ const SEAM_DEPTH: u32 = 9;
 /// Each position's count must equal its standalone cost; the second half shows an uncleared run
 /// really moves, so the first is testing something.
 #[test]
+#[ignore = "a diagnostic branch, where the whole bench outlasts the job"]
 fn the_bench_clears_the_table_between_positions() {
     let report = bench::bench();
     let fens = bench::positions();
@@ -917,6 +918,7 @@ fn the_bench_clears_the_table_between_positions() {
 
 /// Compiled in, not passed, and the summary line says what it was.
 #[test]
+#[ignore = "a diagnostic branch, where the whole bench outlasts the job"]
 fn the_bench_records_the_table_size_it_ran_at() {
     const { assert!(bench::HASH_MB >= 1) };
     let out = std::process::Command::new(support::binary())

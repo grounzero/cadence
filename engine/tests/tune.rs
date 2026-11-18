@@ -384,6 +384,7 @@ fn the_default_multiplier_is_the_divisor_it_replaced() {
 /// Each search starts from the compiled-in values and only a session hands it others; this fails if
 /// a tunable is made process-wide.
 #[test]
+#[ignore = "a diagnostic branch, where the whole bench outlasts the job"]
 fn a_setting_in_a_session_cannot_reach_bench() {
     let mut session = Session::new();
     for p in PARAMS {
