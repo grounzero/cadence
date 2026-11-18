@@ -8,6 +8,7 @@ mod support;
 
 use std::sync::atomic::AtomicBool;
 
+use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{Move, Square, generate_legal};
 use cadence_engine::position::Position;
@@ -915,4 +916,48 @@ fn the_bench_records_the_table_size_it_ran_at() {
         out.contains(&format!("hash {} MB", bench::HASH_MB)),
         "the summary does not name the table size: {out}"
     );
+}
+
+/// A hand-built middlegame with many legal moves, so two distinct ones are at hand.
+const FAIL_LOW_FEN: &str = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 5";
+
+fn fail_low_position() -> (u64, Move, Move) {
+    let board = Board::from_fen(FAIL_LOW_FEN).expect("a position");
+    let moves = generate_legal(&board);
+    let moves = moves.as_slice();
+    (board.key(), moves[0], moves[1])
+}
+
+/// A fail-low says no move here reached alpha, so the move an earlier search found good stays
+/// beside the new bound.
+#[test]
+fn a_fail_low_store_keeps_the_move_the_entry_held() {
+    let (key, held, other) = fail_low_position();
+    let t = one_bucket();
+    t.new_search();
+    t.store(key, held, 50, 6, Bound::Lower, false);
+    t.store(key, other, -20, 7, Bound::Upper, false);
+    let hit = t.probe(key).expect("still there");
+    assert_eq!(
+        (hit.mv, hit.score, hit.depth, hit.bound),
+        (held, -20, 7, Bound::Upper)
+    );
+    t.store(key, other, 80, 8, Bound::Lower, false);
+    assert_eq!(t.probe(key).expect("still there").mv, other);
+}
+
+/// Where the entry holds no move, or there is no entry, a fail-low store keeps the move it was
+/// given.
+#[test]
+fn a_fail_low_store_with_no_move_held_keeps_its_own() {
+    let (key, held, _) = fail_low_position();
+    let t = one_bucket();
+    t.new_search();
+    t.store(key, held, -10, 5, Bound::Upper, false);
+    assert_eq!(t.probe(key).expect("stored").mv, held);
+    let t = one_bucket();
+    t.new_search();
+    t.store(key, Move::NULL, 0, 5, Bound::Upper, false);
+    t.store(key, held, -10, 6, Bound::Upper, false);
+    assert_eq!(t.probe(key).expect("stored").mv, held);
 }
