@@ -23,3 +23,53 @@ fn the_king_and_queen_position_depth_by_depth() {
         .collect();
     panic!("depth by depth:\n{}", shown.join("\n"));
 }
+
+/// Each counter at depth ten and eleven, in the test build with the shipped net, as the bench runs.
+#[test]
+fn the_king_and_queen_position_counted_at_ten_and_eleven() {
+    let report = std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(|| [10, 11].map(counted).join("\n"))
+        .expect("a search thread")
+        .join()
+        .expect("the search finishes");
+    panic!("counted:\n{report}");
+}
+
+fn counted(depth: u32) -> String {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use cadence_core::position::Board;
+    use cadence_engine::position::Position;
+    use cadence_engine::search::{Limits, Search};
+    use cadence_engine::tt::Table;
+    use cadence_nnue::Network;
+    use cadence_nnue::net::EMBEDDED;
+
+    let board = Board::from_fen("8/2k5/8/8/8/8/1Q6/K7 w - - 0 1").expect("the position");
+    let net = Network::shipped(EMBEDDED).expect("a shipped net").expect("it loads");
+    let mut pos = Position::with_net(board, Arc::new(net));
+    let tt = Table::new(16).expect("a table");
+    let stop = AtomicBool::new(false);
+    let mut s = Search::new(&stop, &tt);
+    s.set_limits(Limits::depth(depth));
+    let best = s.run(&mut pos, &mut std::io::sink());
+    format!(
+        "depth {depth} best {best:?} nodes {} evals {} iir {} lmr {} lmr_re {} null {}/{} rfp {} fut {} lmp {} probcut {}/{} hist_less {} hist_more {}",
+        s.nodes(),
+        s.static_evals(),
+        s.iir_nodes(),
+        s.lmr_reductions(),
+        s.lmr_researches(),
+        s.null_cutoffs(),
+        s.null_attempts(),
+        s.reverse_futility_cutoffs(),
+        s.futility_skipped(),
+        s.lmp_skipped(),
+        s.probcut_cutoffs(),
+        s.probcut_attempts(),
+        s.history_reduced_less(),
+        s.history_reduced_more(),
+    )
+}
