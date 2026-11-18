@@ -66,20 +66,44 @@ fn every_node_of_a_search_is_pv_exactly_where_its_window_is_open() {
 }
 
 /// Every call that derives its kind names the kind its parent was given, which is the last one
-/// recorded a ply up; below the root, every other is the null move's all node.
+/// recorded a ply up inside the same verification. Below the root every other is the null move's
+/// all node, or a node searched again by its verification, which keeps its kind but a PV node's.
 #[cfg(debug_assertions)]
 #[test]
 fn every_child_is_derived_from_the_kind_its_parent_was_given() {
     let stop = AtomicBool::new(false);
-    for fen in positions() {
+    let mut verified = 0;
+    // The handcrafted positions, and the middlegame a net scores, whose search asks the singular
+    // question a ply deeper than the rest reach.
+    let mut searched: Vec<_> = positions()
+        .into_iter()
+        .map(|fen| (support::position(&fen), fen, 8))
+        .collect();
+    searched.push((support::netted(MIDDLEGAME), MIDDLEGAME.to_string(), 9));
+    for (mut b, fen, depth) in searched {
         let tt = table();
-        let mut b = support::position(&fen);
-        let mut s = support::search(Limits::depth(8), &stop, &tt);
+        let mut s = support::search(Limits::depth(depth), &stop, &tt);
         s.trace_calls();
         s.run(&mut b, &mut Vec::new());
-        let mut path: Vec<Expected> = Vec::new();
+        // One path per verification level, the outermost being the search itself.
+        let mut paths: Vec<Vec<Expected>> = vec![Vec::new()];
         let mut derived = 0;
         for call in s.calls() {
+            let level = call.verifying as usize;
+            paths.truncate(level + 1);
+            let reentry = paths.len() == level;
+            if reentry {
+                let outer = paths[level - 1][call.ply];
+                let kind = if outer == Expected::Pv {
+                    Expected::All
+                } else {
+                    outer
+                };
+                assert_eq!((call.asked, call.kind), (None, kind), "{fen}: {call:?}");
+                paths.push(paths[level - 1][..call.ply].to_vec());
+                verified += 1;
+            }
+            let path = &mut paths[level];
             path.truncate(call.ply);
             assert_eq!(path.len(), call.ply, "{fen}: no parent recorded");
             match call.asked {
@@ -88,6 +112,7 @@ fn every_child_is_derived_from_the_kind_its_parent_was_given() {
                     assert_eq!(call.kind, parent.child(via), "{fen}: ply {}", call.ply);
                     derived += 1;
                 }
+                None if reentry => {}
                 None if call.ply > 0 => assert_eq!(call.kind, Expected::All, "{fen}: {call:?}"),
                 None => assert_eq!(call.kind, Expected::Pv, "{fen}: the root"),
             }
@@ -95,6 +120,7 @@ fn every_child_is_derived_from_the_kind_its_parent_was_given() {
         }
         assert!(derived > 10_000, "{fen}: too few calls to say anything");
     }
+    assert!(verified > 0, "no verification was searched");
 }
 
 /// Each root search's first child is PV, each later one a cut node under the null window, and one
@@ -113,7 +139,8 @@ fn the_roots_first_child_is_pv_and_its_later_children_are_cut_nodes() {
         s.trace_calls();
         s.run(&mut b, &mut Vec::new());
         let mut searches: Vec<Vec<Call>> = Vec::new();
-        for call in s.calls() {
+        // A verification's calls are its node's search and not the root's.
+        for call in s.calls().iter().filter(|c| c.verifying == 0) {
             match call.ply {
                 0 => searches.push(Vec::new()),
                 1 => searches.last_mut().expect("the root first").push(*call),

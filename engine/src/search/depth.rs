@@ -6,15 +6,104 @@
 use cadence_core::Move;
 
 use crate::history;
+use crate::score::{self, Score};
+use crate::tt::{Bound, Hit};
+use crate::tune::{Tunable, Tunables};
 
-/// The cap bounds the pathological line, not the ordinary tree: at bench depths an extended line
-/// ends on depth, not ply.
+/// The backstop beside the count's cap at the root depth, which refuses a grant here first. At
+/// bench depths an extended line ends on depth, not ply.
 const EXTEND_WITHIN: usize = 2;
 
 /// `check` is the child's `in_check`, read after the move is made.
 #[must_use]
 pub fn extension(check: bool, ply: usize, root_depth: u32) -> u32 {
     u32::from(check && ply < EXTEND_WITHIN * root_depth as usize)
+}
+
+/// What a line may still be extended by: its extensions of every kind stop at the root depth, so no
+/// interior node lies past twice the root depth from the root.
+#[must_use]
+pub fn headroom(taken: u32, root_depth: u32) -> u32 {
+    root_depth.saturating_sub(taken)
+}
+
+/// A positive extension held to the line's headroom. A negative one is a reduction of one move and
+/// reads none.
+#[must_use]
+pub fn granted(ext: i32, taken: u32, root_depth: u32) -> i32 {
+    ext.min(i32::try_from(headroom(taken, root_depth)).unwrap_or(i32::MAX))
+}
+
+/// The child's count, which never falls: a negative extension gives no headroom back.
+#[must_use]
+pub fn counted(taken: u32, ext: i32) -> u32 {
+    taken.saturating_add(ext.max(0).unsigned_abs())
+}
+
+/// One ply below the parent, moved by the extension, and never below the quiescence search.
+#[must_use]
+pub fn child_depth(depth: u32, ext: i32) -> u32 {
+    depth.saturating_add_signed(ext).saturating_sub(1)
+}
+
+/// The shallowest node that asks whether its table's move is singular, where a net's search starts.
+pub const SINGULAR_DEPTH: i32 = 8;
+
+/// A shallowest depth that asks nowhere, which the handcrafted evaluation's search reads so that it
+/// searches as `0.6.0` did. The count's cap at the root depth is off with it.
+pub const SINGULAR_OFF: i32 = 0;
+
+/// Whether a search reading `tunables` asks the singular question and caps each line's extensions.
+#[must_use]
+pub fn asks_singular(tunables: &Tunables) -> bool {
+    tunables.get(Tunable::SingularDepth) != SINGULAR_OFF
+}
+
+/// Centipawns a ply below the stored score at which another move counts as holding it.
+pub const SINGULAR_MARGIN: i32 = 2;
+
+/// How far below the node's depth a stored entry may lie and still be evidence.
+const SINGULAR_WITHIN: u32 = 3;
+
+/// Saturating, so the function is total at any depth and margin.
+#[must_use]
+pub fn singular_beta(tt_score: Score, depth: u32, margin: Score) -> Score {
+    tt_score.saturating_sub(margin.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX)))
+}
+
+/// Half the depth below the node, rounded down: the verification establishes a bound, not a value.
+#[must_use]
+pub fn verification_depth(depth: u32) -> u32 {
+    depth.saturating_sub(1) / 2
+}
+
+/// The singular beta where a node asks whether its table's move is singular, and `None` where it
+/// does not. The caller passes only an entry whose move is legal here; a set that asks, asks below
+/// the root at its depth or deeper, of an entry naming a move, not an upper bound, within three
+/// plies, with neither score on the decided scale.
+#[must_use]
+pub fn singular_admission(
+    hit: Option<Hit>,
+    depth: u32,
+    ply: usize,
+    tunables: &Tunables,
+) -> Option<Score> {
+    let hit = hit.filter(|_| asks_singular(tunables))?;
+    let shallowest = tunables.get(Tunable::SingularDepth).unsigned_abs();
+    if ply == 0
+        || depth < shallowest
+        || hit.mv.is_null()
+        || hit.bound == Bound::Upper
+        || u32::from(hit.depth) + SINGULAR_WITHIN < depth
+    {
+        return None;
+    }
+    let tt_score = score::from_tt(hit.score, ply);
+    let s_beta = singular_beta(tt_score, depth, tunables.get(Tunable::SingularMargin));
+    if score::is_decisive(tt_score) || score::is_decisive(s_beta) {
+        return None;
+    }
+    Some(s_beta)
 }
 
 /// The shallowest node searched shallower for the move its table did not name.

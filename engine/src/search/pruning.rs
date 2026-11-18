@@ -168,6 +168,28 @@ impl Search<'_> {
         true
     }
 
+    /// The excluded move first, then the margin, then the count, each passing over a move before
+    /// it is made.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the node's own values, which each helper of the node takes separately"
+    )]
+    pub(super) fn skipped(
+        &mut self,
+        board: &Board,
+        ply: usize,
+        futile: bool,
+        give_up: Option<usize>,
+        m: Move,
+        killers: [Move; 2],
+        index: usize,
+        quiet_index: usize,
+    ) -> bool {
+        m == self.excluded[ply]
+            || self.futile(board, futile, m, index)
+            || self.given_up(board, give_up, m, killers, quiet_index)
+    }
+
     /// `gives_check` last, as in [`Search::futile`].
     pub(super) fn given_up(
         &mut self,
@@ -224,7 +246,7 @@ mod proofs {
 
     /// No margin rule fires on a decided bound or in check, and none overflows near a mate.
     #[kani::proof]
-    #[kani::unwind(3)]
+    #[kani::unwind(5)]
     fn no_margin_fires_on_a_decided_bound() {
         let tunables = tunables();
         let (eval, depth): (Option<Score>, u32) = (kani::any(), kani::any());
@@ -245,7 +267,7 @@ mod proofs {
 
     /// Late move pruning gives up no move before `REDUCTION_INDEX`, nor in check, nor at a PV node.
     #[kani::proof]
-    #[kani::unwind(3)]
+    #[kani::unwind(5)]
     fn late_move_pruning_keeps_its_exemptions() {
         let tunables = tunables();
         let (in_check, pv) = (kani::any(), kani::any());

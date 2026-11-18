@@ -31,9 +31,10 @@ mod root;
 
 use counters::Stats;
 pub use depth::{
-    REDUCTION_INDEX, cut_node_reduction, extension, history_reduction, iir_reduction,
+    REDUCTION_INDEX, SINGULAR_DEPTH, SINGULAR_MARGIN, SINGULAR_OFF, asks_singular, child_depth,
+    counted, cut_node_reduction, extension, granted, headroom, history_reduction, iir_reduction,
     lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduced_depth,
-    reduction,
+    reduction, singular_admission, singular_beta, verification_depth,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;
@@ -133,6 +134,13 @@ pub struct Search<'a> {
     root_depth: u32,
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
+    /// The extensions of every kind the line has taken above each ply, the root's none. One longer
+    /// than the plies, since a move at the last ply writes its child's.
+    extensions: [u32; MAX_PLY + 1],
+    /// The move each node's verification leaves out, `Move::NULL` where none is.
+    excluded: [Move; MAX_PLY],
+    /// How many verifications enclose the node being searched.
+    verifying: u32,
     /// The move made at each ply of the current path, which each call's entry takes.
     #[cfg(debug_assertions)]
     moved: [Move; MAX_PLY],
@@ -324,6 +332,9 @@ impl<'a> Search<'a> {
             pawns: PawnCache::new(),
             root_depth: 0,
             tt_pv: [false; MAX_PLY],
+            extensions: [0; MAX_PLY + 1],
+            excluded: [Move::NULL; MAX_PLY],
+            verifying: 0,
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
             #[cfg(debug_assertions)]
@@ -427,6 +438,8 @@ impl<'a> Search<'a> {
         self.run.clear();
         self.heuristics.clear();
         self.stats = Stats::default();
+        self.excluded = [Move::NULL; MAX_PLY];
+        self.verifying = 0;
     }
 
     /// The table, the stop flag and the node slots are all a group shares.

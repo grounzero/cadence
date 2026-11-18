@@ -96,6 +96,13 @@ pub(super) struct Stats {
     pub(super) probcut_cutoffs: Counter,
     pub(super) probcut_refused_window: Counter,
     pub(super) iir_nodes: Counter,
+    /// Verifications run, those run inside another, the table moves extended as singular, the nodes
+    /// below the outermost verifications, and the nodes multicut returned from.
+    pub(super) singular_tests: Counter,
+    pub(super) singular_nested: Counter,
+    pub(super) singular_extensions: Counter,
+    pub(super) singular_nodes: Counter,
+    pub(super) multicut_cutoffs: Counter,
     /// The first shows the in-check horizon is reached, without which the second proves nothing.
     pub(super) evasion_lists: Counter,
     pub(super) evasion_lists_reordered: Counter,
@@ -291,6 +298,40 @@ impl Search<'_> {
         self.stats.iir_nodes.get()
     }
 
+    /// Verifications run, and those run inside another.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn singular_tests(&self) -> u64 {
+        self.stats.singular_tests.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn singular_nested(&self) -> u64 {
+        self.stats.singular_nested.get()
+    }
+
+    /// Table moves a singular verdict extended, and the nodes searched inside the outermost
+    /// verifications.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn singular_extensions(&self) -> u64 {
+        self.stats.singular_extensions.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn singular_nodes(&self) -> u64 {
+        self.stats.singular_nodes.get()
+    }
+
+    /// Nodes that returned the singular beta because a move other than the table's beat it.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn multicut_cutoffs(&self) -> u64 {
+        self.stats.multicut_cutoffs.get()
+    }
+
     /// Evasion lists the quiescence search prepared, and those whose head the sort changed.
     #[cfg(feature = "counters")]
     #[must_use]
@@ -460,10 +501,15 @@ impl Search<'_> {
     pub(super) fn corrected_eval(
         &mut self,
         board: &Position,
+        ply: usize,
         in_check: bool,
         pawn_key: u64,
         side: Colour,
     ) -> Option<Score> {
+        // The excluded node is its parent's position, read moments before.
+        if !self.excluded[ply].is_null() {
+            return self.heuristics.evals[ply];
+        }
         if in_check {
             return None;
         }
@@ -496,6 +542,10 @@ impl Search<'_> {
         bound: Bound,
         depth: u32,
     ) {
+        // The excluded node's value answers another question.
+        if !self.excluded[ply].is_null() {
+            return;
+        }
         let Some(eval) = self.heuristics.evals[ply] else {
             return;
         };

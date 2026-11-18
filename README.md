@@ -97,7 +97,7 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `Use NNUE` | on | Score positions with a network instead of the handcrafted evaluation: the one `EvalFile` loaded, or else the one built into the engine. Off plays with the handcrafted evaluation. |
 | `EvalFile` | empty | A network file to use in place of the built-in one, which emptying this restores. A file for another network shape, or one whose weights could overflow, is refused with the reason and leaves the built-in network, if there is one. |
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
-| `reverse_futility_margin`, `lmp_multiplier` | 150, 0.500 | Search constants offered to tuners (50 to 300, 0 to 2). Leave them alone for play. |
+| `reverse_futility_margin`, `lmp_multiplier`, `singular_depth`, `singular_margin` | 150, 0.500, 8, 2 | Search constants offered to tuners (50 to 300, 0 to 2, 0 to 12 with 0 off, 1 to 8). Leave them alone for play. |
 
 On macOS, raise the open-file limit with `ulimit -n` before starting the
 engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
