@@ -504,7 +504,7 @@ fn a_setting_in_a_session_cannot_reach_bench() {
 fn the_handcrafted_set_holds_its_frozen_values() {
     assert_eq!(Tunables::HCE.get(Tunable::ReverseFutilityMargin), 150);
     assert_eq!(Tunables::HCE.get(Tunable::LmpMultiplier), 500);
-    assert_eq!(Tunables::HCE.get(Tunable::SingularDepth), 8);
+    assert_eq!(Tunables::HCE.get(Tunable::SingularDepth), 0);
     assert_eq!(Tunables::HCE.get(Tunable::SingularMargin), 2);
 }
 

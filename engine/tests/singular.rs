@@ -79,6 +79,10 @@ fn admission_refuses_each_condition_alone() {
     assert!(score::is_decisive(singular_beta(edge, d, SINGULAR_MARGIN)));
     let entry = Some(hit(m, stored, near, Bound::Lower));
     assert_eq!(singular_admission(entry, d, 1, &DEFAULT), None, "the edge");
+    // The handcrafted evaluation's set asks nothing of an entry the net's admits.
+    let entry = Some(hit(m, 100, near, Bound::Lower));
+    let hce = Tunables::HCE;
+    assert_eq!(singular_admission(entry, d, 1, &hce), None, "handcrafted");
 }
 
 #[test]
@@ -112,15 +116,15 @@ fn the_verification_runs_at_half_the_depth_below_the_node() {
     }
 }
 
-/// Over the first bench positions at a depth past the rule's, with the bench's table, the rule
-/// asks its question, extends, and cuts by multicut.
+/// Over the first bench positions scored by a net at a depth past the rule's, the rule asks its
+/// question, extends, and cuts by multicut.
 #[test]
 fn the_rule_fires_over_the_bench_positions() {
     let stop = AtomicBool::new(false);
     let (mut tests, mut extended, mut cut) = (0, 0, 0);
     for fen in bench::positions().into_iter().take(6) {
         let tt = table();
-        let mut b = support::position(fen);
+        let mut b = support::netted(fen);
         let mut s = support::search(Limits::depth(10), &stop, &tt);
         s.run(&mut b, &mut Vec::new());
         tests += s.singular_tests();

@@ -131,6 +131,25 @@ pub fn position(fen: &str) -> cadence_engine::position::Position {
     )
 }
 
+/// The same scored by a seeded net, whose search reads the net's set and so asks what only a net's
+/// search asks.
+///
+/// # Panics
+///
+/// If `fen` does not parse.
+#[must_use]
+pub fn netted(fen: &str) -> cadence_engine::position::Position {
+    static NET: std::sync::OnceLock<std::sync::Arc<cadence_nnue::Network>> =
+        std::sync::OnceLock::new();
+    let net = std::sync::Arc::clone(NET.get_or_init(seeded_net));
+    cadence_engine::position::Position::with_net(position(fen).into_board(), net)
+}
+
+fn seeded_net() -> std::sync::Arc<cadence_nnue::Network> {
+    let net = cadence_nnue::Network::seeded(7, cadence_nnue::Provenance::SelfPlay);
+    std::sync::Arc::new(net)
+}
+
 /// With `limits` already set, which every gate would otherwise write out.
 #[must_use]
 pub fn search<'a>(

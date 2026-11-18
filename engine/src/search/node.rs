@@ -10,9 +10,9 @@ use cadence_core::{
 #[cfg(debug_assertions)]
 use super::Call;
 use super::depth::{
-    child_depth, counted, cut_node_reduction, extension, granted, history_reduction, iir_reduction,
-    losing_capture, move_history, null_reduction, pv_reduction, reduced_depth, reduction,
-    singular_admission, verification_depth,
+    asks_singular, child_depth, counted, cut_node_reduction, extension, granted, history_reduction,
+    iir_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduced_depth,
+    reduction, singular_admission, verification_depth,
 };
 use super::pruning::{
     PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
@@ -272,12 +272,16 @@ impl Search<'_> {
         board.make_move(m);
     }
 
-    /// A check or a singular table move takes one ply, never two, held to the line's headroom. The
-    /// child's count is written here, after the move is made, so each search of the child reads it.
+    /// A check or a singular table move takes one ply, never two, held to the line's headroom where
+    /// the set asks. The child's count is written here, after the move is made, for its searches.
     pub(super) fn extend(&mut self, check: bool, singular: bool, ply: usize) -> i32 {
         let taken = self.extensions[ply];
         let asked = extension(check || singular, ply + 1, self.root_depth).cast_signed();
-        let ext = granted(asked, taken, self.root_depth);
+        let ext = if asks_singular(&self.tunables) {
+            granted(asked, taken, self.root_depth)
+        } else {
+            asked
+        };
         self.stats
             .singular_extensions
             .add_if(singular && !check && ext > 0);
@@ -1053,6 +1057,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = searcher(&stop, &tt);
+        search.tunables = DEFAULT;
         let (mut board, m) = position_and_move(CHECKS, "h2h3");
         search.root_depth = 4;
         search.make(&mut board, 0, m);
@@ -1125,7 +1130,7 @@ mod tests {
     }
 
     /// A count left at every ply by an earlier run: the gates' entry starts the line at none, so no
-    /// call holds more than its ply.
+    /// call holds more than its ply, which is all the handcrafted search's uncapped count allows.
     #[test]
     fn the_gates_entry_starts_every_line_at_no_extension() {
         let stop = AtomicBool::new(false);
@@ -1138,7 +1143,7 @@ mod tests {
         assert!(calls.len() > 1, "nothing searched below the entry");
         for c in calls {
             let ply = u32::try_from(c.ply).expect("a small ply");
-            assert!(c.extensions <= ply.min(3), "{c:?}");
+            assert!(c.extensions <= ply, "{c:?}");
         }
     }
 
@@ -1266,6 +1271,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = searcher(&stop, &tt);
+        search.tunables = DEFAULT;
         let (mut board, m) = position_and_move(MIDDLEGAME, "h2h3");
         search.root_depth = 17;
         search.make(&mut board, 0, m);
@@ -1312,6 +1318,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = Search::new(&stop, &tt);
+        search.tunables = DEFAULT;
         search.root_depth = 8;
         for (check, singular, want) in [
             (false, false, 0),
@@ -1334,6 +1341,22 @@ mod tests {
             );
         }
         assert_eq!(search.stats.singular_extensions.get(), 1);
+    }
+
+    /// Under the handcrafted set an admitted entry is asked nothing and a check at the cap is still
+    /// extended, as `0.6.0` searched.
+    #[test]
+    fn the_handcrafted_set_neither_asks_nor_caps() {
+        let lower = (Bound::Lower, 500);
+        let found = below_a_table_move(QUEEN_HANGS, lower, 11, Tunables::HCE, HIGH_WINDOW);
+        assert_eq!(found.tests, 0);
+        assert_eq!(depths_of(&found.calls, found.table_move), [10]);
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        search.root_depth = 8;
+        search.extensions[3] = 8;
+        assert_eq!(search.extend(true, false, 3), 1);
     }
 
     /// The set a net's search reads, with the shallowest depth asked moved to `depth`.
@@ -1480,6 +1503,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = searcher(&stop, &tt);
+        search.tunables = DEFAULT;
         let (mut board, capture) = position_and_move(QUEEN_HANGS, "e4d5");
         let key = board.key();
         tt.store(key, capture, 500, 8, Bound::Lower, false);
@@ -1506,6 +1530,7 @@ mod tests {
         // Asked alone across the same stop, the verdict is the stop and never singular.
         let tt = Table::new(1).expect("a one mebibyte table");
         let mut search = searcher(&stop, &tt);
+        search.tunables = DEFAULT;
         tt.store(key, capture, 500, 8, Bound::Lower, false);
         search.set_limits(Limits {
             nodes: Some(2),

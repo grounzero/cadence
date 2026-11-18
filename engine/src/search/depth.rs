@@ -49,6 +49,16 @@ pub fn child_depth(depth: u32, ext: i32) -> u32 {
 /// The shallowest node that asks whether its table's move is singular, where a net's search starts.
 pub const SINGULAR_DEPTH: i32 = 8;
 
+/// A shallowest depth that asks nowhere, which the handcrafted evaluation's search reads so that it
+/// searches as `0.6.0` did. The count's cap at the root depth is off with it.
+pub const SINGULAR_OFF: i32 = 0;
+
+/// Whether a search reading `tunables` asks the singular question and caps each line's extensions.
+#[must_use]
+pub fn asks_singular(tunables: &Tunables) -> bool {
+    tunables.get(Tunable::SingularDepth) != SINGULAR_OFF
+}
+
 /// Centipawns a ply below the stored score at which another move counts as holding it.
 pub const SINGULAR_MARGIN: i32 = 2;
 
@@ -68,9 +78,9 @@ pub fn verification_depth(depth: u32) -> u32 {
 }
 
 /// The singular beta where a node asks whether its table's move is singular, and `None` where it
-/// does not. The caller passes only an entry whose move is legal here; it asks below the root, at
-/// the set's depth or deeper, of an entry naming a move, not an upper bound, within three plies,
-/// with neither score on the decided scale.
+/// does not. The caller passes only an entry whose move is legal here; a set that asks, asks below
+/// the root at its depth or deeper, of an entry naming a move, not an upper bound, within three
+/// plies, with neither score on the decided scale.
 #[must_use]
 pub fn singular_admission(
     hit: Option<Hit>,
@@ -78,7 +88,7 @@ pub fn singular_admission(
     ply: usize,
     tunables: &Tunables,
 ) -> Option<Score> {
-    let hit = hit?;
+    let hit = hit.filter(|_| asks_singular(tunables))?;
     let shallowest = tunables.get(Tunable::SingularDepth).unsigned_abs();
     if ply == 0
         || depth < shallowest

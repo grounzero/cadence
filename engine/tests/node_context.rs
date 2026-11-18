@@ -73,10 +73,16 @@ fn every_node_of_a_search_is_pv_exactly_where_its_window_is_open() {
 fn every_child_is_derived_from_the_kind_its_parent_was_given() {
     let stop = AtomicBool::new(false);
     let mut verified = 0;
-    for fen in positions() {
+    // The handcrafted positions, and the middlegame a net scores, whose search asks the singular
+    // question a ply deeper than the rest reach.
+    let mut searched: Vec<_> = positions()
+        .into_iter()
+        .map(|fen| (support::position(&fen), fen, 8))
+        .collect();
+    searched.push((support::netted(MIDDLEGAME), MIDDLEGAME.to_string(), 9));
+    for (mut b, fen, depth) in searched {
         let tt = table();
-        let mut b = support::position(&fen);
-        let mut s = support::search(Limits::depth(8), &stop, &tt);
+        let mut s = support::search(Limits::depth(depth), &stop, &tt);
         s.trace_calls();
         s.run(&mut b, &mut Vec::new());
         // One path per verification level, the outermost being the search itself.

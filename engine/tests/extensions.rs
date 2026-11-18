@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The count of extensions each line takes, capped at the root depth. The record of each call these
-//! read exists only in a debug build, so these gates do too.
+//! The count of extensions each line takes, capped at the root depth where a net's search reads it.
+//! The record of each call these read exists only in a debug build, so these gates do too.
 
 #![cfg(debug_assertions)]
 
@@ -35,7 +35,7 @@ struct Counted {
 fn counted(fen: &str, depth: u32) -> Counted {
     let stop = AtomicBool::new(false);
     let tt = table();
-    let mut b = support::position(fen);
+    let mut b = support::netted(fen);
     let mut s = support::search(Limits::depth(depth), &stop, &tt);
     s.trace_calls();
     s.run(&mut b, &mut Vec::new());

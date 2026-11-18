@@ -31,10 +31,10 @@ mod root;
 
 use counters::Stats;
 pub use depth::{
-    REDUCTION_INDEX, SINGULAR_DEPTH, SINGULAR_MARGIN, child_depth, counted, cut_node_reduction,
-    extension, granted, headroom, history_reduction, iir_reduction, lmr_reduction, losing_capture,
-    move_history, null_reduction, pv_reduction, reduced_depth, reduction, singular_admission,
-    singular_beta, verification_depth,
+    REDUCTION_INDEX, SINGULAR_DEPTH, SINGULAR_MARGIN, SINGULAR_OFF, asks_singular, child_depth,
+    counted, cut_node_reduction, extension, granted, headroom, history_reduction, iir_reduction,
+    lmr_reduction, losing_capture, move_history, null_reduction, pv_reduction, reduced_depth,
+    reduction, singular_admission, singular_beta, verification_depth,
 };
 #[cfg(debug_assertions)]
 pub use expected::Call;

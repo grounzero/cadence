@@ -7,7 +7,9 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::search::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN, SINGULAR_DEPTH, SINGULAR_MARGIN};
+use crate::search::{
+    LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN, SINGULAR_DEPTH, SINGULAR_MARGIN, SINGULAR_OFF,
+};
 
 /// The search reads integers only, so a float is converted once, here.
 pub const MILLI: i32 = 1000;
@@ -37,8 +39,7 @@ pub struct Param {
     pub name: &'static str,
     pub kind: Kind,
     pub default: i32,
-    /// What the handcrafted evaluation's search reads, never tuned: `0.6.0`'s value, or the default
-    /// a parameter added since was introduced with.
+    /// What the handcrafted evaluation's search reads, `0.6.0`'s value and never tuned.
     pub hce: i32,
     pub min: i32,
     pub max: i32,
@@ -76,8 +77,8 @@ pub const PARAMS: &[Param] = &[
         name: "singular_depth",
         kind: Kind::Int,
         default: SINGULAR_DEPTH,
-        hce: SINGULAR_DEPTH,
-        min: 4,
+        hce: SINGULAR_OFF,
+        min: SINGULAR_OFF,
         max: 12,
         c_end: 1.0,
         r_end: 0.002,
