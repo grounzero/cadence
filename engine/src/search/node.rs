@@ -107,7 +107,7 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, tb, _hit) = match self.lookup(board, key, depth, ply, alpha, beta) {
+        let (tt_move, tb, hit) = match self.lookup(board, key, depth, ply, alpha, beta) {
             Ok(found) => found,
             Err(score) => return score,
         };
@@ -145,7 +145,7 @@ impl Search<'_> {
         };
         // After generation, so the list holds the table's move, and before the sort, whose row at
         // this ply the verification's own picker takes first.
-        let singular = match self.singular_verdict(board, &legal, None, depth, ply, kind, beta) {
+        let singular = match self.singular_verdict(board, &legal, hit, depth, ply, kind, beta) {
             Ok(singular) => singular,
             Err(score) => return score,
         };
