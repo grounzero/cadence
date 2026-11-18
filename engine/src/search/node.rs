@@ -69,6 +69,7 @@ impl Search<'_> {
     }
 
     /// Fail-soft. After an abort the value means nothing, and every caller discards it.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn negamax(
         &mut self,
         board: &mut Position,
