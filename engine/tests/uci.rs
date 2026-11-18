@@ -881,8 +881,10 @@ fn a_hash_size_set_over_uci_sizes_the_table_searched() {
 #[test]
 fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
     let watched = cadence_engine::search::CURRMOVE_AFTER_MS * 2;
+    // Sized against the handcrafted evaluation: with the net a slow debug build can end its last
+    // iteration before the root moves are named, its next one predicted not to fit.
     let (elapsed, clocked) = Engine::go_within(
-        &["position startpos"],
+        &["setoption name Use NNUE value false", "position startpos"],
         &format!("go movetime {watched}"),
         std::time::Duration::from_secs(60),
     );
@@ -941,7 +943,7 @@ fn a_clocked_search_names_its_root_move_and_a_node_limited_one_stays_silent() {
         .and_then(|l| field(l, "nodes"))
         .expect("a completed iteration");
     let (_, counted) = Engine::go_within(
-        &["position startpos"],
+        &["setoption name Use NNUE value false", "position startpos"],
         &format!("go nodes {nodes}"),
         std::time::Duration::from_secs(60),
     );
