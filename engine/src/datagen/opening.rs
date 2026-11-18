@@ -3,10 +3,13 @@
 //! A double-Fischer start drawn uniformly, uniform random plies on top, and a shallow screen
 //! refusing a start already decided. The three constants are chosen, not measured.
 
+use std::sync::Arc;
+
 use cadence_core::chess960::{ARRAYS, dfrc_fen};
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_core::{Move, generate_legal};
+use cadence_nnue::Network;
 
 use super::game;
 use crate::position::Position;
@@ -43,11 +46,18 @@ fn screen(board: &mut Position, tt: &Table) -> Option<Score> {
 ///
 /// If the drawn start does not parse.
 pub fn draw(rng: &mut Rng, tt: &Table) -> Option<Opening> {
-    draw_with(rng, tt, &screen, false)
+    draw_with(rng, tt, &screen, false, None)
 }
 
-/// The standard array for both sides when `standard`, and otherwise two drawn uniformly.
-fn draw_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>, standard: bool) -> Option<Opening> {
+/// The standard array for both sides when `standard`, and otherwise two drawn uniformly; scored by
+/// `net` where one is given, the screen included.
+fn draw_with(
+    rng: &mut Rng,
+    tt: &Table,
+    probe: &Probe<'_>,
+    standard: bool,
+    net: Option<&Arc<Network>>,
+) -> Option<Opening> {
     let (white, black) = if standard {
         let array = u32::from(cadence_dataset::chunk::STANDARD_ARRAY);
         (array, array)
@@ -56,7 +66,10 @@ fn draw_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>, standard: bool) -> Op
     };
     let fen = dfrc_fen(white, black);
     let start = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
-    let mut board = Position::new(start);
+    let mut board = match net {
+        Some(net) => Position::with_net(start, Arc::clone(net)),
+        None => Position::new(start),
+    };
     let mut plies = Vec::with_capacity(RANDOM_PLIES);
     for _ in 0..RANDOM_PLIES {
         let legal = generate_legal(&board);
@@ -85,7 +98,7 @@ pub fn next(rng: &mut Rng, tt: &Table) -> (Opening, u32) {
 }
 
 fn next_with(rng: &mut Rng, tt: &Table, probe: &Probe<'_>) -> (Opening, u32) {
-    next_of_kind(rng, tt, false, probe)
+    next_of_kind(rng, tt, false, probe, None)
 }
 
 /// A start the screen refuses is drawn again under the same kind, so the share holds.
@@ -94,10 +107,11 @@ pub fn next_of_kind(
     tt: &Table,
     standard: bool,
     probe: &Probe<'_>,
+    net: Option<&Arc<Network>>,
 ) -> (Opening, u32) {
     let mut refused = 0;
     loop {
-        if let Some(opening) = draw_with(rng, tt, probe, standard) {
+        if let Some(opening) = draw_with(rng, tt, probe, standard, net) {
             return (opening, refused);
         }
         refused += 1;

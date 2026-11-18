@@ -27,7 +27,7 @@ $UciSeconds = 30
 $TablesBytes = 983957920
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
-$InstallerVersion = '0.6.0'
+$InstallerVersion = '0.7.0-rc.1'
 
 $script:Yes = $false
 $script:KeepLog = $false

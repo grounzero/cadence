@@ -341,6 +341,45 @@ fn the_same_chunk_or_game_twice_is_refused() {
     );
 }
 
+/// A game drawn again from another seed, as the standard start's random plies can be by chance, is
+/// kept once and counted; past one in a thousand of a kind the conversion refuses.
+#[test]
+fn a_game_repeated_from_another_seed_is_kept_once() {
+    let dir = scratch("repeated");
+    let first = games(8, 1_000, |_| 1);
+    let mut second = games(9, 1_000, |_| 1);
+    let mut again = first[3].clone();
+    again.index = 5;
+    again.seed ^= 1;
+    second[5] = again;
+    let manifest = dataset(&dir.join("one"), 31, &[first.clone(), second]);
+    let (ok, text, units) = convert(&[&manifest], &dir.join("a"), &["--shuffle-seed", "1"]);
+    let report = units
+        .first()
+        .map(|u| std::fs::read_to_string(u.join("report.txt")).expect("a report"));
+    let mut few = games(10, 6, |_| 1);
+    let mut twice = few[1].clone();
+    twice.index = 4;
+    twice.seed ^= 1;
+    few[4] = twice;
+    let refused = dataset(&dir.join("two"), 32, &[few]);
+    let (ok_few, few_text, _) = convert(&[&refused], &dir.join("b"), &["--shuffle-seed", "1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    let report = report.expect("a unit");
+    assert!(
+        report.contains(
+            "standard games repeating an earlier game from another seed, dropped: 1 of 2000"
+        ),
+        "{report}"
+    );
+    assert!(report.contains("  standard games 1999 "), "{report}");
+    assert!(
+        !ok_few && few_text.contains("1 of 6 standard games repeat an earlier game"),
+        "{few_text}"
+    );
+}
+
 /// The share asked is met exactly by dropping games of the more common kind.
 #[test]
 fn the_standard_share_is_met_exactly() {

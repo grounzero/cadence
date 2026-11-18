@@ -365,9 +365,13 @@ fn run_from_args(args: &[String]) -> Result<(), Failure> {
     if let Some(why) = packed::build_refusal(&build.commit_full, build.modified) {
         return Err(Failure::Work(why.to_string()));
     }
+    let net = packed::shipped_net().map_err(Failure::Work)?;
     std::fs::create_dir_all(&settings.dir)
         .map_err(|e| Failure::Work(format!("{}: {e}", settings.dir.display())))?;
-    let written = packed::run(&settings, &build, &packed::play);
+    let player = |seed: u64, index: u32, share: u8, tt: &Table| {
+        packed::play(seed, index, share, tt, net.as_ref())
+    };
+    let written = packed::run(&settings, &build, &player);
     if let Ok(written) = &written {
         println!(
             "stopped: chunks {} games uniform {} standard {}",
@@ -476,6 +480,7 @@ fn verify_paths(
     every: Option<u32>,
     threads: usize,
 ) -> Result<Vec<verify::Summary>, String> {
+    let net = packed::shipped_net()?;
     let mut chunks = Vec::new();
     for path in paths {
         chunks.extend(verify::chunk_paths(Path::new(path))?);
@@ -488,7 +493,7 @@ fn verify_paths(
     thread::scope(|scope| {
         let mut handles = Vec::new();
         for _ in 0..threads.clamp(1, MAX_THREADS).min(chunks.len()) {
-            let (next, results, chunks) = (&next, &results, &chunks);
+            let (next, results, chunks, net) = (&next, &results, &chunks, net.as_ref());
             handles.push(spawn_search(scope, move || {
                 let Some(tt) = Table::new(HASH_MB) else {
                     return Err("a table could not be allocated".to_string());
@@ -499,7 +504,7 @@ fn verify_paths(
                     let Some(path) = chunks.get(i) else {
                         return Ok(());
                     };
-                    let checked = verify::chunk(path, every, &tt);
+                    let checked = verify::chunk(path, every, &tt, net);
                     unpoisoned(results.lock())[i] = Some(checked);
                 }
             }));
