@@ -56,8 +56,22 @@ fn counted(depth: u32) -> String {
     let stop = AtomicBool::new(false);
     let mut s = Search::new(&stop, &tt);
     s.set_limits(Limits::depth(depth));
+    let _ = cadence_engine::search::spread_take();
     let best = s.run(&mut pos, &mut std::io::sink());
-    format!(
+    let spread = cadence_engine::search::spread_take();
+    let at = |i: usize| spread.get(i).copied().unwrap_or(0);
+    let by_depth: Vec<u64> = (1..16).map(at).collect();
+    let by_ply: Vec<u64> = (32..72).map(at).collect();
+    let moves = format!(
+        "extended {} unextended {} reopened {} first {} first_checks {} first_quiet {}",
+        at(96),
+        at(102),
+        at(97),
+        at(100),
+        at(99),
+        at(103)
+    );
+    let counts = format!(
         "depth {depth} best {best:?} nodes {} evals {} iir {} lmr {} lmr_re {} null {}/{} rfp {} fut {} lmp {} probcut {}/{} hist_less {} hist_more {}",
         s.nodes(),
         s.static_evals(),
@@ -73,5 +87,6 @@ fn counted(depth: u32) -> String {
         s.probcut_attempts(),
         s.history_reduced_less(),
         s.history_reduced_more(),
-    )
+    );
+    format!("{counts}\n  {moves}\n  by depth 1..15 {by_depth:?}\n  by ply 0..39 {by_ply:?}")
 }
