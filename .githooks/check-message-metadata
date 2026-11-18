@@ -23,7 +23,7 @@ MSG_FILE="${1:?usage: check-message-metadata [--record] [--stored] <message-file
 trap 'echo "  not examined: a closing line that is neither a trailer nor a link (left to the writer)" >&2' EXIT
 
 # An allowlist, so a key nobody has thought of is already refused.
-ALLOWED='bench'
+ALLOWED='bench handcrafted'
 
 # Being written, everything from `commit -v`'s scissors line down is the diff and the `#` lines go,
 # as git drops both once the hook has run.

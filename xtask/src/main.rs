@@ -2220,6 +2220,30 @@ mod tests {
         }
     }
 
+    /// The handcrafted count moves only with a declaration, as the bench does: a staged change to
+    /// its file needs one `Handcrafted:` trailer that agrees with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_change_to_the_handcrafted_count_is_declared() {
+        let root = std::env::temp_dir().join(format!("xtask-handcrafted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q"]).unwrap();
+        std::fs::write(root.join("bench.txt"), "100\n").unwrap();
+        std::fs::write(root.join("handcrafted-bench.txt"), "200\n").unwrap();
+        git(&root, &["add", "bench.txt", "handcrafted-bench.txt"]).unwrap();
+        let passes = |message: &str| {
+            hook_passes_at("check-bench-declaration", message, &root, None)
+        };
+        assert!(!passes("Fix a search bug\n\nBench: 100\n"), "undeclared");
+        assert!(
+            !passes("Fix a search bug\n\nBench: 100\nHandcrafted: 201\n"),
+            "wrong count"
+        );
+        assert!(passes("Fix a search bug\n\nBench: 100\nHandcrafted: 200\n"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A commit that falls back to building the checker says so, so cargo never runs unseen; a
     /// stand-in `cargo` on the path answers for it here.
     #[cfg(unix)]
