@@ -13,8 +13,9 @@ use cadence_engine::score::{INFINITE, Score};
 use cadence_engine::search::Limits;
 use support::table;
 
-/// Middlegames whose best move changes between iterations, so some stops land after a change.
-const FENS: [&str; 8] = [
+/// Middlegames whose best move changes between iterations, and opening traps whose bait is refuted
+/// only deeper, so some stops land after a change and some inside the fail low a refutation brings.
+const FENS: [&str; 11] = [
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
     "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
     "rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6",
@@ -23,6 +24,12 @@ const FENS: [&str; 8] = [
     "r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQ - 0 8",
     "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 0 4",
     "r1b2rk1/2q1bppp/p2p1n2/1p2p3/3nP3/1BN1BN2/PPP2PPP/R2QR1K1 w - - 0 13",
+    // Taking on d5 wins a pawn until the bishop check that costs a piece is seen.
+    "r1bqkb1r/pppn1ppp/5n2/3p2B1/3P4/2N5/PP2PPPP/R2QKBNR w KQkq - 0 6",
+    // Taking on d4 wins a pawn until the pawns trap the bishop.
+    "r1bqkbnr/2p2ppp/p2p4/1p6/3pP3/1B6/PPP2PPP/RNBQK2R w KQkq - 0 8",
+    // Taking on e5 wins a pawn until the queen reaches g2.
+    "r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
 ];
 
 /// Limits growing by a tenth from 2,000 nodes, so stops fall densely at every depth from the first
