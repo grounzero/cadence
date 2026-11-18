@@ -470,7 +470,7 @@ impl Search<'_> {
         ply: usize,
         alpha: Score,
         beta: Score,
-    ) -> Result<(Move, (Score, Score), Option<Hit>), Score> {
+    ) -> Result<Found, Score> {
         // The excluded node is its parent's position without one move, which neither the table nor
         // the tablebases can answer for; its flag stays as its own search wrote it.
         if !self.excluded[ply].is_null() {
@@ -713,6 +713,9 @@ impl Search<'_> {
         None
     }
 }
+
+/// What the lookup hands the node: the table's move, the floor and ceiling it keeps, and the entry.
+type Found = (Move, (Score, Score), Option<Hit>);
 
 /// Which of a node's moves it searched, one bit per index into its own list.
 #[derive(Clone, Copy, Debug, Default)]
