@@ -48,7 +48,9 @@ fn counted(depth: u32) -> String {
     use cadence_nnue::net::EMBEDDED;
 
     let board = Board::from_fen("8/2k5/8/8/8/8/1Q6/K7 w - - 0 1").expect("the position");
-    let net = Network::shipped(EMBEDDED).expect("a shipped net").expect("it loads");
+    let net = Network::shipped(EMBEDDED)
+        .expect("a shipped net")
+        .expect("it loads");
     let mut pos = Position::with_net(board, Arc::new(net));
     let tt = Table::new(16).expect("a table");
     let stop = AtomicBool::new(false);
