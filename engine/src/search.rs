@@ -198,7 +198,8 @@ impl Heuristics {
 /// `begin`.
 struct Run {
     nodes: u64,
-    /// The iteration's partial result is discarded unless it is the first.
+    /// An unfinished iteration's result stands if it is the first, or if its move beat its window's
+    /// floor.
     aborted: bool,
     completed_depth: u32,
     best: Move,

@@ -192,9 +192,18 @@ impl Search<'_> {
         self.run.pv.extend_from_slice(&line.pv);
     }
 
-    /// Recorded for the gates where a completed iteration's move stands.
+    /// The unfinished iteration's move replaces the completed one's only where its score beat the
+    /// floor of its window. At or under the floor it may be a fail low's bound, and proves nothing.
     fn keep_unfinished(&mut self, partial: (Move, Score, Score)) {
         self.run.unfinished = Some(partial);
+        let (best, score, floor) = partial;
+        if self.multipv > 1 || score <= floor {
+            return;
+        }
+        self.run.best = best;
+        self.run.score = score;
+        self.run.pv.clear();
+        self.run.pv.extend_from_slice(self.table.line(0));
     }
 
     /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded
