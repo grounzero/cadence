@@ -52,7 +52,12 @@ fn admission_refuses_each_condition_alone() {
     let refused = [
         ("no entry", None, d, 1),
         ("no move", lower(Move::NULL, near), d, 1),
-        ("an upper bound", Some(hit(m, 100, near, Bound::Upper)), d, 1),
+        (
+            "an upper bound",
+            Some(hit(m, 100, near, Bound::Upper)),
+            d,
+            1,
+        ),
         ("four plies short", lower(m, near - 1), d, 1),
         ("too shallow", lower(m, near), shallowest() - 1, 1),
         ("the root", lower(m, near), d, 0),

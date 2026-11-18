@@ -58,9 +58,7 @@ const SINGULAR_WITHIN: u32 = 3;
 /// Saturating, so the function is total at any depth and margin.
 #[must_use]
 pub fn singular_beta(tt_score: Score, depth: u32, margin: Score) -> Score {
-    tt_score.saturating_sub(
-        margin.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX)),
-    )
+    tt_score.saturating_sub(margin.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX)))
 }
 
 /// Half the depth below the node, rounded down: the verification establishes a bound, not a value.
