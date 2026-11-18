@@ -638,8 +638,11 @@ fn unless_stalemate(board: &Board, value: Score) -> Score {
 /// The move a node stores beside its bound, where `held` is the table's move this node found legal,
 /// or null.
 fn kept(bound: Bound, held: Move, best_move: Move) -> Move {
-    let _ = (bound, held);
-    best_move
+    if bound == Bound::Upper && !held.is_null() {
+        held
+    } else {
+        best_move
+    }
 }
 
 #[cfg(test)]
