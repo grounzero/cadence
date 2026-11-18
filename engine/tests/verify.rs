@@ -342,3 +342,25 @@ fn the_manifest_refuses_chunks_of_different_builds() {
     let one_build = verify::manifest(&[first, same]);
     one_build.expect("one build's chunks are listed");
 }
+
+/// The manifest names the run's chunk size, which numbers each game in its run, and refuses chunks
+/// planned at another size.
+#[test]
+fn the_manifest_names_the_chunk_size_and_refuses_a_mix() {
+    let dir = scratch("chunk-games");
+    let path = written(&dir, SEED);
+    let first = check(&path, None);
+    let _ = std::fs::remove_dir_all(&dir);
+    let first = first.expect("verifies");
+    let listed = verify::manifest(std::slice::from_ref(&first));
+    let listed = listed.expect("one chunk is listed");
+    assert!(listed.contains("\nchunk-games\t3\n"), "{listed}");
+    let mut other = first.clone();
+    other.name = "other".to_string();
+    other.header.games_planned = 4;
+    let mixed = verify::manifest(&[first, other]);
+    assert!(
+        mixed.is_err_and(|e| e.contains("different builds")),
+        "chunks planned at two sizes were listed together"
+    );
+}

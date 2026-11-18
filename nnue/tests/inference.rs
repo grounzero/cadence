@@ -5,10 +5,11 @@
 //! one digest every target's build must print.
 
 use cadence_core::chess960::dfrc_fen;
+use cadence_core::mv::parse_uci;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_core::{FenStyle, Move, generate_legal};
-use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
+use cadence_nnue::net::{EMBEDDED, HEADER_LEN, PAYLOAD_LEN};
 use cadence_nnue::{AccumulatorStack, LoadError, Network, Provenance};
 
 /// The digest of `corpus_outputs`, the same on every target, or a build computes another number.
@@ -154,8 +155,49 @@ fn only_a_self_play_net_may_generate_data() {
     );
 }
 
-/// Each bound the load check holds is refused one past it: a lane whose 32 largest weights and
-/// bias could leave `i16`, an output weight of 128, and an output sum past `i32`.
+/// No bytes ship no net, and a self-play net ships exactly as its file loads.
+#[test]
+fn a_build_ships_a_self_play_net_or_none() {
+    assert!(Network::shipped(&[]).is_none());
+    let bytes = net().to_bytes();
+    let shipped = Network::shipped(&bytes)
+        .expect("bytes ship a net")
+        .expect("a self-play net ships");
+    assert_eq!(shipped.to_bytes(), bytes);
+}
+
+/// A canary net, or one trained on an external dataset, is refused as the net a build ships.
+#[test]
+fn only_a_self_play_net_ships() {
+    let canary = Network::seeded(1, Provenance::Canary).to_bytes();
+    assert_eq!(
+        Network::shipped(&canary).map(Result::err),
+        Some(Some(LoadError::Canary))
+    );
+    let validation = Provenance::External("lichess-big3-resolved".to_string());
+    let external = Network::seeded(1, validation).to_bytes();
+    assert_eq!(
+        Network::shipped(&external).map(Result::err),
+        Some(Some(LoadError::NotSelfPlay(
+            "lichess-big3-resolved".to_string()
+        )))
+    );
+}
+
+/// The file this build reads in ships no net, or a self-play net of this build's architecture
+/// whose weights pass the load check, so a refused one fails here before any binary ships it.
+#[test]
+fn the_embedded_net_is_none_or_a_self_play_net_this_build_loads() {
+    match Network::shipped(EMBEDDED) {
+        None => assert_eq!(EMBEDDED, b""),
+        Some(Ok(shipped)) => assert_eq!(shipped.to_bytes(), EMBEDDED),
+        Some(Err(e)) => panic!("the embedded net is refused: {e}"),
+    }
+}
+
+/// Each bound the load check holds is refused one past it, a lane whose 32 largest weights and
+/// bias could leave `i16` and an output weight of 128; every output weight at 127 loads and scores
+/// as the reference does, since the two perspectives add in `i64`.
 #[test]
 fn a_net_that_could_overflow_is_refused() {
     let good = net().to_bytes();
@@ -187,10 +229,14 @@ fn a_net_that_could_overflow_is_refused() {
     for i in 0..2 * hidden {
         set(&mut sum, output + i, 127);
     }
-    assert!(matches!(
-        Network::from_bytes(&sum),
-        Err(LoadError::OutputSum { .. })
-    ));
+    let widest = Network::from_bytes(&sum).expect("every output weight at 127 loads");
+    let board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+    let stack = AccumulatorStack::new(&widest, &board);
+    let stm = board.side_to_move();
+    assert_eq!(
+        widest.evaluate(stack.current(), stm),
+        widest.evaluate_reference(stack.current(), stm)
+    );
 }
 
 /// After every move and every unmake of random DFRC games, the incremental stack equals a full
@@ -228,6 +274,45 @@ fn incremental_updates_equal_a_refresh() {
         castles > 0 && promotions > 0,
         "{castles} castles and {promotions} promotions"
     );
+}
+
+/// A position, a move in it, and the kind of move it must be.
+type Case = (&'static str, &'static str, fn(Move) -> bool);
+
+/// A Chess960 castle whose king and rook swap squares, an en passant capture and a promotion, each
+/// updated from its parent and compared with a refresh from both perspectives.
+#[test]
+fn a_swapping_castle_en_passant_and_a_promotion_update_as_a_refresh() {
+    let net = net();
+    let cases: [Case; 3] = [
+        ("4k3/8/8/8/8/8/8/2RK3R w C - 0 1", "d1c1", Move::is_castle),
+        (
+            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+            "e5d6",
+            Move::is_en_passant,
+        ),
+        (
+            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+            "a7a8q",
+            Move::is_promotion,
+        ),
+    ];
+    for (fen, uci, kind) in cases {
+        let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+        let legal = generate_legal(&board);
+        let m = parse_uci(&legal, uci).unwrap_or_else(|| panic!("{uci} is not legal in {fen}"));
+        assert!(kind(m), "{uci} in {fen} is not the case it stands for");
+        let parent = net.refresh(&board);
+        let dirty = board.make_move(m);
+        let updated = net.update(&parent, &dirty);
+        let fresh = net.refresh(&board);
+        for (persp, side) in [(0, "White"), (1, "Black")] {
+            assert_eq!(
+                updated.sums[persp], fresh.sums[persp],
+                "{uci} in {fen}, {side}'s perspective"
+            );
+        }
+    }
 }
 
 #[test]

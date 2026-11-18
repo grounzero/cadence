@@ -35,6 +35,11 @@ const BUCKET: i32 = 100;
 const SPAN: i32 = 2_000;
 const BUCKETS: usize = (2 * SPAN / BUCKET) as usize + 2;
 
+/// A kind's games may repeat an earlier game from another seed up to one in this many, where chance
+/// gives standard starts about one in sixty thousand at two million games, rising with the count.
+/// Past it the seeds are suspect and the conversion refuses.
+const REPEAT_BAR: u64 = 1_000;
+
 /// The unit published, and the line reporting it when the sync after its rename failed.
 #[derive(Debug)]
 pub struct Converted {
@@ -220,6 +225,7 @@ fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String>
         ("random-plies", h.random_plies.to_string()),
         ("window", h.window.to_string()),
         ("standard-share", h.standard_share.to_string()),
+        ("chunk-games", h.games_planned.to_string()),
         ("run-seeds", format!("{:016x}", h.run_seed)),
     ];
     for (field, have) in fields {
@@ -343,9 +349,25 @@ struct Kept {
     holdout: Vec<[u8; RECORD_LEN]>,
     train_keys: BTreeSet<u64>,
     holdout_keys: Vec<u64>,
-    /// By network input, a reading only: sorted once every position is kept.
-    train_inputs: Vec<u64>,
-    holdout_inputs: Vec<u64>,
+    /// By start kind and network input, a reading only: each sorted once every position is kept.
+    train_inputs: [Vec<u64>; 2],
+    holdout_inputs: [Vec<u64>; 2],
+}
+
+/// One start kind's positions read by network input, its holdout against both kinds' training.
+#[derive(Clone, Copy, Debug, Default)]
+struct ByInput {
+    train: usize,
+    holdout: usize,
+    overlap: usize,
+    /// Positions in a split beyond the first with their input.
+    train_repeats: usize,
+    holdout_repeats: usize,
+}
+
+/// Entries of a sorted list beyond the first of each value.
+fn repeats(sorted: &[u64]) -> usize {
+    sorted.windows(2).filter(|w| w[0] == w[1]).count()
 }
 
 /// The whole conversion up to its published unit's path; `steps` renames the unit and syncs, so a
@@ -353,8 +375,8 @@ struct Kept {
 ///
 /// # Errors
 ///
-/// Any refusal before a record is read, a duplicate game or chunk, a record that does not replay,
-/// or a file that cannot be written; nothing is published then.
+/// Any refusal before a record is read, a copied game or chunk, repeats past `REPEAT_BAR`, a record
+/// that does not replay, or a file that cannot be written; nothing is published then.
 pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, String> {
     let sets = request
         .manifests
@@ -364,7 +386,7 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
     for set in &sets {
         check_listing(set)?;
     }
-    let games = read_games(&sets)?;
+    let (games, repeated) = read_games(&sets)?;
     let chosen = subsample(&games, request.standard_share);
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
     let mut kept = Kept::default();
@@ -392,23 +414,40 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
         .iter()
         .filter(|k| kept.train_keys.contains(k))
         .count();
-    kept.train_inputs.sort_unstable();
-    let input_overlap = kept
-        .holdout_inputs
-        .iter()
-        .filter(|k| kept.train_inputs.binary_search(k).is_ok())
-        .count();
+    for inputs in kept.train_inputs.iter_mut().chain(&mut kept.holdout_inputs) {
+        inputs.sort_unstable();
+    }
+    let in_training = |k: &u64| kept.train_inputs.iter().any(|t| t.binary_search(k).is_ok());
+    let by_input: [ByInput; 2] = std::array::from_fn(|kind| {
+        let (train, holdout) = (&kept.train_inputs[kind], &kept.holdout_inputs[kind]);
+        ByInput {
+            train: train.len(),
+            holdout: holdout.len(),
+            overlap: holdout.iter().filter(|k| in_training(k)).count(),
+            train_repeats: repeats(train),
+            holdout_repeats: repeats(holdout),
+        }
+    });
     let mut rng = Rng::new(request.shuffle_seed);
     shuffle(&mut kept.train, &mut rng);
     shuffle(&mut kept.holdout, &mut rng);
-    let report = report(&sets, &counts, overlap, input_overlap);
+    let report = report(&sets, &counts, &repeated, overlap, &by_input);
     publish(request, &sets, &counts, &kept, &report, steps)
 }
 
-/// Every chunk read and held together: no run seed and chunk index twice, and no game twice.
-fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
+/// Games of one start kind read, and those dropped as repeating an earlier game from another seed.
+#[derive(Clone, Copy, Debug, Default)]
+struct Repeats {
+    read: u64,
+    dropped: u64,
+}
+
+/// Every chunk read and held together: no run seed and chunk index twice, and no game copied. A
+/// game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
+fn read_games(sets: &[Dataset]) -> Result<(Vec<Game>, [Repeats; 2]), String> {
     let mut chunks: BTreeMap<(u64, u32), String> = BTreeMap::new();
-    let mut keys: BTreeMap<[u8; 16], (String, u32)> = BTreeMap::new();
+    let mut keys: BTreeMap<[u8; 16], (String, u32, u64)> = BTreeMap::new();
+    let mut repeats = [Repeats::default(); 2];
     let mut games = Vec::new();
     for (dataset, set) in sets.iter().enumerate() {
         for (name, _) in &set.chunks {
@@ -424,13 +463,19 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
             }
             for record in chunk.records {
                 let key = game_key(&record);
-                if let Some((first, index)) = keys.get(&key) {
-                    return Err(format!(
-                        "{name} game {} is the same game as {first} game {index}",
-                        record.index
-                    ));
+                let kind = &mut repeats[usize::from(record.kind)];
+                kind.read += 1;
+                if let Some((first, index, seed)) = keys.get(&key) {
+                    if *seed == record.seed {
+                        return Err(format!(
+                            "{name} game {} is the same game as {first} game {index}",
+                            record.index
+                        ));
+                    }
+                    kind.dropped += 1;
+                    continue;
                 }
-                keys.insert(key, (name.clone(), record.index));
+                keys.insert(key, (name.clone(), record.index, record.seed));
                 games.push(Game {
                     dataset,
                     chunk: name.clone(),
@@ -440,7 +485,16 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
             }
         }
     }
-    Ok(games)
+    for (name, kind) in ["uniform", "standard"].iter().zip(&repeats) {
+        if kind.dropped * REPEAT_BAR > kind.read {
+            return Err(format!(
+                "{} of {} {name} games repeat an earlier game from another seed, more than one in \
+                 {REPEAT_BAR}",
+                kind.dropped, kind.read
+            ));
+        }
+    }
+    Ok((games, repeats))
 }
 
 /// A game's place in its run, from its chunk's place and its own within the chunk.
@@ -539,15 +593,16 @@ fn positions(
                 counts.plies[band] += 1;
                 counts.zeros[band] += u64::from(score == 0);
                 counts.scores[bucket(score)] += 1;
+                let kind = usize::from(record.kind);
                 if held {
                     kept.holdout.push(bytes);
                     kept.holdout_keys.push(key);
-                    kept.holdout_inputs.push(input);
+                    kept.holdout_inputs[kind].push(input);
                     counts.holdout += 1;
                 } else {
                     kept.train.push(bytes);
                     kept.train_keys.insert(key);
-                    kept.train_inputs.push(input);
+                    kept.train_inputs[kind].push(input);
                     counts.train += 1;
                 }
             }
@@ -597,10 +652,18 @@ fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
 fn report(
     sets: &[Dataset],
     counts: &[[Counts; 2]],
+    repeats: &[Repeats; 2],
     overlap: usize,
-    input_overlap: usize,
+    by_input: &[ByInput; 2],
 ) -> String {
     let mut text = String::new();
+    for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
+        let _ = writeln!(
+            text,
+            "{name} games repeating an earlier game from another seed, dropped: {} of {}",
+            kind.dropped, kind.read
+        );
+    }
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "dataset {}", set.manifest.display());
         for (name, c) in ["uniform", "standard"].iter().zip(kinds) {
@@ -660,11 +723,24 @@ fn report(
         text,
         "holdout positions whose key is also in training: {overlap}"
     );
+    let input_overlap: usize = by_input.iter().map(|b| b.overlap).sum();
     let _ = writeln!(
         text,
         "holdout positions whose network input (768 features and the side to move) is also in \
          training: {input_overlap}"
     );
+    for (name, b) in ["uniform", "standard"].iter().zip(by_input) {
+        let _ = writeln!(
+            text,
+            "{name} holdout positions whose network input is also in training: {} of {}",
+            b.overlap, b.holdout
+        );
+        let _ = writeln!(
+            text,
+            "{name} repeats by network input within training {} of {}, within holdout {} of {}",
+            b.train_repeats, b.train, b.holdout_repeats, b.holdout
+        );
+    }
     text
 }
 
@@ -860,7 +936,8 @@ mod tests {
         let manifest = dir.join("MANIFEST.tsv");
         let provenance = format!(
             "commit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\nhash\t16\n\
-             random-plies\t8\nwindow\t200\nstandard-share\t50\nrun-seeds\t{:016x}\n",
+             random-plies\t8\nwindow\t200\nstandard-share\t50\nchunk-games\t2\n\
+             run-seeds\t{:016x}\n",
             hex(&[1; 20]),
             1
         );
