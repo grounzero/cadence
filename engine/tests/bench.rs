@@ -179,3 +179,18 @@ fn the_count_equals_bench_txt() {
          bench.txt and put `Bench: {got}` in the commit message"
     );
 }
+
+/// What the handcrafted evaluation's search took over these positions at `0.6.0`, whose values its
+/// set keeps. A search change that moves it reached the handcrafted search, which takes new
+/// features only together and only after a test of its own.
+const HANDCRAFTED_AT_0_6_0: u64 = 34_686_410;
+
+#[test]
+fn the_handcrafted_search_takes_0_6_0_s_count() {
+    let got = bench::handcrafted().nodes;
+    assert_eq!(
+        got, HANDCRAFTED_AT_0_6_0,
+        "the handcrafted search took {got} nodes over the bench positions, against 0.6.0's \
+         {HANDCRAFTED_AT_0_6_0}: a search change reached it"
+    );
+}
