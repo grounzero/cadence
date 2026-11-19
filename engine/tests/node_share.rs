@@ -10,8 +10,9 @@ use std::sync::atomic::AtomicBool;
 use cadence_engine::search::Limits;
 use support::table;
 
-/// The shares a fixed-depth search of `fen` recorded, one a completed iteration.
-fn shares(fen: &str, depth: u32) -> Vec<u32> {
+/// The shares a fixed-depth search of `fen` recorded, one pair a completed iteration: of that
+/// iteration's root nodes, and of the whole search's.
+fn shares(fen: &str, depth: u32) -> Vec<(u32, u32)> {
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut search = support::search(Limits::depth(depth), &stop, &tt);
@@ -24,7 +25,8 @@ fn shares(fen: &str, depth: u32) -> Vec<u32> {
     search.iteration_shares().to_vec()
 }
 
-/// A share is a part of the whole, at every iteration of every position.
+/// A share is a part of the whole at every iteration of every position, and the first iteration is
+/// the whole search so far.
 #[test]
 fn a_share_is_at_most_the_whole_root() {
     for fen in [
@@ -34,7 +36,11 @@ fn a_share_is_at_most_the_whole_root() {
     ] {
         let read = shares(fen, 7);
         assert_eq!(read.len(), 7, "{fen}");
-        assert!(read.iter().all(|&s| s <= 1000), "{fen}: {read:?}");
+        assert!(
+            read.iter().all(|&(it, all)| it <= 1000 && all <= 1000),
+            "{fen}: {read:?}"
+        );
+        assert_eq!(read[0].0, read[0].1, "{fen}: {read:?}");
     }
 }
 
@@ -44,5 +50,5 @@ fn a_share_is_at_most_the_whole_root() {
 fn a_root_with_one_legal_move_gives_it_the_whole_share() {
     let read = shares("4k3/8/8/8/8/4p3/3q4/4K2R w K - 0 1", 6);
     assert!(!read.is_empty());
-    assert!(read.iter().all(|&s| s == 1000), "{read:?}");
+    assert!(read.iter().all(|&s| s == (1000, 1000)), "{read:?}");
 }
