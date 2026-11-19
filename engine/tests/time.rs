@@ -291,6 +291,43 @@ fn the_increment_is_spent() {
     assert!(with.hard >= without.hard, "{without:?} vs {with:?}");
 }
 
+fn clock_with_overhead(time: u64, inc: u64, overhead: u64) -> Budget {
+    let mut l = limits(&format!("wtime {time} btime {time} winc {inc} binc {inc}"));
+    l.move_overhead = Some(overhead);
+    budget(&l, Colour::White).expect("a clock gives a budget")
+}
+
+/// Every move pays the overhead, so an increment no larger than it adds nothing to a move's budget.
+#[test]
+fn only_the_increment_past_the_overhead_is_spent() {
+    for overhead in [0, 20, 500] {
+        for time in [10_000, 180_000] {
+            let none = clock_with_overhead(time, 0, overhead);
+            let paid = clock_with_overhead(time, overhead, overhead);
+            assert_eq!(paid, none, "{time}+{overhead}, overhead {overhead}");
+            let past = clock_with_overhead(time, overhead + 400, overhead);
+            assert_eq!(past.soft, none.soft + 300, "{time}, overhead {overhead}");
+        }
+    }
+}
+
+/// Where every move also costs the overhead outside the search, a game spending each soft budget
+/// settles well above the floor the cap at half the clock would hold it to.
+#[test]
+fn a_game_paying_the_overhead_every_move_settles_above_the_cap() {
+    let (overhead, inc) = (600, 2000);
+    let mut t = 180_000u64;
+    for mv in 0..200 {
+        let b = clock_with_overhead(t, inc, overhead);
+        t = t
+            .checked_sub(b.soft + overhead)
+            .expect("the cap leaves the overhead")
+            + inc;
+        assert!(t > overhead, "move {mv}: {t} left");
+    }
+    assert!(t >= 6000, "{t} left after 200 moves");
+}
+
 #[test]
 fn few_moves_to_go_means_more_per_move() {
     let sudden_death = clock(10_000, 0, None);
