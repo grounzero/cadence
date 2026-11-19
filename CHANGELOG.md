@@ -19,6 +19,11 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Training: `cadence-train run --lr-schedule step` lowers the learning rate
+  in five equal drops, in place of the cosine decay, to the same final rate.
+
 ## [0.7.0-rc.2] - 2026-11-19
 
 A release candidate for 0.7.0, with a retrained network.
