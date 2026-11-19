@@ -26,6 +26,7 @@ fn read(net: Option<&AnyNetwork>, depth: u32) {
     let stop = AtomicBool::new(false);
     let tt = Table::new(16).expect("a table");
     let mut by_depth: Vec<Vec<u32>> = vec![Vec::new(); depth as usize + 1];
+    let mut cumulative: Vec<Vec<u32>> = vec![Vec::new(); depth as usize + 1];
     let mut rows: Vec<(String, &str)> = cadence_engine::bench::positions()
         .into_iter()
         .enumerate()
@@ -45,35 +46,38 @@ fn read(net: Option<&AnyNetwork>, depth: u32) {
         let roots = search.iteration_roots();
         let shares = search.iteration_shares();
         let mut run = 0;
-        for (d, (&(mv, _), &share)) in roots.iter().zip(shares).enumerate() {
+        for (d, (&(mv, _), &(share, total))) in roots.iter().zip(shares).enumerate() {
             let changed = d > 0 && roots[d - 1].0 != mv;
             run = if changed || d == 0 { 1 } else { run + 1 };
             println!(
-                "SHARE {name} depth {} share {share} run {run} changed {}",
+                "SHARE {name} depth {} share {share} cumulative {total} run {run} changed {}",
                 d + 1,
                 u8::from(changed)
             );
             if name.starts_with("bench") {
                 by_depth[d + 1].push(share);
+                cumulative[d + 1].push(total);
             }
         }
         println!("NODES {name} {}", search.nodes());
     }
-    for (d, mut v) in by_depth.into_iter().enumerate().skip(1) {
-        if v.is_empty() {
-            continue;
+    for (label, table) in [("DEPTH", by_depth), ("CUMULATIVE", cumulative)] {
+        for (d, mut v) in table.into_iter().enumerate().skip(1) {
+            if v.is_empty() {
+                continue;
+            }
+            v.sort_unstable();
+            let q = |p: usize| v[(v.len() - 1) * p / 4];
+            println!(
+                "{label} {d} n {} q1 {} median {} q3 {} min {} max {}",
+                v.len(),
+                q(1),
+                q(2),
+                q(3),
+                v[0],
+                v[v.len() - 1]
+            );
         }
-        v.sort_unstable();
-        let q = |p: usize| v[(v.len() - 1) * p / 4];
-        println!(
-            "DEPTH {d} n {} q1 {} median {} q3 {} min {} max {}",
-            v.len(),
-            q(1),
-            q(2),
-            q(3),
-            v[0],
-            v[v.len() - 1]
-        );
     }
 }
 
