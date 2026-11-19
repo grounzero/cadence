@@ -259,6 +259,41 @@ fn a_wide_search_leaves_the_accumulators_at_the_root() {
     }
 }
 
+/// A net of eight output buckets scores each position at the bucket its pieces pick, from the root
+/// and after a search, which leaves its accumulators at the root as a one-bucket net's does.
+#[test]
+fn a_bucketed_net_scores_at_the_bucket_its_pieces_pick() {
+    let net = Arc::new(Network::<HIDDEN>::generate_bucketed(
+        11,
+        Provenance::SelfPlay,
+    ));
+    let mut buckets = std::collections::BTreeSet::new();
+    for fen in support::corpus_fens().iter().take(8) {
+        let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+        let pieces = board.occupied().count();
+        buckets.insert(net.bucket(pieces));
+        let raw = net.evaluate(&net.refresh(&board), board.side_to_move(), pieces);
+        let fresh = Position::with_net(board.duplicate(), Arc::clone(&net)).net_eval();
+        assert_eq!(fresh, Some(raw.clamp(-MAX_EVAL + 1, MAX_EVAL - 1)), "{fen}");
+        let mut pos = Position::with_net(board, Arc::clone(&net));
+        let stop = AtomicBool::new(false);
+        let tt = support::table();
+        let limits = Limits {
+            depth: Some(6),
+            nodes: Some(200_000),
+            ..Limits::default()
+        };
+        let mut search = support::search(limits, &stop, &tt);
+        let _ = search.run(&mut pos, &mut std::io::sink());
+        assert_eq!(pos.net_ply(), Some(0), "{fen}");
+        assert_eq!(pos.net_eval(), fresh, "{fen}");
+    }
+    assert!(
+        buckets.len() > 1,
+        "the positions share one bucket: {buckets:?}"
+    );
+}
+
 /// Every lane at the activation's ceiling and every output weight `weight`: the load check passes
 /// it, and it scores far past the evaluation's range.
 fn extreme(weight: i16) -> Network {
@@ -268,7 +303,7 @@ fn extreme(weight: i16) -> Network {
         .chain([0])
         .collect();
     let payload: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    Network::from_payload(&payload, Provenance::SelfPlay, &"0".repeat(40), [0; 32])
+    Network::from_payload(&payload, 1, Provenance::SelfPlay, &"0".repeat(40), [0; 32])
         .expect("the load check passes it")
 }
 
@@ -280,7 +315,8 @@ fn an_extreme_net_is_held_strictly_inside_the_evaluation_range() {
         let net = Arc::new(extreme(weight));
         let board = Board::from_fen(FEN).expect("a position");
         let stack = AccumulatorStack::new(&net, &board);
-        let raw = net.evaluate(stack.current(), board.side_to_move());
+        let pieces = board.occupied().count();
+        let raw = net.evaluate(stack.current(), board.side_to_move(), pieces);
         let held = Position::with_net(board, Arc::clone(&net)).net_eval();
         assert!(raw.abs() > MAX_EVAL, "the plant scores {raw}");
         let held = held.expect("the net scores");

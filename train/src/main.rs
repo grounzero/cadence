@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bullet_lib::game::inputs::Chess768;
+use bullet_lib::game::outputs::MaterialCount;
 use bullet_lib::nn::optimiser::{AdamW, AdamWParams};
 use bullet_lib::trainer::save::SavedFormat;
 use bullet_lib::trainer::schedule::{TrainingSchedule, TrainingSteps, lr, wdl};
@@ -22,7 +23,8 @@ use bullet_lib::value::loader::DirectSequentialDataLoader;
 use cadence_core::features::NUM_INPUTS;
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
-use cadence_nnue::{HIDDEN, Provenance, WIDE};
+use cadence_nnue::{HIDDEN, OUTPUT_BUCKETS, Provenance, WIDE};
+use cadence_train::checkpoint::check_all;
 use cadence_train::data::{BOOK_HEADER, COMMIT_FILE};
 
 const SUPERBATCHES: usize = 40;
@@ -60,7 +62,7 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
-           [--hidden 256|512]
+           [--hidden 256|512] [--output-buckets 1|8]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
@@ -93,6 +95,54 @@ macro_rules! recipe {
                 let ntm_hidden = l0.forward(ntm_inputs).screlu();
                 l1.forward(stm_hidden.concat(ntm_hidden))
             })
+    }};
+}
+
+/// `recipe!` with `OUTPUT_BUCKETS` output layers, one picked a position by its count of pieces, the
+/// layer saved transposed so that the file holds it a bucket at a time, as the engine reads it.
+macro_rules! bucketed_recipe {
+    ($hidden:expr) => {{
+        let hidden: usize = $hidden;
+        ValueTrainerBuilder::default()
+            .dual_perspective()
+            .optimiser(AdamW)
+            .inputs(Chess768)
+            .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
+            .save_format(&[
+                SavedFormat::id("l0w").round().quantise::<i16>(QA as i16),
+                SavedFormat::id("l0b").round().quantise::<i16>(QA as i16),
+                SavedFormat::id("l1w")
+                    .round()
+                    .quantise::<i16>(QB as i16)
+                    .transpose(),
+                SavedFormat::id("l1b")
+                    .round()
+                    .quantise::<i16>((QA * QB) as i16),
+            ])
+            .loss_fn(|output, target| output.sigmoid().squared_error(target))
+            .build(move |builder, stm_inputs, ntm_inputs, output_buckets| {
+                let l0 = builder.new_affine("l0", NUM_INPUTS, hidden);
+                let l1 = builder.new_affine("l1", 2 * hidden, OUTPUT_BUCKETS);
+                let stm_hidden = l0.forward(stm_inputs).screlu();
+                let ntm_hidden = l0.forward(ntm_inputs).screlu();
+                l1.forward(stm_hidden.concat(ntm_hidden))
+                    .select(output_buckets)
+            })
+    }};
+}
+
+/// `$body` with `$trainer` the recipe at `$hidden` units and `$buckets` output buckets, compiled
+/// once for each recipe, since the bucketed trainer is another type.
+macro_rules! with_recipe {
+    ($hidden:expr, $buckets:expr, |$trainer:ident| $body:block) => {{
+        let hidden: usize = $hidden;
+        if $buckets == OUTPUT_BUCKETS {
+            let mut $trainer = bucketed_recipe!(hidden);
+            $body
+        } else {
+            let mut $trainer = recipe!(hidden);
+            $body
+        }
     }};
 }
 
@@ -162,6 +212,18 @@ fn width_flag(flags: &Flags) -> Result<usize, String> {
     }
 }
 
+/// `--output-buckets`, one or the count the engine reads a bucketed net at.
+fn buckets_flag(flags: &Flags) -> Result<usize, String> {
+    let buckets = parsed(flags, "--output-buckets", 1)?;
+    if buckets == 1 || buckets == OUTPUT_BUCKETS {
+        Ok(buckets)
+    } else {
+        Err(format!(
+            "--output-buckets {buckets}, where the engine reads 1 or {OUTPUT_BUCKETS}\n{USAGE}"
+        ))
+    }
+}
+
 /// The optimiser's defaults with every weight held to `clip` either way.
 fn clipped(clip: f32) -> AdamWParams {
     AdamWParams {
@@ -194,6 +256,7 @@ fn run(flags: &Flags) -> Result<(), String> {
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
     let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
     let hidden = width_flag(flags)?;
+    let buckets = buckets_flag(flags)?;
     if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
         return Err(format!(
             "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
@@ -215,19 +278,13 @@ fn run(flags: &Flags) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", commit_file.display()))?;
     cadence_train::data::record_manifests(Path::new(out), &verified)?;
     cadence_train::data::record_result_share(Path::new(out), result_share)?;
+    cadence_train::data::record_output_buckets(Path::new(out), buckets)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let watcher = {
         let (stop, out, id) = (Arc::clone(&stop), PathBuf::from(out), id.to_string());
-        std::thread::spawn(move || watch(&out, &id, hidden, &stop))
+        std::thread::spawn(move || watch(&out, &id, hidden, buckets, &stop))
     };
-    let mut trainer = recipe!(hidden);
-    // The wide net's output layer is clipped tighter, so that its quantised sum loads.
-    if let Some(clip) = cadence_train::export::output_clip(hidden) {
-        trainer
-            .optimiser
-            .set_params_for_weight("l1w", clipped(clip));
-    }
     let schedule = TrainingSchedule {
         net_id: id.to_string(),
         eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
@@ -253,13 +310,21 @@ fn run(flags: &Flags) -> Result<(), String> {
         output_directory: out,
         batch_queue_size: BATCH_QUEUE,
     };
-    trainer.run(
-        &schedule,
-        &settings,
-        &DirectSequentialDataLoader::new(&data),
-    );
-    // Freed before the checkpoints are read back, each into a trainer of its own.
-    drop(trainer);
+    // The trainer is freed at the block's end, before the checkpoints are read back, each into a
+    // trainer of its own.
+    with_recipe!(hidden, buckets, |trainer| {
+        // The wide net's output layer is clipped tighter, so that its quantised sum loads.
+        if let Some(clip) = cadence_train::export::output_clip(hidden) {
+            trainer
+                .optimiser
+                .set_params_for_weight("l1w", clipped(clip));
+        }
+        trainer.run(
+            &schedule,
+            &settings,
+            &DirectSequentialDataLoader::new(&data),
+        );
+    });
     stop.store(true, Ordering::Relaxed);
     let mut seen = watcher
         .join()
@@ -269,18 +334,24 @@ fn run(flags: &Flags) -> Result<(), String> {
         .filter(|sb| sb % save_rate == 0 || *sb == superbatches)
         .map(|sb| Path::new(out).join(format!("{id}-{sb}")))
         .collect();
-    let checked =
-        cadence_train::checkpoint::check_all(Path::new(out), id, hidden, &checkpoints, &mut seen)?;
+    let checked = check_all(Path::new(out), id, hidden, buckets, &checkpoints, &mut seen)?;
     println!("checkpoints: {checked} loaded as an export would load them, every one the run saved");
     validation(&checkpoints, holdout, positions, result_share, result_share)
 }
 
 /// Loads each checkpoint as it is saved and ends the process at the first the engine's loader
 /// refuses, since every step after it trains a net that cannot ship.
-fn watch(out: &Path, id: &str, hidden: usize, stop: &AtomicBool) -> BTreeSet<PathBuf> {
+fn watch(
+    out: &Path,
+    id: &str,
+    hidden: usize,
+    buckets: usize,
+    stop: &AtomicBool,
+) -> BTreeSet<PathBuf> {
     let mut seen = BTreeSet::new();
     while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = cadence_train::checkpoint::check_saved(out, id, hidden, &mut seen) {
+        if let Err(e) = cadence_train::checkpoint::check_saved(out, id, hidden, buckets, &mut seen)
+        {
             eprintln!("cadence-train: {e}");
             std::process::exit(1);
         }
@@ -376,13 +447,17 @@ fn validation(
     let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
     let mut misread = Vec::new();
     for checkpoint in checkpoints {
-        let mut trainer = recipe!(width(checkpoint)?);
-        trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
-        let loss: f64 = examples
-            .iter()
-            .map(|e| cadence_train::validate::loss(trainer.eval(&e.fen), e, result_share, scale))
-            .sum::<f64>()
-            / f64::from(n);
+        let (hidden, buckets) = shape(checkpoint)?;
+        let loss: f64 = with_recipe!(hidden, buckets, |trainer| {
+            trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
+            examples
+                .iter()
+                .map(|e| {
+                    cadence_train::validate::loss(trainer.eval(&e.fen), e, result_share, scale)
+                })
+                .sum::<f64>()
+                / f64::from(n)
+        });
         let superbatch = checkpoint
             .file_name()
             .and_then(|name| name.to_string_lossy().rsplit('-').next()?.parse().ok());
@@ -392,8 +467,14 @@ fn validation(
             .map_or_else(|| "not logged".to_string(), |t| format!("{t:.6}"));
         let file = checkpoint.join("quantised.bin");
         let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let held =
-            cadence_train::validate::quantised_check(&bytes, &examples, result_share, scale, loss);
+        let held = cadence_train::validate::quantised_check(
+            &bytes,
+            buckets,
+            &examples,
+            result_share,
+            scale,
+            loss,
+        );
         let quantised = held
             .as_ref()
             .map_or_else(|_| "outside the bar".to_string(), |q| format!("{q:.6}"));
@@ -437,7 +518,8 @@ fn export(flags: &Flags) -> Result<(), String> {
         .to_string();
     let manifest = read(Path::new(manifest_path))?;
     cadence_train::data::verify_export(run, &manifest)?;
-    let net = cadence_train::export::export(&quantised, provenance, &trainer, &manifest)
+    let buckets = cadence_train::data::run_output_buckets(run)?;
+    let net = cadence_train::export::export(&quantised, buckets, provenance, &trainer, &manifest)
         .map_err(|e| e.to_string())?;
     std::fs::write(&out, net.to_bytes()).map_err(|e| format!("{}: {e}", out.display()))?;
     println!(
@@ -505,6 +587,8 @@ fn overfit(flags: &Flags) -> Result<(), String> {
         ));
     }
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    // Its checkpoints are the one-bucket recipe's, recorded as a run records its own.
+    cadence_train::data::record_output_buckets(&out, 1)?;
     let dir = out.to_string_lossy().into_owned();
     let settings = LocalSettings {
         threads: THREADS,
@@ -634,21 +718,26 @@ fn book(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
-/// The width a saved checkpoint was trained at, from its quantised file's length.
-fn width(checkpoint: &Path) -> Result<usize, String> {
+/// The width and output buckets a saved checkpoint was trained at: the buckets its run recorded,
+/// and the width its quantised file's length names for them.
+fn shape(checkpoint: &Path) -> Result<(usize, usize), String> {
+    let run = checkpoint.parent().unwrap_or(Path::new("."));
+    let buckets = cadence_train::data::run_output_buckets(run)?;
     let file = checkpoint.join("quantised.bin");
     let len = std::fs::metadata(&file)
         .map_err(|e| format!("{}: {e}", file.display()))?
         .len();
-    usize::try_from(len)
+    let hidden = usize::try_from(len)
         .ok()
-        .and_then(cadence_train::export::width_of)
+        .and_then(|len| cadence_train::export::width_of(len, buckets))
         .ok_or_else(|| {
             format!(
-                "{}: {len} bytes, a checkpoint of neither width",
+                "{}: {len} bytes, a checkpoint of neither width at the {buckets} output bucket(s) \
+                 its run recorded",
                 file.display()
             )
-        })
+        })?;
+    Ok((hidden, buckets))
 }
 
 /// The trainer's own output for each position, read back from a checkpoint the recipe saved, in
@@ -669,11 +758,13 @@ fn eval(flags: &Flags) -> Result<(), String> {
         .map(|line| line.split('[').next().unwrap_or(line).trim())
         .filter(|fen| !fen.is_empty())
         .collect();
-    let mut trainer = recipe!(width(Path::new(checkpoint))?);
-    trainer.load_from_checkpoint(checkpoint);
+    let (hidden, buckets) = shape(Path::new(checkpoint))?;
     let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
-    for fen in positions {
-        println!("{:.4}\t{fen}", trainer.eval(fen) * scale);
-    }
+    with_recipe!(hidden, buckets, |trainer| {
+        trainer.load_from_checkpoint(checkpoint);
+        for fen in positions {
+            println!("{:.4}\t{fen}", trainer.eval(fen) * scale);
+        }
+    });
     Ok(())
 }

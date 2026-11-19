@@ -166,8 +166,8 @@ fn a_book_conversion_names_its_holdout() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Both commands check the holdout against the manifest, and a checkpoint for being one, before
-/// either builds a trainer.
+/// Both commands check the holdout against the manifest, a run its bucket count and a checkpoint for
+/// being one, before either builds a trainer.
 #[test]
 fn run_and_validate_refuse_before_building_a_trainer() {
     let dir = scratch("validate-refuses");
@@ -209,6 +209,27 @@ fn run_and_validate_refuse_before_building_a_trainer() {
     assert!(!ok && text.contains("--holdout"), "{text}");
     let (ok, text) = run(Some(&b.join("holdout.bin")));
     assert!(!ok && text.contains("is not the holdout split"), "{text}");
+    assert!(!text.contains("Training Preamble"), "{text}");
+    assert!(!checkpoints.exists());
+    let (ok, text) = train(&[
+        "run",
+        "--data",
+        &path(&train_a),
+        "--manifest",
+        &path(&manifest_a),
+        "--holdout",
+        &path(&holdout_a),
+        "--out",
+        &path(&checkpoints),
+        "--id",
+        "refused",
+        "--output-buckets",
+        "3",
+    ]);
+    assert!(
+        !ok && text.contains("--output-buckets 3, where the engine reads 1 or 8"),
+        "{text}"
+    );
     assert!(!text.contains("Training Preamble"), "{text}");
     assert!(!checkpoints.exists());
     let (ok, text) = train(&[

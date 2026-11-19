@@ -9,6 +9,7 @@ use std::io::Read;
 use std::path::Path;
 
 use cadence_dataset::sha256::{Sha256, hex, sha256};
+use cadence_nnue::OUTPUT_BUCKETS;
 
 use crate::export::CONVERTED;
 
@@ -215,13 +216,56 @@ pub fn run_result_share(run: &Path, given: Option<f32>) -> Result<f32, String> {
     }
 }
 
+/// Beside a run's checkpoints, the output buckets its recipe had, which every reader of its
+/// checkpoints must build the same recipe with.
+pub const OUTPUT_BUCKETS_FILE: &str = "output-buckets";
+
+/// Writes `OUTPUT_BUCKETS_FILE` in `out` for the bucket count the run trains with.
+///
+/// # Errors
+///
+/// A file that cannot be written.
+pub fn record_output_buckets(out: &Path, buckets: usize) -> Result<(), String> {
+    let path = out.join(OUTPUT_BUCKETS_FILE);
+    std::fs::write(&path, format!("{buckets}\n")).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The output buckets the run in `run` recorded, 1 or `OUTPUT_BUCKETS`; a run that recorded none
+/// trained before the record existed, when every recipe had one.
+///
+/// # Errors
+///
+/// A record that cannot be read or names another count.
+pub fn run_output_buckets(run: &Path) -> Result<usize, String> {
+    let path = run.join(OUTPUT_BUCKETS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    match text.trim().parse() {
+        Ok(buckets) if buckets == 1 || buckets == OUTPUT_BUCKETS => Ok(buckets),
+        _ => Err(format!(
+            "{}: {} is not 1 or {OUTPUT_BUCKETS} output buckets",
+            path.display(),
+            text.trim()
+        )),
+    }
+}
+
 /// A run's directory holds no other run's record, since a second run would overwrite the first's.
 ///
 /// # Errors
 ///
-/// A directory holding `COMMIT_FILE`, `VERIFIED_MANIFESTS` or `RESULT_SHARE_FILE`.
+/// A directory holding `COMMIT_FILE`, `VERIFIED_MANIFESTS`, `RESULT_SHARE_FILE` or
+/// `OUTPUT_BUCKETS_FILE`.
 pub fn fresh_run(out: &Path) -> Result<(), String> {
-    for name in [COMMIT_FILE, VERIFIED_MANIFESTS, RESULT_SHARE_FILE] {
+    for name in [
+        COMMIT_FILE,
+        VERIFIED_MANIFESTS,
+        RESULT_SHARE_FILE,
+        OUTPUT_BUCKETS_FILE,
+    ] {
         if out.join(name).exists() {
             return Err(format!(
                 "{} holds another run's {name}, and a run never shares its directory",

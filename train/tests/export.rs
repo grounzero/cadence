@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::Command;
 
 use cadence_dataset::sha256::sha256;
-use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
-use cadence_nnue::{AnyNetwork, LoadError, Network, Provenance, WIDE};
-use cadence_train::data::{COMMIT_FILE, record_manifests};
+use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN, payload_len};
+use cadence_nnue::{AnyNetwork, HIDDEN, LoadError, Network, OUTPUT_BUCKETS, Provenance, WIDE};
+use cadence_train::data::{COMMIT_FILE, OUTPUT_BUCKETS_FILE, record_manifests};
 use cadence_train::export::{CONVERTED, ExportError, FILL, PADDING, export};
 
 const TRAINER: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -32,10 +32,11 @@ fn manifest() -> Vec<u8> {
 #[test]
 fn a_checkpoint_exports_to_a_file_the_engine_loads_unchanged() {
     let saved = checkpoint();
-    let net = export(&saved, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
+    let net = export(&saved, 1, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
     let file = net.to_bytes();
     let back = Network::for_datagen(&file).expect("the engine loads it, for datagen too");
     assert_eq!(&file[HEADER_LEN..], &saved[..PAYLOAD_LEN]);
+    assert_eq!((file[18], back.buckets()), (0, 1));
     assert_eq!(back.trainer(), TRAINER);
     assert_eq!(back.manifest(), sha256(&manifest()));
     assert_eq!(*back.provenance(), Provenance::SelfPlay);
@@ -46,7 +47,7 @@ fn each_fault_is_refused_by_name() {
     let saved = checkpoint();
     let external = || Provenance::External("lichess-big3-resolved".to_string());
     let attempt = |bytes: &[u8], provenance, trainer, manifest: &[u8]| {
-        export(bytes, provenance, trainer, manifest).err()
+        export(bytes, 1, provenance, trainer, manifest).err()
     };
     assert!(matches!(
         attempt(
@@ -145,9 +146,9 @@ fn an_export_refuses_a_manifest_its_run_did_not_verify() {
 #[test]
 fn a_canary_exports_only_from_converted_data() {
     let saved = checkpoint();
-    let refused = export(&saved, Provenance::Canary, TRAINER, b"not converted\n");
+    let refused = export(&saved, 1, Provenance::Canary, TRAINER, b"not converted\n");
     assert_eq!(refused.err(), Some(ExportError::NotConverted));
-    let net = export(&saved, Provenance::Canary, TRAINER, &manifest()).expect("exports");
+    let net = export(&saved, 1, Provenance::Canary, TRAINER, &manifest()).expect("exports");
     let back = Network::from_bytes(&net.to_bytes()).expect("loads");
     assert_eq!(*back.provenance(), Provenance::Canary);
 }
@@ -162,10 +163,137 @@ fn a_wide_checkpoint_exports_at_its_width() {
     for i in 0..payload.next_multiple_of(PADDING) - payload {
         saved.push(FILL[i % FILL.len()]);
     }
-    let net = export(&saved, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
+    let net = export(&saved, 1, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
     assert_eq!(net.hidden(), WIDE);
     let file = net.to_bytes();
     let back = AnyNetwork::for_datagen(&file).expect("the engine loads it at its width");
     assert_eq!(back.hidden(), WIDE);
     assert_eq!(&file[HEADER_LEN..], &saved[..payload]);
+}
+
+/// A payload padded as the pinned trainer pads a saved file.
+fn padded(payload: &[u8]) -> Vec<u8> {
+    let mut bytes = payload.to_vec();
+    for i in 0..payload.len().next_multiple_of(PADDING) - payload.len() {
+        bytes.push(FILL[i % FILL.len()]);
+    }
+    bytes
+}
+
+/// A checkpoint of eight output buckets, at either width, exports at its run's bucket count to a
+/// file whose header names the count and which the engine loads with its weights unchanged; read
+/// as one bucket, its length is refused.
+#[test]
+fn a_bucketed_checkpoint_exports_at_its_bucket_count() {
+    for (hidden, file) in [
+        (
+            HIDDEN,
+            Network::<HIDDEN>::generate_bucketed(3, Provenance::SelfPlay).to_bytes(),
+        ),
+        (
+            WIDE,
+            Network::<WIDE>::generate_bucketed(3, Provenance::SelfPlay).to_bytes(),
+        ),
+    ] {
+        let payload = &file[HEADER_LEN..];
+        assert_eq!(payload.len(), payload_len(hidden, OUTPUT_BUCKETS));
+        let saved = padded(payload);
+        let net = export(
+            &saved,
+            OUTPUT_BUCKETS,
+            Provenance::SelfPlay,
+            TRAINER,
+            &manifest(),
+        )
+        .expect("exports");
+        assert_eq!((net.hidden(), net.buckets()), (hidden, OUTPUT_BUCKETS));
+        let exported = net.to_bytes();
+        assert_eq!(usize::from(exported[18]), OUTPUT_BUCKETS);
+        assert_eq!(&exported[HEADER_LEN..], payload);
+        let back = AnyNetwork::for_datagen(&exported).expect("the engine loads it");
+        assert_eq!((back.hidden(), back.buckets()), (hidden, OUTPUT_BUCKETS));
+        assert_eq!(back.to_bytes(), exported);
+        let one = export(&saved, 1, Provenance::SelfPlay, TRAINER, &manifest());
+        assert!(matches!(one.err(), Some(ExportError::Length { .. })));
+    }
+    let one_bucket = checkpoint();
+    let eight = export(
+        &one_bucket,
+        OUTPUT_BUCKETS,
+        Provenance::SelfPlay,
+        TRAINER,
+        &manifest(),
+    );
+    assert!(matches!(eight.err(), Some(ExportError::Length { .. })));
+}
+
+/// The command reads the bucket count its run recorded: a bucketed checkpoint exports under a
+/// record of eight, and is refused, with nothing written, under a record of one or of a count the
+/// engine does not read, as a one-bucket checkpoint is under a record of eight.
+#[test]
+fn an_export_reads_the_bucket_count_its_run_recorded() {
+    let dir = std::env::temp_dir().join(format!("cadence-export-buckets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("checkpoints");
+    let (bucketed, plain) = (run.join("bucketed-10"), run.join("plain-10"));
+    let file = Network::<HIDDEN>::generate_bucketed(3, Provenance::SelfPlay).to_bytes();
+    for (saved, bytes) in [
+        (&bucketed, padded(&file[HEADER_LEN..])),
+        (&plain, checkpoint()),
+    ] {
+        std::fs::create_dir_all(saved).expect("a checkpoint directory");
+        std::fs::write(saved.join("quantised.bin"), bytes).expect("writes");
+    }
+    std::fs::write(run.join(COMMIT_FILE), format!("{TRAINER}\n")).expect("writes");
+    let manifest_path = dir.join("a.tsv");
+    std::fs::write(&manifest_path, manifest()).expect("writes");
+    record_manifests(&run, &[&manifest_path]).expect("records");
+    let export = |saved: &Path, recorded: &str, out: &str| {
+        std::fs::write(run.join(OUTPUT_BUCKETS_FILE), recorded).expect("writes");
+        let out = dir.join(out);
+        let done = Command::new(env!("CARGO_BIN_EXE_cadence-train"))
+            .arg("export")
+            .arg("--checkpoint")
+            .arg(saved)
+            .arg("--manifest")
+            .arg(&manifest_path)
+            .args(["--provenance", "self-play", "--out"])
+            .arg(&out)
+            .output()
+            .expect("cadence-train runs");
+        (
+            done.status.success(),
+            String::from_utf8_lossy(&done.stderr).into_owned(),
+            std::fs::read(&out).ok(),
+        )
+    };
+    let read = export(&bucketed, "8\n", "eight.cdnn");
+    let as_one = export(&bucketed, "1\n", "as-one.cdnn");
+    let as_three = export(&bucketed, "3\n", "as-three.cdnn");
+    let plain_as_eight = export(&plain, "8\n", "plain-as-eight.cdnn");
+    let plain_as_one = export(&plain, "1\n", "plain.cdnn");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (ok, text, written) = read;
+    assert!(ok, "{text}");
+    let written = written.expect("written");
+    assert_eq!(usize::from(written[18]), OUTPUT_BUCKETS);
+    assert_eq!(&written[HEADER_LEN..], &file[HEADER_LEN..]);
+    let back = Network::from_bytes(&written).expect("loads");
+    assert_eq!(back.buckets(), OUTPUT_BUCKETS);
+    for (ok, text, written) in [as_one, plain_as_eight] {
+        assert!(
+            !ok && text.contains("bytes where a padded checkpoint"),
+            "{text}"
+        );
+        assert!(written.is_none());
+    }
+    let (ok, text, written) = as_three;
+    assert!(
+        !ok && text.contains("is not 1 or 8 output buckets"),
+        "{text}"
+    );
+    assert!(written.is_none());
+    let (ok, text, written) = plain_as_one;
+    assert!(ok, "{text}");
+    assert_eq!(written.map(|w| w[18]), Some(0));
 }

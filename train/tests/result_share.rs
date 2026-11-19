@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The result share a run trained with, recorded beside its checkpoints and read back by
-//! validation in place of a default.
+//! The result share and output buckets a run trained with, recorded beside its checkpoints and
+//! read back by validation and every reader of its checkpoints in place of a default.
 
 mod common;
 
-use cadence_train::data::{record_result_share, run_result_share};
+use cadence_train::data::{
+    OUTPUT_BUCKETS_FILE, fresh_run, record_output_buckets, record_result_share, run_output_buckets,
+    run_result_share,
+};
 use cadence_train::validate::{score_note, score_share};
 use common::scratch;
 
@@ -58,4 +61,39 @@ fn a_loss_may_be_scored_at_another_share_and_says_which() {
         score_note(0.5, 0.75),
         "scored at result share 0.5, not the run's 0.75"
     );
+}
+
+/// A run's bucket count is recorded beside its checkpoints and read back; a run that recorded none
+/// predates the record and reads as one bucket, and a record of any count the engine does not read
+/// is refused.
+#[test]
+fn the_output_buckets_a_run_recorded_are_read_back() {
+    let run = scratch("output-buckets");
+    let eight = record_output_buckets(&run, 8).and_then(|()| run_output_buckets(&run));
+    let one = record_output_buckets(&run, 1).and_then(|()| run_output_buckets(&run));
+    let refused: Vec<Result<usize, String>> = ["3\n", "0\n", "eight\n", ""]
+        .iter()
+        .map(|text| {
+            std::fs::write(run.join(OUTPUT_BUCKETS_FILE), text).expect("writes");
+            run_output_buckets(&run)
+        })
+        .collect();
+    let fresh = fresh_run(&run);
+    let empty = scratch("output-buckets-none");
+    let none = run_output_buckets(&empty);
+    let _ = std::fs::remove_dir_all(&run);
+    let _ = std::fs::remove_dir_all(&empty);
+    assert_eq!(eight, Ok(8));
+    assert_eq!(one, Ok(1));
+    for read in refused {
+        assert!(
+            read.as_ref().is_err_and(|e| e.contains("is not 1 or 8")),
+            "{read:?}"
+        );
+    }
+    assert!(
+        fresh.is_err_and(|e| e.contains(OUTPUT_BUCKETS_FILE)),
+        "a directory holding a bucket record was taken for a fresh run"
+    );
+    assert_eq!(none, Ok(1));
 }

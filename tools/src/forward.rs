@@ -31,30 +31,54 @@ const USAGE: &str = "forward --net FILE [--raw FILE [--against FILE]] [--positio
 struct Reference<const H: usize> {
     columns: Vec<[f32; H]>,
     bias: [f32; H],
-    output: [[f32; H]; 2],
-    output_bias: f32,
+    /// A bucket's two perspectives, the mover's first.
+    output: Vec<[[f32; H]; 2]>,
+    output_bias: Vec<f32>,
+}
+
+/// How a file orders a bucketed net's output weights: the engine's file a bucket at a time, the
+/// trainer's unquantised file an input at a time, since its save leaves the layer untransposed.
+#[derive(Clone, Copy)]
+enum Order {
+    BucketMajor,
+    InputMajor,
 }
 
 impl<const H: usize> Reference<H> {
-    /// `words` in the file's order, each divided by the scale it was saved at.
-    fn from_words(words: &[f32], feature: f32, output: f32, output_bias: f32) -> Reference<H> {
+    /// `words` in the file's order for `buckets` output buckets, each divided by the scale it was
+    /// saved at.
+    fn from_words(
+        words: &[f32],
+        buckets: usize,
+        order: Order,
+        feature: f32,
+        output: f32,
+        output_bias: f32,
+    ) -> Reference<H> {
         let mut at = words.iter().copied();
         let mut take = |scale: f32| at.next().unwrap_or(0.0) / scale;
         let columns = (0..NUM_INPUTS)
             .map(|_| core::array::from_fn(|_| take(feature)))
             .collect();
         let bias = core::array::from_fn(|_| take(feature));
-        let output = core::array::from_fn(|_| core::array::from_fn(|_| take(output)));
+        let mut rows = vec![[[0.0; H]; 2]; buckets];
+        for n in 0..buckets * 2 * H {
+            let (bucket, input) = match order {
+                Order::BucketMajor => (n / (2 * H), n % (2 * H)),
+                Order::InputMajor => (n % buckets, n / buckets),
+            };
+            rows[bucket][input / H][input % H] = take(output);
+        }
         Reference {
             columns,
             bias,
-            output,
-            output_bias: take(output_bias),
+            output: rows,
+            output_bias: (0..buckets).map(|_| take(output_bias)).collect(),
         }
     }
 
     /// The quantised file read as numbers: features at `QA`, outputs at `QB`, the output bias at both.
-    fn quantised(file: &[u8]) -> Reference<H> {
+    fn quantised(file: &[u8], buckets: usize) -> Reference<H> {
         let words: Vec<f32> = file[HEADER_LEN..]
             .as_chunks::<2>()
             .0
@@ -62,12 +86,13 @@ impl<const H: usize> Reference<H> {
             .map(|&w| f32::from(i16::from_le_bytes(w)))
             .collect();
         let (qa, qb) = (scale(QA), scale(QB));
-        Reference::from_words(&words, qa, qb, qa * qb)
+        Reference::from_words(&words, buckets, Order::BucketMajor, qa, qb, qa * qb)
     }
 
-    /// The trainer's unquantised file, the same order in `f32` with no padding.
-    fn raw(bytes: &[u8]) -> Result<Reference<H>, String> {
-        let want = payload_len(H) * 2;
+    /// The trainer's unquantised file in `f32` with no padding, its output weights an input at a
+    /// time, which for one bucket is the file's own order.
+    fn raw(bytes: &[u8], buckets: usize) -> Result<Reference<H>, String> {
+        let want = payload_len(H, buckets) * 2;
         if bytes.len() != want {
             return Err(format!("{} bytes where a raw file is {want}", bytes.len()));
         }
@@ -77,14 +102,26 @@ impl<const H: usize> Reference<H> {
             .iter()
             .map(|&w| f32::from_le_bytes(w))
             .collect();
-        Ok(Reference::from_words(&words, 1.0, 1.0, 1.0))
+        Ok(Reference::from_words(
+            &words,
+            buckets,
+            Order::InputMajor,
+            1.0,
+            1.0,
+            1.0,
+        ))
     }
 
-    /// Centipawns from the mover's view: each sum clamped to [0, 1] and squared, then weighted.
+    /// Centipawns from the mover's view: each sum clamped to [0, 1] and squared, then weighted by
+    /// the bucket the trainer picks, 2 to 32 pieces spread evenly over the buckets.
     fn evaluate(&self, board: &Board) -> f64 {
         let mover = board.side_to_move();
-        let mut out = self.output_bias;
-        for (persp, weights) in [mover, mover.flip()].into_iter().zip(&self.output) {
+        let buckets = self.output.len();
+        let pieces = board.occupied().count() as usize;
+        let bucket = (pieces.saturating_sub(2) / 32_usize.div_ceil(buckets)).min(buckets - 1);
+        let mut out = self.output_bias[bucket];
+        let rows = &self.output[bucket];
+        for (persp, weights) in [mover, mover.flip()].into_iter().zip(rows) {
             let mut sums = self.bias;
             for sq in board.occupied() {
                 if let Some(piece) = board.piece_at(sq) {
@@ -142,7 +179,8 @@ pub fn deltas<const H: usize>(
     let mut largest = 0.0_f64;
     let mut total = 0.0;
     for board in boards {
-        let engine = net.evaluate(&net.refresh(board), board.side_to_move());
+        let pieces = board.occupied().count();
+        let engine = net.evaluate(&net.refresh(board), board.side_to_move(), pieces);
         let delta = (f64::from(engine) - reference(board)).abs();
         largest = largest.max(delta);
         total += delta;
@@ -179,7 +217,8 @@ fn against<const H: usize>(
             .map_err(|_| format!("line {}: `{cp}`", i + 1))?;
         let board = Board::from_fen(fen.trim()).map_err(|e| format!("line {}: {e:?}", i + 1))?;
         let reference = raw.evaluate(&board);
-        let engine = f64::from(net.evaluate(&net.refresh(&board), board.side_to_move()));
+        let pieces = board.occupied().count();
+        let engine = f64::from(net.evaluate(&net.refresh(&board), board.side_to_move(), pieces));
         let (dr, dn) = ((trainer - reference).abs(), (trainer - engine).abs());
         if dr > worst.0 {
             worst = (
@@ -293,8 +332,11 @@ struct Reading<'a> {
 impl Reading<'_> {
     /// Prints each comparison and answers whether the net file's agreement passed.
     fn report<const H: usize>(&self, net: &Network<H>) -> Result<bool, String> {
+        let buckets = net.buckets();
         let raw = match self.raw {
-            Some((bytes, p)) => Some(Reference::<H>::raw(bytes).map_err(|e| format!("{p}: {e}"))?),
+            Some((bytes, p)) => {
+                Some(Reference::<H>::raw(bytes, buckets).map_err(|e| format!("{p}: {e}"))?)
+            }
             None => None,
         };
         if let Some((text, path)) = self.against {
@@ -307,12 +349,17 @@ impl Reading<'_> {
             );
         }
         let within = |largest: f64, mean: f64| largest <= MAX_DELTA && mean <= MEAN_DELTA;
-        let quantised = Reference::<H>::quantised(self.file);
+        let quantised = Reference::<H>::quantised(self.file, buckets);
         let (largest, mean) = deltas(net, |b| quantised.evaluate(b), self.boards);
         let passed = within(largest, mean);
+        let shape = if buckets == 1 {
+            String::new()
+        } else {
+            format!(", {buckets} output buckets")
+        };
         println!(
-            "forward: against the net file, {} positions from seed {:016x}, hidden width {H}: max \
-             |delta| {largest:.3} cp, mean {mean:.3} cp, {} (bounds {MAX_DELTA} and {MEAN_DELTA})",
+            "forward: against the net file, {} positions from seed {:016x}, hidden width {H}{shape}: \
+             max |delta| {largest:.3} cp, mean {mean:.3} cp, {} (bounds {MAX_DELTA} and {MEAN_DELTA})",
             self.boards.len(),
             self.seed,
             if passed { "PASS" } else { "FAIL" }

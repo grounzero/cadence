@@ -6,7 +6,7 @@
 use core::fmt;
 
 use cadence_dataset::sha256::sha256;
-use cadence_nnue::net::{PAYLOAD_LEN, payload_len};
+use cadence_nnue::net::payload_len;
 use cadence_nnue::{AnyNetwork, HIDDEN, LoadError, Network, Provenance, WIDE};
 
 /// The trainer pads every quantised file to a multiple of this many bytes.
@@ -23,12 +23,13 @@ pub fn output_clip(hidden: usize) -> Option<f32> {
     (hidden == WIDE).then_some(WIDE_OUTPUT_CLIP)
 }
 
-/// The hidden width a padded quantised checkpoint of this length holds, if it is either's.
+/// The hidden width a padded quantised checkpoint of this length and `buckets` output buckets
+/// holds, if it is either's.
 #[must_use]
-pub fn width_of(quantised_len: usize) -> Option<usize> {
+pub fn width_of(quantised_len: usize, buckets: usize) -> Option<usize> {
     [HIDDEN, WIDE]
         .into_iter()
-        .find(|&h| payload_len(h).next_multiple_of(PADDING) == quantised_len)
+        .find(|&h| payload_len(h, buckets).next_multiple_of(PADDING) == quantised_len)
 }
 
 /// What the pinned trainer pads with, repeated from the first byte after the weights.
@@ -70,26 +71,28 @@ impl fmt::Display for ExportError {
     }
 }
 
-/// The result is what the engine loads, at the width the checkpoint's length names, refused by the
-/// same checks as a file.
+/// The result is what the engine loads, at the `buckets` its run recorded and the width the
+/// checkpoint's length names for them, refused by the same checks as a file.
 ///
 /// # Errors
 ///
-/// A checkpoint of neither width's length or with padding that is not the trainer's fill, a
-/// self-play or canary claim for data the converter did not write, or anything the loader refuses.
+/// A checkpoint of neither width's length at `buckets` or with padding that is not the trainer's
+/// fill, a self-play or canary claim for data the converter did not write, or anything the loader
+/// refuses.
 pub fn export(
     quantised: &[u8],
+    buckets: usize,
     provenance: Provenance,
     trainer: &str,
     manifest: &[u8],
 ) -> Result<AnyNetwork, ExportError> {
-    let Some(hidden) = width_of(quantised.len()) else {
+    let Some(hidden) = width_of(quantised.len(), buckets) else {
         return Err(ExportError::Length {
-            want: PAYLOAD_LEN.next_multiple_of(PADDING),
+            want: payload_len(HIDDEN, buckets).next_multiple_of(PADDING),
             got: quantised.len(),
         });
     };
-    let (payload, pad) = quantised.split_at(payload_len(hidden));
+    let (payload, pad) = quantised.split_at(payload_len(hidden, buckets));
     if pad.iter().zip(FILL.iter().cycle()).any(|(b, f)| b != f) {
         return Err(ExportError::Padding);
     }
@@ -99,9 +102,10 @@ pub fn export(
     }
     let manifest = sha256(manifest);
     let net = if hidden == WIDE {
-        Network::<WIDE>::load_payload(payload, provenance, trainer, manifest).map(AnyNetwork::from)
+        Network::<WIDE>::load_payload(payload, buckets, provenance, trainer, manifest)
+            .map(AnyNetwork::from)
     } else {
-        Network::<HIDDEN>::load_payload(payload, provenance, trainer, manifest)
+        Network::<HIDDEN>::load_payload(payload, buckets, provenance, trainer, manifest)
             .map(AnyNetwork::from)
     };
     net.map_err(ExportError::Load)

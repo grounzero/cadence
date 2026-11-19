@@ -141,14 +141,16 @@ pub const QUANTISED_MARGIN: f64 = 0.02;
 /// Added to the margin, so a loss near zero is not held to the rounding of its own arithmetic.
 pub const QUANTISED_FLOOR: f64 = 1e-6;
 
-/// The loss of a checkpoint's quantised weights over `examples`, scored by the engine's own integer
-/// evaluation, held to `QUANTISED_MARGIN` of the trainer's loss `trainer` over the same examples.
+/// The loss of a checkpoint's quantised weights of `buckets` output buckets over `examples`, scored
+/// by the engine's own integer evaluation, held to `QUANTISED_MARGIN` of the trainer's loss
+/// `trainer` over the same examples.
 ///
 /// # Errors
 ///
 /// Weights the engine's loader refuses, a position that does not parse, or a loss outside the bar.
 pub fn quantised_check(
     quantised: &[u8],
+    buckets: usize,
     examples: &[Example],
     result_share: f32,
     scale: f32,
@@ -156,17 +158,17 @@ pub fn quantised_check(
 ) -> Result<f64, String> {
     let unnamed = Provenance::External("checkpoint".to_string());
     let refused = |e: LoadError| format!("the engine's loader refuses it: {e}");
-    let sum = if quantised.len() >= payload_len(WIDE) {
-        let payload = &quantised[..payload_len(WIDE)];
-        let net =
-            Network::<WIDE>::load_payload(payload, unnamed, UNNAMED, [0; 32]).map_err(refused)?;
+    let sum = if quantised.len() >= payload_len(WIDE, buckets) {
+        let payload = &quantised[..payload_len(WIDE, buckets)];
+        let net = Network::<WIDE>::load_payload(payload, buckets, unnamed, UNNAMED, [0; 32])
+            .map_err(refused)?;
         quantised_sum(&net, examples, result_share, scale)?
     } else {
         let payload = quantised
-            .get(..payload_len(HIDDEN))
+            .get(..payload_len(HIDDEN, buckets))
             .ok_or("shorter than a net's weights")?;
-        let net =
-            Network::<HIDDEN>::load_payload(payload, unnamed, UNNAMED, [0; 32]).map_err(refused)?;
+        let net = Network::<HIDDEN>::load_payload(payload, buckets, unnamed, UNNAMED, [0; 32])
+            .map_err(refused)?;
         quantised_sum(&net, examples, result_share, scale)?
     };
     let n = u32::try_from(examples.len())
@@ -194,7 +196,11 @@ fn quantised_sum<const H: usize>(
     for example in examples {
         let board = Board::from_fen(&example.fen).map_err(|e| format!("{}: {e:?}", example.fen))?;
         let stack = AccumulatorStack::new(net, &board);
-        let cp = net.evaluate(stack.current(), board.side_to_move());
+        let cp = net.evaluate(
+            stack.current(),
+            board.side_to_move(),
+            board.occupied().count(),
+        );
         let output = (f64::from(cp) / f64::from(scale)) as f32;
         sum += loss(output, example, result_share, scale);
     }
