@@ -10,6 +10,10 @@ use crate::search::Limits;
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
 pub const MOVE_OVERHEAD_MS: u64 = 20;
 
+/// The moves a clock with no moves to go is shared over. Searches overrun their soft budget by about
+/// a third on average, so this spends about a thirtieth of the clock a move.
+pub const MOVES_LEFT: u64 = 40;
+
 /// Milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
@@ -41,7 +45,7 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     let cap = avail / 2;
     let share = match limits.movestogo {
         Some(mtg) => avail / u64::from(mtg.max(1)),
-        None => avail / 25,
+        None => avail / MOVES_LEFT,
     };
     // Saturating, so a clock or increment near the limit bounds the budget rather than overflowing.
     let soft = share.saturating_add(inc.saturating_mul(3) / 4).min(cap);
