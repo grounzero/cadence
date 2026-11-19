@@ -13,8 +13,8 @@ use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
-    Budget, MOVE_OVERHEAD_MS, STABILITY_CALLS, STABILITY_SCALE, another_iteration_fits, budget,
-    soft_for_run,
+    Budget, MOVE_OVERHEAD_MS, MOVES_LEFT, STABILITY_CALLS, STABILITY_SCALE, another_iteration_fits,
+    budget, soft_for_run,
 };
 use cadence_engine::tt::Table;
 use support::Engine;
@@ -1118,8 +1118,9 @@ fn a_set_move_overhead_reaches_the_movetime_and_the_clock_paths() {
             hard: 400
         })
     );
+    // The overhead comes off the clock before the rest is shared over the moves left.
     let clocked = Limits {
-        time: [Some(2_600), Some(2_600)],
+        time: [Some(100 + 100 * MOVES_LEFT); 2],
         move_overhead: Some(100),
         ..Limits::default()
     };
