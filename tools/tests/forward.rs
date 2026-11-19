@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cadence_nnue::net::{HEADER_LEN, QA, QB};
-use cadence_nnue::{HIDDEN, Network, Provenance, WIDE};
+use cadence_nnue::{HIDDEN, Network, OUTPUT_BUCKETS, Provenance, WIDE};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("cadence-forward-{name}-{}", std::process::id()));
@@ -57,6 +57,35 @@ fn raw(file: &[u8], hidden: usize, edit: impl Fn(usize, f32) -> f32) -> Vec<u8> 
     out
 }
 
+/// A bucketed file's weights unquantised, its output layer an input at a time as the trainer saves
+/// it untransposed, or with `as_file` a bucket at a time as the engine's file holds it.
+fn bucketed_raw(file: &[u8], hidden: usize, as_file: bool) -> Vec<u8> {
+    let words: Vec<i16> = file[HEADER_LEN..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&w| i16::from_le_bytes(w))
+        .collect();
+    let outputs = words.len() - OUTPUT_BUCKETS * (2 * hidden + 1);
+    let biases = words.len() - OUTPUT_BUCKETS;
+    let scale = |q: i32| f32::from(i16::try_from(q).expect("a scale fits i16"));
+    let (qa, qb) = (scale(QA), scale(QB));
+    let mut values: Vec<f32> = words[..outputs]
+        .iter()
+        .map(|&w| f32::from(w) / qa)
+        .collect();
+    for n in 0..OUTPUT_BUCKETS * 2 * hidden {
+        let at = if as_file {
+            n
+        } else {
+            (n % OUTPUT_BUCKETS) * 2 * hidden + n / OUTPUT_BUCKETS
+        };
+        values.push(f32::from(words[outputs + at]) / qb);
+    }
+    values.extend(words[biases..].iter().map(|&w| f32::from(w) / (qa * qb)));
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
 fn write(dir: &Path, name: &str, bytes: &[u8]) -> String {
     let path = dir.join(name);
     std::fs::write(&path, bytes).expect("writes");
@@ -77,6 +106,37 @@ fn a_wide_net_agrees_with_its_file_and_its_unquantised_weights() {
     assert!(text.contains("hidden width 512: max"), "{text}");
     assert_eq!(text.matches(", PASS (bounds 5 and 1)").count(), 1, "{text}");
     assert!(text.contains("within the bounds"), "{text}");
+}
+
+/// A net of eight output buckets agrees with its own file at either width, and with its unquantised
+/// weights read as the trainer saves them, which a reading in the file's order does not.
+#[test]
+fn a_bucketed_net_agrees_with_its_file_and_its_unquantised_weights() {
+    let dir = scratch("bucketed");
+    for (hidden, file) in [
+        (
+            HIDDEN,
+            Network::<HIDDEN>::generate_bucketed(5, Provenance::SelfPlay).to_bytes(),
+        ),
+        (
+            WIDE,
+            Network::<WIDE>::generate_bucketed(5, Provenance::SelfPlay).to_bytes(),
+        ),
+    ] {
+        let net = write(&dir, "net.cdnn", &file);
+        let saved = write(&dir, "raw.bin", &bucketed_raw(&file, hidden, false));
+        let (ok, text) = forward(&["--net", &net, "--raw", &saved]);
+        assert!(ok, "{text}");
+        let named = format!("hidden width {hidden}, {OUTPUT_BUCKETS} output buckets: max");
+        assert!(text.contains(&named), "{text}");
+        assert_eq!(text.matches(", PASS (bounds 5 and 1)").count(), 1, "{text}");
+        assert!(text.contains("within the bounds"), "{text}");
+        let misordered = write(&dir, "raw.bin", &bucketed_raw(&file, hidden, true));
+        let (ok, text) = forward(&["--net", &net, "--raw", &misordered]);
+        assert!(ok, "{text}");
+        assert!(text.contains("outside the bounds"), "{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -160,7 +220,9 @@ fn trainer_file(net: &Network, shift: f64) -> String {
             };
             board.play(m);
         }
-        let cp = f64::from(net.evaluate(&net.refresh(&board), board.side_to_move())) + shift;
+        let pieces = board.occupied().count();
+        let cp =
+            f64::from(net.evaluate(&net.refresh(&board), board.side_to_move(), pieces)) + shift;
         let fen = board.to_fen(cadence_core::FenStyle::XFen);
         let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{cp:.4}\t{fen}\n"));
     }

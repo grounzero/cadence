@@ -19,19 +19,36 @@ pub const QA: i32 = 255;
 pub const QB: i32 = 64;
 /// Centipawns per unit of the trained output.
 pub const SCALE: i32 = 400;
+/// Output layers a bucketed net has, one chosen per position by its count of pieces; any other net
+/// has one.
+pub const OUTPUT_BUCKETS: usize = 8;
 
 const MAGIC: [u8; 4] = *b"CDNN";
 const FORMAT: u16 = 1;
 /// The activation byte naming the one this build computes: clamped to [0, QA], then squared.
 const SCRELU: u8 = 0;
 pub const HEADER_LEN: usize = 128;
-/// The feature weights, their biases, both perspectives' output weights and the output bias.
+/// The feature weights, their biases, each bucket's two perspectives' output weights, then each
+/// bucket's output bias.
 #[must_use]
-pub const fn payload_len(hidden: usize) -> usize {
-    2 * (NUM_INPUTS * hidden + hidden + 2 * hidden + 1)
+pub const fn payload_len(hidden: usize, buckets: usize) -> usize {
+    2 * (NUM_INPUTS * hidden + hidden + buckets * (2 * hidden + 1))
 }
-/// A net of the narrow width's payload.
-pub const PAYLOAD_LEN: usize = payload_len(HIDDEN);
+/// A one-bucket net of the narrow width's payload.
+pub const PAYLOAD_LEN: usize = payload_len(HIDDEN, 1);
+
+/// The output bucket of a board holding `pieces`, kings included, as the trainer's material count
+/// spreads 2 to 32 pieces evenly over `buckets`; a count outside that range takes the nearest end.
+#[must_use]
+pub const fn bucket_of(pieces: u32, buckets: usize) -> usize {
+    let span = 32_usize.div_ceil(buckets);
+    let bucket = pieces.saturating_sub(2) as usize / span;
+    if bucket < buckets {
+        bucket
+    } else {
+        buckets - 1
+    }
+}
 
 /// The net this build ships, read in from one fixed path when the crate compiles and replaced at
 /// each promotion; an empty file ships none.
@@ -51,7 +68,9 @@ const fn architecture(hidden: usize) -> [(&'static str, usize, u16); 5] {
 const WIDTH_AT: usize = 8;
 const ACTIVATION_AT: usize = 10;
 const PROVENANCE_LEN_AT: usize = 11;
-const RESERVED: core::ops::Range<usize> = 18..24;
+/// 0 for one output bucket, which every file before buckets has, or `OUTPUT_BUCKETS`.
+const BUCKETS_AT: usize = 18;
+const RESERVED: core::ops::Range<usize> = 19..24;
 /// The trainer crate's commit, 40 lowercase hexadecimal digits.
 const TRAINER: core::ops::Range<usize> = 24..64;
 /// The SHA-256 of the manifest the training data was built from.
@@ -95,6 +114,8 @@ pub enum LoadError {
     Format(u16),
     /// A hidden width that is neither of the two this build reads.
     Width(u16),
+    /// A header's bucket byte that is neither 0, for one bucket, nor `OUTPUT_BUCKETS`.
+    Buckets(u8),
     /// A constant of the file's architecture that is not the one this build compiles.
     Architecture {
         field: &'static str,
@@ -113,12 +134,13 @@ pub enum LoadError {
         lane: usize,
         bound: i64,
     },
-    /// An output weight outside [-127, 127], where the activation times it could leave `i16`.
+    /// An output weight outside [-127, 127], where the activation times it could leave `i16`;
+    /// `index` counts every bucket's weights in file order.
     OutputWeight {
         index: usize,
         weight: i16,
     },
-    /// The output layer's worst-case sum could leave `i32`.
+    /// An output bucket's worst-case sum could leave `i32`.
     OutputSum {
         bound: i64,
     },
@@ -134,6 +156,12 @@ impl fmt::Display for LoadError {
                 write!(
                     f,
                     "hidden width {w}, where this build reads {HIDDEN} or {WIDE}"
+                )
+            }
+            LoadError::Buckets(b) => {
+                write!(
+                    f,
+                    "output bucket byte {b}, where this build reads 0 or {OUTPUT_BUCKETS}"
                 )
             }
             LoadError::Architecture { field, file, build } => {
@@ -175,8 +203,8 @@ struct Origin {
     manifest: [u8; 32],
 }
 
-/// A name the field cannot hold is written so that `read_header` refuses it.
-fn write_header(origin: &Origin, hidden: usize) -> [u8; HEADER_LEN] {
+/// A name the field cannot hold, or a bucket count of none, is written so that the load refuses it.
+fn write_header(origin: &Origin, hidden: usize, buckets: usize) -> [u8; HEADER_LEN] {
     let mut out = [0; HEADER_LEN];
     out[..4].copy_from_slice(&MAGIC);
     out[4..6].copy_from_slice(&FORMAT.to_le_bytes());
@@ -184,6 +212,11 @@ fn write_header(origin: &Origin, hidden: usize) -> [u8; HEADER_LEN] {
         out[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }
     out[ACTIVATION_AT] = SCRELU;
+    out[BUCKETS_AT] = match buckets {
+        1 => 0,
+        0 => u8::MAX,
+        n => u8::try_from(n).unwrap_or(u8::MAX),
+    };
     let name = origin.provenance.to_string();
     out[PROVENANCE_LEN_AT] = u8::try_from(name.len()).unwrap_or(0);
     out[TRAINER].copy_from_slice(&origin.trainer);
@@ -192,6 +225,22 @@ fn write_header(origin: &Origin, hidden: usize) -> [u8; HEADER_LEN] {
     let n = name.len().min(field.len());
     field[..n].copy_from_slice(&name.as_bytes()[..n]);
     out
+}
+
+/// The output buckets a header of this build's magic and format names, read before the length is
+/// known; any other header is taken as one bucket, for its own fault to be named later.
+fn buckets_named(bytes: &[u8]) -> Result<usize, LoadError> {
+    let Some(h) = bytes.first_chunk::<HEADER_LEN>() else {
+        return Ok(1);
+    };
+    if h[..4] != MAGIC || u16::from_le_bytes([h[4], h[5]]) != FORMAT {
+        return Ok(1);
+    }
+    match h[BUCKETS_AT] {
+        0 => Ok(1),
+        b if usize::from(b) == OUTPUT_BUCKETS => Ok(OUTPUT_BUCKETS),
+        b => Err(LoadError::Buckets(b)),
+    }
 }
 
 fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError> {
@@ -257,14 +306,21 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
     })
 }
 
+/// One output bucket's layer.
+#[derive(Clone, Copy)]
+pub(crate) struct Output<const H: usize> {
+    /// The side to move's perspective first, then the other's.
+    pub(crate) weights: [[i16; H]; 2],
+    pub(crate) bias: i16,
+}
+
 /// The weights, laid out as the trainer exports them: one column of `H` per input feature, `H`
 /// being the hidden width the header names.
 pub struct Network<const H: usize = HIDDEN> {
     pub(crate) weights: Box<[[i16; H]; NUM_INPUTS]>,
     pub(crate) bias: [i16; H],
-    /// The side to move's perspective first, then the other's.
-    pub(crate) output: [[i16; H]; 2],
-    pub(crate) output_bias: i16,
+    /// One or `OUTPUT_BUCKETS` of them, as the header names.
+    pub(crate) output: Box<[Output<H>]>,
     origin: Origin,
 }
 
@@ -278,20 +334,21 @@ impl Network {
         Network::load(bytes)
     }
 
-    /// A trainer's weights in file order, behind a header naming where they came from, loaded and
-    /// checked as a file is.
+    /// A trainer's weights in file order for `buckets` output buckets, behind a header naming them
+    /// and where they came from, loaded and checked as a file is.
     ///
     /// # Errors
     ///
-    /// As `from_bytes`: a payload of the wrong length, a trainer commit or provenance the header
-    /// cannot hold, or weights that could overflow.
+    /// As `from_bytes`: a payload of the wrong length, a bucket count, trainer commit or provenance
+    /// the header cannot hold, or weights that could overflow.
     pub fn from_payload(
         payload: &[u8],
+        buckets: usize,
         provenance: Provenance,
         trainer: &str,
         manifest: [u8; 32],
     ) -> Result<Network, LoadError> {
-        Network::load_payload(payload, provenance, trainer, manifest)
+        Network::load_payload(payload, buckets, provenance, trainer, manifest)
     }
 
     /// The loader for any net that generates data: `from_bytes`, and a self-play provenance.
@@ -311,7 +368,7 @@ impl Network {
         (!bytes.is_empty()).then(|| Network::for_datagen(bytes))
     }
 
-    /// A net from seeded weights small enough to load, for tests and timing.
+    /// A one-bucket net from seeded weights small enough to load, for tests and timing.
     #[must_use]
     pub fn seeded(seed: u64, provenance: Provenance) -> Network {
         Network::generate(seed, provenance)
@@ -325,7 +382,8 @@ impl<const H: usize> Network<H> {
     ///
     /// A file of the wrong length or header, or weights that could overflow, named by `LoadError`.
     pub fn load(bytes: &[u8]) -> Result<Network<H>, LoadError> {
-        let want = HEADER_LEN + payload_len(H);
+        let buckets = buckets_named(bytes)?;
+        let want = HEADER_LEN + payload_len(H, buckets);
         let Some((header, _)) = bytes
             .split_first_chunk::<HEADER_LEN>()
             .filter(|_| bytes.len() == want)
@@ -346,14 +404,11 @@ impl<const H: usize> Network<H> {
         fill(weights.as_flattened_mut(), &mut next);
         let mut bias = [0; H];
         fill(&mut bias, &mut next);
-        let mut output = [[0; H]; 2];
-        fill(output.as_flattened_mut(), &mut next);
-        let output_bias = next();
+        let output = outputs(buckets, &mut next);
         let net = Network {
             weights,
             bias,
             output,
-            output_bias,
             origin,
         };
         net.check()?;
@@ -364,10 +419,11 @@ impl<const H: usize> Network<H> {
     ///
     /// # Errors
     ///
-    /// As `load`: a payload of the wrong length, a trainer commit or provenance the header cannot
-    /// hold, or weights that could overflow.
+    /// As `load`: a payload of the wrong length, a bucket count, trainer commit or provenance the
+    /// header cannot hold, or weights that could overflow.
     pub fn load_payload(
         payload: &[u8],
+        buckets: usize,
         provenance: Provenance,
         trainer: &str,
         manifest: [u8; 32],
@@ -381,7 +437,7 @@ impl<const H: usize> Network<H> {
             trainer,
             manifest,
         };
-        let mut bytes = write_header(&origin, H).to_vec();
+        let mut bytes = write_header(&origin, H, buckets).to_vec();
         bytes.extend_from_slice(payload);
         Network::load(&bytes)
     }
@@ -417,18 +473,35 @@ impl<const H: usize> Network<H> {
         self.origin.manifest
     }
 
+    /// One, or `OUTPUT_BUCKETS`, as the header names.
+    #[must_use]
+    pub fn buckets(&self) -> usize {
+        self.output.len()
+    }
+
+    /// The output bucket this net scores a board of `pieces` with, kings included.
+    #[must_use]
+    pub fn bucket(&self, pieces: u32) -> usize {
+        // A constant divisor for the only bucketed count a net may have, so no division is left.
+        if self.output.len() == OUTPUT_BUCKETS {
+            bucket_of(pieces, OUTPUT_BUCKETS)
+        } else {
+            0
+        }
+    }
+
     /// The file `load` reads, for a net built in memory.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = write_header(&self.origin, H).to_vec();
-        out.reserve(payload_len(H));
+        let mut out = write_header(&self.origin, H, self.output.len()).to_vec();
+        out.reserve(payload_len(H, self.output.len()));
         let words = self
             .weights
             .iter()
             .flatten()
             .chain(&self.bias)
-            .chain(self.output.iter().flatten())
-            .chain(core::iter::once(&self.output_bias));
+            .chain(self.output.iter().flat_map(|o| o.weights.iter().flatten()))
+            .chain(self.output.iter().map(|o| &o.bias));
         for w in words {
             out.extend_from_slice(&w.to_le_bytes());
         }
@@ -450,11 +523,12 @@ impl<const H: usize> Network<H> {
                 return Err(LoadError::Lane { lane, bound });
             }
         }
-        for (perspective, weights) in self.output.iter().enumerate() {
+        let rows = self.output.iter().flat_map(|o| &o.weights);
+        for (row, weights) in rows.enumerate() {
             let mut sum = 0_i64;
             for (i, &weight) in weights.iter().enumerate() {
                 if !(-127..=127).contains(&weight) {
-                    let index = perspective * H + i;
+                    let index = row * H + i;
                     return Err(LoadError::OutputWeight { index, weight });
                 }
                 sum += i64::from(QA * QA) * i64::from(weight).abs();
@@ -469,6 +543,17 @@ impl<const H: usize> Network<H> {
     /// `seeded` at width `H`, its output weights drawn small enough that the wide net's sum loads.
     #[must_use]
     pub fn generate(seed: u64, provenance: Provenance) -> Network<H> {
+        Network::generate_buckets(seed, provenance, 1)
+    }
+
+    /// `generate` with `OUTPUT_BUCKETS` output buckets, each drawn apart, for tests and timing.
+    #[must_use]
+    pub fn generate_bucketed(seed: u64, provenance: Provenance) -> Network<H> {
+        Network::generate_buckets(seed, provenance, OUTPUT_BUCKETS)
+    }
+
+    /// Drawn in file order, so one bucket draws exactly what `generate` drew before buckets.
+    fn generate_buckets(seed: u64, provenance: Provenance, buckets: usize) -> Network<H> {
         let mut state = seed;
         let mut draw = |span: i16| {
             let (out, next) = cadence_core::rng::splitmix64(state);
@@ -480,13 +565,15 @@ impl<const H: usize> Network<H> {
         fill(weights.as_flattened_mut(), || draw(400));
         let mut bias = [0; H];
         fill(&mut bias, || draw(200));
-        let mut output = [[0; H]; 2];
-        fill(output.as_flattened_mut(), || draw(60));
+        let mut drawn = 0;
+        let output = outputs(buckets, || {
+            drawn += 1;
+            draw(if drawn <= buckets * 2 * H { 60 } else { 500 })
+        });
         Network {
             weights,
             bias,
             output,
-            output_bias: draw(500),
             origin: Origin {
                 provenance,
                 trainer: [b'0'; 40],
@@ -572,6 +659,15 @@ impl AnyNetwork {
         }
     }
 
+    /// The output buckets, which the header names.
+    #[must_use]
+    pub fn buckets(&self) -> usize {
+        match self {
+            AnyNetwork::Narrow(net) => net.buckets(),
+            AnyNetwork::Wide(net) => net.buckets(),
+        }
+    }
+
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
@@ -617,6 +713,21 @@ fn zeroed_columns<const H: usize>() -> Box<[[i16; H]; NUM_INPUTS]> {
         .into_boxed_slice()
         .try_into()
         .unwrap_or_else(|_| unreachable!("a vector of NUM_INPUTS columns is NUM_INPUTS long"))
+}
+
+/// `buckets` output layers in file order: every bucket's weights, then every bucket's bias.
+fn outputs<const H: usize>(buckets: usize, mut next: impl FnMut() -> i16) -> Box<[Output<H>]> {
+    let mut output: Box<[Output<H>]> = (0..buckets)
+        .map(|_| {
+            let mut weights = [[0; H]; 2];
+            fill(weights.as_flattened_mut(), &mut next);
+            Output { weights, bias: 0 }
+        })
+        .collect();
+    for o in &mut output {
+        o.bias = next();
+    }
+    output
 }
 
 fn fill(cells: &mut [i16], mut next: impl FnMut() -> i16) {

@@ -19,6 +19,12 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Evaluation: the engine reads a network with eight output layers, one
+  picked by the number of pieces on the board, beside one with a single
+  output layer, and `cadence-train run --output-buckets 8` trains one.
+
 ## [0.7.0-rc.2] - 2026-11-19
 
 A release candidate for 0.7.0, with a retrained network.

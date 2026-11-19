@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The output layer: each activation clamped to [0, 255] and squared, weighted, summed and
-//! scaled to centipawns from the side to move's view.
+//! The output layer: each activation clamped to [0, 255] and squared, weighted by the bucket the
+//! board's piece count picks, summed and scaled to centipawns from the side to move's view.
 
 use cadence_core::Colour;
 
@@ -9,15 +9,18 @@ use crate::accumulator::Accumulator;
 use crate::net::{Network, QA, QB, SCALE};
 
 impl<const H: usize> Network<H> {
-    /// The fast form, multiplying the clamped activation by its weight in `i16` and widening only
-    /// the second product, which the load check keeps exact; the two perspectives add in `i64`.
+    /// The fast form at the board's `pieces`, kings included, multiplying the clamped activation by
+    /// its weight in `i16` and widening only the second product, which the load check keeps exact.
+    /// The two perspectives add in `i64`.
     #[must_use]
-    pub fn evaluate(&self, acc: &Accumulator<H>, stm: Colour) -> i32 {
+    pub fn evaluate(&self, acc: &Accumulator<H>, stm: Colour, pieces: u32) -> i32 {
+        let output = &self.output[self.bucket(pieces)];
         let us = &acc.sums[stm.index()];
         let them = &acc.sums[stm.flip().index()];
-        let sum = i64::from(layer(us, &self.output[0])) + i64::from(layer(them, &self.output[1]));
+        let [ours, theirs] = &output.weights;
+        let sum = i64::from(layer(us, ours)) + i64::from(layer(them, theirs));
         let value = round_div(
-            (sum / i64::from(QA) + i64::from(self.output_bias)) * i64::from(SCALE),
+            (sum / i64::from(QA) + i64::from(output.bias)) * i64::from(SCALE),
             i64::from(QA * QB),
         );
         i32::try_from(value).unwrap_or_else(|_| unreachable!("the load check bounds the sum"))
@@ -26,11 +29,13 @@ impl<const H: usize> Network<H> {
     /// The same value by the plainest arithmetic, in `i64` throughout: the oracle the fast form
     /// and every target's build must equal.
     #[must_use]
-    pub fn evaluate_reference(&self, acc: &Accumulator<H>, stm: Colour) -> i32 {
+    pub fn evaluate_reference(&self, acc: &Accumulator<H>, stm: Colour, pieces: u32) -> i32 {
+        let bucket = crate::net::bucket_of(pieces, self.output.len());
+        let output = &self.output[bucket];
         let mut sum = 0_i64;
         for (sums, weights) in [
-            (&acc.sums[stm.index()], &self.output[0]),
-            (&acc.sums[stm.flip().index()], &self.output[1]),
+            (&acc.sums[stm.index()], &output.weights[0]),
+            (&acc.sums[stm.flip().index()], &output.weights[1]),
         ] {
             for (&s, &w) in sums.iter().zip(weights) {
                 let c = i64::from(s).clamp(0, i64::from(QA));
@@ -38,7 +43,7 @@ impl<const H: usize> Network<H> {
             }
         }
         let value = round_div(
-            (sum / i64::from(QA) + i64::from(self.output_bias)) * i64::from(SCALE),
+            (sum / i64::from(QA) + i64::from(output.bias)) * i64::from(SCALE),
             i64::from(QA * QB),
         );
         i32::try_from(value).unwrap_or_else(|_| unreachable!("the load check bounds the sum"))

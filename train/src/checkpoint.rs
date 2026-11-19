@@ -20,28 +20,34 @@ const UNNAMED: &str = "0000000000000000000000000000000000000000";
 /// weights, one a line, in the order they were saved.
 pub const OUTPUT_SUMS: &str = "output-sums";
 
-/// The summed magnitude of the quantised output weights, the figure the engine's loader bounds, at
-/// the width the payload's length names; the payload may carry the trainer's padding.
+/// The summed magnitude of the quantised output weights of the bucket where it is largest, the
+/// figure the engine's loader bounds, at the width the payload's length names for `buckets`; the
+/// payload may carry the trainer's padding.
 #[must_use]
-pub fn output_sum(payload: &[u8]) -> u64 {
-    let hidden = if payload.len() >= payload_len(WIDE) {
+pub fn output_sum(payload: &[u8], buckets: usize) -> u64 {
+    let hidden = if payload.len() >= payload_len(WIDE, buckets) {
         WIDE
     } else {
         HIDDEN
     };
-    payload
+    let words: Vec<u64> = payload
         .as_chunks::<2>()
         .0
         .iter()
         .skip(NUM_INPUTS * hidden + hidden)
-        .take(2 * hidden)
+        .take(buckets * 2 * hidden)
         .map(|&w| u64::from(i16::from_le_bytes(w).unsigned_abs()))
-        .sum()
+        .collect();
+    words
+        .chunks(2 * hidden)
+        .map(|bucket| bucket.iter().sum())
+        .max()
+        .unwrap_or(0)
 }
 
 /// The checkpoints of run `id` under `out` saved whole since the last scan, at the run's width
-/// `hidden`, each loaded and its output sum appended to `OUTPUT_SUMS`; a file still being written
-/// is left for the next scan.
+/// `hidden` and its `buckets`, each loaded and its output sum appended to `OUTPUT_SUMS`; a file
+/// still being written is left for the next scan.
 ///
 /// # Errors
 ///
@@ -51,9 +57,10 @@ pub fn check_saved(
     out: &Path,
     id: &str,
     hidden: usize,
+    buckets: usize,
     seen: &mut BTreeSet<PathBuf>,
 ) -> Result<(), String> {
-    let whole = payload_len(hidden).next_multiple_of(PADDING);
+    let whole = payload_len(hidden, buckets).next_multiple_of(PADDING);
     let mut saved = Vec::new();
     for entry in std::fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))? {
         let dir = entry.map_err(|e| format!("{}: {e}", out.display()))?.path();
@@ -76,12 +83,13 @@ pub fn check_saved(
         }
         let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
         let unnamed = Provenance::External("checkpoint".to_string());
-        let net = export(&bytes, unnamed, UNNAMED, b"")
+        let net = export(&bytes, buckets, unnamed, UNNAMED, b"")
             .map_err(|e| format!("{}: {e}, so the run is stopped", dir.display()))?;
         let name = dir
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let line = format!("{name}\t{}\n", output_sum(&net.to_bytes()[HEADER_LEN..]));
+        let sum = output_sum(&net.to_bytes()[HEADER_LEN..], buckets);
+        let line = format!("{name}\t{sum}\n");
         let sums = out.join(OUTPUT_SUMS);
         std::fs::OpenOptions::new()
             .create(true)
@@ -104,10 +112,11 @@ pub fn check_all(
     out: &Path,
     id: &str,
     hidden: usize,
+    buckets: usize,
     expected: &[PathBuf],
     seen: &mut BTreeSet<PathBuf>,
 ) -> Result<usize, String> {
-    check_saved(out, id, hidden, seen)?;
+    check_saved(out, id, hidden, buckets, seen)?;
     if let Some(missing) = expected.iter().find(|c| !seen.contains(*c)) {
         return Err(format!(
             "{}: never loaded, its quantised.bin missing or not a whole checkpoint's length",

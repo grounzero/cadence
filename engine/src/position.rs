@@ -92,7 +92,8 @@ impl Position {
     pub fn net_eval(&self) -> Option<Score> {
         let stm = self.board.side_to_move();
         self.inference.as_ref().map(|i| {
-            each!(i, |net, stack| net.evaluate(stack.current(), stm))
+            let pieces = self.board.occupied().count();
+            each!(i, |net, stack| net.evaluate(stack.current(), stm, pieces))
                 .clamp(-MAX_EVAL + 1, MAX_EVAL - 1)
         })
     }

@@ -124,7 +124,7 @@ fn report<const H: usize>(net: &Network<H>, any: &AnyNetwork, set: &[Board]) -> 
     });
     let evaluation = per_call(set.len(), || {
         for (acc, board) in parents.iter().zip(set) {
-            black_box(net.evaluate(acc, board.side_to_move()));
+            black_box(net.evaluate(acc, board.side_to_move(), board.occupied().count()));
         }
     });
     let (nodes, evals, nulls, seconds) = searched(Some(any));

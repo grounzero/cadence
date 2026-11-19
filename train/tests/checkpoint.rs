@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use cadence_core::features::NUM_INPUTS;
 use cadence_nnue::net::{HEADER_LEN, payload_len};
-use cadence_nnue::{HIDDEN, Network, Provenance, WIDE};
+use cadence_nnue::{HIDDEN, Network, OUTPUT_BUCKETS, Provenance, WIDE};
 use cadence_train::checkpoint::{OUTPUT_SUMS, check_all, check_saved, output_sum};
 use cadence_train::export::{FILL, PADDING};
 
@@ -40,7 +40,7 @@ fn outputs_of_width(hidden: usize, w: i16) -> Vec<u8> {
         .chain(std::iter::repeat_n(w, 2 * hidden))
         .chain([0])
         .collect();
-    assert_eq!(words.len() * 2, payload_len(hidden));
+    assert_eq!(words.len() * 2, payload_len(hidden, 1));
     padded(
         &words
             .iter()
@@ -63,13 +63,13 @@ fn a_checkpoint_the_loader_refuses_stops_the_run() {
     save(&out, "net-10", &good);
     save(&out, "net-20", &outputs_at(128));
     let mut seen = BTreeSet::new();
-    let checked = check_saved(&out, "net", HIDDEN, &mut seen);
+    let checked = check_saved(&out, "net", HIDDEN, 1, &mut seen);
     let sums = std::fs::read_to_string(out.join(OUTPUT_SUMS));
     let _ = std::fs::remove_dir_all(&out);
-    assert_eq!(output_sum(&outputs_at(128)), 128 * 2 * HIDDEN as u64);
+    assert_eq!(output_sum(&outputs_at(128), 1), 128 * 2 * HIDDEN as u64);
     let error = checked.expect_err("a checkpoint the loader refuses passed");
     assert!(error.contains("net-20"), "{error}");
-    let want = format!("net-10\t{}\n", output_sum(&good));
+    let want = format!("net-10\t{}\n", output_sum(&good, 1));
     assert_eq!(sums.expect("the sums file"), want);
 }
 
@@ -81,10 +81,10 @@ fn a_checkpoint_still_being_written_is_left_for_the_next_scan() {
     let whole = outputs_at(1);
     save(&out, "net-10", &whole[..whole.len() / 2]);
     let mut seen = BTreeSet::new();
-    let first = check_saved(&out, "net", HIDDEN, &mut seen);
+    let first = check_saved(&out, "net", HIDDEN, 1, &mut seen);
     let early = out.join(OUTPUT_SUMS).exists();
     save(&out, "net-10", &whole);
-    let second = check_saved(&out, "net", HIDDEN, &mut seen);
+    let second = check_saved(&out, "net", HIDDEN, 1, &mut seen);
     let sums = std::fs::read_to_string(out.join(OUTPUT_SUMS));
     let _ = std::fs::remove_dir_all(&out);
     first.expect("a partial file is not judged");
@@ -105,9 +105,9 @@ fn an_expected_checkpoint_never_loaded_is_refused_after_training() {
     save(&out, "net-10", &whole);
     save(&out, "net-20", &whole[..whole.len() - 1]);
     let expected = [out.join("net-10"), out.join("net-20")];
-    let refused = check_all(&out, "net", HIDDEN, &expected, &mut BTreeSet::new());
+    let refused = check_all(&out, "net", HIDDEN, 1, &expected, &mut BTreeSet::new());
     save(&out, "net-20", &whole);
-    let checked = check_all(&out, "net", HIDDEN, &expected, &mut BTreeSet::new());
+    let checked = check_all(&out, "net", HIDDEN, 1, &expected, &mut BTreeSet::new());
     let _ = std::fs::remove_dir_all(&out);
     let error = refused.expect_err("a checkpoint never loaded passed");
     assert!(error.contains("net-20"), "{error}");
@@ -123,15 +123,69 @@ fn a_wide_runs_checkpoints_are_judged_at_its_width() {
     save(&out, "net-10", &good);
     save(&out, "net-20", &outputs_of_width(WIDE, 65));
     let mut seen = BTreeSet::new();
-    let checked = check_saved(&out, "net", WIDE, &mut seen);
+    let checked = check_saved(&out, "net", WIDE, 1, &mut seen);
     let sums = std::fs::read_to_string(out.join(OUTPUT_SUMS));
     let _ = std::fs::remove_dir_all(&out);
     assert_eq!(
-        output_sum(&outputs_of_width(WIDE, 65)),
+        output_sum(&outputs_of_width(WIDE, 65), 1),
         65 * 2 * WIDE as u64
     );
     let error = checked.expect_err("a wide checkpoint whose sum could overflow passed");
     assert!(error.contains("net-20"), "{error}");
-    let want = format!("net-10\t{}\n", output_sum(&good));
+    let want = format!("net-10\t{}\n", output_sum(&good, 1));
     assert_eq!(sums.expect("the sums file"), want);
+}
+
+/// A bucketed run's checkpoints are judged at its bucket count: a whole bucketed file loads and its
+/// output sum is its largest bucket's, one with a weight of 128 in its last bucket stops the run by
+/// name, and a one-bucket file is never whole at this count, so it is refused after training.
+#[test]
+fn a_bucketed_runs_checkpoints_are_judged_at_its_bucket_count() {
+    let out = scratch("bucketed");
+    let net = Network::<HIDDEN>::generate_bucketed(3, Provenance::SelfPlay);
+    let payload = &net.to_bytes()[HEADER_LEN..];
+    let good = padded(payload);
+    let mut words: Vec<i16> = payload
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&w| i16::from_le_bytes(w))
+        .collect();
+    let outputs = NUM_INPUTS * HIDDEN + HIDDEN;
+    let row = 2 * HIDDEN;
+    let largest = (0..OUTPUT_BUCKETS)
+        .map(|b| {
+            let bucket = &words[outputs + b * row..outputs + (b + 1) * row];
+            bucket
+                .iter()
+                .map(|w| u64::from(w.unsigned_abs()))
+                .sum::<u64>()
+        })
+        .max();
+    words[outputs + (OUTPUT_BUCKETS - 1) * row] = 128;
+    let refused: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    save(&out, "net-10", &good);
+    save(&out, "net-20", &padded(&refused));
+    let mut seen = BTreeSet::new();
+    let checked = check_saved(&out, "net", HIDDEN, OUTPUT_BUCKETS, &mut seen);
+    let sums = std::fs::read_to_string(out.join(OUTPUT_SUMS));
+    std::fs::remove_dir_all(out.join("net-20")).expect("removes");
+    save(&out, "net-20", &outputs_at(1));
+    let expected = [out.join("net-10"), out.join("net-20")];
+    let unread = check_all(
+        &out,
+        "net",
+        HIDDEN,
+        OUTPUT_BUCKETS,
+        &expected,
+        &mut BTreeSet::new(),
+    );
+    let _ = std::fs::remove_dir_all(&out);
+    assert_eq!(Some(output_sum(&good, OUTPUT_BUCKETS)), largest);
+    let error = checked.expect_err("a bucketed checkpoint with a weight of 128 passed");
+    assert!(error.contains("net-20"), "{error}");
+    let want = format!("net-10\t{}\n", output_sum(&good, OUTPUT_BUCKETS));
+    assert_eq!(sums.expect("the sums file"), want);
+    let error = unread.expect_err("a one-bucket file in a bucketed run passed");
+    assert!(error.contains("net-20"), "{error}");
 }
