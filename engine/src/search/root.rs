@@ -72,6 +72,7 @@ impl Search<'_> {
             // Each line skips the moves the lines before it took.
             let wanted = self.multipv.min(root_moves.len());
             self.run.lines.clear();
+            self.run.iteration_nodes.clear();
             let mut partial = (root_moves[0], -INFINITE);
             for _ in 0..wanted {
                 let (best, score) =
@@ -113,8 +114,11 @@ impl Search<'_> {
             // Only accepted iterations reach here, so a run of equal moves is a run of completed
             // ones.
             self.run.roots.push((best, score));
-            let share = best_share(&self.run.root_nodes, best);
-            self.run.shares.push(share);
+            let shares = (
+                best_share(&self.run.iteration_nodes, best),
+                best_share(&self.run.search_nodes, best),
+            );
+            self.run.shares.push(shares);
             self.run.pv.clear();
             self.run.pv.extend_from_slice(&self.run.lines[0].pv);
             for number in 1..=self.run.lines.len().min(self.shown) {
@@ -257,7 +261,6 @@ impl Search<'_> {
         self.expect(0, depth, Expected::Pv, alpha, beta);
         self.visit(0);
         self.table.clear(0);
-        self.run.root_nodes.clear();
         // The root's window is always open, and its children read the flag one ply up.
         self.tt_pv[0] = true;
         let mut best = Move::NULL;
@@ -289,7 +292,9 @@ impl Search<'_> {
                 score = -self.negamax(board, child, 1, -beta, -alpha, open);
             }
             board.unmake_move(m);
-            self.run.root_nodes.push((m, self.run.nodes - before));
+            let spent = self.run.nodes - before;
+            credit(&mut self.run.iteration_nodes, m, spent);
+            credit(&mut self.run.search_nodes, m, spent);
             searched += 1;
             if self.run.aborted {
                 break;
@@ -310,8 +315,15 @@ impl Search<'_> {
     }
 }
 
-/// Thousandths of the root search's nodes that lay under `best`, and 0 where it took none. Of the
-/// last root search only, so an aspiration window's re-search replaces the one it widened.
+/// Every search of a root move adds to its count, the windows an aspiration widened included.
+fn credit(counts: &mut Vec<(Move, u64)>, m: Move, nodes: u64) {
+    match counts.iter_mut().find(|(c, _)| *c == m) {
+        Some((_, n)) => *n += nodes,
+        None => counts.push((m, nodes)),
+    }
+}
+
+/// Thousandths of the counted nodes that lay under `best`, and 0 where none were counted.
 fn best_share(root_nodes: &[(Move, u64)], best: Move) -> u32 {
     let total: u64 = root_nodes.iter().map(|&(_, n)| n).sum();
     let under: u64 = root_nodes
