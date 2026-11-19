@@ -756,3 +756,73 @@ fn the_overlap_and_the_repeats_are_read_by_start_kind() {
         assert!(text.contains(line), "no `{line}` in\n{text}");
     }
 }
+
+/// With a cap of four, each network input keeps four training copies, the first read, and the rest
+/// are dropped and counted; validation keeps every copy, and without the cap training does too.
+#[test]
+fn training_keeps_at_most_the_cap_copies_of_an_input() {
+    let plies = [
+        "e2e4", "e7e5", "g1f3", "g8f6", "f3g1", "f6g8", "b1c3", "b8c6",
+    ];
+    let filler = [
+        "c3b1", "c6b8", "b1c3", "b8c6", "c3b1", "c6b8", "b1c3", "b8c6",
+    ];
+    let cycle = ["g1f3", "g8f6", "f3g1", "f6g8"];
+    // Three cycles visit four inputs three times each, then a last move apart in each game keeps
+    // the games distinct while its position is the cycle's first again.
+    let game = |index: u32, last: &str| {
+        let moves: Vec<&str> = filler
+            .iter()
+            .chain(cycle.iter().cycle().take(12))
+            .chain(std::iter::once(&last))
+            .copied()
+            .collect();
+        scripted(index, &plies, &moves)
+    };
+    let chunk = vec![
+        game(0, "a2a3"),
+        game(1, "b2b3"),
+        game(2, "h2h3"),
+        game(3, "a2a4"),
+    ];
+    let dir = scratch("copies-cap");
+    let manifest = dataset(&dir.join("data"), 95, &[chunk]);
+    let (ok, text, units) = convert(
+        &[&manifest],
+        &dir.join("capped"),
+        &["--shuffle-seed", "1", "--max-copies", "4"],
+    );
+    assert!(ok, "{text}");
+    let (train, holdout) = (
+        records(&units[0].join("train.bin")).len(),
+        records(&units[0].join("holdout.bin")).len(),
+    );
+    let (whole_ok, whole, whole_units) =
+        convert(&[&manifest], &dir.join("whole"), &["--shuffle-seed", "1"]);
+    assert!(whole_ok, "{whole}");
+    let whole_train = records(&whole_units[0].join("train.bin")).len();
+    let manifest_text =
+        std::fs::read_to_string(units[0].join("MANIFEST.tsv")).expect("the unit's manifest");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        whole_train, 39,
+        "three training games of thirteen positions"
+    );
+    assert!(
+        whole.contains(
+            "standard training positions by copies of their network input: 1 0 2-8 0 9-64 39"
+        ),
+        "{whole}"
+    );
+    assert_eq!((train, holdout), (16, 13));
+    for line in [
+        "standard training positions past 4 copies of their network input, dropped: 23",
+        "standard training positions by copies of their network input: 1 0 2-8 16 9-64 0",
+    ] {
+        assert!(text.contains(line), "no `{line}` in\n{text}");
+    }
+    assert!(
+        manifest_text.contains("at most 4 training copies of a network input"),
+        "{manifest_text}"
+    );
+}
