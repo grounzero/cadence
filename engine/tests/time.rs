@@ -1021,6 +1021,9 @@ fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
     for pondered in PONDERED_MS {
         let (completed, after_hit) = Engine::within(Duration::from_secs(30), move || {
             let mut e = Engine::spawn();
+            // Sized against the handcrafted evaluation: with the net a slow debug build reads the
+            // clock too rarely, every 1,024 nodes, to answer at the soft budget.
+            e.send("setoption name Use NNUE value false");
             e.send("position startpos");
             e.sync();
             e.send(&format!("go ponder {CLOCK}"));

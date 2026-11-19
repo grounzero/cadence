@@ -24,6 +24,10 @@ pub const HEADER_LEN: usize = 128;
 /// The feature weights, their biases, both perspectives' output weights and the output bias.
 pub const PAYLOAD_LEN: usize = 2 * (NUM_INPUTS * HIDDEN + HIDDEN + 2 * HIDDEN + 1);
 
+/// The net this build ships, read in from one fixed path when the crate compiles and replaced at
+/// each promotion; an empty file ships none.
+pub const EMBEDDED: &[u8] = include_bytes!("../net.cdnn");
+
 /// Each compiled constant the header repeats, at its offset, so a file for another build is refused.
 const ARCHITECTURE: [(&str, usize, u16); 5] = [
     ("inputs", 6, NUM_INPUTS as u16),
@@ -324,6 +328,13 @@ impl Network {
         }
     }
 
+    /// The loader for the net a build ships: `None` for no bytes, else `for_datagen`'s answer,
+    /// because only a self-play net is ever shipped.
+    #[must_use]
+    pub fn shipped(bytes: &[u8]) -> Option<Result<Network, LoadError>> {
+        (!bytes.is_empty()).then(|| Network::for_datagen(bytes))
+    }
+
     #[must_use]
     pub fn provenance(&self) -> &Provenance {
         &self.origin.provenance
@@ -373,15 +384,18 @@ impl Network {
                 return Err(LoadError::Lane { lane, bound });
             }
         }
-        let mut sum = 0_i64;
-        for (index, &weight) in self.output.iter().flatten().enumerate() {
-            if !(-127..=127).contains(&weight) {
-                return Err(LoadError::OutputWeight { index, weight });
+        for (perspective, weights) in self.output.iter().enumerate() {
+            let mut sum = 0_i64;
+            for (i, &weight) in weights.iter().enumerate() {
+                if !(-127..=127).contains(&weight) {
+                    let index = perspective * HIDDEN + i;
+                    return Err(LoadError::OutputWeight { index, weight });
+                }
+                sum += i64::from(QA * QA) * i64::from(weight).abs();
             }
-            sum += i64::from(QA * QA) * i64::from(weight).abs();
-        }
-        if sum > i64::from(i32::MAX) {
-            return Err(LoadError::OutputSum { bound: sum });
+            if sum > i64::from(i32::MAX) {
+                return Err(LoadError::OutputSum { bound: sum });
+            }
         }
         Ok(())
     }

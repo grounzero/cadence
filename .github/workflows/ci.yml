@@ -340,7 +340,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=850
+          floor=880
           [ "$passed" -ge "$floor" ] || { echo "::error::only $passed tests passed, under the floor of $floor"; exit 1; }
           # A floor far under the count would pass a run that lost a whole test file, so it is kept near.
           [ $((passed - 40)) -lt "$floor" ] \
@@ -452,6 +452,35 @@ jobs:
           [ "$skipped" -eq 1 ] || { echo "::error::the skip matched $skipped tests and not one"; exit 1; }
           [ $((passed + ignored + skipped)) -eq "$listed" ] \
             || { echo "::error::$passed passed, $ignored ignored and $skipped skipped of $listed"; exit 1; }
+
+      # Random UCI command streams at one thread and at four, against the test build, whose debug
+      # assertions are on, then against the binary that ships; the nightly run streams for longer.
+      - name: UCI stress at one thread and four
+        shell: bash
+        timeout-minutes: 30
+        env:
+          TEST_SECS: ${{ github.event_name == 'schedule' && 120 || 30 }}
+          RELEASE_SECS: ${{ github.event_name == 'schedule' && 300 || 60 }}
+        run: |
+          bin="$PWD/target/release/cadence"
+          if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -w "$bin.exe"); fi
+          echo "### UCI stress" >> "$GITHUB_STEP_SUMMARY"
+          for build in test release; do
+            if [ "$build" = release ]; then
+              export CADENCE_BIN="$bin" CADENCE_STRESS_SECS="$RELEASE_SECS"
+            else
+              unset CADENCE_BIN
+              export CADENCE_STRESS_SECS="$TEST_SECS"
+            fi
+            cargo test --locked -p cadence-engine --test uci_stream $CONFIG_ARG \
+              -- --ignored --test-threads 1 --nocapture 2>&1 | tee "stress-$build.log"
+            status=${PIPESTATUS[0]}
+            grep -h -e ' streams, ' -e '^test result:' "stress-$build.log" \
+              | sed "s/^/$build build: /" >> "$GITHUB_STEP_SUMMARY" || true
+            [ "$status" -eq 0 ] || exit "$status"
+            grep -q '^test result: ok\. 2 passed; 0 failed; 0 ignored' "stress-$build.log" \
+              || { echo "::error::the $build build's stress run did not pass both thread counts"; exit 1; }
+          done
 
       # The regression detector. The last line of `cadence bench` is
       # `<nodes> nodes <nps> nps`; the count must equal bench.txt, and a commit
