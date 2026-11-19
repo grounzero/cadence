@@ -329,6 +329,41 @@ fn a_game_that_spends_every_hard_budget_does_not_run_out() {
     }
 }
 
+/// What one move costs the clock, in thousandths of its soft budget, as the bot's 3+2 games averaged
+/// over moves 1 to 20, 21 to 40 and 41 on. Capped at the hard budget, which no search passes.
+fn charged(b: Budget, mv: u32) -> u64 {
+    let scale = match mv {
+        0..=20 => 1400,
+        21..=40 => 1330,
+        _ => 930,
+    };
+    (b.soft.saturating_mul(scale) / 1000).min(b.hard)
+}
+
+/// A game that costs what the bot's games measured keeps a fifth of its clock at move 40 and an
+/// eighth at move 60, with an increment or without.
+#[test]
+fn a_game_spent_as_measured_keeps_a_reserve_into_the_late_middlegame() {
+    for (start, inc) in [
+        (180_000u64, 2000u64),
+        (120_000, 1000),
+        (180_000, 0),
+        (60_000, 0),
+        (40_000, 400),
+        (8000, 80),
+    ] {
+        let mut t = start;
+        for mv in 1..=60 {
+            let b = clock(t, inc, None);
+            t = t.saturating_sub(charged(b, mv)) + inc;
+            if mv == 40 {
+                assert!(t * 5 >= start, "{start}+{inc}: {t} left at move 40");
+            }
+        }
+        assert!(t * 8 >= start, "{start}+{inc}: {t} left at move 60");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Against the binary
 // ---------------------------------------------------------------------------
