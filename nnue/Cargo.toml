@@ -1,6 +1,6 @@
 [package]
 name         = "cadence-nnue"
-description  = "Reserved for Cadence's quantised NNUE inference; empty today"
+description  = "Cadence's quantised NNUE inference"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -9,6 +9,9 @@ repository.workspace   = true
 
 [lib]
 name = "cadence_nnue"
+
+[dependencies]
+cadence-core = { path = "../core" }
 
 [lints]
 workspace = true

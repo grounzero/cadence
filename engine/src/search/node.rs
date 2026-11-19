@@ -18,7 +18,6 @@ use super::pruning::{
 };
 use super::{Expected, Search, Via, bound_for, order_first, remember_killer};
 use crate::conthist::{self, OFFSETS};
-use crate::eval;
 use crate::picker::{self, Picker, Tables};
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -80,6 +79,7 @@ impl Search<'_> {
         self.root_depth = depth;
         self.heuristics.frames.fill(None);
         self.tt_pv.fill(false);
+        self.choose_tunables(board);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
 
@@ -113,7 +113,7 @@ impl Search<'_> {
         // Above the sort, where the first read past the arrays would be; release has only a bounds
         // check.
         if ply >= MAX_PLY {
-            return eval::evaluate_cached(board, &mut self.pawns);
+            return self.static_eval(board);
         }
 
         // Before generation: that saving is most of what the table is for.

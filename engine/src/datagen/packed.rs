@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,8 @@ use cadence_dataset::chunk::{
 use cadence_dataset::crc32::crc32;
 use cadence_dataset::durable::{self, Disk, Steps};
 use cadence_dataset::sha256::{Sha256, hex, sha256};
+use cadence_nnue::Network;
+use cadence_nnue::net::EMBEDDED;
 
 use super::game::{self, Ending, Outcome};
 use super::opening::{self, Probe};
@@ -46,12 +48,41 @@ pub fn start_kind(rng: &mut Rng, share: u8) -> u8 {
     }
 }
 
-/// A function of the chunk seed, the index and the share alone, whatever `tt` held before.
+/// A function of the chunk seed, the index, the share and the net alone, whatever `tt` held before;
+/// the handcrafted evaluation plays where `net` is `None`.
 #[must_use]
-pub fn play(chunk_seed: u64, index: u32, share: u8, tt: &Table) -> GameRecord {
-    play_with(chunk_seed, index, share, tt, &|board, tt| {
-        game::probe(board, opening::SCREEN_NODES, tt)
-    })
+pub fn play(
+    chunk_seed: u64,
+    index: u32,
+    share: u8,
+    tt: &Table,
+    net: Option<&Arc<Network>>,
+) -> GameRecord {
+    let probe = |board: &mut _, tt: &Table| game::probe(board, opening::SCREEN_NODES, tt);
+    play_with(chunk_seed, index, share, tt, &probe, net)
+}
+
+/// The net a build ships, which every game of its runs plays with: `None` where it ships none.
+///
+/// # Errors
+///
+/// A shipped net the loader refuses for generating data, a canary's or another dataset's.
+pub fn shipped_net() -> Result<Option<Arc<Network>>, String> {
+    match Network::shipped(EMBEDDED) {
+        None => Ok(None),
+        Some(Ok(net)) => Ok(Some(Arc::new(net))),
+        Some(Err(e)) => Err(format!("the shipped net may not generate data: {e}")),
+    }
+}
+
+/// The SHA-256 of the net a build ships, and zero where it ships none, as a header names it.
+#[must_use]
+pub fn shipped_net_sha256() -> [u8; 32] {
+    if EMBEDDED.is_empty() {
+        [0; 32]
+    } else {
+        sha256(EMBEDDED)
+    }
 }
 
 /// `probe` screens a start, so a test can refuse some.
@@ -65,11 +96,13 @@ pub fn play_with(
     share: u8,
     tt: &Table,
     probe: &Probe<'_>,
+    net: Option<&Arc<Network>>,
 ) -> GameRecord {
     let seed = game_seed(chunk_seed, u64::from(index));
     let mut rng = Rng::new(seed);
     let kind = start_kind(&mut rng, share);
-    let (mut start, refused) = opening::next_of_kind(&mut rng, tt, kind == KIND_STANDARD, probe);
+    let (mut start, refused) =
+        opening::next_of_kind(&mut rng, tt, kind == KIND_STANDARD, probe, net);
     let played = game::play(&mut start.board, NODES, tt);
     let label = |score: Option<i32>| {
         score.map_or(NO_SCORE, |s| {
@@ -132,6 +165,8 @@ pub struct Build {
     pub target: String,
     pub features: String,
     pub cfg_features: String,
+    /// The played net's SHA-256, zero for the handcrafted evaluation.
+    pub net_sha256: [u8; 32],
 }
 
 impl Build {
@@ -144,6 +179,7 @@ impl Build {
             target: version::TARGET.to_string(),
             features: version::TARGET_FEATURES.to_string(),
             cfg_features: version::CFG_FEATURES.to_string(),
+            net_sha256: shipped_net_sha256(),
         }
     }
 }
@@ -530,7 +566,7 @@ fn write_chunk(
         header_crc: crc32(&head),
     };
     sink.put(&trailer.encode())?;
-    close(
+    let notes = close(
         &mut Disk,
         &settings.dir,
         sink.file,
@@ -539,7 +575,17 @@ fn write_chunk(
         sink.hasher.finish(),
     )?;
     log(&settings.dir, &format!("closed {name} games {games}"))?;
+    unconfirmed(&settings.dir, notes)?;
     Ok(kinds)
+}
+
+/// Each closed file whose durability is unconfirmed, logged and said on stderr.
+fn unconfirmed(dir: &Path, notes: Vec<String>) -> Result<(), String> {
+    for note in notes {
+        log(dir, &note)?;
+        eprintln!("cadence datagen: {note}");
+    }
+    Ok(())
 }
 
 /// The open `.tmp`, hashed as it is written.
@@ -617,7 +663,7 @@ fn close(
     tmp: &Path,
     path: &Path,
     digest: [u8; 32],
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let failed = |e: io::Error| format!("{}: {e}", tmp.display());
     file.sync_all().map_err(failed)?;
     drop(file);
@@ -632,8 +678,13 @@ fn close(
         .map_err(side_failed)?;
     side.sync_all().map_err(side_failed)?;
     drop(side);
-    durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
-    durable::publish(steps, tmp, path).map_err(failed)
+    let sidecar_published = durable::publish(steps, &partial, &sidecar).map_err(side_failed)?;
+    let chunk_published = durable::publish(steps, tmp, path).map_err(failed)?;
+    Ok(sidecar_published
+        .note(&sidecar)
+        .into_iter()
+        .chain(chunk_published.note(path))
+        .collect())
 }
 
 fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header, String> {
@@ -661,7 +712,7 @@ fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header
         games_planned: settings.chunk_games,
         host: settings.host.clone(),
         start_time: unix_now(),
-        net_sha256: [0; 32],
+        net_sha256: build.net_sha256,
         modified: u8::from(build.modified),
         cfg_sha256: sha256(build.cfg_features.as_bytes()),
     })
@@ -759,12 +810,23 @@ impl Status {
 }
 
 /// A `.tmp` cut to the records it holds whole, closed as its chunk, and what was kept and dropped.
+/// The cut is written to a file beside it and renamed over it only once it reads back whole, so a
+/// repair that stops partway leaves the `.tmp` as it was.
 ///
 /// # Errors
 ///
 /// A path not ending `.tmp`, a file whose header is not a chunk's, or a file that cannot be
 /// rewritten.
 pub fn repair(tmp: &Path) -> Result<String, String> {
+    repair_with(&mut Disk, tmp)
+}
+
+/// As `repair`, with its renames and directory syncs taken through `steps`.
+///
+/// # Errors
+///
+/// As `repair`'s, and any rename or sync `steps` fails.
+pub fn repair_with(steps: &mut dyn Steps, tmp: &Path) -> Result<String, String> {
     let name = tmp.to_string_lossy();
     let Some(final_name) = name.strip_suffix(".tmp") else {
         return Err(format!("{name}: not a .tmp"));
@@ -786,22 +848,36 @@ pub fn repair(tmp: &Path) -> Result<String, String> {
     };
     whole.extend_from_slice(&trailer.encode());
     Chunk::read(&whole).map_err(|e| format!("{name}: the repaired chunk does not read: {e}"))?;
-    let mut file = File::options()
-        .write(true)
-        .truncate(true)
-        .open(tmp)
-        .map_err(|e| format!("{name}: {e}"))?;
-    file.write_all(&whole).map_err(|e| format!("{name}: {e}"))?;
+    let partial = PathBuf::from(format!("{name}.partial"));
+    let failed = |e: io::Error| format!("{}: {e}", partial.display());
+    let mut written = File::create(&partial).map_err(failed)?;
+    written.write_all(&whole).map_err(failed)?;
+    written.sync_all().map_err(failed)?;
+    drop(written);
+    if fs::read(&partial).map_err(failed)? != whole {
+        return Err(failed(io::Error::other("does not read back as written")));
+    }
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    close(&mut Disk, &dir, file, tmp, &path, sha256(&whole))?;
-    Ok(format!(
+    let replaced = durable::publish(steps, &partial, tmp).map_err(failed)?;
+    let mut notes: Vec<String> = replaced.note(tmp).into_iter().collect();
+    let file = File::options()
+        .write(true)
+        .open(tmp)
+        .map_err(|e| format!("{name}: {e}"))?;
+    notes.extend(close(steps, &dir, file, tmp, &path, sha256(&whole))?);
+    let mut report = format!(
         "repaired {} kept {} games dropped {dropped} bytes",
         path.display(),
         records.len()
-    ))
+    );
+    for note in notes {
+        report.push('\n');
+        report.push_str(&note);
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -812,6 +888,47 @@ mod tests {
     use cadence_dataset::sha256::{hex, sha256};
 
     use super::close;
+
+    /// A sync that fails after the sidecar's rename or the chunk's leaves both in place, and reports
+    /// the one whose durability is unconfirmed.
+    #[test]
+    fn a_failed_sync_after_either_rename_is_reported_and_leaves_the_chunk_closed() {
+        for (n, unsynced) in [(0, "x.cdg.sha256"), (1, "x.cdg")] {
+            let dir =
+                std::env::temp_dir().join(format!("cadence-close-{n}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch directory");
+            let (tmp, path) = (dir.join("x.cdg.tmp"), dir.join("x.cdg"));
+            std::fs::write(&tmp, b"chunk").expect("writes");
+            let file = File::options().write(true).open(&tmp).expect("opens");
+            let closed = close(
+                &mut Logged::failing_sync(n),
+                &dir,
+                file,
+                &tmp,
+                &path,
+                sha256(b"chunk"),
+            );
+            let mut left: Vec<String> = std::fs::read_dir(&dir)
+                .expect("lists")
+                .map(|e| {
+                    e.expect("an entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            left.sort_unstable();
+            let _ = std::fs::remove_dir_all(&dir);
+            let notes = closed.expect("closed, with one sync failed");
+            assert_eq!(left, ["x.cdg", "x.cdg.sha256"], "sync {n} failing");
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert!(
+                notes[0].contains(&format!("{unsynced}: published, durability unconfirmed")),
+                "{notes:?}"
+            );
+        }
+    }
 
     /// The sidecar and then the chunk are each published by a rename, and the directory is synced
     /// after each, so a crash cannot keep a name without its entry or lose one already reported.

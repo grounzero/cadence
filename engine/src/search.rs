@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Instant;
 
-use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList};
 
 use crate::conthist::{ContinuationHistory, Frame};
@@ -12,6 +11,7 @@ use crate::eval::PawnCache;
 use crate::history::History;
 use crate::level;
 use crate::picker::Slot;
+use crate::position::Position;
 use crate::score::{ABORTED, Score};
 use crate::syzygy::{Rank, Tables};
 use crate::time::{self, Budget};
@@ -109,8 +109,10 @@ pub struct Search<'a> {
     root_rank: Option<Rank>,
     /// Spelling in `info` lines only.
     chess960: bool,
-    /// `bench` builds its own searches, so it never sees a setting.
+    /// What this run reads: [`Tunables::HCE`] unless a net scores the position, and then `given`.
     tunables: Tunables,
+    /// A net's set, which only the UCI session moves off [`Tunables::DEFAULT`].
+    given: Tunables,
     /// Zero only where a gate compares against a search with no table, every node of which lacks a
     /// table move.
     iir_plies: u32,
@@ -309,7 +311,8 @@ impl<'a> Search<'a> {
             probing: None,
             root_rank: None,
             chess960: false,
-            tunables: Tunables::DEFAULT,
+            tunables: Tunables::HCE,
+            given: Tunables::DEFAULT,
             iir_plies: depth::IIR_REDUCTION,
             shared_nodes: None,
             worker_index: 0,
@@ -352,9 +355,19 @@ impl<'a> Search<'a> {
         self.chess960 = on;
     }
 
-    /// From the next run on.
+    /// From the next run on, and only where a net scores it: the handcrafted evaluation's search
+    /// reads [`Tunables::HCE`].
     pub fn set_tunables(&mut self, tunables: Tunables) {
-        self.tunables = tunables;
+        self.given = tunables;
+    }
+
+    /// The one place the set is chosen, from the evaluator scoring this search.
+    fn choose_tunables(&mut self, board: &Position) {
+        self.tunables = if board.scored_by_net() {
+            self.given
+        } else {
+            Tunables::HCE
+        };
     }
 
     pub fn set_multipv(&mut self, n: usize) {
@@ -408,7 +421,8 @@ impl<'a> Search<'a> {
     /// The clock origin is set here and moved only by a `ponderhit`. The settings, the pawn cache
     /// and the scratch rows outlive a run, and every other field is reset here or written before it
     /// is read.
-    fn begin(&mut self, board: &Board) {
+    fn begin(&mut self, board: &Position) {
+        self.choose_tunables(board);
         self.clock.begin(&self.limits, board.side_to_move());
         self.run.clear();
         self.heuristics.clear();

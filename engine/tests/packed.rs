@@ -16,6 +16,7 @@ use cadence_core::rng::Rng;
 use cadence_dataset::chunk::{
     Chunk, GameRecord, HEADER_LEN, KIND_STANDARD, KIND_UNIFORM, TRAILER_LEN, chunk_name,
 };
+use cadence_dataset::durable::Logged;
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_engine::datagen::game_seed;
 use cadence_engine::datagen::opening::{RANDOM_PLIES, SCREEN_NODES};
@@ -61,6 +62,7 @@ fn build() -> Build {
         target: "test-target-triple".to_string(),
         features: "+test".to_string(),
         cfg_features: "test".to_string(),
+        net_sha256: [0; 32],
     }
 }
 
@@ -154,7 +156,7 @@ fn a_refused_start_is_drawn_again_under_its_kind() {
             game::probe(board, SCREEN_NODES, tt)
         }
     };
-    let record = packed::play_with(chunk_seed(SEED, 0), 0, 100, &tt, &probe);
+    let record = packed::play_with(chunk_seed(SEED, 0), 0, 100, &tt, &probe, None);
     assert_eq!(record.kind, KIND_STANDARD);
     assert_eq!((record.white, record.black), (518, 518));
     assert_eq!(record.refused, 3);
@@ -169,7 +171,7 @@ fn a_chunk_holds_the_same_records_at_any_thread_count() {
             if index == 2 {
                 std::fs::write(dir.join("STOP"), "").expect("writes");
             }
-            packed::play(seed, index, share, tt)
+            packed::play(seed, index, share, tt, None)
         };
         let written = packed::run(&settings(&dir, 3, threads), &build(), &stop_after);
         assert_eq!(written.expect("a run").chunks, 1);
@@ -305,6 +307,37 @@ fn repair_keeps_exactly_the_whole_records_at_every_cut() {
         let want = (cut - HEADER_LEN) / record;
         assert_eq!(chunk.records.len(), want, "cut at {cut}: {report}");
     }
+}
+
+/// A repair whose first rename fails leaves the `.tmp` as it found it, so a second repair still
+/// keeps every whole record in it.
+#[test]
+fn a_failed_repair_leaves_the_tmp_as_it_was() {
+    let dir = scratch("repair-failed-source");
+    packed::run(&settings(&dir, 3, 1), &build(), &|s, i, sh, t| {
+        if i == 2 {
+            std::fs::write(dir.join("STOP"), "").expect("writes");
+        }
+        let _ = (s, t);
+        fake(i, sh)
+    })
+    .expect("a run");
+    let whole = std::fs::read(dir.join(chunk_name(SEED, 0))).expect("the chunk");
+    let _ = std::fs::remove_dir_all(&dir);
+    let record = fake(0, 50).encode().expect("encodes").len();
+    let torn = &whole[..HEADER_LEN + record + record / 2];
+    let dir = scratch("repair-failed");
+    let tmp = dir.join(format!("{}.tmp", chunk_name(SEED, 0)));
+    std::fs::write(&tmp, torn).expect("writes");
+    let failed = packed::repair_with(&mut Logged::failing_at(0), &tmp);
+    let left = std::fs::read(&tmp).expect("the .tmp is still there");
+    let repaired = repair(&tmp);
+    let chunk = read_chunk(&dir, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(failed.is_err(), "a failed rename was taken as a repair");
+    assert!(left == torn, "the failed repair rewrote the .tmp");
+    repaired.expect("repairs once the rename works");
+    assert_eq!(chunk.records.len(), 1);
 }
 
 /// `repair` from the command line closes a `.tmp` and says what it did not examine, the skipped

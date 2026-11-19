@@ -1,6 +1,6 @@
 [workspace]
 members  = ["core", "dataset", "nnue", "engine", "tools"]
-exclude  = ["xtask"]
+exclude  = ["xtask", "train"]
 resolver = "3"
 
 [workspace.package]
@@ -13,7 +13,7 @@ resolver = "3"
 # plays, inside it. The archived binary is
 # still what identifies a promotion, because a version says which release a
 # build is and not what it played like.
-version      = "0.6.0"
+version      = "0.7.0-rc.2"
 edition      = "2024"
 rust-version = "1.99"
 license      = "GPL-3.0-or-later"

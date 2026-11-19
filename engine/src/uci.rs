@@ -8,6 +8,8 @@ use std::thread::JoinHandle;
 
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
+use cadence_nnue::Network;
+use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
 use crate::syzygy::{self, Tables};
@@ -56,12 +58,14 @@ pub struct Session {
     /// SPRT plays.
     ponder: bool,
     threads: usize,
-    /// Handed to every search a `go` starts and to nothing else.
+    /// A net's set, handed to every search a `go` starts and to nothing else; the handcrafted
+    /// evaluation's search reads its own, frozen.
     tunables: Tunables,
     move_overhead: u64,
     /// Loaded on `setoption` and handed to each search; `None` probes nothing.
     tables: Option<Arc<Tables>>,
     syzygy_path: String,
+    nnue: NetOptions,
     probe_limit: usize,
     /// Until `stop`, `position`, the next `go`, or shutdown joins it; it may already have finished.
     search: Option<Running>,
@@ -69,6 +73,24 @@ pub struct Session {
     /// answers `bestmove 0000` and searches nothing.
     refused: Option<String>,
 }
+
+/// `Use NNUE`, `EvalFile`, the net that file loaded and the net the build ships.
+#[derive(Default)]
+struct NetOptions {
+    /// On by default only where the build ships a net, so a build without one scores every search
+    /// with the handcrafted evaluation until it is set.
+    on: bool,
+    file: String,
+    /// The shipped net until a file loads, and again once `EvalFile` is emptied or refuses a file.
+    net: Option<Arc<Network>>,
+    /// The SHA-256 of the bytes `net` came from, which tells one net from another.
+    key: Option<[u8; 32]>,
+    /// `None` where the build ships no net, else that net and its digest, or why it was refused.
+    shipped: Option<Result<Shipped, String>>,
+}
+
+/// The net a build ships and the SHA-256 of its bytes.
+type Shipped = (Arc<Network>, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,
@@ -88,6 +110,11 @@ impl Session {
     /// If the default table cannot be allocated.
     #[must_use]
     pub fn new() -> Session {
+        Session::shipping(EMBEDDED)
+    }
+
+    /// A session whose build ships the net in `net`, which is empty where it ships none.
+    fn shipping(net: &[u8]) -> Session {
         #[allow(clippy::expect_used, reason = "the default table is sixteen mebibytes")]
         let tt = Table::new(tt::DEFAULT_HASH_MB).expect("the default transposition table");
         Session {
@@ -103,6 +130,7 @@ impl Session {
             move_overhead: time::MOVE_OVERHEAD_MS,
             tables: None,
             syzygy_path: String::new(),
+            nnue: NetOptions::shipping(net),
             probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
             refused: None,
@@ -198,6 +226,13 @@ impl Session {
                 ));
                 say(format_args!("option name Clear Hash type button"));
                 say(format_args!(
+                    "option name Use NNUE type check default {}",
+                    self.nnue.ships()
+                ));
+                say(format_args!(
+                    "option name EvalFile type string default <empty>"
+                ));
+                say(format_args!(
                     "option name SyzygyPath type string default <empty>"
                 ));
                 say(format_args!(
@@ -212,6 +247,12 @@ impl Session {
                 // here.
                 for param in tune::PARAMS {
                     say(format_args!("{}", param.uci_option()));
+                }
+                // A refused shipped net leaves the handcrafted evaluation scoring, so a GUI is told.
+                if let Some(Err(e)) = &self.nnue.shipped {
+                    say(format_args!(
+                        "info string the net this build ships is refused: {e}"
+                    ));
                 }
                 say(format_args!("uciok"));
             }

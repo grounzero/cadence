@@ -55,14 +55,48 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
-/// Renamed into place, then the directory holding `to` synced.
+/// What a publish left: the new name synced into its directory, or published with that sync failed.
+#[derive(Debug)]
+pub enum Published {
+    Durable,
+    /// The rename was made and the directory sync after it failed, so nothing is rolled back.
+    Unconfirmed {
+        dir: PathBuf,
+        error: io::Error,
+    },
+}
+
+impl Published {
+    /// The line a tool reports for `path` when the sync after its rename failed.
+    #[must_use]
+    pub fn note(&self, path: &Path) -> Option<String> {
+        match self {
+            Published::Durable => None,
+            Published::Unconfirmed { dir, error } => Some(format!(
+                "{}: published, durability unconfirmed ({}: {error})",
+                path.display(),
+                dir.display()
+            )),
+        }
+    }
+}
+
+/// Renamed into place, then the directory holding `to` synced; a sync that fails after the rename
+/// leaves the file published and says so.
 ///
 /// # Errors
 ///
-/// The rename's, or the sync's once the rename is made.
-pub fn publish(steps: &mut dyn Steps, from: &Path, to: &Path) -> io::Result<()> {
+/// The rename's, and nothing is published then.
+pub fn publish(steps: &mut dyn Steps, from: &Path, to: &Path) -> io::Result<Published> {
     steps.rename(from, to)?;
-    steps.sync_dir(parent(to))
+    let dir = parent(to);
+    Ok(match steps.sync_dir(dir) {
+        Ok(()) => Published::Durable,
+        Err(error) => Published::Unconfirmed {
+            dir: dir.to_path_buf(),
+            error,
+        },
+    })
 }
 
 /// The directory a path's entry is in, `.` for a bare name.
@@ -81,13 +115,15 @@ pub enum Step {
     Sync(PathBuf),
 }
 
-/// Each step made on the file system and recorded in order, with one rename failing where a test
-/// chooses.
+/// Each step made on the file system and recorded in order, with one rename or one directory sync
+/// failing where a test chooses.
 #[derive(Debug, Default)]
 pub struct Logged {
     pub steps: Vec<Step>,
     fail_rename: Option<usize>,
     renames: usize,
+    fail_sync: Option<usize>,
+    syncs: usize,
 }
 
 impl Logged {
@@ -96,6 +132,15 @@ impl Logged {
     pub fn failing_at(n: usize) -> Logged {
         Logged {
             fail_rename: Some(n),
+            ..Logged::default()
+        }
+    }
+
+    /// Directory sync `n`, counted from 0, fails and is not recorded.
+    #[must_use]
+    pub fn failing_sync(n: usize) -> Logged {
+        Logged {
+            fail_sync: Some(n),
             ..Logged::default()
         }
     }
@@ -114,6 +159,11 @@ impl Steps for Logged {
     }
 
     fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
+        let n = self.syncs;
+        self.syncs += 1;
+        if self.fail_sync == Some(n) {
+            return Err(io::Error::other("injected sync failure"));
+        }
         sync_dir(dir)?;
         self.steps.push(Step::Sync(dir.to_path_buf()));
         Ok(())
@@ -139,6 +189,27 @@ mod tests {
         published.expect("publishes");
         assert_eq!(landed.expect("lands"), "a");
         assert_eq!(logged.steps, [Step::Rename(to), Step::Sync(dir)]);
+    }
+
+    /// A sync that fails after the rename leaves the file published, and the result says so.
+    #[test]
+    fn a_sync_that_fails_after_the_rename_leaves_the_file_published_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("cadence-unsynced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let (from, to) = (dir.join("a.partial"), dir.join("a"));
+        std::fs::write(&from, "a").expect("writes");
+        let mut logged = Logged::failing_sync(0);
+        let published = publish(&mut logged, &from, &to);
+        let landed = std::fs::read_to_string(&to);
+        let _ = std::fs::remove_dir_all(&dir);
+        let note = published
+            .expect("the rename was made")
+            .note(&to)
+            .expect("the failed sync is reported");
+        assert!(note.contains("published, durability unconfirmed"), "{note}");
+        assert_eq!(landed.expect("lands"), "a");
+        assert_eq!(logged.steps, [Step::Rename(to)]);
     }
 
     /// Unix opens the directory to sync it, so a missing one fails there; elsewhere nothing is

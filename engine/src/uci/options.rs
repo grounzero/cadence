@@ -3,13 +3,46 @@
 use std::sync::Arc;
 
 use cadence_core::MAX_MOVES;
+use cadence_dataset::sha256::sha256;
+use cadence_nnue::Network;
 
 use super::say::say;
-use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, Session};
+use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, NetOptions, Session};
 use crate::level;
 use crate::syzygy::{MAX_PROBE_LIMIT, Tables};
 use crate::tt::{self, Table};
 use crate::tune::{self, Param};
+
+impl NetOptions {
+    /// Scoring with the net in `bytes` by default, the net the build ships; empty bytes ship none.
+    pub(super) fn shipping(bytes: &[u8]) -> NetOptions {
+        let shipped = Network::shipped(bytes).map(|loaded| {
+            loaded
+                .map(|net| (Arc::new(net), sha256(bytes)))
+                .map_err(|e| e.to_string())
+        });
+        let mut options = NetOptions {
+            shipped,
+            ..NetOptions::default()
+        };
+        options.on = options.ships();
+        options.restore_shipped();
+        options
+    }
+
+    /// Whether the build ships a net its loader took.
+    pub(super) fn ships(&self) -> bool {
+        matches!(self.shipped, Some(Ok(_)))
+    }
+
+    /// The shipped net in place of any file's, or no net where the build ships none.
+    fn restore_shipped(&mut self) {
+        (self.net, self.key) = match &self.shipped {
+            Some(Ok((net, key))) => (Some(Arc::clone(net)), Some(*key)),
+            _ => (None, None),
+        };
+    }
+}
 
 impl Session {
     /// `name` and `value` delimit names and values, which may contain spaces. A path is kept as
@@ -68,6 +101,18 @@ impl Session {
             self.tt.clear();
         } else if name.eq_ignore_ascii_case("SyzygyPath") {
             self.set_syzygy_path(path);
+        } else if name.eq_ignore_ascii_case("Use NNUE") {
+            let before = self.evaluator();
+            if value.eq_ignore_ascii_case("true") {
+                self.nnue.on = true;
+            } else if value.eq_ignore_ascii_case("false") {
+                self.nnue.on = false;
+            }
+            self.evaluator_changed(before);
+        } else if name.eq_ignore_ascii_case("EvalFile") {
+            let before = self.evaluator();
+            self.set_eval_file(path);
+            self.evaluator_changed(before);
         } else if name.eq_ignore_ascii_case("SyzygyProbeLimit") {
             self.set_probe_limit(&value);
         } else if let Some(param) = tune::find(&name) {
@@ -175,6 +220,69 @@ impl Session {
         self.load_tables();
     }
 
+    /// Empty, or `<empty>`, returns to the net the build ships, or to none where it ships none; a
+    /// file the loader refuses does the same, and says why.
+    fn set_eval_file(&mut self, value: &str) {
+        let value = value.trim();
+        self.nnue.file = if value.eq_ignore_ascii_case("<empty>") {
+            String::new()
+        } else {
+            value.to_string()
+        };
+        self.nnue.restore_shipped();
+        if self.nnue.file.is_empty() {
+            return;
+        }
+        let loaded = std::fs::read(&self.nnue.file)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                Network::from_bytes(&bytes)
+                    .map(|net| (net, sha256(&bytes)))
+                    .map_err(|e| e.to_string())
+            });
+        match loaded {
+            Ok((net, key)) => {
+                say(format_args!(
+                    "info string EvalFile: {} loaded, provenance {}, trainer {}",
+                    self.nnue.file,
+                    net.provenance(),
+                    net.trainer()
+                ));
+                self.nnue.net = Some(Arc::new(net));
+                self.nnue.key = Some(key);
+            }
+            Err(e) => say(format_args!(
+                "info string EvalFile: {}: {e}",
+                self.nnue.file
+            )),
+        }
+    }
+
+    /// What scores a search: `None` for the handcrafted evaluation, else the net's file digest.
+    fn evaluator(&self) -> Option<[u8; 32]> {
+        self.nnue
+            .key
+            .filter(|_| self.nnue.on && self.nnue.net.is_some())
+    }
+
+    /// The table holds scores, so another evaluator starts from an empty one, as `ucinewgame` does.
+    fn evaluator_changed(&mut self, before: Option<[u8; 32]>) {
+        if self.evaluator() != before {
+            self.stop_search();
+            self.tt.clear();
+        }
+    }
+
+    /// The net a `go` scores with: only when `Use NNUE` is on and a net loaded.
+    pub(super) fn active_net(&self) -> Option<Arc<Network>> {
+        if self.nnue.on && self.nnue.net.is_none() {
+            say(format_args!(
+                "info string Use NNUE is on and no net is loaded; the handcrafted evaluation scores this search"
+            ));
+        }
+        self.nnue.net.clone().filter(|_| self.nnue.on)
+    }
+
     /// Clamped, not refused, for [`Session::set_hash`]'s reason; zero turns probing off.
     fn set_probe_limit(&mut self, value: &str) {
         let Ok(asked) = value.trim().parse::<usize>() else {
@@ -240,6 +348,93 @@ impl Session {
                 "info string setoption Hash: {mb} MB could not be allocated, keeping {} MB",
                 self.tt.bytes() >> 20
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use cadence_dataset::sha256::sha256;
+    use cadence_nnue::{Network, Provenance};
+
+    use super::Session;
+
+    /// A session whose build ships a seeded net of `provenance`, and that net's digest.
+    fn shipping(provenance: Provenance) -> (Session, [u8; 32]) {
+        let bytes = Network::seeded(7, provenance).to_bytes();
+        (Session::shipping(&bytes), sha256(&bytes))
+    }
+
+    fn net_file(name: &str, bytes: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "cadence-shipped-{name}-{}.cdnn",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("write the net file");
+        path
+    }
+
+    /// A shipped net scores every search from the start, with no option set.
+    #[test]
+    fn a_shipped_net_scores_by_default() {
+        let (session, key) = shipping(Provenance::SelfPlay);
+        assert!(session.nnue.ships());
+        assert_eq!(session.evaluator(), Some(key));
+    }
+
+    /// `EvalFile` replaces the shipped net, and emptying it returns to the shipped net.
+    #[test]
+    fn eval_file_overrides_the_shipped_net_until_it_is_emptied() {
+        let (mut session, key) = shipping(Provenance::SelfPlay);
+        let other = Network::seeded(8, Provenance::SelfPlay).to_bytes();
+        let file = net_file("override", &other);
+        session.set_option(&format!("setoption name EvalFile value {}", file.display()));
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(session.evaluator(), Some(sha256(&other)));
+        session.set_option("setoption name EvalFile value <empty>");
+        assert_eq!(session.evaluator(), Some(key));
+    }
+
+    /// A file the loader refuses leaves the shipped net scoring, not none.
+    #[test]
+    fn a_refused_file_leaves_the_shipped_net() {
+        let (mut session, key) = shipping(Provenance::SelfPlay);
+        let file = net_file("refused", b"not a net");
+        session.set_option(&format!("setoption name EvalFile value {}", file.display()));
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(session.evaluator(), Some(key));
+    }
+
+    /// `Use NNUE` turns the shipped net off and on again as it does a loaded one.
+    #[test]
+    fn use_nnue_switches_the_shipped_net_off_and_on() {
+        let (mut session, key) = shipping(Provenance::SelfPlay);
+        session.set_option("setoption name Use NNUE value false");
+        assert_eq!(session.evaluator(), None);
+        session.set_option("setoption name Use NNUE value true");
+        assert_eq!(session.evaluator(), Some(key));
+    }
+
+    /// A build that ships no net starts on the handcrafted evaluation with the switch off.
+    #[test]
+    fn a_build_that_ships_no_net_starts_handcrafted() {
+        let session = Session::shipping(&[]);
+        assert!(!session.nnue.on);
+        assert!(session.nnue.shipped.is_none());
+        assert_eq!(session.evaluator(), None);
+    }
+
+    /// A canary net or an external one is refused as the shipped net, and scores nothing.
+    #[test]
+    fn a_shipped_net_that_is_not_self_play_is_refused() {
+        let validation = Provenance::External("lichess-big3-resolved".to_string());
+        for provenance in [Provenance::Canary, validation] {
+            let (session, _) = shipping(provenance);
+            assert!(!session.nnue.on);
+            assert!(matches!(session.nnue.shipped, Some(Err(_))));
+            assert_eq!(session.evaluator(), None);
         }
     }
 }

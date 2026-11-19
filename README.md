@@ -6,9 +6,10 @@
 [![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
 Cadence is a UCI chess engine written in Rust, for standard chess, Chess960
-and double Chess960 (DFRC), using a classical alpha-beta search and a
-hand-written evaluation tuned on its own games, with no neural network. It
-reads Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
+and double Chess960 (DFRC), using a classical alpha-beta search and a neural
+network evaluation (NNUE) trained on positions from its own games, which are
+not published; its hand-written evaluation stays behind an option. It reads
+Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
 crates, which with the crates they use are its only outside dependencies.
 
 You can play it on Lichess as the bot
@@ -93,6 +94,8 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
+| `Use NNUE` | on | Score positions with a network instead of the handcrafted evaluation: the one `EvalFile` loaded, or else the one built into the engine. Off plays with the handcrafted evaluation. |
+| `EvalFile` | empty | A network file to use in place of the built-in one, which emptying this restores. A file for another network shape, or one whose weights could overflow, is refused with the reason and leaves the built-in network, if there is one. |
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
 | `reverse_futility_margin`, `lmp_multiplier` | 150, 0.500 | Search constants offered to tuners (50 to 300, 0 to 2). Leave them alone for play. |
 
@@ -142,10 +145,15 @@ cargo test --manifest-path xtask/Cargo.toml
 cargo xtask check-headers
 cargo xtask check-boundary
 cargo xtask check-changelog
+cargo fmt --manifest-path train/Cargo.toml -- --check
+cargo clippy --manifest-path train/Cargo.toml --all-targets -- -D warnings
+cargo build -p cadence-tools
+CADENCE_TOOLS=target/debug/cadence-tools cargo test --manifest-path train/Cargo.toml
 ```
 
 The second line runs the slow tests, the deep perft runs among them. The rest
-are CI's checks; `xtask` is a separate crate, so it has lines of its own.
+are CI's checks; `xtask` and `train` are separate crates, so they have lines of
+their own, and `train`'s tests run the `cadence-tools` built before them.
 
 ### Benchmark and perft
 
@@ -168,12 +176,18 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence spsa` | Prints an SPSA tuner's input, one line per tuning option above. |
 | `cadence datagen play --games N --seed S [--threads N] [--out PATH]` | Plays games against itself; the same seed and game count give the same file at any thread count. |
 | `cadence datagen extract <games> --train PATH --holdout PATH [--every N]` | Cuts games into positions, every Nth game to the holdout set. |
-| `cadence datagen run --out DIR --run-seed HEX\|fresh [--threads N] [--chunk-games N] [--standard-share P] [--host NAME]` | Writes packed chunks of games until a `STOP` file appears in `DIR`; a `PAUSE` file pauses it. Built only with the `packed-datagen` feature. |
+| `cadence datagen run --out DIR --run-seed HEX\|fresh [--threads N] [--chunk-games N] [--standard-share P] [--host NAME]` | Writes packed chunks of games until a `STOP` file appears in `DIR`; a `PAUSE` file pauses it. The games are played with the network built into the engine, whose SHA-256 every chunk's header names. Built only with the `packed-datagen` feature. |
 | `cadence datagen repair CHUNK.tmp` | Closes a chunk a killed run left, keeping its whole records. Built only with the `packed-datagen` feature. |
-| `cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest]` | Checks chunks against their sidecars, this build's settings and the rules, regenerating every Nth game; `--manifest` writes a directory's `MANIFEST.tsv` once every chunk in it passes. Built only with the `packed-datagen` feature. |
+| `cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest]` | Checks chunks against their sidecars, this build's settings and network and the rules, regenerating every Nth game; `--manifest` writes a directory's `MANIFEST.tsv` once every chunk in it passes. Built only with the `packed-datagen` feature. |
 | `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
 | `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. |
+| `cadence-tools forward --net FILE [--raw FILE [--against FILE]] [--positions N] [--seed HEX]` | Scores at least 1,000 random legal positions with a net file's quantised evaluation and with an `f32` one written from the same file, and passes when no position differs by more than 5 centipawns and the mean by no more than 1. `--raw` also compares the trainer's unquantised weights, a reading for training time that decides nothing, and `--against` compares them with the trainer's own scores as `cadence-train eval` prints them, another such reading. |
+| `cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). Each data file must hash to the training file a manifest names, `cadence-tools convert`'s or `cadence-train book`'s, or the run stops before it starts; two files with the same records are refused, the holdout must be the holdout split of a manifest a data file matched, and a run never shares its directory with another's. The manifests it verified are listed by SHA-256 in `verified-manifests` beside the checkpoints. After training, each saved checkpoint is scored over the holdout's first 20,000 records by the trainer's own forward pass, and its validation loss printed beside the training loss it logged. The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target half result and half score. It needs a GPU and the `cuda` feature. |
+| `cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE` | Writes one checkpoint as the file `EvalFile` loads, naming the data's manifest and the commit that trained it; the manifest must be one its run verified. |
+| `cadence-train book --in FILE --out FILE --seed HEX [--every N]` | Turns a tuning set's text, one position a line as a FEN and White's result in brackets, into the trainer's records, scored zero, every Nth line (by default the tenth) held out to `FILE.holdout`, each part shuffled from the seed, with a manifest beside them naming both that an export hashes into the net's header. |
+| `cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE... [--validation-positions N] [--result-share F]` | The validation loss `run` prints, for checkpoints already saved. It needs a GPU and the `cuda` feature. |
+| `cadence-train eval --checkpoint DIR --fens FILE` | Prints the trainer's own score for each FEN in the file, in centipawns, from one saved checkpoint, the same network `run` builds. It needs a GPU and the `cuda` feature. |
 
 ### Git hooks
 

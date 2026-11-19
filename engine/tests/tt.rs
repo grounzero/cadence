@@ -6,8 +6,10 @@
 
 mod support;
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{Move, Square, generate_legal};
 use cadence_engine::position::Position;
@@ -18,6 +20,8 @@ use cadence_engine::{
     bench,
     uci::{DEFAULT_THREADS, MAX_THREADS, Session},
 };
+use cadence_nnue::Network;
+use cadence_nnue::net::EMBEDDED;
 use support::Rng;
 
 // ---------------------------------------------------------------------------
@@ -40,6 +44,15 @@ fn nodes_without_iir(board: &mut Position, depth: u32, tt: &Table) -> u64 {
     s.set_iir_reduction(0);
     s.run(board, &mut Vec::new());
     s.nodes()
+}
+
+/// The position as the bench builds it, scored by the net the build ships where it ships one.
+fn bench_position(fen: &str) -> Position {
+    let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+    match Network::shipped(EMBEDDED) {
+        Some(net) => Position::with_net(board, Arc::new(net.expect("the shipped net loads"))),
+        None => Position::new(board),
+    }
 }
 
 fn table(mb: usize) -> Table {
@@ -873,7 +886,7 @@ fn the_bench_clears_the_table_between_positions() {
     assert_eq!(report.lines.len(), fens.len());
     for line in &report.lines {
         let (best, _, nodes) = search_with(
-            &mut support::position(&line.fen),
+            &mut bench_position(&line.fen),
             bench::DEPTH,
             &table(bench::HASH_MB),
         );

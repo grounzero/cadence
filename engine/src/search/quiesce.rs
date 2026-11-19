@@ -5,7 +5,6 @@
 use cadence_core::{MAX_PLY, generate_legal, generate_noisy, has_legal_move};
 
 use super::Search;
-use crate::eval;
 use crate::picker;
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -29,7 +28,7 @@ impl Search<'_> {
             return DRAW;
         }
         if ply >= MAX_PLY {
-            return eval::evaluate_cached(board, &mut self.pawns);
+            return self.static_eval(board);
         }
 
         let in_check = board.in_check();
@@ -58,7 +57,7 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            let stand_pat = eval::evaluate_cached(board, &mut self.pawns);
+            let stand_pat = self.static_eval(board);
             if stand_pat >= beta {
                 // A stand-pat cut on a stalemate would score it as the evaluation.
                 return if has_legal_move(board) { beta } else { DRAW };

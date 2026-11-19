@@ -15,8 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cadence_core::chess960::dfrc_fen;
 use cadence_core::generate_legal;
 use cadence_core::position::Board;
-use cadence_core::rng::Rng;
-use cadence_dataset::chunk::{Chunk, GameRecord, NO_SCORE, decode_move, game_key};
+use cadence_core::rng::{Rng, splitmix64};
+use cadence_dataset::chunk::{Chunk, GameRecord, Header, NO_SCORE, decode_move, game_key};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND};
 use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
 use cadence_dataset::sha256::{hex, sha256};
@@ -34,6 +34,18 @@ const PLY_BANDS: usize = 30;
 const BUCKET: i32 = 100;
 const SPAN: i32 = 2_000;
 const BUCKETS: usize = (2 * SPAN / BUCKET) as usize + 2;
+
+/// A kind's games may repeat an earlier game from another seed up to one in this many, where chance
+/// gives standard starts about one in sixty thousand at two million games, rising with the count.
+/// Past it the seeds are suspect and the conversion refuses.
+const REPEAT_BAR: u64 = 1_000;
+
+/// The unit published, and the line reporting it when the sync after its rename failed.
+#[derive(Debug)]
+pub struct Converted {
+    pub unit: PathBuf,
+    pub unconfirmed: Option<String>,
+}
 
 /// What the command line asks.
 #[derive(Clone, Debug)]
@@ -58,10 +70,11 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let mut unexamined = vec![
         "the trainer's own reading of the records (the train crate's round trip)",
         "each game's ending and its regeneration (datagen verify's)",
+        "each manifest row's games, plies and kinds (a chunk is held to its SHA-256 and its header)",
     ];
     unexamined.extend(UNSYNCED);
-    let unit = match converted {
-        Ok(unit) => unit,
+    let converted = match converted {
+        Ok(converted) => converted,
         Err(e) => {
             for spot in &unexamined {
                 let _ = writeln!(stdout, "  not examined: {spot}");
@@ -69,12 +82,17 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
             return Err(e);
         }
     };
+    let unit = &converted.unit;
     let report = fs::read_to_string(unit.join("report.txt")).unwrap_or_default();
     let _ = write!(stdout, "{report}");
     for spot in unexamined {
         let _ = writeln!(stdout, "  not examined: {spot}");
     }
-    let _ = writeln!(stdout, "published {}", unit.display());
+    let published = converted
+        .unconfirmed
+        .clone()
+        .unwrap_or_else(|| format!("published {}", unit.display()));
+    let _ = writeln!(stdout, "{published}");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -101,7 +119,14 @@ fn request_from(args: &[String]) -> Result<Request, String> {
         match arg.as_str() {
             "--manifest" => request.manifests.push(PathBuf::from(value)),
             "--out" => out = Some(PathBuf::from(value)),
-            "--every" => request.every = value.parse().map_err(|_| bad())?,
+            "--every" => {
+                request.every = value.parse().map_err(|_| bad())?;
+                if request.every < 2 {
+                    return Err(format!(
+                        "--every {value} is refused: 0 holds out nothing and 1 trains on nothing"
+                    ));
+                }
+            }
             "--shuffle-seed" => seed = Some(parse_seed(value).ok_or_else(bad)?),
             "--standard-share" => {
                 let share: u8 = value.parse().map_err(|_| bad())?;
@@ -139,11 +164,12 @@ fn parse_seed(value: &str) -> Option<u64> {
     u64::from_str_radix(value, 16).ok()
 }
 
-/// One dataset's manifest: its settings, and each chunk with its SHA-256.
+/// One dataset's manifest: its provenance, and each chunk with its SHA-256.
 struct Dataset {
     manifest: PathBuf,
     dir: PathBuf,
     sha256: String,
+    provenance: BTreeMap<String, String>,
     chunks: Vec<(String, String)>,
 }
 
@@ -151,12 +177,16 @@ fn read_manifest(path: &Path) -> Result<Dataset, String> {
     let text = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let digest = hex(&sha256(&text));
     let text = String::from_utf8(text).map_err(|_| format!("{}: not text", path.display()))?;
-    let mut chunks = Vec::new();
+    let (mut chunks, mut provenance) = (Vec::new(), BTreeMap::new());
     let mut rows = false;
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         if line.starts_with("chunk\t") {
             rows = true;
-        } else if rows {
+        } else if !rows {
+            if let Some((field, value)) = line.split_once('\t') {
+                provenance.insert(field.to_string(), value.to_string());
+            }
+        } else {
             let mut fields = line.split('\t');
             let (Some(name), Some(sha)) = (fields.next(), fields.next()) else {
                 return Err(format!(
@@ -178,8 +208,43 @@ fn read_manifest(path: &Path) -> Result<Dataset, String> {
         manifest: path.to_path_buf(),
         dir,
         sha256: digest,
+        provenance,
         chunks,
     })
+}
+
+/// A chunk's header against its manifest's provenance, so a manifest edited with every hash left
+/// matching is still refused.
+fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String> {
+    let fields = [
+        ("commit", hex(&h.commit)),
+        ("version", h.version.clone()),
+        ("nodes", h.nodes.to_string()),
+        ("screen-nodes", h.screen_nodes.to_string()),
+        ("hash", h.hash_mb.to_string()),
+        ("random-plies", h.random_plies.to_string()),
+        ("window", h.window.to_string()),
+        ("standard-share", h.standard_share.to_string()),
+        ("chunk-games", h.games_planned.to_string()),
+        ("run-seeds", format!("{:016x}", h.run_seed)),
+    ];
+    for (field, have) in fields {
+        let want = set
+            .provenance
+            .get(field)
+            .ok_or_else(|| format!("{}: names no {field}", set.manifest.display()))?;
+        let agrees = if field == "run-seeds" {
+            want.split_whitespace().any(|seed| seed == have)
+        } else {
+            *want == have
+        };
+        if !agrees {
+            return Err(format!(
+                "{name}: {field} {have} in its header, and the manifest says {want}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Before any record is read: every chunk in the directory listed, every listed chunk present, and
@@ -226,6 +291,8 @@ fn check_listing(set: &Dataset) -> Result<(), String> {
 struct Game {
     dataset: usize,
     chunk: String,
+    /// Its place in its run, which the holdout is taken by.
+    number: u64,
     record: GameRecord,
 }
 
@@ -282,6 +349,25 @@ struct Kept {
     holdout: Vec<[u8; RECORD_LEN]>,
     train_keys: BTreeSet<u64>,
     holdout_keys: Vec<u64>,
+    /// By start kind and network input, a reading only: each sorted once every position is kept.
+    train_inputs: [Vec<u64>; 2],
+    holdout_inputs: [Vec<u64>; 2],
+}
+
+/// One start kind's positions read by network input, its holdout against both kinds' training.
+#[derive(Clone, Copy, Debug, Default)]
+struct ByInput {
+    train: usize,
+    holdout: usize,
+    overlap: usize,
+    /// Positions in a split beyond the first with their input.
+    train_repeats: usize,
+    holdout_repeats: usize,
+}
+
+/// Entries of a sorted list beyond the first of each value.
+fn repeats(sorted: &[u64]) -> usize {
+    sorted.windows(2).filter(|w| w[0] == w[1]).count()
 }
 
 /// The whole conversion up to its published unit's path; `steps` renames the unit and syncs, so a
@@ -289,9 +375,9 @@ struct Kept {
 ///
 /// # Errors
 ///
-/// Any refusal before a record is read, a duplicate game or chunk, a record that does not replay,
-/// or a file that cannot be written; nothing is published then.
-pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<PathBuf, String> {
+/// Any refusal before a record is read, a copied game or chunk, repeats past `REPEAT_BAR`, a record
+/// that does not replay, or a file that cannot be written; nothing is published then.
+pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, String> {
     let sets = request
         .manifests
         .iter()
@@ -300,7 +386,7 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<PathBuf, Stri
     for set in &sets {
         check_listing(set)?;
     }
-    let games = read_games(&sets)?;
+    let (games, repeated) = read_games(&sets)?;
     let chosen = subsample(&games, request.standard_share);
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
     let mut kept = Kept::default();
@@ -315,27 +401,59 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<PathBuf, Stri
         )
         .map_err(|e| format!("{} game {}: {e}", game.chunk, game.record.index))?;
     }
+    if kept.train.is_empty() {
+        return Err("no training position is left after the filters; nothing was published".into());
+    }
+    if kept.holdout.is_empty() {
+        return Err(
+            "no validation position is left after the filters; nothing was published".into(),
+        );
+    }
     let overlap = kept
         .holdout_keys
         .iter()
         .filter(|k| kept.train_keys.contains(k))
         .count();
+    for inputs in kept.train_inputs.iter_mut().chain(&mut kept.holdout_inputs) {
+        inputs.sort_unstable();
+    }
+    let in_training = |k: &u64| kept.train_inputs.iter().any(|t| t.binary_search(k).is_ok());
+    let by_input: [ByInput; 2] = std::array::from_fn(|kind| {
+        let (train, holdout) = (&kept.train_inputs[kind], &kept.holdout_inputs[kind]);
+        ByInput {
+            train: train.len(),
+            holdout: holdout.len(),
+            overlap: holdout.iter().filter(|k| in_training(k)).count(),
+            train_repeats: repeats(train),
+            holdout_repeats: repeats(holdout),
+        }
+    });
     let mut rng = Rng::new(request.shuffle_seed);
     shuffle(&mut kept.train, &mut rng);
     shuffle(&mut kept.holdout, &mut rng);
-    let report = report(&sets, &counts, overlap);
+    let report = report(&sets, &counts, &repeated, overlap, &by_input);
     publish(request, &sets, &counts, &kept, &report, steps)
 }
 
-/// Every chunk read and held together: no run seed and chunk index twice, and no game twice.
-fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
+/// Games of one start kind read, and those dropped as repeating an earlier game from another seed.
+#[derive(Clone, Copy, Debug, Default)]
+struct Repeats {
+    read: u64,
+    dropped: u64,
+}
+
+/// Every chunk read and held together: no run seed and chunk index twice, and no game copied. A
+/// game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
+fn read_games(sets: &[Dataset]) -> Result<(Vec<Game>, [Repeats; 2]), String> {
     let mut chunks: BTreeMap<(u64, u32), String> = BTreeMap::new();
-    let mut keys: BTreeMap<[u8; 16], (String, u32)> = BTreeMap::new();
+    let mut keys: BTreeMap<[u8; 16], (String, u32, u64)> = BTreeMap::new();
+    let mut repeats = [Repeats::default(); 2];
     let mut games = Vec::new();
     for (dataset, set) in sets.iter().enumerate() {
         for (name, _) in &set.chunks {
             let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
             let chunk = Chunk::read(&bytes).map_err(|e| format!("{name}: {e}"))?;
+            check_provenance(set, name, &chunk.header)?;
             let at = (chunk.header.run_seed, chunk.header.chunk_index);
             if let Some(first) = chunks.insert(at, name.clone()) {
                 return Err(format!(
@@ -345,22 +463,43 @@ fn read_games(sets: &[Dataset]) -> Result<Vec<Game>, String> {
             }
             for record in chunk.records {
                 let key = game_key(&record);
-                if let Some((first, index)) = keys.get(&key) {
-                    return Err(format!(
-                        "{name} game {} is the same game as {first} game {index}",
-                        record.index
-                    ));
+                let kind = &mut repeats[usize::from(record.kind)];
+                kind.read += 1;
+                if let Some((first, index, seed)) = keys.get(&key) {
+                    if *seed == record.seed {
+                        return Err(format!(
+                            "{name} game {} is the same game as {first} game {index}",
+                            record.index
+                        ));
+                    }
+                    kind.dropped += 1;
+                    continue;
                 }
-                keys.insert(key, (name.clone(), record.index));
+                keys.insert(key, (name.clone(), record.index, record.seed));
                 games.push(Game {
                     dataset,
                     chunk: name.clone(),
+                    number: game_number(&chunk.header, record.index),
                     record,
                 });
             }
         }
     }
-    Ok(games)
+    for (name, kind) in ["uniform", "standard"].iter().zip(&repeats) {
+        if kind.dropped * REPEAT_BAR > kind.read {
+            return Err(format!(
+                "{} of {} {name} games repeat an earlier game from another seed, more than one in \
+                 {REPEAT_BAR}",
+                kind.dropped, kind.read
+            ));
+        }
+    }
+    Ok((games, repeats))
+}
+
+/// A game's place in its run, from its chunk's place and its own within the chunk.
+fn game_number(header: &Header, index: u32) -> u64 {
+    u64::from(header.chunk_index) * u64::from(header.games_planned) + u64::from(index)
 }
 
 /// Games of the more common kind dropped from the end until the standard share is the one asked,
@@ -410,7 +549,7 @@ fn positions(
         board.play(m);
     }
     counts.games += 1;
-    let held = request.every > 0 && record.index.is_multiple_of(request.every);
+    let held = request.every > 0 && game.number.is_multiple_of(u64::from(request.every));
     let mut decided = false;
     let mut this_game = BTreeSet::new();
     for (ply, &(bits, score)) in record.moves.iter().enumerate() {
@@ -450,16 +589,20 @@ fn positions(
                     board.side_to_move() == cadence_core::Colour::White,
                 );
                 let bytes = trainer::encode(&board, score, result);
+                let input = input_key(&bytes, board.side_to_move() == cadence_core::Colour::White);
                 counts.plies[band] += 1;
                 counts.zeros[band] += u64::from(score == 0);
                 counts.scores[bucket(score)] += 1;
+                let kind = usize::from(record.kind);
                 if held {
                     kept.holdout.push(bytes);
                     kept.holdout_keys.push(key);
+                    kept.holdout_inputs[kind].push(input);
                     counts.holdout += 1;
                 } else {
                     kept.train.push(bytes);
                     kept.train_keys.insert(key);
+                    kept.train_inputs[kind].push(input);
                     counts.train += 1;
                 }
             }
@@ -471,6 +614,18 @@ fn positions(
         board.play(m);
     }
     Ok(())
+}
+
+/// The network's input, its 768 piece-square features and the side to move, hashed: the record's
+/// first 24 bytes are the pieces as the mover sees them, so the mover completes it.
+fn input_key(record: &[u8; RECORD_LEN], white_to_move: bool) -> u64 {
+    let word = |i: usize| {
+        let mut w = [0; 8];
+        w.copy_from_slice(&record[i..i + 8]);
+        u64::from_le_bytes(w)
+    };
+    let mix = |x: u64| splitmix64(x).0;
+    mix(word(0) ^ mix(word(8) ^ mix(word(16) ^ u64::from(white_to_move))))
 }
 
 /// The record stores White's result; the trainer reads the side to move's.
@@ -494,8 +649,21 @@ fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
     clippy::cast_precision_loss,
     reason = "a position count is far below 2^52"
 )]
-fn report(sets: &[Dataset], counts: &[[Counts; 2]], overlap: usize) -> String {
+fn report(
+    sets: &[Dataset],
+    counts: &[[Counts; 2]],
+    repeats: &[Repeats; 2],
+    overlap: usize,
+    by_input: &[ByInput; 2],
+) -> String {
     let mut text = String::new();
+    for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
+        let _ = writeln!(
+            text,
+            "{name} games repeating an earlier game from another seed, dropped: {} of {}",
+            kind.dropped, kind.read
+        );
+    }
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "dataset {}", set.manifest.display());
         for (name, c) in ["uniform", "standard"].iter().zip(kinds) {
@@ -555,6 +723,24 @@ fn report(sets: &[Dataset], counts: &[[Counts; 2]], overlap: usize) -> String {
         text,
         "holdout positions whose key is also in training: {overlap}"
     );
+    let input_overlap: usize = by_input.iter().map(|b| b.overlap).sum();
+    let _ = writeln!(
+        text,
+        "holdout positions whose network input (768 features and the side to move) is also in \
+         training: {input_overlap}"
+    );
+    for (name, b) in ["uniform", "standard"].iter().zip(by_input) {
+        let _ = writeln!(
+            text,
+            "{name} holdout positions whose network input is also in training: {} of {}",
+            b.overlap, b.holdout
+        );
+        let _ = writeln!(
+            text,
+            "{name} repeats by network input within training {} of {}, within holdout {} of {}",
+            b.train_repeats, b.train, b.holdout_repeats, b.holdout
+        );
+    }
     text
 }
 
@@ -568,7 +754,7 @@ fn publish(
     kept: &Kept,
     report: &str,
     steps: &mut dyn Steps,
-) -> Result<PathBuf, String> {
+) -> Result<Converted, String> {
     fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
     let staging = request.out.join(format!(".staging-{}", std::process::id()));
     fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
@@ -597,8 +783,12 @@ fn publish(
         steps
             .sync_dir(&staging)
             .map_err(|e| format!("{}: {e}", staging.display()))?;
-        durable::publish(steps, &staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
-        Ok(unit)
+        let published = durable::publish(steps, &staging, &unit)
+            .map_err(|e| format!("{}: {e}", unit.display()))?;
+        Ok(Converted {
+            unconfirmed: published.note(&unit),
+            unit,
+        })
     })();
     if staged.is_err() {
         let _ = fs::remove_dir_all(&staging);
@@ -637,7 +827,7 @@ fn manifest(
     let _ = writeln!(text, "shuffle-seed\t{:016x}", request.shuffle_seed);
     let _ = writeln!(
         text,
-        "holdout\tgame index modulo {} within its chunk",
+        "holdout\tgame number in its run modulo {}",
         request.every
     );
     let share = request
@@ -690,22 +880,23 @@ fn manifest(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::{BUCKETS, Request, bucket, convert, result_for_mover};
-    use cadence_dataset::chunk::{Chunk, Header, chunk_name};
+    use super::{
+        BUCKETS, RECORD_LEN, Request, bucket, convert, game_number, input_key, result_for_mover,
+    };
+    use cadence_core::chess960::dfrc_fen;
+    use cadence_core::generate_legal;
+    use cadence_core::position::Board;
+    use cadence_core::rng::Rng;
+    use cadence_dataset::chunk::{Chunk, GameRecord, Header, chunk_name, encode_move};
     use cadence_dataset::durable::{Logged, Step};
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{DRAW, LOSS, WIN};
 
-    /// A rename that fails leaves neither the unit nor its staging behind, and one that works has the
-    /// unit's entries synced before it and the unit's name synced after it.
-    #[test]
-    fn a_failed_rename_publishes_nothing() {
-        let dir = std::env::temp_dir().join(format!("cadence-convert-unit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("a scratch directory");
-        let header = Header {
+    /// The header of chunk 0 of run 1, planned at two games.
+    fn test_header() -> Header {
+        Header {
             commit: [1; 20],
             version: "0.0.0-test".to_string(),
             target: "test".to_string(),
@@ -718,14 +909,23 @@ mod tests {
             standard_share: 50,
             run_seed: 1,
             chunk_index: 0,
-            games_planned: 1,
+            games_planned: 2,
             host: "test".to_string(),
             start_time: 0,
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [0; 32],
-        };
-        let bytes = Chunk::bytes(&header, &[]).expect("an empty chunk");
+        }
+    }
+
+    /// Two short games in a chunk of `dir`, its sidecar and manifest, and the request that converts
+    /// them to `dir/out`.
+    fn fixture(dir: &Path) -> Request {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).expect("a scratch directory");
+        let header = test_header();
+        let games = [short_game(0, 3), short_game(1, 4)];
+        let bytes = Chunk::bytes(&header, &games).expect("a chunk");
         let (name, digest) = (chunk_name(1, 0), hex(&sha256(&bytes)));
         std::fs::write(dir.join(&name), &bytes).expect("writes");
         std::fs::write(
@@ -734,18 +934,35 @@ mod tests {
         )
         .expect("writes");
         let manifest = dir.join("MANIFEST.tsv");
-        std::fs::write(&manifest, format!("chunk\tsha256\n{name}\t{digest}\n")).expect("writes");
+        let provenance = format!(
+            "commit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\nhash\t16\n\
+             random-plies\t8\nwindow\t200\nstandard-share\t50\nchunk-games\t2\n\
+             run-seeds\t{:016x}\n",
+            hex(&[1; 20]),
+            1
+        );
+        let rows = format!("chunk\tsha256\n{name}\t{digest}\n");
+        std::fs::write(&manifest, provenance + &rows).expect("writes");
         let out = dir.join("out");
-        let request = Request {
+        Request {
             manifests: vec![manifest],
-            out: out.clone(),
+            out,
             every: 10,
             shuffle_seed: 1,
             standard_share: None,
             score_cap: None,
             swing_cap: None,
             dedup: false,
-        };
+        }
+    }
+
+    /// A rename that fails leaves neither the unit nor its staging behind, and one that works has the
+    /// unit's entries synced before it and the unit's name synced after it.
+    #[test]
+    fn a_failed_rename_publishes_nothing() {
+        let dir = std::env::temp_dir().join(format!("cadence-convert-unit-{}", std::process::id()));
+        let request = fixture(&dir);
+        let out = request.out.clone();
         let failed = convert(&request, &mut Logged::failing_at(0));
         let left: Vec<PathBuf> = std::fs::read_dir(&out)
             .expect("lists")
@@ -756,13 +973,73 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failed.is_err(), "a failed rename was taken as published");
         assert_eq!(left, [] as [PathBuf; 0]);
-        let unit = published.expect("the same request publishes once the rename works");
+        let unit = published
+            .expect("the same request publishes once the rename works")
+            .unit;
         let staging = out.join(format!(".staging-{}", std::process::id()));
         assert_eq!(
             logged.steps,
             [Step::Sync(staging), Step::Rename(unit), Step::Sync(out)],
             "the unit's entries synced before its rename, and its name after"
         );
+    }
+
+    /// A directory sync that fails before the unit's rename publishes nothing, and one that fails
+    /// after it leaves the unit published and says its durability is unconfirmed.
+    #[test]
+    fn a_failed_sync_publishes_nothing_before_the_rename_and_is_reported_after_it() {
+        let dir = std::env::temp_dir().join(format!("cadence-convert-sync-{}", std::process::id()));
+        let request = fixture(&dir);
+        let before = convert(&request, &mut Logged::failing_sync(0));
+        let left: Vec<PathBuf> = std::fs::read_dir(&request.out).map_or_else(
+            |_| Vec::new(),
+            |d| d.map(|e| e.expect("an entry").path()).collect(),
+        );
+        let after = convert(&request, &mut Logged::failing_sync(1));
+        let landed = after
+            .as_ref()
+            .is_ok_and(|c| c.unit.join("train.bin").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            before.is_err(),
+            "a sync before the rename failed and a unit was published"
+        );
+        assert_eq!(left, [] as [PathBuf; 0]);
+        let after = after.expect("published once the rename is made");
+        assert!(landed, "the unit is not in place");
+        let note = after.unconfirmed.expect("the failed sync is reported");
+        assert!(note.contains("published, durability unconfirmed"), "{note}");
+    }
+
+    /// Eight random plies and 32 random moves from the standard start, each move scored 5.
+    fn short_game(index: u32, seed: u64) -> GameRecord {
+        let mut rng = Rng::new(seed);
+        let mut board = Board::from_fen(&dfrc_fen(518, 518)).expect("the start");
+        let (mut plies, mut moves) = (Vec::new(), Vec::new());
+        for ply in 0..40 {
+            let legal = generate_legal(&board);
+            let Some(&m) = legal.as_slice().get(rng.below(legal.len().max(1))) else {
+                break;
+            };
+            if ply < 8 {
+                plies.push(encode_move(m));
+            } else {
+                moves.push((encode_move(m), 5));
+            }
+            board.play(m);
+        }
+        GameRecord {
+            index,
+            seed,
+            kind: 1,
+            white: 518,
+            black: 518,
+            plies,
+            moves,
+            outcome: 2,
+            ending: 3,
+            refused: 0,
+        }
     }
 
     #[test]
@@ -776,6 +1053,32 @@ mod tests {
     }
 
     /// White's result, turned to the side to move's.
+    /// Two records whose second and third words differ so that a fold adding a constant between
+    /// XORs would give them one key, as the first form of this key did, still get two.
+    #[test]
+    fn inputs_that_cancel_in_an_additive_fold_get_distinct_keys() {
+        let golden = 0x9E37_79B9_7F4A_7C15_u64;
+        let (first, second, third): (u64, u64, u64) = (
+            0x0123_4567_89ab_cdef,
+            0x0f0f_f0f0_0f0f_f0f0,
+            0x1111_2222_3333_4444,
+        );
+        let moved = third ^ 0x80;
+        let cancelled = second ^ third.wrapping_add(golden) ^ moved.wrapping_add(golden);
+        let record = |words: [u64; 3]| {
+            let mut r = [0_u8; RECORD_LEN];
+            for (i, w) in words.iter().enumerate() {
+                r[8 * i..8 * i + 8].copy_from_slice(&w.to_le_bytes());
+            }
+            r
+        };
+        let a = record([first, second, third]);
+        let b = record([first, cancelled, moved]);
+        assert_ne!(a, b);
+        assert_ne!(input_key(&a, false), input_key(&b, false));
+        assert_ne!(input_key(&a, false), input_key(&a, true));
+    }
+
     #[test]
     fn the_result_is_the_movers() {
         assert_eq!(result_for_mover(0, true), WIN);
@@ -783,5 +1086,26 @@ mod tests {
         assert_eq!(result_for_mover(1, false), WIN);
         assert_eq!(result_for_mover(1, true), LOSS);
         assert_eq!(result_for_mover(2, true), DRAW);
+    }
+
+    /// A game's number is its place in the run whatever size the run's chunks are, so the holdout
+    /// takes every tenth game of the run and not every tenth of each chunk.
+    #[test]
+    fn a_games_number_is_its_place_in_the_run_at_any_chunk_size() {
+        for chunk_games in [1_u32, 5, 1_000] {
+            let games = 2 * chunk_games.max(10);
+            let numbers: Vec<u64> = (0..games)
+                .map(|g| {
+                    let header = Header {
+                        chunk_index: g / chunk_games,
+                        games_planned: chunk_games,
+                        ..test_header()
+                    };
+                    game_number(&header, g % chunk_games)
+                })
+                .collect();
+            let first_wrong = numbers.iter().zip(0..).position(|(&n, g)| n != g);
+            assert_eq!(first_wrong, None, "chunks of {chunk_games}");
+        }
     }
 }
