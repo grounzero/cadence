@@ -49,6 +49,6 @@ fn a_share_is_at_most_the_whole_root() {
 #[test]
 fn a_root_with_one_legal_move_gives_it_the_whole_share() {
     let read = shares("4k3/8/8/8/8/4p3/3q4/4K2R w K - 0 1", 6);
-    assert!(!read.is_empty());
+    assert_ne!(read.len(), 0, "a completed iteration");
     assert!(read.iter().all(|&s| s == (1000, 1000)), "{read:?}");
 }
