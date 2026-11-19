@@ -24,7 +24,7 @@ use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
 const USAGE: &str = "usage: cadence-tools convert --manifest FILE [--manifest FILE]... --out DIR \
      --shuffle-seed HEX|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] \
-     [--dedup]";
+     [--dedup] [--max-copies N]";
 
 /// The last band holds every ply past it, as `datagen extract`'s does.
 const PLY_BAND: usize = 10;
@@ -58,6 +58,8 @@ pub struct Request {
     pub score_cap: Option<i16>,
     pub swing_cap: Option<i16>,
     pub dedup: bool,
+    /// At most this many training copies of a network input, the first read kept.
+    pub max_copies: Option<u8>,
 }
 
 /// # Errors
@@ -106,6 +108,7 @@ fn request_from(args: &[String]) -> Result<Request, String> {
         score_cap: None,
         swing_cap: None,
         dedup: false,
+        max_copies: None,
     };
     let (mut out, mut seed) = (None, None);
     let mut it = args.iter();
@@ -137,6 +140,11 @@ fn request_from(args: &[String]) -> Result<Request, String> {
             }
             "--score-cap" => request.score_cap = Some(value.parse().map_err(|_| bad())?),
             "--swing-cap" => request.swing_cap = Some(value.parse().map_err(|_| bad())?),
+            "--max-copies" => match value.parse::<u8>() {
+                Ok(0) => return Err("--max-copies 0 is refused: it trains on nothing".to_string()),
+                Ok(cap) => request.max_copies = Some(cap),
+                Err(_) => return Err(format!("bad {arg} `{value}`: 1 to 255")),
+            },
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -309,6 +317,7 @@ struct Counts {
     capped: u64,
     swung: u64,
     repeated_dropped: u64,
+    past_copies: u64,
     train: u64,
     holdout: u64,
     within_game: u64,
@@ -352,6 +361,7 @@ struct Kept {
     /// By start kind and network input, a reading only: each sorted once every position is kept.
     train_inputs: [Vec<u64>; 2],
     holdout_inputs: [Vec<u64>; 2],
+    copies: CopyCounts,
 }
 
 impl Kept {
@@ -363,6 +373,7 @@ impl Kept {
             holdout_keys: Vec::new(),
             train_inputs: [Vec::new(), Vec::new()],
             holdout_inputs: [Vec::new(), Vec::new()],
+            copies: CopyCounts::new(),
         })
     }
 }
@@ -501,6 +512,57 @@ impl KeySet {
     }
 }
 
+/// Training copies of each network input, a count beside each key in a key set's layout, so 11 to 21
+/// bytes an input as the table fills; a count stops at 255, past any cap the command line takes.
+struct CopyCounts {
+    slots: Vec<u64>,
+    counts: Vec<u8>,
+    len: usize,
+    zero: u8,
+}
+
+impl CopyCounts {
+    fn new() -> CopyCounts {
+        CopyCounts {
+            slots: vec![0; 1 << 16],
+            counts: vec![0; 1 << 16],
+            len: 0,
+            zero: 0,
+        }
+    }
+
+    /// The input's count with this copy.
+    fn bump(&mut self, key: u64) -> u8 {
+        if key == 0 {
+            self.zero = self.zero.saturating_add(1);
+            return self.zero;
+        }
+        if (self.len + 1) * 20 > self.slots.len() * 17 {
+            let mut slots = vec![0; self.slots.len() * 2];
+            let mut counts = vec![0; self.slots.len() * 2];
+            for (&k, &n) in self
+                .slots
+                .iter()
+                .zip(&self.counts)
+                .filter(|&(&k, _)| k != 0)
+            {
+                let i = KeySet::slot(&slots, k);
+                slots[i] = k;
+                counts[i] = n;
+            }
+            self.slots = slots;
+            self.counts = counts;
+        }
+        let i = KeySet::slot(&self.slots, key);
+        if self.slots[i] != key {
+            self.slots[i] = key;
+            self.len += 1;
+        }
+        self.counts[i] = self.counts[i].saturating_add(1);
+        self.counts[i]
+    }
+}
+
 /// One start kind's positions read by network input, its holdout against both kinds' training.
 #[derive(Clone, Copy, Debug, Default)]
 struct ByInput {
@@ -618,7 +680,14 @@ fn convert_into(
             copies: copies(train),
         }
     });
-    let report = report(sets, &counts, &plan.repeats, overlap, &by_input);
+    let report = report(
+        sets,
+        &counts,
+        &plan.repeats,
+        overlap,
+        &by_input,
+        request.max_copies,
+    );
     let Kept {
         train,
         holdout,
@@ -626,8 +695,15 @@ fn convert_into(
         holdout_keys,
         train_inputs,
         holdout_inputs,
+        copies,
     } = kept;
-    drop((train_keys, holdout_keys, train_inputs, holdout_inputs));
+    drop((
+        train_keys,
+        holdout_keys,
+        train_inputs,
+        holdout_inputs,
+        copies,
+    ));
     let mut rng = Rng::new(request.shuffle_seed);
     let train_sha = train.drain(&staging.join("train.bin"), &mut rng)?;
     let holdout_sha = holdout.drain(&staging.join("holdout.bin"), &mut rng)?;
@@ -861,20 +937,29 @@ fn positions(
                 );
                 let bytes = trainer::encode(&board, score, result);
                 let input = input_key(&bytes, board.side_to_move() == cadence_core::Colour::White);
-                counts.plies[band] += 1;
-                counts.zeros[band] += u64::from(score == 0);
-                counts.scores[bucket(score)] += 1;
                 let kind = usize::from(record.kind);
-                if held {
-                    kept.holdout.push(&bytes)?;
-                    kept.holdout_keys.push(key);
-                    kept.holdout_inputs[kind].push(input);
-                    counts.holdout += 1;
+                // The cap reads training only, so validation keeps every copy it held before.
+                if !held
+                    && request
+                        .max_copies
+                        .is_some_and(|cap| kept.copies.bump(input) > cap)
+                {
+                    counts.past_copies += 1;
                 } else {
-                    kept.train.push(&bytes)?;
-                    kept.train_keys.push(key);
-                    kept.train_inputs[kind].push(input);
-                    counts.train += 1;
+                    counts.plies[band] += 1;
+                    counts.zeros[band] += u64::from(score == 0);
+                    counts.scores[bucket(score)] += 1;
+                    if held {
+                        kept.holdout.push(&bytes)?;
+                        kept.holdout_keys.push(key);
+                        kept.holdout_inputs[kind].push(input);
+                        counts.holdout += 1;
+                    } else {
+                        kept.train.push(&bytes)?;
+                        kept.train_keys.push(key);
+                        kept.train_inputs[kind].push(input);
+                        counts.train += 1;
+                    }
                 }
             }
         }
@@ -926,6 +1011,7 @@ fn report(
     repeats: &[Repeats; 2],
     overlap: usize,
     by_input: &[ByInput; 2],
+    max_copies: Option<u8>,
 ) -> String {
     let mut text = String::new();
     for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
@@ -965,6 +1051,13 @@ fn report(
                 "  {name} repeated positions within-game {} across-games {}",
                 c.within_game, c.across_games
             );
+            if let Some(cap) = max_copies {
+                let _ = writeln!(
+                    text,
+                    "  {name} training positions past {cap} copies of their network input, dropped: {}",
+                    c.past_copies
+                );
+            }
             for (label, bands) in [
                 ("kept", &c.plies),
                 ("exact-zero", &c.zeros),
@@ -1069,6 +1162,12 @@ fn manifest(
     if request.dedup {
         filters.push_str(", repeated positions dropped");
     }
+    if let Some(cap) = request.max_copies {
+        let _ = write!(
+            filters,
+            ", at most {cap} training copies of a network input"
+        );
+    }
     let _ = writeln!(text, "filters\t{filters}");
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "source\t{}\t{}", set.manifest.display(), set.sha256);
@@ -1102,8 +1201,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BUCKETS, Buckets, KeySet, RECORD_LEN, Request, bucket, convert, copies, game_number,
-        input_key, result_for_mover,
+        BUCKETS, Buckets, CopyCounts, KeySet, RECORD_LEN, Request, bucket, convert, copies,
+        game_number, input_key, request_from, result_for_mover,
     };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
@@ -1173,6 +1272,7 @@ mod tests {
             score_cap: None,
             swing_cap: None,
             dedup: false,
+            max_copies: None,
         }
     }
 
@@ -1433,5 +1533,55 @@ mod tests {
         sorted.extend(std::iter::repeat_n(4, 9));
         sorted.extend(std::iter::repeat_n(5, 600));
         assert_eq!(copies(&sorted), [1, 5, 9, 0, 600]);
+    }
+
+    /// Each input's count rises by one a copy through the table's growth, zero's too, and stops at
+    /// 255.
+    #[test]
+    fn copy_counts_count_each_input_through_growth() {
+        let mut counts = CopyCounts::new();
+        for round in 1..=3u8 {
+            for key in 0..100_000u64 {
+                assert_eq!(
+                    counts.bump(key * 7),
+                    round,
+                    "key {} in round {round}",
+                    key * 7
+                );
+            }
+        }
+        assert_eq!(counts.bump(1), 1, "a key never bumped starts at one");
+        let last = (0..300).map(|_| counts.bump(5)).last();
+        assert_eq!(last, Some(255));
+    }
+
+    /// The cap is one to 255 copies, and absent unless asked.
+    #[test]
+    fn the_copies_cap_takes_one_to_255() {
+        let ask = |cap: &str| {
+            let args: Vec<String> = [
+                "--manifest",
+                "m",
+                "--out",
+                "o",
+                "--shuffle-seed",
+                "1",
+                "--max-copies",
+                cap,
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+            request_from(&args).map(|r| r.max_copies)
+        };
+        assert_eq!(ask("32"), Ok(Some(32)));
+        assert_eq!(ask("255"), Ok(Some(255)));
+        assert!(ask("0").is_err_and(|e| e.contains("trains on nothing")));
+        assert!(ask("256").is_err_and(|e| e.contains("1 to 255")));
+        let none: Vec<String> = ["--manifest", "m", "--out", "o", "--shuffle-seed", "1"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(request_from(&none).map(|r| r.max_copies), Ok(None));
     }
 }

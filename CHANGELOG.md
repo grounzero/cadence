@@ -19,6 +19,12 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Tools: `cadence-tools convert --max-copies N` keeps at most N training
+  copies of a position's network input, the first read, and counts the rest
+  it drops; validation keeps every copy.
+
 ### Changed
 
 - Tools: `cadence-tools convert` deals the records it keeps to bucket files
