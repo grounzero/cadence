@@ -113,6 +113,8 @@ impl Search<'_> {
             // Only accepted iterations reach here, so a run of equal moves is a run of completed
             // ones.
             self.run.roots.push((best, score));
+            let share = best_share(&self.run.root_nodes, best);
+            self.run.shares.push(share);
             self.run.pv.clear();
             self.run.pv.extend_from_slice(&self.run.lines[0].pv);
             for number in 1..=self.run.lines.len().min(self.shown) {
@@ -255,6 +257,7 @@ impl Search<'_> {
         self.expect(0, depth, Expected::Pv, alpha, beta);
         self.visit(0);
         self.table.clear(0);
+        self.run.root_nodes.clear();
         // The root's window is always open, and its children read the flag one ply up.
         self.tt_pv[0] = true;
         let mut best = Move::NULL;
@@ -269,6 +272,7 @@ impl Search<'_> {
                 best = m;
             }
             self.name_current(m, i + 1, legal, out);
+            let before = self.run.nodes;
             self.make(board, 0, m);
             // The root extends a checking move like any node.
             let ext = extension(board.in_check(), 1, depth);
@@ -285,6 +289,7 @@ impl Search<'_> {
                 score = -self.negamax(board, child, 1, -beta, -alpha, open);
             }
             board.unmake_move(m);
+            self.run.root_nodes.push((m, self.run.nodes - before));
             searched += 1;
             if self.run.aborted {
                 break;
@@ -303,4 +308,19 @@ impl Search<'_> {
         }
         (best, best_score)
     }
+}
+
+/// Thousandths of the root search's nodes that lay under `best`, and 0 where it took none. Of the
+/// last root search only, so an aspiration window's re-search replaces the one it widened.
+fn best_share(root_nodes: &[(Move, u64)], best: Move) -> u32 {
+    let total: u64 = root_nodes.iter().map(|&(_, n)| n).sum();
+    let under: u64 = root_nodes
+        .iter()
+        .filter(|&&(m, _)| m == best)
+        .map(|&(_, n)| n)
+        .sum();
+    if total == 0 {
+        return 0;
+    }
+    u32::try_from(under.saturating_mul(1000) / total).unwrap_or(1000)
 }

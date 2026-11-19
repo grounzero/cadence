@@ -377,6 +377,13 @@ impl Search<'_> {
         &self.run.roots
     }
 
+    /// Thousandths of each completed iteration's root nodes that lay under its best move, beside
+    /// [`Search::iteration_roots`].
+    #[must_use]
+    pub fn iteration_shares(&self) -> &[u32] {
+        &self.run.shares
+    }
+
     /// Completed iterations in a row ending on the last one's move, counting it. Derived from
     /// [`Search::iteration_roots`], so the two cannot disagree.
     #[must_use]
