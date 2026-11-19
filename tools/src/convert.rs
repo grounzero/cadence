@@ -24,7 +24,7 @@ use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
 const USAGE: &str = "usage: cadence-tools convert --manifest FILE [--manifest FILE]... --out DIR \
      --shuffle-seed HEX|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] \
-     [--dedup] [--max-copies N]";
+     [--dedup] [--max-copies N] [--report-sample N]";
 
 /// The last band holds every ply past it, as `datagen extract`'s does.
 const PLY_BAND: usize = 10;
@@ -60,6 +60,8 @@ pub struct Request {
     pub dedup: bool,
     /// At most this many training copies of a network input, the first read kept.
     pub max_copies: Option<u8>,
+    /// The report's figures by key and by input read from 1 key in this many, and scaled by it.
+    pub report_sample: u32,
 }
 
 /// # Errors
@@ -109,6 +111,7 @@ fn request_from(args: &[String]) -> Result<Request, String> {
         swing_cap: None,
         dedup: false,
         max_copies: None,
+        report_sample: 1,
     };
     let (mut out, mut seed) = (None, None);
     let mut it = args.iter();
@@ -144,6 +147,10 @@ fn request_from(args: &[String]) -> Result<Request, String> {
                 Ok(0) => return Err("--max-copies 0 is refused: it trains on nothing".to_string()),
                 Ok(cap) => request.max_copies = Some(cap),
                 Err(_) => return Err(format!("bad {arg} `{value}`: 1 to 255")),
+            },
+            "--report-sample" => match value.parse::<u32>() {
+                Ok(n) if n >= 1 => request.report_sample = n,
+                _ => return Err(format!("bad {arg} `{value}`: 1 reads every key")),
             },
             other => return Err(format!("unknown flag {other}")),
         }
@@ -680,14 +687,7 @@ fn convert_into(
             copies: copies(train),
         }
     });
-    let report = report(
-        sets,
-        &counts,
-        &plan.repeats,
-        overlap,
-        &by_input,
-        request.max_copies,
-    );
+    let report = report(sets, &counts, &plan.repeats, overlap, &by_input, request);
     let Kept {
         train,
         holdout,
@@ -924,13 +924,17 @@ fn positions(
         } else {
             let key = board.key();
             let again = !this_game.insert(key);
-            let before = seen.contains(key);
+            // Deduplication needs every key; the report alone reads its sample.
+            let tracked = request.dedup || in_sample(key, request.report_sample);
+            let before = tracked && seen.contains(key);
             counts.within_game += u64::from(again);
             counts.across_games += u64::from(!again && before);
             if request.dedup && (again || before) {
                 counts.repeated_dropped += 1;
             } else {
-                seen.insert(key);
+                if tracked {
+                    seen.insert(key);
+                }
                 let result = result_for_mover(
                     record.outcome,
                     board.side_to_move() == cadence_core::Colour::White,
@@ -949,16 +953,21 @@ fn positions(
                     counts.plies[band] += 1;
                     counts.zeros[band] += u64::from(score == 0);
                     counts.scores[bucket(score)] += 1;
-                    if held {
+                    let n = request.report_sample;
+                    let (keys, inputs) = if held {
                         kept.holdout.push(&bytes)?;
-                        kept.holdout_keys.push(key);
-                        kept.holdout_inputs[kind].push(input);
                         counts.holdout += 1;
+                        (&mut kept.holdout_keys, &mut kept.holdout_inputs[kind])
                     } else {
                         kept.train.push(&bytes)?;
-                        kept.train_keys.push(key);
-                        kept.train_inputs[kind].push(input);
                         counts.train += 1;
+                        (&mut kept.train_keys, &mut kept.train_inputs[kind])
+                    };
+                    if in_sample(key, n) {
+                        keys.push(key);
+                    }
+                    if in_sample(input, n) {
+                        inputs.push(input);
                     }
                 }
             }
@@ -982,6 +991,15 @@ fn input_key(record: &[u8; RECORD_LEN], white_to_move: bool) -> u64 {
     };
     let mix = |x: u64| splitmix64(x).0;
     mix(word(0) ^ mix(word(8) ^ mix(word(16) ^ u64::from(white_to_move))))
+}
+
+/// Whether the report reads this key, 1 key in `n` by a hash apart from the key set's own, so a
+/// sampled key's every copy is read and a sampled key set probes no denser than a whole one.
+fn in_sample(key: u64, n: u32) -> bool {
+    n == 1
+        || splitmix64(key ^ 0x5851_f42d_4c95_7f2d)
+            .0
+            .is_multiple_of(u64::from(n))
 }
 
 /// The record stores White's result; the trainer reads the side to move's.
@@ -1011,9 +1029,16 @@ fn report(
     repeats: &[Repeats; 2],
     overlap: usize,
     by_input: &[ByInput; 2],
-    max_copies: Option<u8>,
+    request: &Request,
 ) -> String {
     let mut text = String::new();
+    let n = request.report_sample;
+    // Figures read from a sample are scaled to the whole and say so; at 1 the text is unchanged.
+    let (s, note) = if n > 1 {
+        (n as usize, format!(" (1 in {n} keys, scaled)"))
+    } else {
+        (1, String::new())
+    };
     for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
         let _ = writeln!(
             text,
@@ -1048,10 +1073,11 @@ fn report(
             );
             let _ = writeln!(
                 text,
-                "  {name} repeated positions within-game {} across-games {}",
-                c.within_game, c.across_games
+                "  {name} repeated positions within-game {} across-games {}{note}",
+                c.within_game,
+                c.across_games * s as u64
             );
-            if let Some(cap) = max_copies {
+            if let Some(cap) = request.max_copies {
                 let _ = writeln!(
                     text,
                     "  {name} training positions past {cap} copies of their network input, dropped: {}",
@@ -1083,35 +1109,54 @@ fn report(
             );
         }
     }
+    sampled_figures(&mut text, overlap, by_input, s, &note);
+    text
+}
+
+/// The report's figures read by key and by network input, each scaled by `s` and marked with `note`
+/// when read from a sample.
+fn sampled_figures(
+    text: &mut String,
+    overlap: usize,
+    by_input: &[ByInput; 2],
+    s: usize,
+    note: &str,
+) {
     let _ = writeln!(
-        text,
-        "holdout positions whose key is also in training: {overlap}"
+        *text,
+        "holdout positions whose key is also in training: {}{note}",
+        overlap * s
     );
     let input_overlap: usize = by_input.iter().map(|b| b.overlap).sum();
     let _ = writeln!(
-        text,
+        *text,
         "holdout positions whose network input (768 features and the side to move) is also in \
-         training: {input_overlap}"
+         training: {}{note}",
+        input_overlap * s
     );
     for (name, b) in ["uniform", "standard"].iter().zip(by_input) {
         let _ = writeln!(
-            text,
-            "{name} holdout positions whose network input is also in training: {} of {}",
-            b.overlap, b.holdout
+            *text,
+            "{name} holdout positions whose network input is also in training: {} of {}{note}",
+            b.overlap * s,
+            b.holdout * s
         );
         let _ = writeln!(
-            text,
-            "{name} repeats by network input within training {} of {}, within holdout {} of {}",
-            b.train_repeats, b.train, b.holdout_repeats, b.holdout
+            *text,
+            "{name} repeats by network input within training {} of {}, within holdout {} of \
+             {}{note}",
+            b.train_repeats * s,
+            b.train * s,
+            b.holdout_repeats * s,
+            b.holdout * s
         );
-        let [one, few, some, many, most] = b.copies;
+        let [one, few, some, many, most] = b.copies.map(|c| c * s as u64);
         let _ = writeln!(
-            text,
+            *text,
             "{name} training positions by copies of their network input: 1 {one} 2-8 {few} 9-64 \
-             {some} 65-512 {many} over-512 {most}"
+             {some} 65-512 {many} over-512 {most}{note}"
         );
     }
-    text
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1168,6 +1213,13 @@ fn manifest(
             ", at most {cap} training copies of a network input"
         );
     }
+    if request.report_sample > 1 {
+        let _ = write!(
+            filters,
+            "; report figures by key and input from 1 key in {}",
+            request.report_sample
+        );
+    }
     let _ = writeln!(text, "filters\t{filters}");
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "source\t{}\t{}", set.manifest.display(), set.sha256);
@@ -1202,7 +1254,7 @@ mod tests {
 
     use super::{
         BUCKETS, Buckets, CopyCounts, KeySet, RECORD_LEN, Request, bucket, convert, copies,
-        game_number, input_key, request_from, result_for_mover,
+        game_number, in_sample, input_key, request_from, result_for_mover,
     };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
@@ -1273,6 +1325,7 @@ mod tests {
             swing_cap: None,
             dedup: false,
             max_copies: None,
+            report_sample: 1,
         }
     }
 
@@ -1553,6 +1606,18 @@ mod tests {
         assert_eq!(counts.bump(1), 1, "a key never bumped starts at one");
         let last = (0..300).map(|_| counts.bump(5)).last();
         assert_eq!(last, Some(255));
+    }
+
+    /// The report's sample reads about one key in `n`, and every key at one.
+    #[test]
+    fn the_report_sample_reads_about_one_key_in_n() {
+        let read = |n: u32| (0..1_000_000u64).filter(|&k| in_sample(k, n)).count();
+        assert_eq!(read(1), 1_000_000);
+        let sixteenth = read(16);
+        assert!(
+            (61_250..=63_750).contains(&sixteenth),
+            "{sixteenth} of a million keys at 1 in 16"
+        );
     }
 
     /// The cap is one to 255 copies, and absent unless asked.
