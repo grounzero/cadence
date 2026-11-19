@@ -826,3 +826,62 @@ fn training_keeps_at_most_the_cap_copies_of_an_input() {
         "{manifest_text}"
     );
 }
+
+/// The report's sample changes the report and nothing else: the same records in the same order, the
+/// sampled figures scaled and marked, and the manifest naming the sample.
+#[test]
+fn a_report_sample_leaves_the_records_as_they_were() {
+    let dir = scratch("report-sample");
+    let manifest = dataset(
+        &dir.join("data"),
+        97,
+        &[games(97, 40, |i| u8::from(i % 2 == 0))],
+    );
+    let (whole_ok, whole, whole_units) =
+        convert(&[&manifest], &dir.join("whole"), &["--shuffle-seed", "7"]);
+    let (ok, text, units) = convert(
+        &[&manifest],
+        &dir.join("sampled"),
+        &["--shuffle-seed", "7", "--report-sample", "4"],
+    );
+    assert!(whole_ok && ok, "{whole}\n{text}");
+    let bytes = |unit: &Path, file: &str| std::fs::read(unit.join(file)).expect("reads");
+    let same = ["train.bin", "holdout.bin"]
+        .map(|file| bytes(&whole_units[0], file) == bytes(&units[0], file));
+    let manifest_text =
+        std::fs::read_to_string(units[0].join("MANIFEST.tsv")).expect("the unit's manifest");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(same, [true, true], "the sample changed the records");
+    assert!(!whole.contains("keys, scaled"), "{whole}");
+    let scaled: Vec<&str> = text
+        .lines()
+        .filter(|l| l.ends_with("(1 in 4 keys, scaled)"))
+        .collect();
+    assert_eq!(scaled.len(), 10, "{text}");
+    for line in &scaled {
+        // The labels' own numbers go first, so only the figures are left to read.
+        let mut bare = line
+            .replace("(1 in 4 keys, scaled)", "")
+            .replace(": 1 ", ": ");
+        for label in ["over-512", "65-512", "9-64", "2-8", "768"] {
+            bare = bare.replace(label, " ");
+        }
+        // A game's own repeats are counted whole, and only the figure after them is sampled.
+        if let Some(at) = bare.find("within-game ") {
+            let end = bare[at..].find(" across").map_or(bare.len(), |e| at + e);
+            bare.replace_range(at..end, "");
+        }
+        let figures: Vec<u64> = bare
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|w| w.parse().ok())
+            .collect();
+        assert!(!figures.is_empty(), "no figure in `{line}`");
+        for figure in figures {
+            assert_eq!(figure % 4, 0, "{figure} in `{line}` is not scaled by 4");
+        }
+    }
+    assert!(
+        manifest_text.contains("report figures by key and input from 1 key in 4"),
+        "{manifest_text}"
+    );
+}
