@@ -19,6 +19,11 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Training: `cadence-train run --lr-schedule step` lowers the learning rate
+  in five equal drops, in place of the cosine decay, to the same final rate.
+
 ### Changed
 
 - Tools: `cadence-tools convert` deals the records it keeps to bucket files
