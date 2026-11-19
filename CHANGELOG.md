@@ -21,6 +21,8 @@ result.
 
 ### Changed
 
+- Evaluation: the built-in network is retrained on positions from games the
+  first network played, together with the positions the first was trained on.
 - Tools: `datagen run` plays its games, the opening screen included, with
   the network built into the engine, and every chunk's header names that
   network's SHA-256. `datagen verify` regenerates such a chunk with it and
