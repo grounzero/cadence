@@ -24,6 +24,7 @@ use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
 use cadence_nnue::{HIDDEN, Provenance, WIDE};
 use cadence_train::data::{BOOK_HEADER, COMMIT_FILE};
+use cadence_train::schedule;
 
 const SUPERBATCHES: usize = 40;
 const BATCH_SIZE: usize = 16_384;
@@ -33,9 +34,6 @@ const RESULT_SHARE: f32 = 0.5;
 /// The overfit test's share, away from a half: its blend check reads the swapped share, which at
 /// a half is the same target.
 const OVERFIT_SHARE: f32 = 0.75;
-const INITIAL_LR: f32 = 0.001;
-/// Five steps of 0.3 below the first rate by the last superbatch, decayed along a cosine.
-const FINAL_LR: f32 = INITIAL_LR * 0.3 * 0.3 * 0.3 * 0.3 * 0.3;
 const SAVE_RATE: usize = 10;
 const THREADS: usize = 2;
 const BATCH_QUEUE: usize = 32;
@@ -60,7 +58,7 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
-           [--hidden 256|512]
+           [--hidden 256|512] [--lr-schedule cosine|step]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
@@ -171,6 +169,41 @@ fn clipped(clip: f32) -> AdamWParams {
     }
 }
 
+/// `--lr-schedule`, whether the learning rate falls in steps rather than along the cosine.
+fn stepped_flag(flags: &Flags) -> Result<bool, String> {
+    match flags.get("--lr-schedule").map(Vec::as_slice) {
+        None => Ok(false),
+        Some([s]) if s == "cosine" => Ok(false),
+        Some([s]) if s == "step" => Ok(true),
+        _ => Err(format!("--lr-schedule is cosine or step\n{USAGE}")),
+    }
+}
+
+/// A run's schedule with the learning-rate scheduler given, whose type the schedule carries.
+fn training<LR: lr::LrScheduler>(
+    id: &str,
+    batches: usize,
+    superbatches: usize,
+    result_share: f32,
+    lr_scheduler: LR,
+) -> TrainingSchedule<LR, wdl::ConstantWDL> {
+    TrainingSchedule {
+        net_id: id.to_string(),
+        eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
+        steps: TrainingSteps {
+            batch_size: BATCH_SIZE,
+            batches_per_superbatch: batches,
+            start_superbatch: 1,
+            end_superbatch: superbatches,
+        },
+        wdl_scheduler: wdl::ConstantWDL {
+            value: result_share,
+        },
+        lr_scheduler,
+        save_rate: SAVE_RATE.min(superbatches),
+    }
+}
+
 fn run(flags: &Flags) -> Result<(), String> {
     // Before anything is built: a run trains only on the files its manifests name.
     let manifests: Vec<&Path> = flags
@@ -194,6 +227,7 @@ fn run(flags: &Flags) -> Result<(), String> {
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
     let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
     let hidden = width_flag(flags)?;
+    let stepped = stepped_flag(flags)?;
     if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
         return Err(format!(
             "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
@@ -228,36 +262,21 @@ fn run(flags: &Flags) -> Result<(), String> {
             .optimiser
             .set_params_for_weight("l1w", clipped(clip));
     }
-    let schedule = TrainingSchedule {
-        net_id: id.to_string(),
-        eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
-        steps: TrainingSteps {
-            batch_size: BATCH_SIZE,
-            batches_per_superbatch: batches,
-            start_superbatch: 1,
-            end_superbatch: superbatches,
-        },
-        wdl_scheduler: wdl::ConstantWDL {
-            value: result_share,
-        },
-        lr_scheduler: lr::CosineDecayLR {
-            initial_lr: INITIAL_LR,
-            final_lr: FINAL_LR,
-            final_superbatch: superbatches,
-        },
-        save_rate: SAVE_RATE.min(superbatches),
-    };
     let settings = LocalSettings {
         threads: THREADS,
         test_set: None,
         output_directory: out,
         batch_queue_size: BATCH_QUEUE,
     };
-    trainer.run(
-        &schedule,
-        &settings,
-        &DirectSequentialDataLoader::new(&data),
-    );
+    let loader = DirectSequentialDataLoader::new(&data);
+    let (sb, share) = (superbatches, result_share);
+    if stepped {
+        let lr = schedule::stepped(sb);
+        trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
+    } else {
+        let lr = schedule::cosine(sb);
+        trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
+    }
     // Freed before the checkpoints are read back, each into a trainer of its own.
     drop(trainer);
     stop.store(true, Ordering::Relaxed);
@@ -456,24 +475,10 @@ fn short_schedule(
     superbatches: usize,
     batches: usize,
 ) -> TrainingSchedule<lr::CosineDecayLR, wdl::ConstantWDL> {
+    let lr = schedule::cosine(superbatches);
     TrainingSchedule {
-        net_id: id.to_string(),
-        eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
-        steps: TrainingSteps {
-            batch_size: BATCH_SIZE,
-            batches_per_superbatch: batches,
-            start_superbatch: 1,
-            end_superbatch: superbatches,
-        },
-        wdl_scheduler: wdl::ConstantWDL {
-            value: OVERFIT_SHARE,
-        },
-        lr_scheduler: lr::CosineDecayLR {
-            initial_lr: INITIAL_LR,
-            final_lr: FINAL_LR,
-            final_superbatch: superbatches,
-        },
         save_rate: superbatches,
+        ..training(id, batches, superbatches, OVERFIT_SHARE, lr)
     }
 }
 
