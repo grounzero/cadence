@@ -24,6 +24,15 @@ result.
 - Training: `cadence-train run --lr-schedule step` lowers the learning rate
   in five equal drops, in place of the cosine decay, to the same final rate.
 
+### Changed
+
+- Tools: `cadence-tools convert` deals the records it keeps to bucket files
+  on disk and shuffles each bucket in turn, rather than holding every record
+  in memory, and reads its chunks once to choose the games and again to
+  convert them. The same shuffle seed now gives a different order than
+  before. Its report counts the training positions by how many copies of
+  their network input the set holds.
+
 ## [0.7.0-rc.2] - 2026-11-19
 
 A release candidate for 0.7.0, with a retrained network.
