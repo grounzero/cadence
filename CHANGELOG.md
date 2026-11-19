@@ -19,12 +19,29 @@ result.
 
 ## [Unreleased]
 
+## [0.7.0-rc.2] - 2026-11-19
+
+A release candidate for 0.7.0, with a retrained network.
+
 ### Changed
 
+- Evaluation: the built-in network is retrained on positions from games the
+  first network played, together with the positions the first was trained on.
+- Search: the tunable search options act only on the search that plays with
+  the network; with `Use NNUE` off, the search keeps 0.6.0's values.
 - Tools: `datagen run` plays its games, the opening screen included, with
   the network built into the engine, and every chunk's header names that
   network's SHA-256. `datagen verify` regenerates such a chunk with it and
   refuses a chunk naming another network.
+
+Test 86, for the network: +105.30 (between +85.76 and +125.50), a
+self-play estimate against the build before it at the short control, from
+a sequential test stopped at its first crossing, so it leans high. At 40
+seconds plus 0.4, test 87: +109.38 (between +94.13 and +125.06). In
+Chess960 and double Chess960 at the short control, test 88: +132.75
+(between +111.51 and +154.99). This was a non-regression test, which asks
+only whether the network costs strength there, and it passed at 620 games.
+They are not a rating.
 
 ## [0.7.0-rc.1] - 2026-11-18
 
@@ -630,7 +647,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...main
+[0.7.0-rc.2]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...0.7.0-rc.2
 [0.7.0-rc.1]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0-rc.1
 [0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
