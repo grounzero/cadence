@@ -392,6 +392,14 @@ impl Search<'_> {
             .count()
     }
 
+    /// Thousandths of the soft budget the iteration scores so far earn, from
+    /// [`Search::iteration_roots`], so the two cannot disagree.
+    #[must_use]
+    pub fn drop_scale(&self) -> u64 {
+        let scores: Vec<Score> = self.run.roots.iter().map(|&(_, s)| s).collect();
+        crate::time::drop_scale(&scores)
+    }
+
     /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {

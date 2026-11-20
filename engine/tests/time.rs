@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
+use cadence_engine::score::{MATE, Score};
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
-    Budget, MOVE_OVERHEAD_MS, STABILITY_CALLS, STABILITY_SCALE, another_iteration_fits, budget,
-    soft_for_run,
+    Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, STABILITY_CALLS,
+    STABILITY_SCALE, another_iteration_fits, budget, drop_scale, soft_for_drop, soft_for_run,
 };
 use cadence_engine::tt::Table;
 use support::Engine;
@@ -1264,4 +1265,129 @@ fn the_budget_is_spent_from_the_clock_origin() {
         "took {:?} with its clock spent",
         start.elapsed()
     );
+}
+
+/// A score that holds or rises is no reason to think longer, at any length of search.
+#[test]
+fn a_score_that_holds_or_rises_keeps_the_budget() {
+    let cases: [&[Score]; 6] = [
+        &[],
+        &[40],
+        &[30, 30, 30, 30, 30],
+        &[0, 10, 20, 30, 40],
+        &[-200, -100, 0],
+        &[25, 25],
+    ];
+    for scores in cases {
+        assert_eq!(drop_scale(scores), 1000, "{scores:?}");
+    }
+}
+
+/// Forty centipawns under the window's average is forty steps.
+#[test]
+fn a_falling_score_stretches_the_budget_by_its_fall() {
+    assert_eq!(drop_scale(&[50, 50, 50, 50, 10]), 1000 + 40 * DROP_STEP);
+    assert_eq!(drop_scale(&[20, 40, 60, 80, 30]), 1000 + 20 * DROP_STEP);
+    assert_eq!(drop_scale(&[100, 90]), 1000 + 10 * DROP_STEP);
+}
+
+/// A collapse is bounded, so one iteration's score cannot spend the hard budget on its own.
+#[test]
+fn the_stretch_is_capped() {
+    assert_eq!(drop_scale(&[500, 500, 500, 500, -500]), DROP_SCALE_MAX);
+    assert_eq!(drop_scale(&[2000, -2000]), DROP_SCALE_MAX);
+}
+
+/// Only the window before the last iteration is the reference, so an old score left behind
+/// does not count.
+#[test]
+fn the_reference_is_the_window_before_the_last_iteration() {
+    let mut scores = vec![-1000; 3];
+    scores.extend([0; DROP_WINDOW]);
+    scores.push(0);
+    assert_eq!(drop_scale(&scores), 1000, "{scores:?}");
+    let mut scores = vec![1000; 3];
+    scores.extend([0; DROP_WINDOW]);
+    scores.push(0);
+    assert_eq!(drop_scale(&scores), 1000, "{scores:?}");
+}
+
+/// A mate score is not a margin on the evaluation's scale, so it stretches nothing.
+#[test]
+fn a_decisive_score_stretches_nothing() {
+    for scores in [
+        [0, 0, 0, MATE - 10],
+        [MATE - 10, MATE - 10, MATE - 10, 0],
+        [0, 0, 0, -MATE + 10],
+    ] {
+        assert_eq!(drop_scale(&scores), 1000, "{scores:?}");
+    }
+}
+
+/// A larger fall is never given less time.
+#[test]
+fn a_larger_fall_never_gets_less() {
+    let mut last = 0;
+    for fall in 0..400 {
+        let scale = drop_scale(&[100, 100, 100, 100, 100 - fall]);
+        assert!(scale >= last, "a fall of {fall} got {scale} after {last}");
+        assert!(
+            (1000..=DROP_SCALE_MAX).contains(&scale),
+            "{scale} at a fall of {fall}"
+        );
+        last = scale;
+    }
+}
+
+/// The stretched budget gives more than the soft one where there is room, and never passes the
+/// hard one at any clock.
+#[test]
+fn the_stretched_budget_stays_under_the_hard_one() {
+    for time in TIMES {
+        for inc in INCS {
+            for mtg in MTG {
+                let l = clocked(time, inc, mtg);
+                let b = budget(&l, Colour::White).expect("a clock gives a budget");
+                for scale in [1000, 1001, 1200, DROP_SCALE_MAX] {
+                    let soft = soft_for_drop(&l, b, b.soft, scale);
+                    assert!(soft >= b.soft.min(b.hard), "{scale} shortened {time}+{inc}");
+                    assert!(
+                        soft <= b.hard,
+                        "{scale} at {time}+{inc}: {soft} over {}",
+                        b.hard
+                    );
+                }
+            }
+        }
+    }
+    let l = clocked(60_000, 0, None);
+    let b = budget(&l, Colour::White).expect("a clock gives a budget");
+    assert!(
+        soft_for_drop(&l, b, b.soft, DROP_SCALE_MAX) > b.soft,
+        "the largest stretch gave nothing over a soft budget of {}",
+        b.soft
+    );
+}
+
+/// A `movetime` is the time to spend, so no fall changes it.
+#[test]
+fn a_movetime_is_not_stretched() {
+    for spec in ["movetime 200", "wtime 60000 btime 60000 movetime 500"] {
+        let l = limits(spec);
+        let b = budget(&l, Colour::White).expect("a movetime gives a budget");
+        assert_eq!(
+            soft_for_drop(&l, b, b.soft, DROP_SCALE_MAX),
+            b.soft,
+            "`{spec}`"
+        );
+    }
+}
+
+/// What the search reads is the rule over its own recorded scores, at a hand-built middlegame.
+#[test]
+fn the_search_reads_the_scale_of_its_own_iterations() {
+    searched(MIDDLEGAME, Limits::depth(7), |s, _| {
+        let scores: Vec<Score> = s.iteration_roots().iter().map(|&(_, v)| v).collect();
+        assert_eq!(s.drop_scale(), drop_scale(&scores), "{scores:?}");
+    });
 }

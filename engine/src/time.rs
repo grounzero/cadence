@@ -5,6 +5,7 @@
 
 use cadence_core::Colour;
 
+use crate::score::{Score, is_decisive};
 use crate::search::Limits;
 
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
@@ -104,6 +105,44 @@ pub fn soft_for_run(limits: &Limits, budget: Budget, run: usize) -> u64 {
     }
     let scale = STABILITY_SCALE[stability_bin(run)];
     (budget.soft.saturating_mul(scale) / 1000).min(budget.hard)
+}
+
+/// How many completed iterations before the last one its score is compared with.
+pub const DROP_WINDOW: usize = 4;
+
+/// Thousandths of the soft budget added for each centipawn the score has fallen.
+pub const DROP_STEP: u64 = 5;
+
+/// The most a falling score can stretch the soft budget, in thousandths; the hard budget still
+/// bounds it.
+pub const DROP_SCALE_MAX: u64 = 1600;
+
+/// Thousandths of the soft budget for a search whose iteration scores are `scores`, oldest first.
+#[must_use]
+pub fn drop_scale(scores: &[Score]) -> u64 {
+    let Some((&last, before)) = scores.split_last() else {
+        return 1000;
+    };
+    let window = &before[before.len().saturating_sub(DROP_WINDOW)..];
+    if window.is_empty() || is_decisive(last) || window.iter().any(|&s| is_decisive(s)) {
+        return 1000;
+    }
+    let sum: i64 = window.iter().map(|&s| i64::from(s)).sum();
+    let reference = sum / i64::try_from(window.len()).unwrap_or(1);
+    let fall = u64::try_from(reference - i64::from(last)).unwrap_or(0);
+    let stretch = fall.saturating_mul(DROP_STEP);
+    stretch.saturating_add(1000).min(DROP_SCALE_MAX)
+}
+
+/// The soft budget stretched by `scale` thousandths, never past `hard`. A `movetime` means exactly
+/// that time, so it is not stretched.
+#[must_use]
+pub fn soft_for_drop(limits: &Limits, budget: Budget, soft: u64, scale: u64) -> u64 {
+    if limits.movetime.is_some() {
+        return soft;
+    }
+    let stretched = soft.saturating_mul(scale) / 1000;
+    stretched.clamp(soft.min(budget.hard), budget.hard)
 }
 
 /// EBF is read over two iterations and never one; the single-ratio simplification is the bug this
