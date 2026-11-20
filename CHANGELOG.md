@@ -33,6 +33,15 @@ result.
   before. Its report counts the training positions by how many copies of
   their network input the set holds.
 
+### Fixed
+
+- Engine: after a `ponderhit` the search keeps the iteration times it
+  measured while pondering, and decides when to stop as a search started
+  without pondering would, with both time limits moved by the time pondered.
+  It no longer starts an iteration it cannot predict, which could run to the
+  hard limit, or spends its whole soft budget on an iteration begun while
+  pondering and then abandoned.
+
 ## [0.7.0-rc.2] - 2026-11-19
 
 A release candidate for 0.7.0, with a retrained network.

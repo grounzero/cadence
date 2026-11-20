@@ -3,11 +3,12 @@
 use std::iter::Peekable;
 use std::num::IntErrorKind;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cadence_core::Colour;
 
 use super::{CLOCK_INTERVAL, Search};
+use crate::time;
 
 /// A `None` field did not appear, and the search never writes one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -158,19 +159,18 @@ impl Search<'_> {
             return true;
         }
         if self.run.nodes & (CLOCK_INTERVAL - 1) == 0 {
-            // On the existing interval: a hit that waited for the iteration's end would spend the
-            // clock it just took.
-            self.absorb_ponder_hit();
-            if let Some(b) = self.clock.budget {
-                let limit = if self.clock.unbudgeted_iteration {
-                    b.soft
-                } else {
-                    b.hard
-                };
-                if self.elapsed_ms() >= limit {
-                    self.run.aborted = true;
-                    return true;
-                }
+            // On the existing interval, so a hit does not wait for the iteration's end. Where a fresh
+            // search with the same times would not have started the iteration running, its last
+            // completed one answers.
+            if self.absorb_ponder_hit() && !self.would_have_started() {
+                self.run.aborted = true;
+                return true;
+            }
+            if let Some(b) = self.clock.budget
+                && self.elapsed_ms() >= b.moved(self.clock.hit_at).hard
+            {
+                self.run.aborted = true;
+                return true;
             }
         }
         false
@@ -182,17 +182,30 @@ impl Search<'_> {
         self.shared_nodes.is_some() && self.worker_index == 0 && self.run.completed_depth == 0
     }
 
-    /// The ladder is cleared: an entry measured from the ponder's origin gives a branching factor
-    /// below one and starts an iteration on it.
-    pub(super) fn absorb_ponder_hit(&mut self) {
+    /// The clock and the record are kept and the deadlines move by the time pondered, so every
+    /// decision after the hit is a fresh search's over the same times. True when it absorbs one.
+    pub(super) fn absorb_ponder_hit(&mut self) -> bool {
         if !self.clock.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
-            return;
+            return false;
         }
         self.clock.pondering = false;
-        self.clock.start = Instant::now();
-        self.run.iterations.clear();
+        self.clock.hit_at = self.elapsed_ms();
         self.clock.budget = self.clock.budget_on_hit;
-        self.clock.unbudgeted_iteration = true;
+        true
+    }
+
+    /// The decision skipped while pondering, taken at the last completed iteration. With none, the
+    /// iteration running is the first and goes on.
+    fn would_have_started(&self) -> bool {
+        self.clock.budget.is_none_or(|b| {
+            time::starts_another(
+                &self.limits,
+                b,
+                &self.run.iterations,
+                self.stable_iterations(),
+                self.clock.hit_at,
+            )
+        })
     }
 
     /// Under `infinite` or an unhit ponder, both of which mean do not answer until told. A hit is a
