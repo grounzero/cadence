@@ -62,6 +62,11 @@ Then add the file to your GUI as a new engine.
 The install script picks the right build for your system, checks its
 checksum and bench, and can update or uninstall it later.
 
+It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows), or
+offers to build from source if no release binary fits. It asks before
+anything big: building, installing Rust, changing your PATH or downloading
+tablebases. If a run fails, attach the log it names to a GitHub issue.
+
 #### Windows (PowerShell)
 
 ```powershell
@@ -75,11 +80,6 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
 bash install.sh
 ```
-
-It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows), or
-offers to build from source if no release binary fits. It asks before
-anything big: building, installing Rust, changing your PATH or downloading
-tablebases. If a run fails, attach the log it names to a GitHub issue.
 
 #### Install script options
 
