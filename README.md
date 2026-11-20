@@ -11,8 +11,8 @@ and double Chess960 (DFRC), using an alpha-beta search and a neural network
 with is still available as an option.
 
 Play it on Lichess as [Mithandros](https://lichess.org/@/Mithandros). The bot
-also chats: a small language model answers messages, with no say in its
-moves.
+also chats: a small language model answers messages and remarks on its
+thinking, with no say in its moves.
 
 ## Strength
 
