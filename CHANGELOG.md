@@ -103,7 +103,7 @@ Chess960 and double Chess960 at the short control, test 85: +448.95
 only whether the network costs strength there, and it passed at 392 games.
 They are not a rating.
 
-## [0.6.0] - 2026-11-13
+## [0.6.0] - 2026-11-14
 
 Everything since 0.5.23, published first as four release candidates, each
 a pre-release: 0.6.0-rc.1 (2026-11-06), 0.6.0-rc.2 (2026-11-08),
