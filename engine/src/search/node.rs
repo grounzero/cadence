@@ -76,7 +76,7 @@ impl Search<'_> {
         depth: u32,
         ply: usize,
         mut alpha: Score,
-        beta: Score,
+        mut beta: Score,
         kind: Expected,
     ) -> Score {
         // First, so a call that returns early is checked too.
@@ -100,6 +100,21 @@ impl Search<'_> {
         // check.
         if ply >= MAX_PLY {
             return self.static_eval(board);
+        }
+
+        // No score here beats mating at the next ply or falls below being mated now, so a window
+        // outside that range is already answered. Below `MAX_PLY`, so the next ply's mate exists.
+        let (worst, best) = (mated_in(ply), score::mate_in(ply + 1));
+        if worst >= beta {
+            return worst;
+        }
+        if best <= alpha {
+            return best;
+        }
+        // Skipped where it would leave an open window one point wide, since the kind reads the width.
+        let (low, high) = (alpha.max(worst), beta.min(best));
+        if high > low + 1 || beta <= alpha + 1 {
+            (alpha, beta) = (low, high);
         }
 
         // Before generation: that saving is most of what the table is for.
