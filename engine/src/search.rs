@@ -34,6 +34,19 @@ pub(crate) fn spread_add(slot: usize) {
     });
 }
 
+thread_local! {
+    /// Which store rule a diagnostic search uses; nothing outside this branch sets it.
+    static MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+pub fn set_mode(mode: u8) {
+    MODE.set(mode);
+}
+
+pub(crate) fn mode() -> u8 {
+    MODE.get()
+}
+
 /// The reading since the last call, on this thread.
 #[must_use]
 pub fn spread_take() -> Vec<u64> {

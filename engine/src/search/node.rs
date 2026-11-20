@@ -164,6 +164,9 @@ impl Search<'_> {
         alpha = alpha.max(tb.0);
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
+        let mut held_score: Option<Score> = None;
+        let mut held_check = false;
+        let mut best_check = false;
         // Written at one site above `make_move`, so every rule giving a move up is excluded unasked.
         let mut searched = Searched::default();
         while let Some((m, i, quiet_index)) = picker.next(board, &mut legal, &mut self.slots[ply]) {
@@ -207,9 +210,14 @@ impl Search<'_> {
             if self.run.aborted {
                 return ABORTED;
             }
+            if m == held {
+                held_score = Some(score);
+                held_check = gives_check;
+            }
             if score > best {
                 best = score;
                 best_move = m;
+                best_check = gives_check;
                 if score > alpha {
                     alpha = score;
                     // At a null window a raise is a cutoff, so the parent fails low and never copies
@@ -232,7 +240,38 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
-        self.store(key, ply, depth, best, kept(bound, held, best_move), bound);
+        if bound == Bound::Upper && !held.is_null() && held != best_move {
+            super::spread_add(110);
+            match held_score {
+                None => super::spread_add(119),
+                Some(h) => {
+                    let gap = best - h;
+                    super::spread_add(match gap {
+                        ..=10 => 114,
+                        11..=50 => 115,
+                        51..=200 => 116,
+                        _ => 117,
+                    });
+                }
+            }
+            if held_check {
+                super::spread_add(111);
+            }
+            if best_check {
+                super::spread_add(112);
+            }
+            if held_check && !best_check {
+                super::spread_add(113);
+            }
+        }
+        let stored = match super::mode() {
+            1 => best_move,
+            2 if held_check => best_move,
+            3 if held_score.is_none_or(|h| h < best - 50) => best_move,
+            4 if held_check && !best_check => best_move,
+            _ => kept(bound, held, best_move),
+        };
+        self.store(key, ply, depth, best, stored, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
