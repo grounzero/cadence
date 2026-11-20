@@ -26,6 +26,11 @@ result.
 
 ### Changed
 
+- Evaluation: the built-in network is retrained on positions from games the
+  second network played, together with the positions the second was trained
+  on, and is twice as wide, 512 units a perspective in place of 256.
+- Tools: `datagen run` and `datagen verify` play and regenerate their games
+  with a built-in network of either width.
 - Tools: `cadence-tools convert` deals the records it keeps to bucket files
   on disk and shuffles each bucket in turn, rather than holding every record
   in memory, and reads its chunks once to choose the games and again to
