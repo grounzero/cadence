@@ -3,13 +3,11 @@
 //! A double-Fischer start drawn uniformly, uniform random plies on top, and a shallow screen
 //! refusing a start already decided. The three constants are chosen, not measured.
 
-use std::sync::Arc;
-
 use cadence_core::chess960::{ARRAYS, dfrc_fen};
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_core::{Move, generate_legal};
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 
 use super::game;
 use crate::position::Position;
@@ -56,7 +54,7 @@ fn draw_with(
     tt: &Table,
     probe: &Probe<'_>,
     standard: bool,
-    net: Option<&Arc<Network>>,
+    net: Option<&AnyNetwork>,
 ) -> Option<Opening> {
     let (white, black) = if standard {
         let array = u32::from(cadence_dataset::chunk::STANDARD_ARRAY);
@@ -67,7 +65,7 @@ fn draw_with(
     let fen = dfrc_fen(white, black);
     let start = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
     let mut board = match net {
-        Some(net) => Position::with_net(start, Arc::clone(net)),
+        Some(net) => Position::with_net(start, net.clone()),
         None => Position::new(start),
     };
     let mut plies = Vec::with_capacity(RANDOM_PLIES);
@@ -107,7 +105,7 @@ pub fn next_of_kind(
     tt: &Table,
     standard: bool,
     probe: &Probe<'_>,
-    net: Option<&Arc<Network>>,
+    net: Option<&AnyNetwork>,
 ) -> (Opening, u32) {
     let mut refused = 0;
     loop {
