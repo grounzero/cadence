@@ -33,6 +33,8 @@ Cadence has no board of its own: you play it inside a free chess GUI such as
 [Arena](http://www.playwitharena.de) or
 [BanksiaGUI](https://banksiagui.com).
 
+### Download
+
 Download the file for your system from the
 [latest release](https://github.com/grounzero/cadence/releases/latest).
 Each is named `cadence-<version>-` followed by the ending below.
@@ -55,7 +57,10 @@ Each is named `cadence-<version>-` followed by the ending below.
 
 Then add the file to your GUI as a new engine.
 
-### With an install script
+### Install with a script
+
+The install script picks the right build for your system, checks its
+checksum and bench, and can update or uninstall it later.
 
 `install.ps1` works in Windows PowerShell. `install.sh` works on Linux,
 macOS, and Windows under Git Bash or WSL.
@@ -70,14 +75,25 @@ curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/instal
 bash install.sh
 ```
 
-It downloads the latest release binary, checks its checksum and
-bench, and installs it to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on
-Windows), or offers to build from source if none fits. It asks before anything
-big: building, installing Rust, changing your PATH or downloading tablebases.
+It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows), or
+offers to build from source if no release binary fits. It asks before
+anything big: building, installing Rust, changing your PATH or downloading
+tablebases. If a run fails, attach the log it names to a GitHub issue.
 
-Options: `--version X.Y.Z`, `--dir DIR`, `--generic`, `--source`, `--update`,
-`--uninstall`, `--tables` and `--yes`. If a run fails, attach the log it
-names to a GitHub issue.
+#### Install script options
+
+Both scripts take the same flags.
+
+| Flag | What it does |
+|---|---|
+| `--version X.Y.Z` | Installs that release instead of the latest. |
+| `--dir DIR` | Installs into `DIR` instead of the default folder. |
+| `--generic` | On x86-64, installs the generic build, for processors without AVX2. |
+| `--source` | Builds from source even where a release binary fits. |
+| `--update` | Upgrades an existing install, replacing the file even if this script did not put it there (it asks first). |
+| `--uninstall` | Removes Cadence, and the PATH entry and tablebases if the script added them. |
+| `--tables` | Downloads the 3-4-5 piece tablebases without asking. |
+| `--yes` | Takes every default without asking. |
 
 ### Building from source
 
@@ -93,7 +109,7 @@ x86-64 Linux, Windows and Intel Macs it needs AVX2; for an older processor,
 add `--config .cargo/x86-64-generic.toml` (POPCNT only). Build from the
 repository's root, where Cargo finds `.cargo/config.toml`.
 
-### Options
+### UCI options
 
 | Option | Default | What it does |
 |---|---|---|
