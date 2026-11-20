@@ -5,17 +5,14 @@
 [![Latest release](https://img.shields.io/github/v/release/grounzero/cadence?label=latest%20release)](https://github.com/grounzero/cadence/releases/latest)
 [![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
-Cadence is a UCI chess engine written in Rust, for standard chess, Chess960
-and double Chess960 (DFRC), using a classical alpha-beta search and a neural
-network evaluation (NNUE) trained on positions from its own games, which are
-not published; its hand-written evaluation stays behind an option. It reads
-Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
-crates, which with the crates they use are its only outside dependencies.
+Cadence is a chess engine written in Rust. It plays standard chess, Chess960
+and double Chess960 (DFRC), using an alpha-beta search and a neural network
+(NNUE) trained only on its own games. The handcrafted evaluation it started
+with is still available as an option.
 
-You can play it on Lichess as the bot
-[Mithandros](https://lichess.org/@/Mithandros). The bot also chats: a small
-language model beside it answers messages and remarks on its thinking, with no
-say in the moves.
+Play it on Lichess as [Mithandros](https://lichess.org/@/Mithandros). The bot
+also chats: a small language model answers messages, with no say in its
+moves.
 
 ## Strength
 
@@ -30,30 +27,47 @@ ratings. Method, games and caveats:
 
 ## Getting started
 
-Or download a binary from the
-[latest release](https://github.com/grounzero/cadence/releases/latest): the
-AVX2 build for x86-64 machines from about 2015 on, the generic build if it
-won't start. On macOS, make the downloaded binary executable and clear its
-quarantine flag before running it:
+Cadence has no board of its own: you play it inside a free chess GUI such as
+[En Croissant](https://encroissant.org),
+[Cute Chess](https://github.com/cutechess/cutechess),
+[Arena](http://www.playwitharena.de) or
+[BanksiaGUI](https://banksiagui.com).
 
-```sh
-chmod +x <file>
-xattr -d com.apple.quarantine <file>
-```
+Download the file for your system from the
+[latest release](https://github.com/grounzero/cadence/releases/latest).
+Each is named `cadence-<version>-` followed by the ending below.
+
+- **Windows**: the file ending `windows-x86-64-avx2.exe`, or
+  `windows-x86-64-generic.exe` if it won't start (older processors). The
+  file isn't signed, so Windows SmartScreen may stop it the first time:
+  click "More info", then "Run anyway".
+- **macOS**: the file ending `macos-arm64` (Apple silicon) or
+  `macos-x86-64` (Intel). Make it executable and clear its quarantine flag
+  before running it:
+
+  ```sh
+  chmod +x cadence-<version>-macos-arm64
+  xattr -d com.apple.quarantine cadence-<version>-macos-arm64
+  ```
+
+- **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
+  if it won't start (older processors), or `linux-aarch64` for 64-bit ARM.
+
+Then add the file to your GUI as a new engine.
 
 ### With an install script
 
-`install.sh` works on Linux, macOS, and Windows under Git Bash or WSL.
-`install.ps1` works in Windows PowerShell.
-
-```sh
-curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
-bash install.sh
-```
+`install.ps1` works in Windows PowerShell. `install.sh` works on Linux,
+macOS, and Windows under Git Bash or WSL.
 
 ```powershell
 Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+```sh
+curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
+bash install.sh
 ```
 
 It downloads the latest release binary, checks its checksum and
@@ -209,6 +223,7 @@ included.
   which plays the games.
 - [Ordo](https://github.com/michiguel/Ordo), which fits the ratings on the
   strength page.
+- [Bullet](https://github.com/jw1912/bullet), which trains the networks.
 - [shakmaty](https://github.com/niklasf/shakmaty) and
   [shakmaty-syzygy](https://github.com/niklasf/shakmaty/tree/main/shakmaty-syzygy),
   which read the Syzygy endgame tablebases.
