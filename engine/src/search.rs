@@ -207,7 +207,8 @@ struct Run {
     pv: Vec<Move>,
     /// Read by nothing that decides anything.
     seldepth: usize,
-    /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
+    /// Empty without a budget or a ponder's clock, and timed from the run's start through a hit.
+    /// Taken from the soft-budget reading, so it adds no clock read.
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
     roots: Vec<(Move, Score)>,
@@ -265,9 +266,8 @@ struct Clock {
     pondering: bool,
     /// Derived up front: the hit is absorbed where no board is at hand.
     budget_on_hit: Option<Budget>,
-    /// From a hit absorbed inside an iteration until that or a later one completes: it began with
-    /// no budget and rarely finishes in the one the hit brings, so the soft budget ends it.
-    unbudgeted_iteration: bool,
+    /// Milliseconds pondered before the hit, by which both deadlines move; zero without one.
+    hit_at: u64,
 }
 
 impl Clock {
@@ -280,7 +280,7 @@ impl Clock {
             budget: None,
             pondering: false,
             budget_on_hit: None,
-            unbudgeted_iteration: false,
+            hit_at: 0,
         }
     }
 
@@ -289,7 +289,7 @@ impl Clock {
         self.start = self.origin.take().unwrap_or_else(Instant::now);
         self.reported_from = self.start;
         self.pondering = limits.ponder;
-        self.unbudgeted_iteration = false;
+        self.hit_at = 0;
         self.budget = if limits.infinite {
             None
         } else {
