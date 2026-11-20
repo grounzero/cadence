@@ -570,29 +570,35 @@ impl CopyCounts {
             self.zero = self.zero.saturating_add(1);
             return self.zero;
         }
-        if (self.len + 1) * 20 > self.slots.len() * 17 {
-            let mut slots = vec![0; self.slots.len() * 2];
-            let mut counts = vec![0; self.slots.len() * 2];
-            for (&k, &n) in self
-                .slots
-                .iter()
-                .zip(&self.counts)
-                .filter(|&(&k, _)| k != 0)
-            {
-                let i = CopyCounts::slot(&slots, k);
-                slots[i] = k;
-                counts[i] = n;
-            }
-            self.slots = slots;
-            self.counts = counts;
-        }
-        let i = CopyCounts::slot(&self.slots, key);
+        let mut i = CopyCounts::slot(&self.slots, key);
         if self.slots[i] != key {
+            if (self.len + 1) * 20 > self.slots.len() * 17 {
+                self.double();
+                i = CopyCounts::slot(&self.slots, key);
+            }
             self.slots[i] = key;
             self.len += 1;
         }
         self.counts[i] = self.counts[i].saturating_add(1);
         self.counts[i]
+    }
+
+    /// Twice the slots, every key moved; only a new key past the load bar calls it, never a repeat.
+    fn double(&mut self) {
+        let mut slots = vec![0; self.slots.len() * 2];
+        let mut counts = vec![0; self.slots.len() * 2];
+        for (&k, &n) in self
+            .slots
+            .iter()
+            .zip(&self.counts)
+            .filter(|&(&k, _)| k != 0)
+        {
+            let i = CopyCounts::slot(&slots, k);
+            slots[i] = k;
+            counts[i] = n;
+        }
+        self.slots = slots;
+        self.counts = counts;
     }
 }
 
@@ -670,12 +676,12 @@ fn convert_into(
 ) -> Result<Converted, String> {
     let buckets = staging.join("buckets");
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
-    let copies = if request.max_copies.is_some() {
+    let counter = if request.max_copies.is_some() {
         CopyCounts::with_capacity(plan.train_moves)
     } else {
         CopyCounts::new()
     };
-    let mut kept = Kept::new(&buckets, request.shuffle_seed, copies)?;
+    let mut kept = Kept::new(&buckets, request.shuffle_seed, counter)?;
     let mut seen = KeySet::new();
     for_each_game(sets, plan, |game| {
         positions(
