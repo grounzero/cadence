@@ -62,13 +62,14 @@ Then add the file to your GUI as a new engine.
 The install script picks the right build for your system, checks its
 checksum and bench, and can update or uninstall it later.
 
-`install.ps1` works in Windows PowerShell. `install.sh` works on Linux,
-macOS, and Windows under Git Bash or WSL.
+#### Windows (PowerShell)
 
 ```powershell
 Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
+#### Linux, macOS, or Windows with Git Bash or WSL
 
 ```sh
 curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
