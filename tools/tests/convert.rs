@@ -818,6 +818,8 @@ fn training_keeps_at_most_the_cap_copies_of_an_input() {
     for line in [
         "standard training positions past 4 copies of their network input, dropped: 23",
         "standard training positions by copies of their network input: 1 0 2-8 16 9-64 0",
+        // The three training games' 21 moves each; the held-out game's are not counted.
+        "copy counter sized for 63 training positions",
     ] {
         assert!(text.contains(line), "no `{line}` in\n{text}");
     }

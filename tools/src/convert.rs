@@ -372,7 +372,7 @@ struct Kept {
 }
 
 impl Kept {
-    fn new(dir: &Path, seed: u64) -> Result<Kept, String> {
+    fn new(dir: &Path, seed: u64, copies: CopyCounts) -> Result<Kept, String> {
         Ok(Kept {
             train: Buckets::new(&dir.join("train"), TRAIN_BUCKETS, splitmix64(seed).0)?,
             holdout: Buckets::new(&dir.join("holdout"), HOLDOUT_BUCKETS, splitmix64(!seed).0)?,
@@ -380,7 +380,7 @@ impl Kept {
             holdout_keys: Vec::new(),
             train_inputs: [Vec::new(), Vec::new()],
             holdout_inputs: [Vec::new(), Vec::new()],
-            copies: CopyCounts::new(),
+            copies,
         })
     }
 }
@@ -519,8 +519,8 @@ impl KeySet {
     }
 }
 
-/// Training copies of each network input, a count beside each key in a key set's layout, so 11 to 21
-/// bytes an input as the table fills; a count stops at 255, past any cap the command line takes.
+/// Training copies of each network input, nine bytes a slot kept under 85% full; a count stops at
+/// 255, past any cap the command line takes.
 struct CopyCounts {
     slots: Vec<u64>,
     counts: Vec<u8>,
@@ -530,12 +530,38 @@ struct CopyCounts {
 
 impl CopyCounts {
     fn new() -> CopyCounts {
+        CopyCounts::with_capacity(0)
+    }
+
+    /// Room for `inputs` keys under the load bar from the start, so a bound on the inputs a run can
+    /// meet means the table never doubles, the doubling holding both tables at once.
+    fn with_capacity(inputs: u64) -> CopyCounts {
+        let wanted = usize::try_from(inputs.saturating_mul(20) / 17 + 1).unwrap_or(usize::MAX);
+        let n = wanted.max(1 << 16);
         CopyCounts {
-            slots: vec![0; 1 << 16],
-            counts: vec![0; 1 << 16],
+            slots: vec![0; n],
+            counts: vec![0; n],
             len: 0,
             zero: 0,
         }
+    }
+
+    /// A key's slot by multiply-high over any table length, so the table need not round up to a
+    /// power of two.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the high half of a product with the slot count is below it, a usize"
+    )]
+    fn slot(slots: &[u64], key: u64) -> usize {
+        let n = slots.len();
+        let mut i = ((u128::from(splitmix64(key).0) * n as u128) >> 64) as usize;
+        while slots[i] != 0 && slots[i] != key {
+            i += 1;
+            if i == n {
+                i = 0;
+            }
+        }
+        i
     }
 
     /// The input's count with this copy.
@@ -544,29 +570,35 @@ impl CopyCounts {
             self.zero = self.zero.saturating_add(1);
             return self.zero;
         }
-        if (self.len + 1) * 20 > self.slots.len() * 17 {
-            let mut slots = vec![0; self.slots.len() * 2];
-            let mut counts = vec![0; self.slots.len() * 2];
-            for (&k, &n) in self
-                .slots
-                .iter()
-                .zip(&self.counts)
-                .filter(|&(&k, _)| k != 0)
-            {
-                let i = KeySet::slot(&slots, k);
-                slots[i] = k;
-                counts[i] = n;
-            }
-            self.slots = slots;
-            self.counts = counts;
-        }
-        let i = KeySet::slot(&self.slots, key);
+        let mut i = CopyCounts::slot(&self.slots, key);
         if self.slots[i] != key {
+            if (self.len + 1) * 20 > self.slots.len() * 17 {
+                self.double();
+                i = CopyCounts::slot(&self.slots, key);
+            }
             self.slots[i] = key;
             self.len += 1;
         }
         self.counts[i] = self.counts[i].saturating_add(1);
         self.counts[i]
+    }
+
+    /// Twice the slots, every key moved; only a new key past the load bar calls it, never a repeat.
+    fn double(&mut self) {
+        let mut slots = vec![0; self.slots.len() * 2];
+        let mut counts = vec![0; self.slots.len() * 2];
+        for (&k, &n) in self
+            .slots
+            .iter()
+            .zip(&self.counts)
+            .filter(|&(&k, _)| k != 0)
+        {
+            let i = CopyCounts::slot(&slots, k);
+            slots[i] = k;
+            counts[i] = n;
+        }
+        self.slots = slots;
+        self.counts = counts;
     }
 }
 
@@ -621,7 +653,7 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
     for set in &sets {
         check_listing(set)?;
     }
-    let plan = plan_games(&sets, request.standard_share)?;
+    let plan = plan_games(&sets, request.standard_share, request.every)?;
     fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
     let staging = request.out.join(format!(".staging-{}", std::process::id()));
     fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
@@ -644,7 +676,12 @@ fn convert_into(
 ) -> Result<Converted, String> {
     let buckets = staging.join("buckets");
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
-    let mut kept = Kept::new(&buckets, request.shuffle_seed)?;
+    let counter = if request.max_copies.is_some() {
+        CopyCounts::with_capacity(plan.train_moves)
+    } else {
+        CopyCounts::new()
+    };
+    let mut kept = Kept::new(&buckets, request.shuffle_seed, counter)?;
     let mut seen = KeySet::new();
     for_each_game(sets, plan, |game| {
         positions(
@@ -687,7 +724,7 @@ fn convert_into(
             copies: copies(train),
         }
     });
-    let report = report(sets, &counts, &plan.repeats, overlap, &by_input, request);
+    let report = report(sets, &counts, plan, overlap, &by_input, request);
     let Kept {
         train,
         holdout,
@@ -746,16 +783,20 @@ struct Repeats {
 struct GamePlan {
     chosen: Vec<bool>,
     repeats: [Repeats; 2],
+    /// The moves of the chosen training games, more than the training positions any filter keeps.
+    train_moves: u64,
 }
 
 /// Every chunk read once to choose the games: no run seed and chunk index twice, and no game copied.
 /// A game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
-fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
+fn plan_games(sets: &[Dataset], share: Option<u8>, every: u32) -> Result<GamePlan, String> {
     let mut chunks: BTreeMap<(u64, u32), String> = BTreeMap::new();
     let mut names: Vec<&str> = Vec::new();
     let mut keys: BTreeMap<[u8; 16], (usize, u32, u64)> = BTreeMap::new();
     let mut repeats = [Repeats::default(); 2];
     let (mut chosen, mut kinds) = (Vec::new(), Vec::new());
+    // Each game's moves where it trains, and none where it is held out.
+    let mut trains = Vec::new();
     for set in sets {
         for (name, _) in &set.chunks {
             let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
@@ -774,6 +815,9 @@ fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
                 let kind = &mut repeats[usize::from(record.kind)];
                 kind.read += 1;
                 kinds.push(record.kind);
+                let number = game_number(&chunk.header, record.index);
+                let held = every > 0 && number.is_multiple_of(u64::from(every));
+                trains.push(if held { 0 } else { record.moves.len() as u64 });
                 if let Some(&(first, index, seed)) = keys.get(&key) {
                     if seed == record.seed {
                         return Err(format!(
@@ -800,7 +844,17 @@ fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
         }
     }
     subsample(&mut chosen, &kinds, share);
-    Ok(GamePlan { chosen, repeats })
+    let train_moves = chosen
+        .iter()
+        .zip(&trains)
+        .filter(|&(&c, _)| c)
+        .map(|(_, &m)| m)
+        .sum();
+    Ok(GamePlan {
+        chosen,
+        repeats,
+        train_moves,
+    })
 }
 
 /// The chosen games in reading order, each chunk read again, so one chunk's games are in memory at
@@ -1026,7 +1080,7 @@ fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
 fn report(
     sets: &[Dataset],
     counts: &[[Counts; 2]],
-    repeats: &[Repeats; 2],
+    plan: &GamePlan,
     overlap: usize,
     by_input: &[ByInput; 2],
     request: &Request,
@@ -1039,7 +1093,7 @@ fn report(
     } else {
         (1, String::new())
     };
-    for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
+    for (name, kind) in ["uniform", "standard"].iter().zip(&plan.repeats) {
         let _ = writeln!(
             text,
             "{name} games repeating an earlier game from another seed, dropped: {} of {}",
@@ -1108,6 +1162,13 @@ fn report(
                 row.join(" ")
             );
         }
+    }
+    if request.max_copies.is_some() {
+        let _ = writeln!(
+            text,
+            "copy counter sized for {} training positions, the chosen training games' moves",
+            plan.train_moves
+        );
     }
     sampled_figures(&mut text, overlap, by_input, s, &note);
     text
@@ -1606,6 +1667,28 @@ mod tests {
         assert_eq!(counts.bump(1), 1, "a key never bumped starts at one");
         let last = (0..300).map(|_| counts.bump(5)).last();
         assert_eq!(last, Some(255));
+    }
+
+    /// A table sized for `n` inputs holds `n` distinct inputs without growing, each counted, and
+    /// takes about 20 slots for every 17 of them rather than a power of two's rounding.
+    #[test]
+    fn copy_counts_sized_for_their_inputs_never_grow() {
+        let n = 300_000u64;
+        let mut counts = CopyCounts::with_capacity(n);
+        let slots = counts.slots.len();
+        assert_eq!(slots as u64, n * 20 / 17 + 1);
+        for round in 1..=2u8 {
+            for key in 1..=n {
+                assert_eq!(
+                    counts.bump(key * 11),
+                    round,
+                    "key {} in round {round}",
+                    key * 11
+                );
+            }
+        }
+        assert_eq!(counts.slots.len(), slots, "the table grew");
+        assert_eq!(counts.len as u64, n);
     }
 
     /// The report's sample reads about one key in `n`, and every key at one.
