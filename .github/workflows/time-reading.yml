@@ -1,0 +1,25 @@
+# A reading on this branch only, in release.
+
+name: time-reading
+
+on:
+  push:
+    branches: [diag-time-overshoot]
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        test: [ladders, wall]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Read
+        run: cargo test --release --locked -p cadence-engine --test time_reading -- --ignored --nocapture --exact ${{ matrix.test }}
