@@ -58,12 +58,27 @@ pub fn positions() -> Vec<&'static str> {
 /// allocated, or the bench's search thread cannot be started.
 #[must_use]
 pub fn bench() -> Report {
-    // The search recurses a frame a ply, so it gets the search threads' stack and not the caller's.
+    on_search_stack(|| search_positions(shipped_net().as_ref()))
+}
+
+/// The same positions with no net, so the handcrafted evaluation scores them and its frozen set
+/// decides. No command prints it: a test holds it to the count the handcrafted search last shipped.
+///
+/// # Panics
+///
+/// As [`bench`].
+#[must_use]
+pub fn handcrafted() -> Report {
+    on_search_stack(|| search_positions(None))
+}
+
+/// The search recurses a frame a ply, so it gets the search threads' stack and not the caller's.
+fn on_search_stack(work: fn() -> Report) -> Report {
     std::thread::scope(|scope| {
         #[expect(clippy::expect_used, reason = "no thread, no bench to report")]
         let thread = std::thread::Builder::new()
             .stack_size(SEARCH_STACK_BYTES)
-            .spawn_scoped(scope, search_positions)
+            .spawn_scoped(scope, work)
             .expect("the bench's search thread");
         match thread.join() {
             Ok(report) => report,
@@ -79,9 +94,8 @@ fn shipped_net() -> Option<Arc<Network>> {
         .map(|loaded| Arc::new(loaded.unwrap_or_else(|e| panic!("the net this build ships: {e}"))))
 }
 
-fn search_positions() -> Report {
+fn search_positions(net: Option<&Arc<Network>>) -> Report {
     let start = Instant::now();
-    let net = shipped_net();
     let stop = AtomicBool::new(false);
     #[expect(clippy::expect_used, reason = "sixteen mebibytes")]
     let tt = Table::new(HASH_MB).expect("a bench-sized transposition table");
@@ -91,7 +105,7 @@ fn search_positions() -> Report {
         // The seam: nothing an earlier position learned reaches this one.
         tt.clear();
         let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("bench position {fen}: {e:?}"));
-        let mut pos = match &net {
+        let mut pos = match net {
             Some(net) => Position::with_net(board, Arc::clone(net)),
             None => Position::new(board),
         };
