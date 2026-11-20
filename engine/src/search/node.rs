@@ -76,7 +76,7 @@ impl Search<'_> {
         depth: u32,
         ply: usize,
         mut alpha: Score,
-        beta: Score,
+        mut beta: Score,
         kind: Expected,
     ) -> Score {
         // First, so a call that returns early is checked too.
@@ -104,7 +104,7 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, tb) = match self.lookup(board, key, depth, ply, alpha, beta) {
+        let (tt_move, tb) = match self.lookup(board, key, depth, ply, &mut alpha, &mut beta) {
             Ok(found) => found,
             Err(score) => return score,
         };
@@ -358,17 +358,19 @@ impl Search<'_> {
         self.tt.store(key, mv, score, stored_depth, bound, pv);
     }
 
-    /// The transposition table, then the tablebases: `Err` is the node's value, and otherwise the
-    /// table's move and the floor and ceiling the node keeps.
+    /// The mate bounds, which narrow the window in place, then the table and the tablebases: `Err`
+    /// is the node's value, and otherwise the table's move and the floor and ceiling it keeps.
     fn lookup(
         &mut self,
         board: &Board,
         key: u64,
         depth: u32,
         ply: usize,
-        alpha: Score,
-        beta: Score,
+        alpha: &mut Score,
+        beta: &mut Score,
     ) -> Result<(Move, (Score, Score)), Score> {
+        (*alpha, *beta) = mate_window(ply, *alpha, *beta)?;
+        let (alpha, beta) = (*alpha, *beta);
         let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
             return Err(score);
@@ -633,6 +635,25 @@ fn unless_stalemate(board: &Board, value: Score) -> Score {
     } else {
         DRAW
     }
+}
+
+/// No score at `ply` beats mating at the next ply or falls below being mated there, so `Err` is a
+/// bound that already answers the window, and otherwise the window is narrowed to that range.
+fn mate_window(ply: usize, alpha: Score, beta: Score) -> Result<(Score, Score), Score> {
+    let (worst, best) = (mated_in(ply), score::mate_in(ply + 1));
+    if worst >= beta {
+        return Err(worst);
+    }
+    if best <= alpha {
+        return Err(best);
+    }
+    let (low, high) = (alpha.max(worst), beta.min(best));
+    // Not where an open window would be left one point wide, since a node's kind reads the width.
+    Ok(if high > low + 1 || beta <= alpha + 1 {
+        (low, high)
+    } else {
+        (alpha, beta)
+    })
 }
 
 #[cfg(test)]
