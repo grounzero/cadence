@@ -107,7 +107,14 @@ fn net_nodes_after(setup: &[&str]) -> u64 {
 
 /// Of the last iteration line at `depth`.
 fn nodes_at(setup: &[&str], depth: u32) -> u64 {
-    let position = format!("position fen {MIDDLEGAME}");
+    nodes_from(MIDDLEGAME, setup, depth)
+}
+
+/// The second position the net's options are read from, where `MIDDLEGAME` leaves an end unread.
+const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+
+fn nodes_from(fen: &str, setup: &[&str], depth: u32) -> u64 {
+    let position = format!("position fen {fen}");
     let mut lines: Vec<&str> = setup.to_vec();
     lines.push(&position);
     let out = Engine::go(&lines, &format!("go depth {depth}"));
@@ -423,12 +430,23 @@ fn a_malformed_value_is_refused_and_the_search_is_untouched() {
 /// A declared, accepted option that reaches nothing is the failure a tune cannot report.
 #[test]
 fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
-    let untouched = net_nodes_after(&[]);
+    let net = net_options();
+    let base: Vec<&str> = net.iter().map(String::as_str).collect();
+    let nodes = |fen: &str, set: Option<&str>| {
+        let mut lines = base.clone();
+        lines.extend(set);
+        nodes_from(fen, &lines, NET_DEPTH)
+    };
+    let untouched = [nodes(MIDDLEGAME, None), nodes(KIWIPETE, None)];
     for p in PARAMS {
         for end in [p.min, p.max] {
             let set = format!("setoption name {} value {}", p.name, p.spell(end));
-            let nodes = net_nodes_after(&[&set]);
-            assert_ne!(nodes, untouched, "`{set}` searched the default tree");
+            let moved = nodes(MIDDLEGAME, Some(set.as_str())) != untouched[0]
+                || nodes(KIWIPETE, Some(set.as_str())) != untouched[1];
+            assert!(
+                moved,
+                "`{set}` searched the default tree from both positions"
+            );
         }
     }
 }
