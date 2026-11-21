@@ -22,10 +22,9 @@ thinking, with no say in its moves.
 | [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | - |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
-The estimates are ours, from gauntlets against rated engines, and are
-not official ratings. The CCRL columns are CCRL's own ratings, from its
-testers' games. Method, games and caveats:
-[docs/calibration/strength.md](docs/calibration/strength.md).
+Estimates are from gauntlets against rated engines. CCRL columns are CCRL's official ratings.
+
+Details: [docs/calibration/strength.md](docs/calibration/strength.md).
 
 ## Getting started
 
