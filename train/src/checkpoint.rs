@@ -8,8 +8,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use cadence_core::features::NUM_INPUTS;
-use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
-use cadence_nnue::{HIDDEN, Provenance};
+use cadence_nnue::net::{HEADER_LEN, payload_len};
+use cadence_nnue::{HIDDEN, Provenance, WIDE};
 
 use crate::export::{PADDING, export};
 
@@ -20,29 +20,40 @@ const UNNAMED: &str = "0000000000000000000000000000000000000000";
 /// weights, one a line, in the order they were saved.
 pub const OUTPUT_SUMS: &str = "output-sums";
 
-/// The summed magnitude of the quantised output weights, the figure the engine's loader bounds;
-/// the payload may carry the trainer's padding.
+/// The summed magnitude of the quantised output weights, the figure the engine's loader bounds, at
+/// the width the payload's length names; the payload may carry the trainer's padding.
 #[must_use]
 pub fn output_sum(payload: &[u8]) -> u64 {
+    let hidden = if payload.len() >= payload_len(WIDE) {
+        WIDE
+    } else {
+        HIDDEN
+    };
     payload
         .as_chunks::<2>()
         .0
         .iter()
-        .skip(NUM_INPUTS * HIDDEN + HIDDEN)
-        .take(2 * HIDDEN)
+        .skip(NUM_INPUTS * hidden + hidden)
+        .take(2 * hidden)
         .map(|&w| u64::from(i16::from_le_bytes(w).unsigned_abs()))
         .sum()
 }
 
-/// The checkpoints of run `id` under `out` saved whole since the last scan, each loaded and its
-/// output sum appended to `OUTPUT_SUMS`; a file still being written is left for the next scan.
+/// The checkpoints of run `id` under `out` saved whole since the last scan, at the run's width
+/// `hidden`, each loaded and its output sum appended to `OUTPUT_SUMS`; a file still being written
+/// is left for the next scan.
 ///
 /// # Errors
 ///
 /// The first checkpoint the engine's loader refuses, by name, or a file that cannot be read or
 /// written.
-pub fn check_saved(out: &Path, id: &str, seen: &mut BTreeSet<PathBuf>) -> Result<(), String> {
-    let whole = PAYLOAD_LEN.next_multiple_of(PADDING);
+pub fn check_saved(
+    out: &Path,
+    id: &str,
+    hidden: usize,
+    seen: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    let whole = payload_len(hidden).next_multiple_of(PADDING);
     let mut saved = Vec::new();
     for entry in std::fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))? {
         let dir = entry.map_err(|e| format!("{}: {e}", out.display()))?.path();
@@ -92,10 +103,11 @@ pub fn check_saved(out: &Path, id: &str, seen: &mut BTreeSet<PathBuf>) -> Result
 pub fn check_all(
     out: &Path,
     id: &str,
+    hidden: usize,
     expected: &[PathBuf],
     seen: &mut BTreeSet<PathBuf>,
 ) -> Result<usize, String> {
-    check_saved(out, id, seen)?;
+    check_saved(out, id, hidden, seen)?;
     if let Some(missing) = expected.iter().find(|c| !seen.contains(*c)) {
         return Err(format!(
             "{}: never loaded, its quantised.bin missing or not a whole checkpoint's length",

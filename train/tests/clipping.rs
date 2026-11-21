@@ -4,8 +4,9 @@
 //! accumulator lane and each perspective's output sum inside the loader's bounds.
 
 use bullet_lib::nn::optimiser::AdamWParams;
-use cadence_nnue::HIDDEN;
 use cadence_nnue::net::{QA, QB};
+use cadence_nnue::{HIDDEN, WIDE};
+use cadence_train::export::output_clip;
 
 /// Active features a lane sums at most, one a piece on the board.
 const MAX_ACTIVE: i64 = 32;
@@ -49,5 +50,23 @@ fn the_clip_holds_each_perspectives_output_sum() {
         2 * one > i64::from(i32::MAX),
         "both together fit i32 at {}",
         2 * one
+    );
+}
+
+/// The wide recipe clips its output weights to 1.0, which quantises to 64, so 512 of them at the
+/// clip keep a perspective's sum inside `i32` where the optimiser's own 1.98 would not; the narrow
+/// recipe sets no clip of its own.
+#[test]
+fn the_wide_clip_holds_each_perspectives_output_sum() {
+    assert_eq!(output_clip(HIDDEN), None);
+    let clip = output_clip(WIDE).expect("the wide recipe clips its output layer");
+    assert_eq!(quantised(clip, QB), 64);
+    let weights = i64::try_from(WIDE).expect("a count");
+    let one = weights * quantised(clip, QB) * i64::from(QA * QA);
+    assert!(one <= i64::from(i32::MAX), "one perspective reaches {one}");
+    let unclipped = weights * quantised(AdamWParams::default().max_weight, QB) * i64::from(QA * QA);
+    assert!(
+        unclipped > i64::from(i32::MAX),
+        "the optimiser's own clip fits at {unclipped}"
     );
 }
