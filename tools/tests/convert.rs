@@ -757,8 +757,9 @@ fn the_overlap_and_the_repeats_are_read_by_start_kind() {
     }
 }
 
-/// With a cap of four, each network input keeps four training copies, the first read, and the rest
-/// are dropped and counted; validation keeps every copy, and without the cap training does too.
+/// With a cap of four, each network input keeps four training copies, met in an order the shuffle
+/// seed fixes, and the rest are dropped and counted; validation and an uncapped run keep every
+/// copy.
 #[test]
 fn training_keeps_at_most_the_cap_copies_of_an_input() {
     let plies = [
@@ -793,6 +794,15 @@ fn training_keeps_at_most_the_cap_copies_of_an_input() {
         &["--shuffle-seed", "1", "--max-copies", "4"],
     );
     assert!(ok, "{text}");
+    let (again_ok, again, again_units) = convert(
+        &[&manifest],
+        &dir.join("capped-again"),
+        &["--shuffle-seed", "1", "--max-copies", "4"],
+    );
+    assert!(again_ok, "{again}");
+    let bytes = |unit: &Path, file: &str| std::fs::read(unit.join(file)).expect("reads");
+    let same_again = ["train.bin", "holdout.bin"]
+        .map(|file| bytes(&units[0], file) == bytes(&again_units[0], file));
     let (train, holdout) = (
         records(&units[0].join("train.bin")).len(),
         records(&units[0].join("holdout.bin")).len(),
@@ -815,6 +825,7 @@ fn training_keeps_at_most_the_cap_copies_of_an_input() {
         "{whole}"
     );
     assert_eq!((train, holdout), (16, 13));
+    assert_eq!(same_again, [true, true], "the same seed kept other copies");
     for line in [
         "standard training positions past 4 copies of their network input, dropped: 23",
         "standard training positions by copies of their network input: 1 0 2-8 16 9-64 0",

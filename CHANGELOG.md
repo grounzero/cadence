@@ -22,8 +22,10 @@ result.
 ### Added
 
 - Tools: `cadence-tools convert --max-copies N` keeps at most N training
-  copies of a position's network input, the first read, and counts the rest
-  it drops; validation keeps every copy.
+  copies of a position's network input, a position and its colour-flipped
+  mirror counting as one, meets the games in an order the shuffle seed fixes
+  so no dataset is favoured for being listed first, and counts the copies it
+  drops; validation keeps every copy.
 - Tools: `cadence-tools convert --report-sample N` reads its report's
   repeats, overlaps and copies from one position key or network input in N
   and scales them, so its memory for them falls about N times; the records
