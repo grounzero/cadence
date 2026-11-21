@@ -231,7 +231,7 @@ mod proofs {
 
     /// No margin rule fires on a decided bound or in check, and none overflows near a mate.
     #[kani::proof]
-    #[kani::unwind(3)]
+    #[kani::unwind(6)]
     fn no_margin_fires_on_a_decided_bound() {
         let tunables = tunables();
         let (eval, depth): (Option<Score>, u32) = (kani::any(), kani::any());
@@ -252,7 +252,7 @@ mod proofs {
 
     /// Late move pruning gives up no move before `REDUCTION_INDEX`, nor in check, nor at a PV node.
     #[kani::proof]
-    #[kani::unwind(3)]
+    #[kani::unwind(6)]
     fn late_move_pruning_keeps_its_exemptions() {
         let tunables = tunables();
         let (in_check, pv) = (kani::any(), kani::any());
