@@ -18,12 +18,13 @@ thinking, with no say in its moves.
 
 | Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
 | --- | --- | --- | --- | --- |
-| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) (measured on 0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-14 |
+| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) | - | [2801 ± 23](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit), as of 2026-11-21 | - | 2026-11-14 |
+| [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | - |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
-Estimates are from gauntlets against rated engines, not official
-ratings. Method, games and caveats:
-[docs/calibration/strength.md](docs/calibration/strength.md).
+Estimates are from gauntlets against rated engines. CCRL columns are CCRL's official ratings.
+
+Details: [docs/calibration/strength.md](docs/calibration/strength.md).
 
 ## Getting started
 
