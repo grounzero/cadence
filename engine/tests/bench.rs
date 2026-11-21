@@ -179,3 +179,24 @@ fn the_count_equals_bench_txt() {
          bench.txt and put `Bench: {got}` in the commit message"
     );
 }
+
+/// The handcrafted search's count, which its frozen set holds. A search feature goes into the net's
+/// set and leaves it alone; only a fix to both evaluations moves it, and declares the new count.
+#[test]
+fn the_handcrafted_count_equals_handcrafted_bench_txt() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../handcrafted-bench.txt");
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("handcrafted-bench.txt is missing at the repository root ({e})")
+    });
+    let expected: u64 = text
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("handcrafted-bench.txt holds {text:?}, not a count"));
+    let got = bench::handcrafted().nodes;
+    assert_eq!(
+        got, expected,
+        "the handcrafted search took {got} nodes, handcrafted-bench.txt says {expected}: a search \
+         feature belongs in the net's settings only, and a fix to both evaluations updates the \
+         file and puts `Handcrafted: {got}` in the commit message"
+    );
+}
