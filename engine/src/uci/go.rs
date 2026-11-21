@@ -12,7 +12,7 @@ use super::say::say;
 use super::{Running, Session};
 use crate::level;
 use crate::position::Position;
-use crate::search::{Limits, Search};
+use crate::search::{Learned, Limits, Search};
 use crate::syzygy::{Rank, Tables};
 use crate::time;
 use crate::tt::Table;
@@ -70,6 +70,9 @@ impl Session {
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
+        // Lent to the thread and returned by it, padded or cut to one set per thread.
+        let mut learned = std::mem::take(&mut self.learned);
+        learned.resize_with(threads, Learned::new);
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -93,6 +96,7 @@ impl Session {
                     let (best, pv) = if threads == 1 {
                         let mut out = std::io::stdout();
                         let mut search = Search::new(&stop, &tt);
+                        search.swap_learned(&mut learned[0]);
                         search.set_limits(limits);
                         search.set_clock_origin(received);
                         search.set_ponder_hit(&ponder_hit);
@@ -108,6 +112,7 @@ impl Session {
                         if let Some(policy) = level {
                             best = search.sample(policy, &mut pos, &mut out);
                         }
+                        search.swap_learned(&mut learned[0]);
                         (best, search.pv().to_vec())
                     } else {
                         parallel_search(ParallelGo {
@@ -126,6 +131,7 @@ impl Session {
                             tables: tables.as_ref(),
                             decided,
                             rank,
+                            learned: &mut learned,
                         })
                     };
                     let spelled = to_uci(best, &legal, chess960);
@@ -138,6 +144,7 @@ impl Session {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
                         None => say(format_args!("bestmove {spelled}")),
                     }
+                    learned
                 })
         };
         match thread {
@@ -160,12 +167,22 @@ impl Session {
         }
     }
 
-    /// The search thread prints its `bestmove` on the way out.
+    /// The search thread prints its `bestmove` on the way out and returns the histories it was
+    /// lent; a thread that panicked returns none, and the next `go` starts empty.
     pub(super) fn stop_search(&mut self) {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
             // The panic hook has already reported a panic in the search thread.
-            let _ = running.thread.join();
+            if let Ok(learned) = running.thread.join() {
+                self.learned = learned;
+            }
+        }
+    }
+
+    /// After `stop_search`, which has the search's histories back.
+    pub(super) fn clear_learned(&mut self) {
+        for learned in &mut self.learned {
+            learned.clear();
         }
     }
 }
@@ -212,6 +229,8 @@ struct ParallelGo<'a> {
     decided: bool,
     /// Only the primary reports, so only it is given what the tables read at the root.
     rank: Option<Rank>,
+    /// One set per thread, the primary's first; each worker searches with its own.
+    learned: &'a mut [Learned],
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
@@ -233,6 +252,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         tables,
         decided,
         rank,
+        learned,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -240,7 +260,9 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         .collect::<Vec<_>>()
         .into();
     let mut helpers = Vec::with_capacity(threads.saturating_sub(1));
-    for worker_index in 1..threads {
+    let (primary, others) = learned.split_at_mut(1);
+    for (worker_index, slot) in (1..threads).zip(others.iter_mut()) {
+        let mut helper_learned = std::mem::take(slot);
         let mut helper_board = board.fork();
         let helper_stop = Arc::clone(stop);
         let helper_ponder_hit = Arc::clone(ponder_hit);
@@ -254,6 +276,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
             .spawn(move || {
                 let mut sink = std::io::sink();
                 let mut search = Search::new(&helper_stop, &helper_tt);
+                search.swap_learned(&mut helper_learned);
                 search.set_limits(limits);
                 search.set_clock_origin(received);
                 search.set_ponder_hit(&helper_ponder_hit);
@@ -267,10 +290,12 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 }
                 #[cfg(feature = "counters")]
                 report_given(worker_index, &search);
-                search.run_in_current_generation(&mut helper_board, &mut sink)
+                search.run_in_current_generation(&mut helper_board, &mut sink);
+                search.swap_learned(&mut helper_learned);
+                helper_learned
             });
         match result {
-            Ok(helper) => helpers.push(helper),
+            Ok(helper) => helpers.push((helper, slot)),
             Err(e) => say(format_args!(
                 "info string go: could not start helper {worker_index}: {e}"
             )),
@@ -279,6 +304,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
 
     let mut out = std::io::stdout();
     let mut search = Search::new(stop, tt);
+    search.swap_learned(&mut primary[0]);
     search.set_limits(limits);
     search.set_clock_origin(received);
     search.set_ponder_hit(ponder_hit);
@@ -298,11 +324,14 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         best = search.sample(policy, board, &mut out);
     }
     let pv = search.pv().to_vec();
+    search.swap_learned(&mut primary[0]);
 
     // Helpers check the flag at every node, so this is the whole shutdown.
     stop.store(true, Ordering::Relaxed);
-    for helper in helpers {
-        let _ = helper.join();
+    for (helper, slot) in helpers {
+        if let Ok(returned) = helper.join() {
+            *slot = returned;
+        }
     }
     (best, pv)
 }

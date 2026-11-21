@@ -159,7 +159,8 @@ struct RootLine {
 }
 
 /// What a run learns, and the per-ply stacks it learns from, cleared together in `begin` so a
-/// reused search starts where a fresh one would.
+/// reused search starts where a fresh one would. Once a game's tables are swapped in, `begin` clears
+/// the per-ply stacks and the killers only.
 struct Heuristics {
     killers: [[Move; 2]; MAX_PLY],
     /// On the heap: `Search` is returned by value.
@@ -170,6 +171,8 @@ struct Heuristics {
     corrhist: CorrectionHistory,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
     evals: [Option<Score>; MAX_PLY],
+    /// Set by [`Search::swap_learned`]; never set where `bench` or datagen runs.
+    kept: bool,
 }
 
 impl Heuristics {
@@ -181,16 +184,50 @@ impl Heuristics {
             frames: [None; MAX_PLY],
             corrhist: CorrectionHistory::new(),
             evals: [None; MAX_PLY],
+            kept: false,
         }
     }
 
     fn clear(&mut self) {
         self.killers = [[Move::NULL; 2]; MAX_PLY];
-        self.history.clear();
-        self.conthist.clear();
         self.frames = [None; MAX_PLY];
         self.evals = [None; MAX_PLY];
+        if !self.kept {
+            self.history.clear();
+            self.conthist.clear();
+            self.corrhist.clear();
+        }
+    }
+}
+
+/// The tables a run learns that a UCI session keeps from one `go` to the next, one set per thread.
+/// Emptied where the transposition table is, so a new game starts as a fresh engine does.
+pub struct Learned {
+    history: History,
+    conthist: ContinuationHistory,
+    corrhist: CorrectionHistory,
+}
+
+impl Learned {
+    #[must_use]
+    pub fn new() -> Learned {
+        Learned {
+            history: History::new(),
+            conthist: ContinuationHistory::new(),
+            corrhist: CorrectionHistory::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.history.clear();
+        self.conthist.clear();
         self.corrhist.clear();
+    }
+}
+
+impl Default for Learned {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -418,9 +455,18 @@ impl<'a> Search<'a> {
         self.root_filter = moves.to_vec();
     }
 
-    /// The clock origin is set here and moved only by a `ponderhit`. The settings, the pawn cache
-    /// and the scratch rows outlive a run, and every other field is reset here or written before it
-    /// is read.
+    /// Trades the search's learned tables for `learned`, by pointer, and no later run clears them.
+    /// Called once before a run to hand a game's tables in and once after to take them back.
+    pub fn swap_learned(&mut self, learned: &mut Learned) {
+        std::mem::swap(&mut self.heuristics.history, &mut learned.history);
+        std::mem::swap(&mut self.heuristics.conthist, &mut learned.conthist);
+        std::mem::swap(&mut self.heuristics.corrhist, &mut learned.corrhist);
+        self.heuristics.kept = true;
+    }
+
+    /// The clock origin is set here and moved only by a `ponderhit`. The settings, the pawn cache,
+    /// the scratch rows and any swapped-in learned tables outlive a run, and every other field is
+    /// reset here or written before it is read.
     fn begin(&mut self, board: &Position) {
         self.choose_tunables(board);
         self.clock.begin(&self.limits, board.side_to_move());

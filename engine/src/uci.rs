@@ -12,6 +12,7 @@ use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
+use crate::search::Learned;
 use crate::syzygy::{self, Tables};
 use crate::time;
 use crate::tt::{self, Table};
@@ -49,6 +50,9 @@ pub struct Session {
     chess960: bool,
     /// Kept across the game. `Hash` replaces it; `ucinewgame` clears it.
     tt: Arc<Table>,
+    /// The histories, one set per thread, kept and emptied with the table. Lent to the search
+    /// thread for a `go` and returned when it is joined, so it is empty while a search runs.
+    learned: Vec<Learned>,
     multipv: usize,
     /// A boolean, not a sentinel rating, so no arithmetic on a rating can turn the feature on.
     limit_strength: bool,
@@ -95,7 +99,7 @@ type Shipped = (AnyNetwork, [u8; 32]);
 struct Running {
     stop: Arc<AtomicBool>,
     ponder_hit: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
+    thread: JoinHandle<Vec<Learned>>,
 }
 
 impl Default for Session {
@@ -121,6 +125,7 @@ impl Session {
             board: start_position(),
             chess960: false,
             tt: Arc::new(tt),
+            learned: Vec::new(),
             multipv: 1,
             limit_strength: false,
             elo: level::MAX_ELO,
@@ -271,6 +276,7 @@ impl Session {
             "ucinewgame" => {
                 self.stop_search();
                 self.tt.clear();
+                self.clear_learned();
             }
             "quit" => return false,
             // Ignored, per the protocol.
