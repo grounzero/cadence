@@ -219,25 +219,43 @@ struct ParallelGo<'a> {
 /// about the group.
 /// One thread, which reports and samples a level's move itself.
 fn single_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
+    let ParallelGo {
+        board,
+        limits,
+        received,
+        stop,
+        ponder_hit,
+        tt,
+        chess960,
+        multipv,
+        level,
+        tunables,
+        root_filter,
+        tables,
+        decided,
+        rank,
+        learned,
+        ..
+    } = go;
     let mut out = std::io::stdout();
-    let mut search = Search::new(go.stop, go.tt);
-    search.swap_learned(&mut go.learned[0]);
-    search.set_limits(go.limits);
-    search.set_clock_origin(go.received);
-    search.set_ponder_hit(go.ponder_hit);
-    search.set_chess960(go.chess960);
-    search.set_lines(go.multipv, go.level);
-    search.set_tunables(go.tunables);
-    search.set_root_filter(go.root_filter);
-    if let Some(tables) = go.tables {
-        search.set_tables(tables, go.decided);
+    let mut search = Search::new(stop, tt);
+    search.swap_learned(&mut learned[0]);
+    search.set_limits(limits);
+    search.set_clock_origin(received);
+    search.set_ponder_hit(ponder_hit);
+    search.set_chess960(chess960);
+    search.set_lines(multipv, level);
+    search.set_tunables(tunables);
+    search.set_root_filter(root_filter);
+    if let Some(tables) = tables {
+        search.set_tables(tables, decided);
     }
-    search.set_root_rank(go.rank);
-    let mut best = search.run(go.board, &mut out);
-    if let Some(policy) = go.level {
-        best = search.sample(policy, go.board, &mut out);
+    search.set_root_rank(rank);
+    let mut best = search.run(board, &mut out);
+    if let Some(policy) = level {
+        best = search.sample(policy, board, &mut out);
     }
-    search.swap_learned(&mut go.learned[0]);
+    search.swap_learned(&mut learned[0]);
     (best, search.pv().to_vec())
 }
 
