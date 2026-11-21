@@ -19,6 +19,12 @@ result.
 
 ## [Unreleased]
 
+### Fixed
+
+- Time: a move's budget counts only the part of the increment past
+  `Move Overhead`, since every move pays it, and the default `Move Overhead`
+  is 5 ms in place of 20.
+
 ## [0.7.0-rc.3] - 2026-11-21
 
 A release candidate for 0.7.0, with a retrained network twice as wide.

@@ -8,7 +8,7 @@ use cadence_core::Colour;
 use crate::search::Limits;
 
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
-pub const MOVE_OVERHEAD_MS: u64 = 20;
+pub const MOVE_OVERHEAD_MS: u64 = 5;
 
 /// Milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
