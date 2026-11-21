@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,7 +21,7 @@ use cadence_dataset::chunk::{
 use cadence_dataset::crc32::crc32;
 use cadence_dataset::durable::{self, Disk, Steps};
 use cadence_dataset::sha256::{Sha256, hex, sha256};
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use super::game::{self, Ending, Outcome};
@@ -56,23 +56,22 @@ pub fn play(
     index: u32,
     share: u8,
     tt: &Table,
-    net: Option<&Arc<Network>>,
+    net: Option<&AnyNetwork>,
 ) -> GameRecord {
     let probe = |board: &mut _, tt: &Table| game::probe(board, opening::SCREEN_NODES, tt);
     play_with(chunk_seed, index, share, tt, &probe, net)
 }
 
-/// The net a build ships, which every game of its runs plays with: `None` where it ships none.
+/// The net a build ships, of either width, which every game of its runs plays with: `None` where
+/// it ships none.
 ///
 /// # Errors
 ///
 /// A shipped net the loader refuses for generating data, a canary's or another dataset's.
-pub fn shipped_net() -> Result<Option<Arc<Network>>, String> {
-    match Network::shipped(EMBEDDED) {
-        None => Ok(None),
-        Some(Ok(net)) => Ok(Some(Arc::new(net))),
-        Some(Err(e)) => Err(format!("the shipped net may not generate data: {e}")),
-    }
+pub fn shipped_net() -> Result<Option<AnyNetwork>, String> {
+    AnyNetwork::shipped(EMBEDDED)
+        .transpose()
+        .map_err(|e| format!("the shipped net may not generate data: {e}"))
 }
 
 /// The SHA-256 of the net a build ships, and zero where it ships none, as a header names it.
@@ -96,7 +95,7 @@ pub fn play_with(
     share: u8,
     tt: &Table,
     probe: &Probe<'_>,
-    net: Option<&Arc<Network>>,
+    net: Option<&AnyNetwork>,
 ) -> GameRecord {
     let seed = game_seed(chunk_seed, u64::from(index));
     let mut rng = Rng::new(seed);

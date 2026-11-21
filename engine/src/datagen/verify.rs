@@ -6,14 +6,13 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use cadence_core::chess960::dfrc_fen;
 use cadence_core::generate_legal;
 use cadence_core::position::Board;
 use cadence_dataset::chunk::{Chunk, GameRecord, Header, chunk_name, decode_move};
 use cadence_dataset::sha256::{hex, sha256};
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 
 use super::extract::{BALANCE_CAP, balance};
 use super::game::{Ending, Outcome, ending};
@@ -54,7 +53,7 @@ pub fn chunk(
     path: &Path,
     replay_every: Option<u32>,
     tt: &Table,
-    net: Option<&Arc<Network>>,
+    net: Option<&AnyNetwork>,
 ) -> Result<Summary, String> {
     let name = path
         .file_name()
