@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cadence_core::MAX_MOVES;
 use cadence_dataset::sha256::sha256;
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 
 use super::say::say;
 use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, NetOptions, Session};
@@ -16,9 +16,9 @@ use crate::tune::{self, Param};
 impl NetOptions {
     /// Scoring with the net in `bytes` by default, the net the build ships; empty bytes ship none.
     pub(super) fn shipping(bytes: &[u8]) -> NetOptions {
-        let shipped = Network::shipped(bytes).map(|loaded| {
+        let shipped = AnyNetwork::shipped(bytes).map(|loaded| {
             loaded
-                .map(|net| (Arc::new(net), sha256(bytes)))
+                .map(|net| (net, sha256(bytes)))
                 .map_err(|e| e.to_string())
         });
         let mut options = NetOptions {
@@ -38,7 +38,7 @@ impl NetOptions {
     /// The shipped net in place of any file's, or no net where the build ships none.
     fn restore_shipped(&mut self) {
         (self.net, self.key) = match &self.shipped {
-            Some(Ok((net, key))) => (Some(Arc::clone(net)), Some(*key)),
+            Some(Ok((net, key))) => (Some(net.clone()), Some(*key)),
             _ => (None, None),
         };
     }
@@ -236,7 +236,7 @@ impl Session {
         let loaded = std::fs::read(&self.nnue.file)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
-                Network::from_bytes(&bytes)
+                AnyNetwork::from_bytes(&bytes)
                     .map(|net| (net, sha256(&bytes)))
                     .map_err(|e| e.to_string())
             });
@@ -248,7 +248,7 @@ impl Session {
                     net.provenance(),
                     net.trainer()
                 ));
-                self.nnue.net = Some(Arc::new(net));
+                self.nnue.net = Some(net);
                 self.nnue.key = Some(key);
             }
             Err(e) => say(format_args!(
@@ -274,7 +274,7 @@ impl Session {
     }
 
     /// The net a `go` scores with: only when `Use NNUE` is on and a net loaded.
-    pub(super) fn active_net(&self) -> Option<Arc<Network>> {
+    pub(super) fn active_net(&self) -> Option<AnyNetwork> {
         if self.nnue.on && self.nnue.net.is_none() {
             say(format_args!(
                 "info string Use NNUE is on and no net is loaded; the handcrafted evaluation scores this search"

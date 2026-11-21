@@ -9,7 +9,6 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
 use cadence_dataset::chunk::{Chunk, HEADER_LEN, Header, TRAILER_LEN, Trailer, chunk_name};
@@ -19,7 +18,7 @@ use cadence_engine::datagen::packed::{self, Build, Settings};
 use cadence_engine::datagen::{HASH_MB, verify};
 use cadence_engine::tt::Table;
 use cadence_engine::version::VERSION;
-use cadence_nnue::Network;
+use cadence_nnue::{AnyNetwork, Network, Provenance, WIDE};
 
 const SEED: u64 = 0xc0de;
 
@@ -39,7 +38,7 @@ fn written(dir: &Path, seed: u64) -> PathBuf {
 }
 
 /// As `written`, played by `net` where one is given and its header naming it.
-fn written_by(dir: &Path, seed: u64, net: Option<&Arc<Network>>) -> PathBuf {
+fn written_by(dir: &Path, seed: u64, net: Option<&AnyNetwork>) -> PathBuf {
     let settings = Settings {
         dir: dir.to_path_buf(),
         run_seed: seed,
@@ -147,6 +146,21 @@ fn a_chunk_played_by_the_shipped_net_names_it_and_regenerates_with_it() {
         first.encode().expect("encodes"),
         "the net's game is the handcrafted evaluation's"
     );
+}
+
+/// A 512-wide self-play net passes the loader runs use and regenerates its run byte for byte, so a
+/// build that ships one still generates.
+#[test]
+fn a_chunk_played_by_a_wide_net_regenerates_with_it() {
+    let bytes = Network::<WIDE>::generate(13, Provenance::SelfPlay).to_bytes();
+    let net = AnyNetwork::for_datagen(&bytes).expect("a wide self-play net may generate data");
+    assert!(matches!(net, AnyNetwork::Wide(_)));
+    let dir = scratch("wide");
+    let path = written_by(&dir, SEED, Some(&net));
+    let tt = Table::new(HASH_MB).expect("a table");
+    let replayed = verify::chunk(&path, Some(1), &tt, Some(&net));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(replayed.expect("regenerates with the wide net").replayed, 3);
 }
 
 #[test]
