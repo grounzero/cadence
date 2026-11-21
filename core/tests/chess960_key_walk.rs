@@ -21,8 +21,9 @@ const PLIES: usize = 160;
 const TWO_ROOK_WALKS: usize = 40;
 const SEED: u64 = 0x0960_0960_0960_0960;
 
-/// Two rooks on each side of each king; the rights field picks which one holds each right.
-const TWO_ROOKS: &str = "rr1qk1rr/pppppppp/8/8/8/8/PPPPPPPP/RR1QK1RR w";
+/// Two rooks on each side of each king, the extra two promoted from the missing pawns; the rights
+/// field picks which rook holds each right.
+const TWO_ROOKS: &str = "rr1qk1rr/1pppppp1/8/8/8/8/1PPPPPP1/RR1QK1RR w";
 
 #[derive(Default)]
 struct Coverage {
