@@ -8,14 +8,14 @@ use cadence_core::generate_legal;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN};
-use cadence_nnue::{AccumulatorStack, HIDDEN, Network, Provenance};
+use cadence_nnue::{AccumulatorStack, HIDDEN, Network, Provenance, WIDE};
 use cadence_train::validate::{Example, quantised_check};
 
 const SCALE: f32 = 400.0;
 
 /// Positions with White to move from random games, each labelled with the net's own score, so a
 /// net read as trained scores them at a loss of zero with the result left out.
-fn labelled(net: &Network) -> Vec<Example> {
+fn labelled<const H: usize>(net: &Network<H>) -> Vec<Example> {
     let mut rng = Rng::new(17);
     let mut out = Vec::new();
     while out.len() < 200 {
@@ -71,4 +71,14 @@ fn an_export_read_with_its_perspectives_swapped_fails_the_bar() {
     let refused = quantised_check(&misread, &examples, 0.0, SCALE, 0.0);
     let error = refused.expect_err("a misread export passed the bar");
     assert!(error.contains("outside"), "{error}");
+}
+
+/// A wide net's checkpoint is read at the width its length names, and passes the bar as trained.
+#[test]
+fn a_wide_net_read_as_trained_passes_the_bar() {
+    let net = Network::<WIDE>::generate(5, Provenance::SelfPlay);
+    let examples = labelled(&net);
+    let payload = net.to_bytes()[HEADER_LEN..].to_vec();
+    let loss = quantised_check(&payload, &examples, 0.0, SCALE, 0.0).expect("inside the bar");
+    assert!(loss < 1e-6, "{loss}");
 }

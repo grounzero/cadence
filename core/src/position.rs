@@ -760,19 +760,25 @@ impl Board {
 
     // --- derived state ----------------------------------------------------
 
-    /// Zero when no pawn can take, which keeps the key a function of the position; `recompute_key`
-    /// calls this too.
+    /// Zero unless a pawn can take there legally, so positions the rules count as one share a key.
+    /// Read from the pieces alone, so every path that builds the key agrees; `recompute_key` too.
     #[inline]
     fn ep_key(&self, ep: Square, capturer: Colour) -> u64 {
         // A `capturer` pawn attacks `ep` from the squares an opposing pawn on `ep` would
         // attack.
-        let takers =
+        let mut takers =
             attacks::pawn_attacks(capturer.flip(), ep) & self.pieces(capturer, PieceType::Pawn);
-        if takers.any() {
-            zobrist::ep(ep.file())
-        } else {
-            0
+        let victim = Square::new(ep.index() as u8 ^ 8);
+        let king = self.king_square(capturer);
+        let enemies = self.by_colour(capturer.flip()).without(victim);
+        while let Some(from) = takers.pop_lsb() {
+            // The capture moves one pawn and removes another, which only the occupancy shows.
+            let occ = self.occupied().without(from).without(victim).with(ep);
+            if (self.attackers_to(king, occ) & enemies).is_empty() {
+                return zobrist::ep(ep.file());
+            }
         }
+        0
     }
 
     /// The rights set and each right's rook, which tells two Chess960 layouts with the same pieces
