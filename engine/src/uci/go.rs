@@ -93,46 +93,28 @@ impl Session {
                         tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
                     let mut pos = position_for(board, net);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
+                    let go = ParallelGo {
+                        board: &mut pos,
+                        limits,
+                        received,
+                        stop: &stop,
+                        ponder_hit: &ponder_hit,
+                        tt: &tt,
+                        chess960,
+                        threads,
+                        multipv,
+                        level,
+                        tunables,
+                        root_filter: &root_filter,
+                        tables: tables.as_ref(),
+                        decided,
+                        rank,
+                        learned: &mut learned,
+                    };
                     let (best, pv) = if threads == 1 {
-                        let mut out = std::io::stdout();
-                        let mut search = Search::new(&stop, &tt);
-                        search.swap_learned(&mut learned[0]);
-                        search.set_limits(limits);
-                        search.set_clock_origin(received);
-                        search.set_ponder_hit(&ponder_hit);
-                        search.set_chess960(chess960);
-                        search.set_lines(multipv, level);
-                        search.set_tunables(tunables);
-                        search.set_root_filter(&root_filter);
-                        if let Some(tables) = &tables {
-                            search.set_tables(tables, decided);
-                        }
-                        search.set_root_rank(rank);
-                        let mut best = search.run(&mut pos, &mut out);
-                        if let Some(policy) = level {
-                            best = search.sample(policy, &mut pos, &mut out);
-                        }
-                        search.swap_learned(&mut learned[0]);
-                        (best, search.pv().to_vec())
+                        single_search(go)
                     } else {
-                        parallel_search(ParallelGo {
-                            board: &mut pos,
-                            limits,
-                            received,
-                            stop: &stop,
-                            ponder_hit: &ponder_hit,
-                            tt: &tt,
-                            chess960,
-                            threads,
-                            multipv,
-                            level,
-                            tunables,
-                            root_filter: &root_filter,
-                            tables: tables.as_ref(),
-                            decided,
-                            rank,
-                            learned: &mut learned,
-                        })
+                        parallel_search(go)
                     };
                     let spelled = to_uci(best, &legal, chess960);
                     // Only when the GUI said it ponders; otherwise the line is the one it always
@@ -235,6 +217,30 @@ struct ParallelGo<'a> {
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
 /// about the group.
+/// One thread, which reports and samples a level's move itself.
+fn single_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
+    let mut out = std::io::stdout();
+    let mut search = Search::new(go.stop, go.tt);
+    search.swap_learned(&mut go.learned[0]);
+    search.set_limits(go.limits);
+    search.set_clock_origin(go.received);
+    search.set_ponder_hit(go.ponder_hit);
+    search.set_chess960(go.chess960);
+    search.set_lines(go.multipv, go.level);
+    search.set_tunables(go.tunables);
+    search.set_root_filter(go.root_filter);
+    if let Some(tables) = go.tables {
+        search.set_tables(tables, go.decided);
+    }
+    search.set_root_rank(go.rank);
+    let mut best = search.run(go.board, &mut out);
+    if let Some(policy) = go.level {
+        best = search.sample(policy, go.board, &mut out);
+    }
+    search.swap_learned(&mut go.learned[0]);
+    (best, search.pv().to_vec())
+}
+
 fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let ParallelGo {
         board,
