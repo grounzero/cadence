@@ -19,6 +19,12 @@ result.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chess960: the position key names the rook each castling right belongs to,
+  so two positions that differ only in which rook may castle no longer share
+  a table entry.
+
 ## [0.7.0-rc.3] - 2026-11-21
 
 A release candidate for 0.7.0, with a retrained network twice as wide.
