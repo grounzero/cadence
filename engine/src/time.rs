@@ -8,7 +8,7 @@ use cadence_core::Colour;
 use crate::search::Limits;
 
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
-pub const MOVE_OVERHEAD_MS: u64 = 20;
+pub const MOVE_OVERHEAD_MS: u64 = 5;
 
 /// Milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,8 +54,10 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
         Some(mtg) => avail / u64::from(mtg.max(1)),
         None => avail / 25,
     };
-    // Saturating, so a clock or increment near the limit bounds the budget rather than overflowing.
-    let soft = share.saturating_add(inc.saturating_mul(3) / 4).min(cap);
+    // Every move pays the overhead, so only the increment past it is new time. Saturating, so a
+    // clock or increment near the limit bounds the budget rather than overflowing.
+    let gained = inc.saturating_sub(overhead);
+    let soft = share.saturating_add(gained.saturating_mul(3) / 4).min(cap);
     let hard = soft.saturating_mul(3).min(cap);
     Some(Budget { soft, hard })
 }

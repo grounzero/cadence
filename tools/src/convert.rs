@@ -24,7 +24,7 @@ use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
 const USAGE: &str = "usage: cadence-tools convert --manifest FILE [--manifest FILE]... --out DIR \
      --shuffle-seed HEX|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] \
-     [--dedup]";
+     [--dedup] [--max-copies N] [--report-sample N]";
 
 /// The last band holds every ply past it, as `datagen extract`'s does.
 const PLY_BAND: usize = 10;
@@ -39,6 +39,9 @@ const BUCKETS: usize = (2 * SPAN / BUCKET) as usize + 2;
 /// gives standard starts about one in sixty thousand at two million games, rising with the count.
 /// Past it the seeds are suspect and the conversion refuses.
 const REPEAT_BAR: u64 = 1_000;
+
+/// Set apart from the shuffle seed to give the capped visiting order a stream of its own.
+const VISIT_SALT: u64 = 0x7669_7369_745f_6f72;
 
 /// The unit published, and the line reporting it when the sync after its rename failed.
 #[derive(Debug)]
@@ -58,6 +61,10 @@ pub struct Request {
     pub score_cap: Option<i16>,
     pub swing_cap: Option<i16>,
     pub dedup: bool,
+    /// At most this many training copies of a network input, the games visited in a seeded order.
+    pub max_copies: Option<u8>,
+    /// The report's figures by key and by input read from 1 key in this many, and scaled by it.
+    pub report_sample: u32,
 }
 
 /// # Errors
@@ -106,6 +113,8 @@ fn request_from(args: &[String]) -> Result<Request, String> {
         score_cap: None,
         swing_cap: None,
         dedup: false,
+        max_copies: None,
+        report_sample: 1,
     };
     let (mut out, mut seed) = (None, None);
     let mut it = args.iter();
@@ -137,6 +146,15 @@ fn request_from(args: &[String]) -> Result<Request, String> {
             }
             "--score-cap" => request.score_cap = Some(value.parse().map_err(|_| bad())?),
             "--swing-cap" => request.swing_cap = Some(value.parse().map_err(|_| bad())?),
+            "--max-copies" => match value.parse::<u8>() {
+                Ok(0) => return Err("--max-copies 0 is refused: it trains on nothing".to_string()),
+                Ok(cap) => request.max_copies = Some(cap),
+                Err(_) => return Err(format!("bad {arg} `{value}`: 1 to 255")),
+            },
+            "--report-sample" => match value.parse::<u32>() {
+                Ok(n) if n >= 1 => request.report_sample = n,
+                _ => return Err(format!("bad {arg} `{value}`: 1 reads every key")),
+            },
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -309,6 +327,7 @@ struct Counts {
     capped: u64,
     swung: u64,
     repeated_dropped: u64,
+    past_copies: u64,
     train: u64,
     holdout: u64,
     within_game: u64,
@@ -352,10 +371,11 @@ struct Kept {
     /// By start kind and network input, a reading only: each sorted once every position is kept.
     train_inputs: [Vec<u64>; 2],
     holdout_inputs: [Vec<u64>; 2],
+    copies: CopyCounts,
 }
 
 impl Kept {
-    fn new(dir: &Path, seed: u64) -> Result<Kept, String> {
+    fn new(dir: &Path, seed: u64, copies: CopyCounts) -> Result<Kept, String> {
         Ok(Kept {
             train: Buckets::new(&dir.join("train"), TRAIN_BUCKETS, splitmix64(seed).0)?,
             holdout: Buckets::new(&dir.join("holdout"), HOLDOUT_BUCKETS, splitmix64(!seed).0)?,
@@ -363,6 +383,7 @@ impl Kept {
             holdout_keys: Vec::new(),
             train_inputs: [Vec::new(), Vec::new()],
             holdout_inputs: [Vec::new(), Vec::new()],
+            copies,
         })
     }
 }
@@ -501,6 +522,96 @@ impl KeySet {
     }
 }
 
+/// Training copies of each network input, nine bytes a slot kept under 85% full; a count stops at
+/// the cap, so 255 fits a byte.
+struct CopyCounts {
+    slots: Vec<u64>,
+    counts: Vec<u8>,
+    len: usize,
+    zero: u8,
+}
+
+impl CopyCounts {
+    fn new() -> CopyCounts {
+        CopyCounts::with_capacity(0)
+    }
+
+    /// Room for `inputs` keys under the load bar from the start, so a bound on the inputs a run can
+    /// meet means the table never doubles, the doubling holding both tables at once.
+    fn with_capacity(inputs: u64) -> CopyCounts {
+        let wanted = usize::try_from(inputs.saturating_mul(20) / 17 + 1).unwrap_or(usize::MAX);
+        let n = wanted.max(1 << 16);
+        CopyCounts {
+            slots: vec![0; n],
+            counts: vec![0; n],
+            len: 0,
+            zero: 0,
+        }
+    }
+
+    /// A key's slot by multiply-high over any table length, so the table need not round up to a
+    /// power of two.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the high half of a product with the slot count is below it, a usize"
+    )]
+    fn slot(slots: &[u64], key: u64) -> usize {
+        let n = slots.len();
+        let mut i = ((u128::from(splitmix64(key).0) * n as u128) >> 64) as usize;
+        while slots[i] != 0 && slots[i] != key {
+            i += 1;
+            if i == n {
+                i = 0;
+            }
+        }
+        i
+    }
+
+    /// Whether this copy is within `cap`, counted if it is: the count is read before it rises, so
+    /// it never needs a 256th value.
+    fn take(&mut self, key: u64, cap: u8) -> bool {
+        if key == 0 {
+            if self.zero >= cap {
+                return false;
+            }
+            self.zero = self.zero.saturating_add(1);
+            return true;
+        }
+        let mut i = CopyCounts::slot(&self.slots, key);
+        if self.slots[i] != key {
+            if (self.len + 1) * 20 > self.slots.len() * 17 {
+                self.double();
+                i = CopyCounts::slot(&self.slots, key);
+            }
+            self.slots[i] = key;
+            self.len += 1;
+        }
+        if self.counts[i] >= cap {
+            return false;
+        }
+        self.counts[i] = self.counts[i].saturating_add(1);
+        true
+    }
+
+    /// Twice the slots, every key moved; only a new key past the load bar calls it, never a repeat.
+    fn double(&mut self) {
+        let mut slots = vec![0; self.slots.len() * 2];
+        let mut counts = vec![0; self.slots.len() * 2];
+        for (&k, &n) in self
+            .slots
+            .iter()
+            .zip(&self.counts)
+            .filter(|&(&k, _)| k != 0)
+        {
+            let i = CopyCounts::slot(&slots, k);
+            slots[i] = k;
+            counts[i] = n;
+        }
+        self.slots = slots;
+        self.counts = counts;
+    }
+}
+
 /// One start kind's positions read by network input, its holdout against both kinds' training.
 #[derive(Clone, Copy, Debug, Default)]
 struct ByInput {
@@ -552,7 +663,7 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
     for set in &sets {
         check_listing(set)?;
     }
-    let plan = plan_games(&sets, request.standard_share)?;
+    let plan = plan_games(&sets, request.standard_share, request.every)?;
     fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
     let staging = request.out.join(format!(".staging-{}", std::process::id()));
     fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
@@ -575,9 +686,19 @@ fn convert_into(
 ) -> Result<Converted, String> {
     let buckets = staging.join("buckets");
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
-    let mut kept = Kept::new(&buckets, request.shuffle_seed)?;
+    let counter = if request.max_copies.is_some() {
+        CopyCounts::with_capacity(plan.train_moves)
+    } else {
+        CopyCounts::new()
+    };
+    let mut kept = Kept::new(&buckets, request.shuffle_seed, counter)?;
     let mut seen = KeySet::new();
-    for_each_game(sets, plan, |game| {
+    // A cap keeps the copies it meets first, so with one the games are met in a seeded order rather
+    // than the datasets' own, which would favour whichever was listed first.
+    let order = request
+        .max_copies
+        .map(|_| splitmix64(request.shuffle_seed ^ VISIT_SALT).0);
+    for_each_game(sets, plan, order, |game| {
         positions(
             request,
             game,
@@ -618,7 +739,7 @@ fn convert_into(
             copies: copies(train),
         }
     });
-    let report = report(sets, &counts, &plan.repeats, overlap, &by_input);
+    let report = report(sets, &counts, plan, overlap, &by_input, request);
     let Kept {
         train,
         holdout,
@@ -626,8 +747,15 @@ fn convert_into(
         holdout_keys,
         train_inputs,
         holdout_inputs,
+        copies,
     } = kept;
-    drop((train_keys, holdout_keys, train_inputs, holdout_inputs));
+    drop((
+        train_keys,
+        holdout_keys,
+        train_inputs,
+        holdout_inputs,
+        copies,
+    ));
     let mut rng = Rng::new(request.shuffle_seed);
     let train_sha = train.drain(&staging.join("train.bin"), &mut rng)?;
     let holdout_sha = holdout.drain(&staging.join("holdout.bin"), &mut rng)?;
@@ -670,16 +798,23 @@ struct Repeats {
 struct GamePlan {
     chosen: Vec<bool>,
     repeats: [Repeats; 2],
+    /// The moves of the chosen training games, more than the training positions any filter keeps.
+    train_moves: u64,
+    /// Each chunk's first game in `chosen`, in reading order.
+    starts: Vec<usize>,
 }
 
 /// Every chunk read once to choose the games: no run seed and chunk index twice, and no game copied.
 /// A game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
-fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
+fn plan_games(sets: &[Dataset], share: Option<u8>, every: u32) -> Result<GamePlan, String> {
     let mut chunks: BTreeMap<(u64, u32), String> = BTreeMap::new();
     let mut names: Vec<&str> = Vec::new();
     let mut keys: BTreeMap<[u8; 16], (usize, u32, u64)> = BTreeMap::new();
     let mut repeats = [Repeats::default(); 2];
     let (mut chosen, mut kinds) = (Vec::new(), Vec::new());
+    // Each game's moves where it trains, and none where it is held out.
+    let mut trains = Vec::new();
+    let mut starts = Vec::new();
     for set in sets {
         for (name, _) in &set.chunks {
             let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
@@ -693,11 +828,15 @@ fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
                 ));
             }
             names.push(name.as_str());
+            starts.push(chosen.len());
             for record in &chunk.records {
                 let key = game_key(record);
                 let kind = &mut repeats[usize::from(record.kind)];
                 kind.read += 1;
                 kinds.push(record.kind);
+                let number = game_number(&chunk.header, record.index);
+                let held = every > 0 && number.is_multiple_of(u64::from(every));
+                trains.push(if held { 0 } else { record.moves.len() as u64 });
                 if let Some(&(first, index, seed)) = keys.get(&key) {
                     if seed == record.seed {
                         return Err(format!(
@@ -724,42 +863,73 @@ fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
         }
     }
     subsample(&mut chosen, &kinds, share);
-    Ok(GamePlan { chosen, repeats })
+    let train_moves = chosen
+        .iter()
+        .zip(&trains)
+        .filter(|&(&c, _)| c)
+        .map(|(_, &m)| m)
+        .sum();
+    Ok(GamePlan {
+        chosen,
+        repeats,
+        train_moves,
+        starts,
+    })
 }
 
-/// The chosen games in reading order, each chunk read again, so one chunk's games are in memory at
-/// a time; a chunk whose games differ in number from the first read is refused.
+/// The chosen games, each chunk read again so one chunk's games are in memory at a time; with
+/// `order`, the chunks and each chunk's games are visited in that seed's shuffle, not as read.
 fn for_each_game(
     sets: &[Dataset],
     plan: &GamePlan,
+    order: Option<u64>,
     mut each: impl FnMut(&Game) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut at = 0;
+    let changed = || "a chunk changed between its two reads".to_string();
+    let mut visits = Vec::new();
     for (dataset, set) in sets.iter().enumerate() {
         for (name, _) in &set.chunks {
-            let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
-            let Chunk {
-                header, records, ..
-            } = Chunk::read(&bytes).map_err(|e| format!("{name}: {e}"))?;
-            for record in records {
-                let chosen = *plan
-                    .chosen
-                    .get(at)
-                    .ok_or_else(|| format!("{name} changed between its two reads"))?;
-                at += 1;
-                if chosen {
-                    each(&Game {
-                        dataset,
-                        chunk: name.clone(),
-                        number: game_number(&header, record.index),
-                        record,
-                    })?;
-                }
-            }
+            let k = visits.len();
+            let start = *plan.starts.get(k).ok_or_else(changed)?;
+            let next = plan.starts.get(k + 1).copied();
+            let end = next.unwrap_or(plan.chosen.len());
+            visits.push((dataset, set, name, start, end));
         }
     }
-    if at != plan.chosen.len() {
-        return Err("a chunk changed between its two reads".into());
+    if visits.len() != plan.starts.len() {
+        return Err(changed());
+    }
+    let mut rng = order.map(Rng::new);
+    if let Some(rng) = rng.as_mut() {
+        shuffle(&mut visits, rng);
+    }
+    for (dataset, set, name, start, end) in visits {
+        let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        let Chunk {
+            header, records, ..
+        } = Chunk::read(&bytes).map_err(|e| format!("{name}: {e}"))?;
+        if records.len() != end - start {
+            return Err(format!("{name} changed between its two reads"));
+        }
+        let mut at: Vec<usize> = (0..records.len()).collect();
+        if let Some(rng) = rng.as_mut() {
+            shuffle(&mut at, rng);
+        }
+        let mut records: Vec<Option<GameRecord>> = records.into_iter().map(Some).collect();
+        for i in at {
+            let record = records
+                .get_mut(i)
+                .and_then(Option::take)
+                .ok_or_else(changed)?;
+            if *plan.chosen.get(start + i).ok_or_else(changed)? {
+                each(&Game {
+                    dataset,
+                    chunk: name.clone(),
+                    number: game_number(&header, record.index),
+                    record,
+                })?;
+            }
+        }
     }
     Ok(())
 }
@@ -848,33 +1018,51 @@ fn positions(
         } else {
             let key = board.key();
             let again = !this_game.insert(key);
-            let before = seen.contains(key);
+            // Deduplication needs every key; the report alone reads its sample.
+            let tracked = request.dedup || in_sample(key, request.report_sample);
+            let before = tracked && seen.contains(key);
             counts.within_game += u64::from(again);
             counts.across_games += u64::from(!again && before);
             if request.dedup && (again || before) {
                 counts.repeated_dropped += 1;
             } else {
-                seen.insert(key);
+                if tracked {
+                    seen.insert(key);
+                }
                 let result = result_for_mover(
                     record.outcome,
                     board.side_to_move() == cadence_core::Colour::White,
                 );
                 let bytes = trainer::encode(&board, score, result);
                 let input = input_key(&bytes, board.side_to_move() == cadence_core::Colour::White);
-                counts.plies[band] += 1;
-                counts.zeros[band] += u64::from(score == 0);
-                counts.scores[bucket(score)] += 1;
                 let kind = usize::from(record.kind);
-                if held {
-                    kept.holdout.push(&bytes)?;
-                    kept.holdout_keys.push(key);
-                    kept.holdout_inputs[kind].push(input);
-                    counts.holdout += 1;
+                // The cap reads training only, so validation keeps every copy it held before.
+                if !held
+                    && request
+                        .max_copies
+                        .is_some_and(|cap| !kept.copies.take(copy_key(&bytes), cap))
+                {
+                    counts.past_copies += 1;
                 } else {
-                    kept.train.push(&bytes)?;
-                    kept.train_keys.push(key);
-                    kept.train_inputs[kind].push(input);
-                    counts.train += 1;
+                    counts.plies[band] += 1;
+                    counts.zeros[band] += u64::from(score == 0);
+                    counts.scores[bucket(score)] += 1;
+                    let n = request.report_sample;
+                    let (keys, inputs) = if held {
+                        kept.holdout.push(&bytes)?;
+                        counts.holdout += 1;
+                        (&mut kept.holdout_keys, &mut kept.holdout_inputs[kind])
+                    } else {
+                        kept.train.push(&bytes)?;
+                        counts.train += 1;
+                        (&mut kept.train_keys, &mut kept.train_inputs[kind])
+                    };
+                    if in_sample(key, n) {
+                        keys.push(key);
+                    }
+                    if in_sample(input, n) {
+                        inputs.push(input);
+                    }
                 }
             }
         }
@@ -899,6 +1087,27 @@ fn input_key(record: &[u8; RECORD_LEN], white_to_move: bool) -> u64 {
     mix(word(0) ^ mix(word(8) ^ mix(word(16) ^ u64::from(white_to_move))))
 }
 
+/// The cap's key: the network's input without the side to move, which the input's perspective
+/// already holds, so a position and its colour-flipped mirror share one count.
+fn copy_key(record: &[u8; RECORD_LEN]) -> u64 {
+    let word = |i: usize| {
+        let mut w = [0; 8];
+        w.copy_from_slice(&record[i..i + 8]);
+        u64::from_le_bytes(w)
+    };
+    let mix = |x: u64| splitmix64(x).0;
+    mix(word(0) ^ mix(word(8) ^ mix(word(16))))
+}
+
+/// Whether the report reads this key, 1 key in `n` by a hash apart from the key set's own, so a
+/// sampled key's every copy is read and a sampled key set probes no denser than a whole one.
+fn in_sample(key: u64, n: u32) -> bool {
+    n == 1
+        || splitmix64(key ^ 0x5851_f42d_4c95_7f2d)
+            .0
+            .is_multiple_of(u64::from(n))
+}
+
 /// The record stores White's result; the trainer reads the side to move's.
 fn result_for_mover(outcome: u8, white_to_move: bool) -> u8 {
     match (outcome, white_to_move) {
@@ -909,10 +1118,10 @@ fn result_for_mover(outcome: u8, white_to_move: bool) -> u8 {
 }
 
 /// Fisher-Yates from the recorded seed, so the same seed gives the same bytes.
-fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
-    for i in (1..records.len()).rev() {
+fn shuffle<T>(items: &mut [T], rng: &mut Rng) {
+    for i in (1..items.len()).rev() {
         let j = rng.below(i + 1);
-        records.swap(i, j);
+        items.swap(i, j);
     }
 }
 
@@ -923,12 +1132,20 @@ fn shuffle(records: &mut [[u8; RECORD_LEN]], rng: &mut Rng) {
 fn report(
     sets: &[Dataset],
     counts: &[[Counts; 2]],
-    repeats: &[Repeats; 2],
+    plan: &GamePlan,
     overlap: usize,
     by_input: &[ByInput; 2],
+    request: &Request,
 ) -> String {
     let mut text = String::new();
-    for (name, kind) in ["uniform", "standard"].iter().zip(repeats) {
+    let n = request.report_sample;
+    // Figures read from a sample are scaled to the whole and say so; at 1 the text is unchanged.
+    let (s, note) = if n > 1 {
+        (n as usize, format!(" (1 in {n} keys, scaled)"))
+    } else {
+        (1, String::new())
+    };
+    for (name, kind) in ["uniform", "standard"].iter().zip(&plan.repeats) {
         let _ = writeln!(
             text,
             "{name} games repeating an earlier game from another seed, dropped: {} of {}",
@@ -962,9 +1179,17 @@ fn report(
             );
             let _ = writeln!(
                 text,
-                "  {name} repeated positions within-game {} across-games {}",
-                c.within_game, c.across_games
+                "  {name} repeated positions within-game {} across-games {}{note}",
+                c.within_game,
+                c.across_games * s as u64
             );
+            if let Some(cap) = request.max_copies {
+                let _ = writeln!(
+                    text,
+                    "  {name} training positions past {cap} copies of their network input, dropped: {}",
+                    c.past_copies
+                );
+            }
             for (label, bands) in [
                 ("kept", &c.plies),
                 ("exact-zero", &c.zeros),
@@ -990,35 +1215,61 @@ fn report(
             );
         }
     }
+    if request.max_copies.is_some() {
+        let _ = writeln!(
+            text,
+            "copy counter sized for {} training positions, the chosen training games' moves",
+            plan.train_moves
+        );
+    }
+    sampled_figures(&mut text, overlap, by_input, s, &note);
+    text
+}
+
+/// The report's figures read by key and by network input, each scaled by `s` and marked with `note`
+/// when read from a sample.
+fn sampled_figures(
+    text: &mut String,
+    overlap: usize,
+    by_input: &[ByInput; 2],
+    s: usize,
+    note: &str,
+) {
     let _ = writeln!(
-        text,
-        "holdout positions whose key is also in training: {overlap}"
+        *text,
+        "holdout positions whose key is also in training: {}{note}",
+        overlap * s
     );
     let input_overlap: usize = by_input.iter().map(|b| b.overlap).sum();
     let _ = writeln!(
-        text,
+        *text,
         "holdout positions whose network input (768 features and the side to move) is also in \
-         training: {input_overlap}"
+         training: {}{note}",
+        input_overlap * s
     );
     for (name, b) in ["uniform", "standard"].iter().zip(by_input) {
         let _ = writeln!(
-            text,
-            "{name} holdout positions whose network input is also in training: {} of {}",
-            b.overlap, b.holdout
+            *text,
+            "{name} holdout positions whose network input is also in training: {} of {}{note}",
+            b.overlap * s,
+            b.holdout * s
         );
         let _ = writeln!(
-            text,
-            "{name} repeats by network input within training {} of {}, within holdout {} of {}",
-            b.train_repeats, b.train, b.holdout_repeats, b.holdout
+            *text,
+            "{name} repeats by network input within training {} of {}, within holdout {} of \
+             {}{note}",
+            b.train_repeats * s,
+            b.train * s,
+            b.holdout_repeats * s,
+            b.holdout * s
         );
-        let [one, few, some, many, most] = b.copies;
+        let [one, few, some, many, most] = b.copies.map(|c| c * s as u64);
         let _ = writeln!(
-            text,
+            *text,
             "{name} training positions by copies of their network input: 1 {one} 2-8 {few} 9-64 \
-             {some} 65-512 {many} over-512 {most}"
+             {some} 65-512 {many} over-512 {most}{note}"
         );
     }
-    text
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1069,6 +1320,19 @@ fn manifest(
     if request.dedup {
         filters.push_str(", repeated positions dropped");
     }
+    if let Some(cap) = request.max_copies {
+        let _ = write!(
+            filters,
+            ", at most {cap} training copies of a network input"
+        );
+    }
+    if request.report_sample > 1 {
+        let _ = write!(
+            filters,
+            "; report figures by key and input from 1 key in {}",
+            request.report_sample
+        );
+    }
     let _ = writeln!(text, "filters\t{filters}");
     for (set, kinds) in sets.iter().zip(counts) {
         let _ = writeln!(text, "source\t{}\t{}", set.manifest.display(), set.sha256);
@@ -1102,8 +1366,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BUCKETS, Buckets, KeySet, RECORD_LEN, Request, bucket, convert, copies, game_number,
-        input_key, result_for_mover,
+        BUCKETS, Buckets, CopyCounts, KeySet, RECORD_LEN, Request, bucket, convert, copies,
+        copy_key, game_number, in_sample, input_key, request_from, result_for_mover,
     };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
@@ -1112,7 +1376,7 @@ mod tests {
     use cadence_dataset::chunk::{Chunk, GameRecord, Header, chunk_name, encode_move};
     use cadence_dataset::durable::{Logged, Step};
     use cadence_dataset::sha256::{hex, sha256};
-    use cadence_dataset::trainer::{DRAW, LOSS, WIN};
+    use cadence_dataset::trainer::{self, DRAW, LOSS, WIN};
 
     /// The header of chunk 0 of run 1, planned at two games.
     fn test_header() -> Header {
@@ -1173,6 +1437,8 @@ mod tests {
             score_cap: None,
             swing_cap: None,
             dedup: false,
+            max_copies: None,
+            report_sample: 1,
         }
     }
 
@@ -1433,5 +1699,124 @@ mod tests {
         sorted.extend(std::iter::repeat_n(4, 9));
         sorted.extend(std::iter::repeat_n(5, 600));
         assert_eq!(copies(&sorted), [1, 5, 9, 0, 600]);
+    }
+
+    /// Each input takes copies up to the cap through the table's growth, zero's too, and none past
+    /// it.
+    #[test]
+    fn copy_counts_take_each_input_up_to_the_cap_through_growth() {
+        let mut counts = CopyCounts::new();
+        for round in 1..=4u8 {
+            for key in 0..100_000u64 {
+                assert_eq!(
+                    counts.take(key * 7, 3),
+                    round <= 3,
+                    "key {} in round {round}",
+                    key * 7
+                );
+            }
+        }
+        assert!(counts.take(1, 1), "a key never taken has room for one");
+        assert!(!counts.take(1, 1));
+    }
+
+    /// At a cap of 255 the 256th copy is refused, where a count saturating at 255 would never pass
+    /// the cap.
+    #[test]
+    fn the_256th_copy_is_refused_at_a_cap_of_255() {
+        let mut counts = CopyCounts::new();
+        for key in [0, 5] {
+            assert!((0..255).all(|_| counts.take(key, 255)), "key {key}");
+            assert!(!counts.take(key, 255), "key {key}'s 256th copy");
+        }
+    }
+
+    /// A position and its colour-flipped mirror give the network one input, so they share one copy
+    /// count; the report's key still tells them apart by the side to move.
+    #[test]
+    fn a_position_and_its_colour_flipped_mirror_share_one_count() {
+        let record = |fen: &str| {
+            let board = Board::from_fen(fen).expect("a legal position");
+            trainer::encode(&board, 0, DRAW)
+        };
+        let white = record("4k3/8/8/8/8/2n5/4P3/4K3 w - - 0 1");
+        let black = record("4k3/4p3/2N5/8/8/8/8/4K3 b - - 0 1");
+        assert_eq!(
+            white[..24],
+            black[..24],
+            "the mirror's input is not the same"
+        );
+        assert_eq!(copy_key(&white), copy_key(&black));
+        assert_ne!(input_key(&white, true), input_key(&black, false));
+        let mut counts = CopyCounts::new();
+        assert!(counts.take(copy_key(&white), 1));
+        assert!(
+            !counts.take(copy_key(&black), 1),
+            "the mirror took a second copy"
+        );
+    }
+
+    /// A table sized for `n` inputs holds `n` distinct inputs without growing, each counted, and
+    /// takes about 20 slots for every 17 of them rather than a power of two's rounding.
+    #[test]
+    fn copy_counts_sized_for_their_inputs_never_grow() {
+        let n = 300_000u64;
+        let mut counts = CopyCounts::with_capacity(n);
+        let slots = counts.slots.len();
+        assert_eq!(slots as u64, n * 20 / 17 + 1);
+        for round in 1..=3u8 {
+            for key in 1..=n {
+                assert_eq!(
+                    counts.take(key * 11, 2),
+                    round <= 2,
+                    "key {} in round {round}",
+                    key * 11
+                );
+            }
+        }
+        assert_eq!(counts.slots.len(), slots, "the table grew");
+        assert_eq!(counts.len as u64, n);
+    }
+
+    /// The report's sample reads about one key in `n`, and every key at one.
+    #[test]
+    fn the_report_sample_reads_about_one_key_in_n() {
+        let read = |n: u32| (0..1_000_000u64).filter(|&k| in_sample(k, n)).count();
+        assert_eq!(read(1), 1_000_000);
+        let sixteenth = read(16);
+        assert!(
+            (61_250..=63_750).contains(&sixteenth),
+            "{sixteenth} of a million keys at 1 in 16"
+        );
+    }
+
+    /// The cap is one to 255 copies, and absent unless asked.
+    #[test]
+    fn the_copies_cap_takes_one_to_255() {
+        let ask = |cap: &str| {
+            let args: Vec<String> = [
+                "--manifest",
+                "m",
+                "--out",
+                "o",
+                "--shuffle-seed",
+                "1",
+                "--max-copies",
+                cap,
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+            request_from(&args).map(|r| r.max_copies)
+        };
+        assert_eq!(ask("32"), Ok(Some(32)));
+        assert_eq!(ask("255"), Ok(Some(255)));
+        assert!(ask("0").is_err_and(|e| e.contains("trains on nothing")));
+        assert!(ask("256").is_err_and(|e| e.contains("1 to 255")));
+        let none: Vec<String> = ["--manifest", "m", "--out", "o", "--shuffle-seed", "1"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(request_from(&none).map(|r| r.max_copies), Ok(None));
     }
 }
