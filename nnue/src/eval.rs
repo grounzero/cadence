@@ -6,18 +6,18 @@
 use cadence_core::Colour;
 
 use crate::accumulator::Accumulator;
-use crate::net::{HIDDEN, Network, QA, QB, SCALE};
+use crate::net::{Network, QA, QB, SCALE};
 
-impl Network {
+impl<const H: usize> Network<H> {
     /// The fast form, multiplying the clamped activation by its weight in `i16` and widening only
-    /// the second product, which the load check keeps exact.
+    /// the second product, which the load check keeps exact; the two perspectives add in `i64`.
     #[must_use]
-    pub fn evaluate(&self, acc: &Accumulator, stm: Colour) -> i32 {
+    pub fn evaluate(&self, acc: &Accumulator<H>, stm: Colour) -> i32 {
         let us = &acc.sums[stm.index()];
         let them = &acc.sums[stm.flip().index()];
-        let sum = layer(us, &self.output[0]) + layer(them, &self.output[1]);
+        let sum = i64::from(layer(us, &self.output[0])) + i64::from(layer(them, &self.output[1]));
         let value = round_div(
-            (i64::from(sum / QA) + i64::from(self.output_bias)) * i64::from(SCALE),
+            (sum / i64::from(QA) + i64::from(self.output_bias)) * i64::from(SCALE),
             i64::from(QA * QB),
         );
         i32::try_from(value).unwrap_or_else(|_| unreachable!("the load check bounds the sum"))
@@ -26,7 +26,7 @@ impl Network {
     /// The same value by the plainest arithmetic, in `i64` throughout: the oracle the fast form
     /// and every target's build must equal.
     #[must_use]
-    pub fn evaluate_reference(&self, acc: &Accumulator, stm: Colour) -> i32 {
+    pub fn evaluate_reference(&self, acc: &Accumulator<H>, stm: Colour) -> i32 {
         let mut sum = 0_i64;
         for (sums, weights) in [
             (&acc.sums[stm.index()], &self.output[0]),
@@ -56,7 +56,9 @@ fn round_div(n: i64, d: i64) -> i64 {
     }
 }
 
-fn layer(sums: &[i16; HIDDEN], weights: &[i16; HIDDEN]) -> i32 {
+/// The load check bounds each perspective's sum inside `i32` at either width, which at the wide one
+/// holds only for output weights of magnitude 64 or less.
+fn layer<const H: usize>(sums: &[i16; H], weights: &[i16; H]) -> i32 {
     let ceiling = i16::try_from(QA).unwrap_or(i16::MAX);
     sums.iter()
         .zip(weights)

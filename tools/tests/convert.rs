@@ -117,7 +117,8 @@ fn dataset(dir: &Path, run_seed: u64, chunks: &[Vec<GameRecord>]) -> PathBuf {
     let text = format!(
         "# cadence dataset manifest\ncommit\t{}\nversion\t0.0.0-test\nnodes\t5000\nscreen-nodes\t5000\n\
          hash\t16\nrandom-plies\t{RANDOM_PLIES}\nwindow\t200\nstandard-share\t50\n\
-         run-seeds\t{run_seed:016x}\nchunk\tsha256\tgames\tplies\tuniform\tstandard\n{rows}",
+         chunk-games\t1000\nrun-seeds\t{run_seed:016x}\n\
+         chunk\tsha256\tgames\tplies\tuniform\tstandard\n{rows}",
         hex(&[1; 20])
     );
     std::fs::write(&manifest, text).expect("writes");
@@ -337,6 +338,45 @@ fn the_same_chunk_or_game_twice_is_refused() {
     assert!(
         !ok_game && game_text.contains("is the same game as"),
         "{game_text}"
+    );
+}
+
+/// A game drawn again from another seed, as the standard start's random plies can be by chance, is
+/// kept once and counted; past one in a thousand of a kind the conversion refuses.
+#[test]
+fn a_game_repeated_from_another_seed_is_kept_once() {
+    let dir = scratch("repeated");
+    let first = games(8, 1_000, |_| 1);
+    let mut second = games(9, 1_000, |_| 1);
+    let mut again = first[3].clone();
+    again.index = 5;
+    again.seed ^= 1;
+    second[5] = again;
+    let manifest = dataset(&dir.join("one"), 31, &[first.clone(), second]);
+    let (ok, text, units) = convert(&[&manifest], &dir.join("a"), &["--shuffle-seed", "1"]);
+    let report = units
+        .first()
+        .map(|u| std::fs::read_to_string(u.join("report.txt")).expect("a report"));
+    let mut few = games(10, 6, |_| 1);
+    let mut twice = few[1].clone();
+    twice.index = 4;
+    twice.seed ^= 1;
+    few[4] = twice;
+    let refused = dataset(&dir.join("two"), 32, &[few]);
+    let (ok_few, few_text, _) = convert(&[&refused], &dir.join("b"), &["--shuffle-seed", "1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    let report = report.expect("a unit");
+    assert!(
+        report.contains(
+            "standard games repeating an earlier game from another seed, dropped: 1 of 2000"
+        ),
+        "{report}"
+    );
+    assert!(report.contains("  standard games 1999 "), "{report}");
+    assert!(
+        !ok_few && few_text.contains("1 of 6 standard games repeat an earlier game"),
+        "{few_text}"
     );
 }
 
@@ -580,6 +620,7 @@ fn a_manifest_whose_provenance_disagrees_with_the_headers_is_refused() {
         ("random-plies", "7".to_string()),
         ("window", "150".to_string()),
         ("standard-share", "40".to_string()),
+        ("chunk-games", "999".to_string()),
         ("run-seeds", format!("{:016x}", 82)),
     ];
     let mut tried = Vec::new();
@@ -665,4 +706,53 @@ fn the_overlap_by_network_input_is_read_beside_the_key_overlap() {
         ),
         "{text}"
     );
+}
+
+/// The overlap by network input and the repeats within each split are read by start kind: a
+/// holdout game repeats one of its positions and shares three with training, while the uniform
+/// game shares one of its two.
+#[test]
+fn the_overlap_and_the_repeats_are_read_by_start_kind() {
+    let plies = [
+        "e2e4", "e7e5", "g1f3", "g8f6", "f3g1", "f6g8", "b1c3", "b8c6",
+    ];
+    let shuffle = |a: [&'static str; 4], b: [&'static str; 4]| [a, b].concat();
+    let c_knights = ["c3b1", "c6b8", "b1c3", "b8c6"];
+    let g_knights = ["g1f3", "g8f6", "f3g1", "f6g8"];
+    let a_knights = ["c3a4", "c6a5", "a4c3", "a5c6"];
+    let e_knights = ["g1e2", "g8e7", "e2g1", "e7g8"];
+    let game = |index: u32, kind: u8, filler: Vec<&str>, kept: &[&str]| {
+        let moves: Vec<&str> = filler.iter().chain(kept).copied().collect();
+        let mut record = scripted(index, &plies, &moves);
+        record.kind = kind;
+        record
+    };
+    let standard = vec![
+        game(
+            0,
+            1,
+            shuffle(c_knights, c_knights),
+            &["g1f3", "g8f6", "f3g1", "f6g8", "g1f3"],
+        ),
+        game(1, 1, shuffle(g_knights, g_knights), &["g1f3"]),
+        game(2, 1, shuffle(c_knights, g_knights), &["g1f3", "g8f6"]),
+        game(3, 1, shuffle(g_knights, c_knights), &["a2a3"]),
+    ];
+    let uniform = vec![
+        game(0, 0, shuffle(a_knights, a_knights), &["h2h3", "h7h6"]),
+        game(1, 0, shuffle(e_knights, e_knights), &["d2d3"]),
+    ];
+    let dir = scratch("overlap-by-kind");
+    let manifest = dataset(&dir.join("data"), 93, &[standard, uniform]);
+    let (ok, text, _) = convert(&[&manifest], &dir.join("out"), &["--shuffle-seed", "1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    for line in [
+        "standard holdout positions whose network input is also in training: 3 of 5",
+        "standard repeats by network input within training 2 of 4, within holdout 1 of 5",
+        "uniform holdout positions whose network input is also in training: 1 of 2",
+        "uniform repeats by network input within training 0 of 1, within holdout 0 of 2",
+    ] {
+        assert!(text.contains(line), "no `{line}` in\n{text}");
+    }
 }

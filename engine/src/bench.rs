@@ -10,11 +10,12 @@ use std::time::Instant;
 
 use cadence_core::Move;
 use cadence_core::position::Board;
+use cadence_nnue::AnyNetwork;
+use cadence_nnue::net::EMBEDDED;
 
 use crate::position::Position;
 use crate::search::{Limits, Search};
 use crate::tt::Table;
-use crate::tune::Tunables;
 use crate::uci::SEARCH_STACK_BYTES;
 
 /// What the STC preset passes.
@@ -70,8 +71,16 @@ pub fn bench() -> Report {
     })
 }
 
+/// The net the build ships, which scores the bench as it scores a game. A refused one panics,
+/// since a count from another evaluation would detect nothing.
+fn shipped_net() -> Option<AnyNetwork> {
+    AnyNetwork::shipped(EMBEDDED)
+        .map(|loaded| loaded.unwrap_or_else(|e| panic!("the net this build ships: {e}")))
+}
+
 fn search_positions() -> Report {
     let start = Instant::now();
+    let net = shipped_net();
     let stop = AtomicBool::new(false);
     #[expect(clippy::expect_used, reason = "sixteen mebibytes")]
     let tt = Table::new(HASH_MB).expect("a bench-sized transposition table");
@@ -81,11 +90,12 @@ fn search_positions() -> Report {
         // The seam: nothing an earlier position learned reaches this one.
         tt.clear();
         let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("bench position {fen}: {e:?}"));
-        let mut pos = Position::new(board);
+        let mut pos = match &net {
+            Some(net) => Position::with_net(board, net.clone()),
+            None => Position::new(board),
+        };
         let mut search = Search::new(&stop, &tt);
         search.set_limits(Limits::depth(DEPTH));
-        // Never a setting: a tunable that reached here would make the count depend on an option.
-        search.set_tunables(Tunables::DEFAULT);
         let best = search.run(&mut pos, &mut std::io::sink());
         nodes += search.nodes();
         lines.push(Line {

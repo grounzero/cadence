@@ -112,11 +112,12 @@ impl Board {
                 board.put_piece(p, sq);
             }
         }
+        let castling = board.castling_key(setup.rights);
         let st = &mut board.states[0];
         st.rights = setup.rights;
         st.ep = setup.ep;
         st.halfmove = setup.halfmove;
-        st.key ^= zobrist::castling(setup.rights);
+        st.key ^= castling;
         if setup.stm as u8 == Colour::Black as u8 {
             st.key ^= zobrist::side();
         }
@@ -164,7 +165,7 @@ impl Board {
         if self.stm as u8 == Colour::Black as u8 {
             key ^= zobrist::side();
         }
-        key ^= zobrist::castling(self.state().rights);
+        key ^= self.castling_key(self.state().rights);
         if let Some(ep) = self.state().ep.get() {
             key ^= self.ep_key(ep, self.stm);
         }
@@ -572,8 +573,9 @@ impl Board {
             .rights
             .masked(self.layout.update_mask[from.index()] & self.layout.update_mask[to.index()]);
         if rights != old.rights {
+            let change = self.castling_key(old.rights) ^ self.castling_key(rights);
             let st = self.state_mut();
-            st.key ^= zobrist::castling(old.rights) ^ zobrist::castling(rights);
+            st.key ^= change;
             st.rights = rights;
         }
 
@@ -758,19 +760,39 @@ impl Board {
 
     // --- derived state ----------------------------------------------------
 
-    /// Zero when no pawn can take, which keeps the key a function of the position; `recompute_key`
-    /// calls this too.
+    /// Zero unless a pawn can take there legally, so positions the rules count as one share a key.
+    /// Read from the pieces alone, so every path that builds the key agrees; `recompute_key` too.
     #[inline]
     fn ep_key(&self, ep: Square, capturer: Colour) -> u64 {
         // A `capturer` pawn attacks `ep` from the squares an opposing pawn on `ep` would
         // attack.
-        let takers =
+        let mut takers =
             attacks::pawn_attacks(capturer.flip(), ep) & self.pieces(capturer, PieceType::Pawn);
-        if takers.any() {
-            zobrist::ep(ep.file())
-        } else {
-            0
+        let victim = Square::new(ep.index() as u8 ^ 8);
+        let king = self.king_square(capturer);
+        let enemies = self.by_colour(capturer.flip()).without(victim);
+        while let Some(from) = takers.pop_lsb() {
+            // The capture moves one pawn and removes another, which only the occupancy shows.
+            let occ = self.occupied().without(from).without(victim).with(ep);
+            if (self.attackers_to(king, occ) & enemies).is_empty() {
+                return zobrist::ep(ep.file());
+            }
         }
+        0
+    }
+
+    /// The rights set and each right's rook, which tells two Chess960 layouts with the same pieces
+    /// and rights bits apart.
+    fn castling_key(&self, rights: CastlingRights) -> u64 {
+        let mut key = zobrist::castling(rights);
+        for (i, rook) in self.layout.rook_from.iter().enumerate() {
+            if let Some(rook) = rook.get()
+                && rights.bits() & (1 << i) != 0
+            {
+                key ^= zobrist::castling_rook(i, rook.file());
+            }
+        }
+        key
     }
 
     fn compute_check_info(&mut self) {

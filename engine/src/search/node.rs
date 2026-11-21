@@ -65,6 +65,7 @@ impl Search<'_> {
         self.root_depth = depth;
         self.heuristics.frames.fill(None);
         self.tt_pv.fill(false);
+        self.choose_tunables(board);
         self.negamax(board, depth, ply, alpha, beta, kind)
     }
 

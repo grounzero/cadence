@@ -5,64 +5,98 @@
 [![Latest release](https://img.shields.io/github/v/release/grounzero/cadence?label=latest%20release)](https://github.com/grounzero/cadence/releases/latest)
 [![Pre-release](https://img.shields.io/github/v/release/grounzero/cadence?include_prereleases&label=pre-release)](https://github.com/grounzero/cadence/releases)
 
-Cadence is a UCI chess engine written in Rust, for standard chess, Chess960
-and double Chess960 (DFRC), using a classical alpha-beta search and a
-hand-written evaluation tuned on its own games, with no neural network. It
-reads Syzygy endgame tablebases through the `shakmaty-syzygy` and `shakmaty`
-crates, which with the crates they use are its only outside dependencies.
+Cadence is a chess engine written in Rust. It plays standard chess, Chess960
+and double Chess960 (DFRC), using an alpha-beta search and a neural network
+(NNUE) trained only on its own games. The handcrafted evaluation it started
+with is still available as an option.
 
-You can play it on Lichess as the bot
-[Mithandros](https://lichess.org/@/Mithandros). The bot also chats: a small
-language model beside it answers messages and remarks on its thinking, with no
-say in the moves.
+Play it on Lichess as [Mithandros](https://lichess.org/@/Mithandros). The bot
+also chats: a small language model answers messages and remarks on its
+thinking, with no say in its moves.
 
 ## Strength
 
 | Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
 | --- | --- | --- | --- | --- |
-| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) (measured on 0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-14 |
+| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) | - | [2801 ± 23](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit), as of 2026-11-21 | - | 2026-11-14 |
+| [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | - |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
-Estimates are from gauntlets against rated engines, not official
-ratings. Method, games and caveats:
+The estimates are ours, from gauntlets against rated engines, and are
+not official ratings. The CCRL columns are CCRL's own ratings, from its
+testers' games. Method, games and caveats:
 [docs/calibration/strength.md](docs/calibration/strength.md).
 
 ## Getting started
 
-Or download a binary from the
-[latest release](https://github.com/grounzero/cadence/releases/latest): the
-AVX2 build for x86-64 machines from about 2015 on, the generic build if it
-won't start. On macOS, make the downloaded binary executable and clear its
-quarantine flag before running it:
+Cadence has no board of its own: you play it inside a free chess GUI such as
+[En Croissant](https://encroissant.org),
+[Cute Chess](https://github.com/cutechess/cutechess),
+[Arena](http://www.playwitharena.de) or
+[BanksiaGUI](https://banksiagui.com).
 
-```sh
-chmod +x <file>
-xattr -d com.apple.quarantine <file>
-```
+### Download
 
-### With an install script
+Download the file for your system from the
+[latest release](https://github.com/grounzero/cadence/releases/latest).
+Each is named `cadence-<version>-` followed by the ending below.
 
-`install.sh` works on Linux, macOS, and Windows under Git Bash or WSL.
-`install.ps1` works in Windows PowerShell.
+- **Windows**: the file ending `windows-x86-64-avx2.exe`, or
+  `windows-x86-64-generic.exe` if it won't start (older processors). The
+  file isn't signed, so Windows SmartScreen may stop it the first time:
+  click "More info", then "Run anyway".
+- **macOS**: the file ending `macos-arm64` (Apple silicon) or
+  `macos-x86-64` (Intel). Make it executable and clear its quarantine flag
+  before running it:
 
-```sh
-curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
-bash install.sh
-```
+  ```sh
+  chmod +x cadence-<version>-macos-arm64
+  xattr -d com.apple.quarantine cadence-<version>-macos-arm64
+  ```
+
+- **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
+  if it won't start (older processors), or `linux-aarch64` for 64-bit ARM.
+
+Then add the file to your GUI as a new engine.
+
+### Install with a script
+
+The install script picks the right build for your system, checks its
+checksum and bench, and can update or uninstall it later.
+
+It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows), or
+offers to build from source if no release binary fits. It asks before
+anything big: building, installing Rust, changing your PATH or downloading
+tablebases. If a run fails, attach the log it names to a GitHub issue.
+
+#### Windows (PowerShell)
 
 ```powershell
 Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-It downloads the latest release binary, checks its checksum and
-bench, and installs it to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on
-Windows), or offers to build from source if none fits. It asks before anything
-big: building, installing Rust, changing your PATH or downloading tablebases.
+#### Linux, macOS, or Windows with Git Bash or WSL
 
-Options: `--version X.Y.Z`, `--dir DIR`, `--generic`, `--source`, `--update`,
-`--uninstall`, `--tables` and `--yes`. If a run fails, attach the log it
-names to a GitHub issue.
+```sh
+curl -fsSLO https://github.com/grounzero/cadence/releases/latest/download/install.sh
+bash install.sh
+```
+
+#### Install script options
+
+Both scripts take the same flags.
+
+| Flag | What it does |
+|---|---|
+| `--version X.Y.Z` | Installs that release instead of the latest. |
+| `--dir DIR` | Installs into `DIR` instead of the default folder. |
+| `--generic` | On x86-64, installs the generic build, for processors without AVX2. |
+| `--source` | Builds from source even where a release binary fits. |
+| `--update` | Upgrades an existing install, replacing the file even if this script did not put it there (it asks first). |
+| `--uninstall` | Removes Cadence, and the PATH entry and tablebases if the script added them. |
+| `--tables` | Downloads the 3-4-5 piece tablebases without asking. |
+| `--yes` | Takes every default without asking. |
 
 ### Building from source
 
@@ -78,7 +112,7 @@ x86-64 Linux, Windows and Intel Macs it needs AVX2; for an older processor,
 add `--config .cargo/x86-64-generic.toml` (POPCNT only). Build from the
 repository's root, where Cargo finds `.cargo/config.toml`.
 
-### Options
+### UCI options
 
 | Option | Default | What it does |
 |---|---|---|
@@ -93,8 +127,8 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
-| `Use NNUE` | off | Score positions with the network `EvalFile` loaded, instead of the handcrafted evaluation. No network ships yet, so it does nothing until a file is loaded. |
-| `EvalFile` | empty | A network file to load. A file for another network shape, or one whose weights could overflow, is refused with the reason. |
+| `Use NNUE` | on | Score positions with a network instead of the handcrafted evaluation: the one `EvalFile` loaded, or else the one built into the engine. Off plays with the handcrafted evaluation. |
+| `EvalFile` | empty | A network file to use in place of the built-in one, which emptying this restores. The engine reads networks of 256 or 512 units a perspective, as the file's header names. A file for another network shape, or one whose weights could overflow, is refused with the reason and leaves the built-in network, if there is one. |
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
 | `reverse_futility_margin`, `lmp_multiplier` | 150, 0.500 | Search constants offered to tuners (50 to 300, 0 to 2). Leave them alone for play. |
 
@@ -175,14 +209,14 @@ ends with a `Bench: <n>` line. The tests check perft against the
 | `cadence spsa` | Prints an SPSA tuner's input, one line per tuning option above. |
 | `cadence datagen play --games N --seed S [--threads N] [--out PATH]` | Plays games against itself; the same seed and game count give the same file at any thread count. |
 | `cadence datagen extract <games> --train PATH --holdout PATH [--every N]` | Cuts games into positions, every Nth game to the holdout set. |
-| `cadence datagen run --out DIR --run-seed HEX\|fresh [--threads N] [--chunk-games N] [--standard-share P] [--host NAME]` | Writes packed chunks of games until a `STOP` file appears in `DIR`; a `PAUSE` file pauses it. Built only with the `packed-datagen` feature. |
+| `cadence datagen run --out DIR --run-seed HEX\|fresh [--threads N] [--chunk-games N] [--standard-share P] [--host NAME]` | Writes packed chunks of games until a `STOP` file appears in `DIR`; a `PAUSE` file pauses it. The games are played with the network built into the engine, whose SHA-256 every chunk's header names. Built only with the `packed-datagen` feature. |
 | `cadence datagen repair CHUNK.tmp` | Closes a chunk a killed run left, keeping its whole records. Built only with the `packed-datagen` feature. |
-| `cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest]` | Checks chunks against their sidecars, this build's settings and the rules, regenerating every Nth game; `--manifest` writes a directory's `MANIFEST.tsv` once every chunk in it passes. Built only with the `packed-datagen` feature. |
+| `cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest]` | Checks chunks against their sidecars, this build's settings and network and the rules, regenerating every Nth game; `--manifest` writes a directory's `MANIFEST.tsv` once every chunk in it passes. Built only with the `packed-datagen` feature. |
 | `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
 | `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
 | `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. |
 | `cadence-tools forward --net FILE [--raw FILE [--against FILE]] [--positions N] [--seed HEX]` | Scores at least 1,000 random legal positions with a net file's quantised evaluation and with an `f32` one written from the same file, and passes when no position differs by more than 5 centipawns and the mean by no more than 1. `--raw` also compares the trainer's unquantised weights, a reading for training time that decides nothing, and `--against` compares them with the trainer's own scores as `cadence-train eval` prints them, another such reading. |
-| `cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). Each data file must hash to the training file a manifest names, `cadence-tools convert`'s or `cadence-train book`'s, or the run stops before it starts; two files with the same records are refused, the holdout must be the holdout split of a manifest a data file matched, and a run never shares its directory with another's. The manifests it verified are listed by SHA-256 in `verified-manifests` beside the checkpoints. After training, each saved checkpoint is scored over the holdout's first 20,000 records by the trainer's own forward pass, and its validation loss printed beside the training loss it logged. The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target three quarters result and one quarter score. It needs a GPU and the `cuda` feature. |
+| `cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME [--superbatches N] [--batches N] [--result-share F] [--validation-positions N] [--hidden 256\|512]` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). Each data file must hash to the training file a manifest names, `cadence-tools convert`'s or `cadence-train book`'s, or the run stops before it starts; two files with the same records are refused, the holdout must be the holdout split of a manifest a data file matched, and a run never shares its directory with another's. The manifests it verified are listed by SHA-256 in `verified-manifests` beside the checkpoints. After training, each saved checkpoint is scored over the holdout's first 20,000 records by the trainer's own forward pass, and its validation loss printed beside the training loss it logged. The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target half result and half score, 256 units a perspective. `--hidden 512` trains the wider network, its output weights clipped to 1.0 so that the engine can load it. It needs a GPU and the `cuda` feature. |
 | `cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE` | Writes one checkpoint as the file `EvalFile` loads, naming the data's manifest and the commit that trained it; the manifest must be one its run verified. |
 | `cadence-train book --in FILE --out FILE --seed HEX [--every N]` | Turns a tuning set's text, one position a line as a FEN and White's result in brackets, into the trainer's records, scored zero, every Nth line (by default the tenth) held out to `FILE.holdout`, each part shuffled from the seed, with a manifest beside them naming both that an export hashes into the net's header. |
 | `cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE... [--validation-positions N] [--result-share F]` | The validation loss `run` prints, for checkpoints already saved. It needs a GPU and the `cuda` feature. |
@@ -208,6 +242,7 @@ included.
   which plays the games.
 - [Ordo](https://github.com/michiguel/Ordo), which fits the ratings on the
   strength page.
+- [Bullet](https://github.com/jw1912/bullet), which trains the networks.
 - [shakmaty](https://github.com/niklasf/shakmaty) and
   [shakmaty-syzygy](https://github.com/niklasf/shakmaty/tree/main/shakmaty-syzygy),
   which read the Syzygy endgame tablebases.

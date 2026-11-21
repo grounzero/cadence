@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
 use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 
 use super::say::say;
 use super::{Running, Session};
@@ -314,7 +314,7 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
     say(format_args!(
         "info string search thread {worker_index} given {:?} {:?} filter {:?} probes {}",
         search.limits(),
-        search.tunables(),
+        search.given_tunables(),
         search.root_filter(),
         search.probes()
     ));
@@ -399,7 +399,7 @@ fn ponder_move(board: &mut Position, best: Move, pv: &[Move], chess960: bool) ->
 }
 
 /// Scored by the net where one is active, by the handcrafted evaluation otherwise.
-fn position_for(board: Board, net: Option<Arc<Network>>) -> Position {
+fn position_for(board: Board, net: Option<AnyNetwork>) -> Position {
     match net {
         Some(net) => Position::with_net(board, net),
         None => Position::new(board),

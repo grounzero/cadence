@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What the inference costs on the machine in hand: nanoseconds an accumulator update and an
-//! evaluation, each over the bench positions and walks from them, and their share of a node.
+//! What the inference costs on the machine in hand at each width: nanoseconds an accumulator update
+//! and an evaluation, each over the bench positions and walks from them, and their share of a node.
 
 mod support;
 
@@ -15,7 +15,7 @@ use cadence_core::rng::Rng;
 use cadence_core::{DirtyPieces, generate_legal};
 use cadence_engine::position::Position;
 use cadence_engine::search::Limits;
-use cadence_nnue::{Accumulator, Network, Provenance};
+use cadence_nnue::{Accumulator, AnyNetwork, HIDDEN, Network, Provenance, WIDE};
 
 /// Each round runs at least this long, so the clock's resolution is far below what it reads.
 const ROUND: Duration = Duration::from_millis(120);
@@ -81,12 +81,12 @@ fn walks() -> Vec<Board> {
 }
 
 /// Nodes, static evaluations, null moves and seconds over every bench position at `NODES`.
-fn searched(net: Option<&Arc<Network>>) -> (u64, u64, u64, f64) {
+fn searched(net: Option<&AnyNetwork>) -> (u64, u64, u64, f64) {
     let (mut nodes, mut evals, mut nulls, mut seconds) = (0, 0, 0, 0.0);
     for fen in cadence_engine::bench::positions() {
         let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
         let mut pos = match net {
-            Some(net) => Position::with_net(board, Arc::clone(net)),
+            Some(net) => Position::with_net(board, net.clone()),
             None => Position::new(board),
         };
         let stop = AtomicBool::new(false);
@@ -106,13 +106,10 @@ fn searched(net: Option<&Arc<Network>>) -> (u64, u64, u64, f64) {
     (nodes, evals, nulls, seconds)
 }
 
-/// A reading for an idle machine in the release profile; it asserts nothing about speed.
-#[test]
-#[ignore = "a timing: cargo test --release -p cadence-engine --test nnue_timing -- --ignored --nocapture"]
-fn the_inference_cost_per_call_and_per_node() {
-    let net = Arc::new(Network::seeded(0xc0de, Provenance::SelfPlay));
-    let set = walks();
-    let parents: Vec<Accumulator> = set.iter().map(|b| net.refresh(b)).collect();
+/// One width's costs printed under it, `any` being `net` as a search takes it; answers the
+/// nanoseconds a node of its search.
+fn report<const H: usize>(net: &Network<H>, any: &AnyNetwork, set: &[Board]) -> f64 {
+    let parents: Vec<Accumulator<H>> = set.iter().map(|b| net.refresh(b)).collect();
     let mut moves: Vec<(usize, DirtyPieces)> = Vec::new();
     for (i, board) in set.iter().enumerate() {
         for &m in generate_legal(board).as_slice() {
@@ -126,31 +123,47 @@ fn the_inference_cost_per_call_and_per_node() {
         }
     });
     let evaluation = per_call(set.len(), || {
-        for (acc, board) in parents.iter().zip(&set) {
+        for (acc, board) in parents.iter().zip(set) {
             black_box(net.evaluate(acc, board.side_to_move()));
         }
     });
-    let (nodes, evals, nulls, seconds) = searched(Some(&net));
-    let (hce_nodes, _, _, hce_seconds) = searched(None);
-    let per_node = |n: u64, s: f64| s * 1e9 / float(n);
+    let (nodes, evals, nulls, seconds) = searched(Some(any));
     let evals_per_node = float(evals) / float(nodes);
     // Every node but a null move's child is reached by a make, so by one update.
     let updates_per_node = float(nodes - nulls) / float(nodes);
-    let node = per_node(nodes, seconds);
+    let node = seconds * 1e9 / float(nodes);
     let share = (update * updates_per_node + evaluation * evals_per_node) / node;
     println!(
-        "update {update:.2} ns over {} moves; evaluation {evaluation:.2} ns over {} positions",
+        "width {H}: update {update:.2} ns over {} moves; evaluation {evaluation:.2} ns over {} \
+         positions",
         moves.len(),
         set.len()
     );
     println!(
-        "net search: {nodes} nodes, {node:.2} ns a node, {evals_per_node:.4} evaluations and \
-         {updates_per_node:.4} updates a node; inference {:.1}% of a node",
+        "width {H}: net search: {nodes} nodes, {node:.2} ns a node, {evals_per_node:.4} \
+         evaluations and {updates_per_node:.4} updates a node; inference {:.1}% of a node",
         share * 100.0
     );
+    assert!(update > 0.0 && evaluation > 0.0 && node > 0.0);
+    node
+}
+
+/// A reading for an idle machine in the release profile; it asserts nothing about speed.
+#[test]
+#[ignore = "a timing: cargo test --release -p cadence-engine --test nnue_timing -- --ignored --nocapture"]
+fn the_inference_cost_per_call_and_per_node() {
+    let set = walks();
+    let narrow = Arc::new(Network::seeded(0xc0de, Provenance::SelfPlay));
+    let narrow_node = report(&narrow, &AnyNetwork::from(Arc::clone(&narrow)), &set);
+    let wide = Arc::new(Network::<WIDE>::generate(0xc0de, Provenance::SelfPlay));
+    let wide_node = report(&wide, &AnyNetwork::from(Arc::clone(&wide)), &set);
+    let (hce_nodes, _, _, hce_seconds) = searched(None);
     println!(
         "handcrafted search: {hce_nodes} nodes, {:.2} ns a node",
-        per_node(hce_nodes, hce_seconds)
+        hce_seconds * 1e9 / float(hce_nodes)
     );
-    assert!(update > 0.0 && evaluation > 0.0 && node > 0.0);
+    println!(
+        "width {WIDE} against {HIDDEN}: {:+.1}% a node of search",
+        (wide_node / narrow_node - 1.0) * 100.0
+    );
 }
