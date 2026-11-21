@@ -108,7 +108,11 @@ fn two_rooks_on_a_held_side(b: &Board) -> bool {
 fn check_node(label: &str, b: &Board, seen: &mut HashMap<u64, String>) {
     let key = b.key();
     let shredder = b.to_fen(FenStyle::Shredder);
-    assert_eq!(key, b.recompute_key(), "{label}: key vs recomputation\n  {shredder}");
+    assert_eq!(
+        key,
+        b.recompute_key(),
+        "{label}: key vs recomputation\n  {shredder}"
+    );
     for fen in [shredder, b.to_fen(FenStyle::XFen)] {
         let fresh = board(&fen);
         assert_eq!(fresh.key(), key, "{label}: key vs a fresh parse\n  {fen}");
@@ -120,7 +124,10 @@ fn check_node(label: &str, b: &Board, seen: &mut HashMap<u64, String>) {
     }
     let id = identity(b);
     if let Some(other) = seen.insert(key, id.clone()) {
-        assert_eq!(other, id, "{label}: two positions share the key 0x{key:016x}");
+        assert_eq!(
+            other, id,
+            "{label}: two positions share the key 0x{key:016x}"
+        );
     }
 }
 
@@ -182,7 +189,11 @@ fn play(
     while let Some(m) = played.pop() {
         b.unmake_move(m);
         keys.pop();
-        assert_eq!(Some(&b.key()), keys.last(), "{label}: key after unmaking {m:?}");
+        assert_eq!(
+            Some(&b.key()),
+            keys.last(),
+            "{label}: key after unmaking {m:?}"
+        );
     }
 }
 
@@ -197,7 +208,13 @@ fn chess960_keys_follow_every_move_of_random_games() {
             u32::try_from(w).expect("fits"),
             u32::try_from(b).expect("fits"),
         );
-        play(&format!("game {game}, {w}/{b}"), &fen, &mut rng, &mut seen, &mut cov);
+        play(
+            &format!("game {game}, {w}/{b}"),
+            &fen,
+            &mut rng,
+            &mut seen,
+            &mut cov,
+        );
     }
     let two_rooks = two_rook_fens();
     let keys: Vec<u64> = two_rooks.iter().map(|f| board(f).key()).collect();
@@ -207,7 +224,13 @@ fn chess960_keys_follow_every_move_of_random_games() {
     assert_eq!(distinct.len(), keys.len(), "two rook choices share a key");
     for (i, fen) in two_rooks.iter().enumerate() {
         for walk in 0..TWO_ROOK_WALKS {
-            play(&format!("two rooks {i}, walk {walk}"), fen, &mut rng, &mut seen, &mut cov);
+            play(
+                &format!("two rooks {i}, walk {walk}"),
+                fen,
+                &mut rng,
+                &mut seen,
+                &mut cov,
+            );
         }
     }
     let _ = writeln!(
@@ -219,9 +242,16 @@ fn chess960_keys_follow_every_move_of_random_games() {
         cov.rook_captures,
         cov.two_rook_rights
     );
-    assert!(cov.castles.iter().all(|&n| n > 0), "castles by right {:?}", cov.castles);
+    assert!(
+        cov.castles.iter().all(|&n| n > 0),
+        "castles by right {:?}",
+        cov.castles
+    );
     assert!(cov.rook_captures > 0, "no castling rook was taken");
-    assert!(cov.two_rook_rights > 0, "no node held a right beside a second rook");
+    assert!(
+        cov.two_rook_rights > 0,
+        "no node held a right beside a second rook"
+    );
 }
 
 type Table = HashMap<(u64, u32), (u64, String)>;
@@ -256,7 +286,11 @@ fn hashed_against(label: &str, fen: &str, nodes: &[(u32, u64)], table: &mut Tabl
     let mut read = 0;
     for &(depth, want) in nodes {
         if depth <= support::FAST_DFRC_MAX_DEPTH {
-            assert_eq!(hashed(&mut b, depth, table), want, "{label}, depth {depth}\n  {fen}");
+            assert_eq!(
+                hashed(&mut b, depth, table),
+                want,
+                "{label}, depth {depth}\n  {fen}"
+            );
             read += 1;
         }
     }
@@ -285,7 +319,11 @@ fn a_hashed_perft_over_the_dfrc_corpus_matches_its_counts() {
         let mut b = board(&fen);
         for depth in 1..=4 {
             let plain = perft(&mut b, depth);
-            assert_eq!(hashed(&mut b, depth, &mut table), plain, "{fen}, depth {depth}");
+            assert_eq!(
+                hashed(&mut b, depth, &mut table),
+                plain,
+                "{fen}, depth {depth}"
+            );
             read += 1;
         }
     }
