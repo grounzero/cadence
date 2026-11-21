@@ -1741,12 +1741,19 @@ mod tests {
         };
         let white = record("4k3/8/8/8/8/2n5/4P3/4K3 w - - 0 1");
         let black = record("4k3/4p3/2N5/8/8/8/8/4K3 b - - 0 1");
-        assert_eq!(white[..24], black[..24], "the mirror's input is not the same");
+        assert_eq!(
+            white[..24],
+            black[..24],
+            "the mirror's input is not the same"
+        );
         assert_eq!(copy_key(&white), copy_key(&black));
         assert_ne!(input_key(&white, true), input_key(&black, false));
         let mut counts = CopyCounts::new();
         assert!(counts.take(copy_key(&white), 1));
-        assert!(!counts.take(copy_key(&black), 1), "the mirror took a second copy");
+        assert!(
+            !counts.take(copy_key(&black), 1),
+            "the mirror took a second copy"
+        );
     }
 
     /// A table sized for `n` inputs holds `n` distinct inputs without growing, each counted, and
