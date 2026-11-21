@@ -93,8 +93,8 @@ if [ -n "$DECLARED" ] && [ "$DECLARED" != "$STAGED" ]; then
          "in the message. Write the number before the word: \"1,234 nodes\"."
 fi
 
-# The handcrafted search's count moves only with a fix to both evaluations, declared as the bench
-# is. The key names neither BENCH nor NODES, so OpenBench never reads it as the bench.
+# The handcrafted search's count is declared as the bench is, by any change that moves it.
+# The key names neither BENCH nor NODES, so OpenBench never reads it as the bench.
 HAND_FILE="handcrafted-bench.txt"
 HAND=""
 HAND_CHANGED=""
@@ -128,11 +128,11 @@ fi
 if [ -n "$HAND_CHANGED" ]; then
     if [ "$HAND_LINES" -eq 0 ]; then
         fail "this commit changes $HAND_FILE but declares no handcrafted count." \
-             "Only a correctness fix, which changes both evaluations, moves it. Add:" \
+             "Declare the new count in the same commit, as the bench is. Add:" \
              "" \
              "    Handcrafted: $HAND" \
              "" \
-             "A search feature goes into the net's settings and leaves this number alone."
+             "The handcrafted weights and their tunable set stay frozen; the search does not."
     fi
     if [ "$HAND_VALUE" != "$HAND" ]; then
         fail "trailer says \`Handcrafted: $HAND_VALUE\`, $HAND_FILE says \`$HAND\`." \
