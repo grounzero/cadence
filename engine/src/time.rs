@@ -19,6 +19,17 @@ pub struct Budget {
     pub hard: u64,
 }
 
+impl Budget {
+    /// Both deadlines later by `offset`, the time pondered before a hit.
+    #[must_use]
+    pub fn moved(self, offset: u64) -> Budget {
+        Budget {
+            soft: self.soft.saturating_add(offset),
+            hard: self.hard.saturating_add(offset),
+        }
+    }
+}
+
 /// `None` with no `movetime` and no clock for either side; `movetime` wins over a clock.
 #[must_use]
 pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
@@ -129,6 +140,24 @@ pub fn another_iteration_fits(completed: &[u64], budget: Budget) -> bool {
     let ebf_milli = (elapsed.saturating_mul(1_000_000) / two_back).isqrt();
     let predicted = elapsed.saturating_mul(ebf_milli) / 1_000;
     predicted <= budget.hard
+}
+
+/// Whether a search whose last completed iteration ends `completed` starts another, both deadlines
+/// moved by `offset`. A hit passes the time pondered and every other search zero, so a hit decides
+/// as a fresh search with the same times.
+#[must_use]
+pub fn starts_another(
+    limits: &Limits,
+    budget: Budget,
+    completed: &[u64],
+    run: usize,
+    offset: u64,
+) -> bool {
+    let Some(&elapsed) = completed.last() else {
+        return true;
+    };
+    let soft = soft_for_run(limits, budget, run).saturating_add(offset);
+    elapsed < soft && another_iteration_fits(completed, budget.moved(offset))
 }
 
 #[cfg(kani)]
