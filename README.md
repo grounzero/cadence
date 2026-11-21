@@ -18,12 +18,13 @@ thinking, with no say in its moves.
 
 | Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
 | --- | --- | --- | --- | --- |
-| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) (measured on 0.6.0-rc.3) | 2796 ± 9 | - | - | 2026-11-14 |
+| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) | - | [2801 ± 23](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit), as of 2026-11-21 | - | 2026-11-14 |
+| [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | - |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
-Estimates are from gauntlets against rated engines, not official
-ratings. Method, games and caveats:
-[docs/calibration/strength.md](docs/calibration/strength.md).
+Estimates are from gauntlets against rated engines. CCRL columns are CCRL's official ratings.
+
+Details: [docs/calibration/strength.md](docs/calibration/strength.md).
 
 ## Getting started
 
@@ -118,7 +119,7 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `Threads` | 1 | Search threads. Only one thread gives the same result every time. |
 | `MultiPV` | 1 | How many best lines to show. More lines cost search time. |
 | `Ponder` | off | Think on the opponent's time. Rating lists turn this off. |
-| `Move Overhead` | 20 | Milliseconds kept back from every move for the GUI and the connection (0 to 5000). |
+| `Move Overhead` | 5 | Milliseconds kept back from every move for the GUI and the connection (0 to 5000). |
 | `Clear Hash` | button | Empties the search table. |
 | `UCI_LimitStrength` | off | Play weaker, at the level set by `UCI_Elo`. |
 | `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). |

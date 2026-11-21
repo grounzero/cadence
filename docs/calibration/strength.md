@@ -13,6 +13,15 @@ other engines' published ratings.
 Each "±" is the range the result stays in 95% of the time from luck in the
 games alone. Versions after each one listed have not been measured this way.
 
+## CCRL Blitz
+
+CCRL Blitz lists Cadence 0.6.0 at 2801 ± 23 from 543 games, as of
+2026-11-21 ([CCRL's page](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit)).
+
+That is CCRL's own rating, from games its testers played, and not one of
+the estimates above. Those are ours: 0.6.0-rc.3's 2796 ± 9 was measured
+before 0.6.0 was released.
+
 ## The engines in each gauntlet
 
 Each engine with its rating on the CCRL Blitz list the gauntlet used,
