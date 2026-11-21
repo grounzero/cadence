@@ -5,14 +5,13 @@
 
 mod support;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
 use cadence_engine::position::Position;
 use cadence_engine::score::{Score, mate_in, mated_in};
 use cadence_engine::search::Limits;
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 /// The king's step to f1 is forced, and the queen then mates on f2 under the pawn's guard.
@@ -28,8 +27,8 @@ const NODES: u64 = 100_000;
 fn positions(fen: &str) -> Vec<(&'static str, Position)> {
     let board = || Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
     let mut out = vec![("handcrafted", Position::new(board()))];
-    if let Some(net) = Network::shipped(EMBEDDED) {
-        let net = Arc::new(net.expect("the shipped net loads"));
+    if let Some(net) = AnyNetwork::shipped(EMBEDDED) {
+        let net = net.expect("the shipped net loads");
         out.push(("net", Position::with_net(board(), net)));
     }
     out
