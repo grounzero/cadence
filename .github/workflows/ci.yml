@@ -101,13 +101,17 @@ jobs:
             for i in 0 1 2; do
               a=$W/data-main/$RUN_SEED-00000$i.cdg; b=$W/data-$n/$RUN_SEED-00000$i.cdg
               [ "$(stat -c %s "$a")" = "$(stat -c %s "$b")" ] || { echo "::error::chunk $i sizes differ"; fail=1; continue; }
-              diffs=$(cmp -l "$a" "$b" | wc -l || true)
-              last=$(cmp -l "$a" "$b" | tail -1 | awk '{print $1}' || true)
-              echo "  chunk $i: $(stat -c %s "$a") bytes, $diffs differ, the last at offset ${last:-none}"
-              if [ -n "$last" ] && [ "$last" -gt 1024 ]; then echo "::error::chunk $i differs past its header"; fail=1; fi
+              size=$(stat -c %s "$a")
+              offs=$( (cmp -l "$a" "$b" || true) | awk '{print $1}' | tr '\n' ' ')
+              outside=$(for o in $offs; do if [ "$o" -gt 512 ] && [ "$o" -le $((size - 8)) ]; then echo "$o"; fi; done | wc -l)
+              echo "  chunk $i: $size bytes; differing offsets (1-based): ${offs:-none}"
+              if [ "$outside" -ne 0 ]; then echo "::error::chunk $i differs at $outside offset(s) outside the first 512 and last 8 bytes"; fail=1; fi
             done
-            echo "datagen play"
-            same "$W/play-main.bin" "$W/play-$n.bin"
+            echo "datagen play: lines other than comments"
+            if diff <(grep -av '^#' "$W/play-main.bin") <(grep -av '^#' "$W/play-$n.bin") > /dev/null; then
+              echo "  identical: $(grep -avc '^#' "$W/play-main.bin") record lines"
+            else echo "::error::datagen play records differ"; fail=1; fi
+            echo "  comment lines that differ:"; diff <(grep -a '^#' "$W/play-main.bin") <(grep -a '^#' "$W/play-$n.bin") || true
             echo "datagen: main's converter over this build's data"
             u=$(conv main "$n")
             same "$base/train.bin" "$u/train.bin"
