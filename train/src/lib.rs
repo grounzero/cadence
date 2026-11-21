@@ -6,6 +6,9 @@
 #![forbid(unsafe_code)]
 
 pub mod book;
+pub mod checkpoint;
 pub mod data;
 pub mod export;
+pub mod overfit;
+pub mod schedule;
 pub mod validate;

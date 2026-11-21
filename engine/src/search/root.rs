@@ -130,19 +130,25 @@ impl Search<'_> {
             {
                 break;
             }
-            // Before the budget is read, so the first clocked decision uses the new clock.
-            self.absorb_ponder_hit();
-            // An iteration has completed, so none is left running unbudgeted from a hit.
-            self.clock.unbudgeted_iteration = false;
-            if let Some(b) = self.clock.budget {
+            // A clocked ponder times its iterations too, so a hit decides on the whole record.
+            if self.clock.budget.or(self.clock.budget_on_hit).is_some() {
                 let elapsed = self.elapsed_ms();
                 self.run.iterations.push(elapsed);
-                // The soft budget, scaled by how long the move has stood, says this move has had
-                // its share; the prediction says the next iteration would not finish.
-                let soft = time::soft_for_run(&self.limits, b, self.stable_iterations());
-                if elapsed >= soft || !time::another_iteration_fits(&self.run.iterations, b) {
-                    break;
-                }
+            }
+            // Before the budget is read, so the first clocked decision uses the hit's budget.
+            self.absorb_ponder_hit();
+            // The soft budget, scaled by how long the move has stood, says this move has had its
+            // share; the prediction says the next iteration would not finish.
+            if let Some(b) = self.clock.budget
+                && !time::starts_another(
+                    &self.limits,
+                    b,
+                    &self.run.iterations,
+                    self.stable_iterations(),
+                    self.clock.hit_at,
+                )
+            {
+                break;
             }
         }
         self.wait_if_open_ended();

@@ -21,6 +21,8 @@ use cadence_dataset::chunk::{
 use cadence_dataset::crc32::crc32;
 use cadence_dataset::durable::{self, Disk, Steps};
 use cadence_dataset::sha256::{Sha256, hex, sha256};
+use cadence_nnue::AnyNetwork;
+use cadence_nnue::net::EMBEDDED;
 
 use super::game::{self, Ending, Outcome};
 use super::opening::{self, Probe};
@@ -46,12 +48,40 @@ pub fn start_kind(rng: &mut Rng, share: u8) -> u8 {
     }
 }
 
-/// A function of the chunk seed, the index and the share alone, whatever `tt` held before.
+/// A function of the chunk seed, the index, the share and the net alone, whatever `tt` held before;
+/// the handcrafted evaluation plays where `net` is `None`.
 #[must_use]
-pub fn play(chunk_seed: u64, index: u32, share: u8, tt: &Table) -> GameRecord {
-    play_with(chunk_seed, index, share, tt, &|board, tt| {
-        game::probe(board, opening::SCREEN_NODES, tt)
-    })
+pub fn play(
+    chunk_seed: u64,
+    index: u32,
+    share: u8,
+    tt: &Table,
+    net: Option<&AnyNetwork>,
+) -> GameRecord {
+    let probe = |board: &mut _, tt: &Table| game::probe(board, opening::SCREEN_NODES, tt);
+    play_with(chunk_seed, index, share, tt, &probe, net)
+}
+
+/// The net a build ships, of either width, which every game of its runs plays with: `None` where
+/// it ships none.
+///
+/// # Errors
+///
+/// A shipped net the loader refuses for generating data, a canary's or another dataset's.
+pub fn shipped_net() -> Result<Option<AnyNetwork>, String> {
+    AnyNetwork::shipped(EMBEDDED)
+        .transpose()
+        .map_err(|e| format!("the shipped net may not generate data: {e}"))
+}
+
+/// The SHA-256 of the net a build ships, and zero where it ships none, as a header names it.
+#[must_use]
+pub fn shipped_net_sha256() -> [u8; 32] {
+    if EMBEDDED.is_empty() {
+        [0; 32]
+    } else {
+        sha256(EMBEDDED)
+    }
 }
 
 /// `probe` screens a start, so a test can refuse some.
@@ -65,11 +95,13 @@ pub fn play_with(
     share: u8,
     tt: &Table,
     probe: &Probe<'_>,
+    net: Option<&AnyNetwork>,
 ) -> GameRecord {
     let seed = game_seed(chunk_seed, u64::from(index));
     let mut rng = Rng::new(seed);
     let kind = start_kind(&mut rng, share);
-    let (mut start, refused) = opening::next_of_kind(&mut rng, tt, kind == KIND_STANDARD, probe);
+    let (mut start, refused) =
+        opening::next_of_kind(&mut rng, tt, kind == KIND_STANDARD, probe, net);
     let played = game::play(&mut start.board, NODES, tt);
     let label = |score: Option<i32>| {
         score.map_or(NO_SCORE, |s| {
@@ -132,6 +164,8 @@ pub struct Build {
     pub target: String,
     pub features: String,
     pub cfg_features: String,
+    /// The played net's SHA-256, zero for the handcrafted evaluation.
+    pub net_sha256: [u8; 32],
 }
 
 impl Build {
@@ -144,6 +178,7 @@ impl Build {
             target: version::TARGET.to_string(),
             features: version::TARGET_FEATURES.to_string(),
             cfg_features: version::CFG_FEATURES.to_string(),
+            net_sha256: shipped_net_sha256(),
         }
     }
 }
@@ -676,7 +711,7 @@ fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header
         games_planned: settings.chunk_games,
         host: settings.host.clone(),
         start_time: unix_now(),
-        net_sha256: [0; 32],
+        net_sha256: build.net_sha256,
         modified: u8::from(build.modified),
         cfg_sha256: sha256(build.cfg_features.as_bytes()),
     })

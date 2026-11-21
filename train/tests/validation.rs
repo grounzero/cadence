@@ -225,5 +225,21 @@ fn run_and_validate_refuse_before_building_a_trainer() {
         "{text}"
     );
     assert!(!text.contains("Training Preamble"), "{text}");
+    let saved = dir.join("unrecorded").join("net-10");
+    std::fs::create_dir_all(saved.join("optimiser_state")).expect("a checkpoint directory");
+    let (ok, text) = train(&[
+        "validate",
+        "--checkpoint",
+        &path(&saved),
+        "--holdout",
+        &path(&holdout_a),
+        "--manifest",
+        &path(&manifest_a),
+    ]);
+    assert!(
+        !ok && text.contains("the run's result share is not known"),
+        "{text}"
+    );
+    assert!(!text.contains("Training Preamble"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }

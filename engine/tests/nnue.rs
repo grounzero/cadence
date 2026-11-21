@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The net's switch: what `EvalFile` loads and refuses, that `Use NNUE` alone decides which
-//! evaluation scores, and that a search leaves the accumulators at the root it found.
+//! evaluation scores, and that a search leaves the accumulators at the root it found. Each holds
+//! whether or not the build ships a net, so shipping one changes the file and none of these.
 
 mod support;
 
@@ -15,10 +16,16 @@ use cadence_core::position::Board;
 use cadence_engine::position::Position;
 use cadence_engine::score::MAX_EVAL;
 use cadence_engine::search::Limits;
-use cadence_nnue::{AccumulatorStack, HIDDEN, Network, Provenance};
+use cadence_nnue::net::EMBEDDED;
+use cadence_nnue::{AccumulatorStack, AnyNetwork, HIDDEN, Network, Provenance, WIDE};
 use support::Engine;
 
 const FEN: &str = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3";
+
+/// Whether this build ships a net its loader takes, which turns `Use NNUE` on from the start.
+fn ships() -> bool {
+    matches!(AnyNetwork::shipped(EMBEDDED), Some(Ok(_)))
+}
 
 fn net_file(name: &str, bytes: &[u8]) -> PathBuf {
     let path =
@@ -48,11 +55,8 @@ fn searched(out: &[String]) -> Vec<String> {
 #[test]
 fn uci_declares_the_net_options() {
     let out = support::talk("uci\nquit\n");
-    assert!(
-        out.lines()
-            .any(|l| l == "option name Use NNUE type check default false"),
-        "{out}"
-    );
+    let use_nnue = format!("option name Use NNUE type check default {}", ships());
+    assert!(out.lines().any(|l| l == use_nnue), "{out}");
     assert!(
         out.lines()
             .any(|l| l == "option name EvalFile type string default <empty>"),
@@ -60,7 +64,7 @@ fn uci_declares_the_net_options() {
     );
 }
 
-/// A loaded net scores nothing until `Use NNUE` is on; on, it changes the search and repeats it
+/// A loaded net scores nothing while `Use NNUE` is off; on, it changes the search and repeats it
 /// exactly.
 #[test]
 fn the_net_scores_only_while_use_nnue_is_on() {
@@ -69,13 +73,12 @@ fn the_net_scores_only_while_use_nnue_is_on() {
         &Network::seeded(7, Provenance::SelfPlay).to_bytes(),
     );
     let load = format!("setoption name EvalFile value {}", file.display());
-    let on = "setoption name Use NNUE value true";
     let position = format!("position fen {FEN}");
     let go = "go depth 6";
-    let handcrafted = searched(&Engine::go(&[&position], go));
-    let loaded_off = searched(&Engine::go(&[&load, &position], go));
-    let with_net = searched(&Engine::go(&[&load, on, &position], go));
-    let again = searched(&Engine::go(&[on, &load, &position], go));
+    let handcrafted = searched(&Engine::go(&[OFF, &position], go));
+    let loaded_off = searched(&Engine::go(&[&load, OFF, &position], go));
+    let with_net = searched(&Engine::go(&[&load, ON, &position], go));
+    let again = searched(&Engine::go(&[ON, &load, &position], go));
     let _ = std::fs::remove_file(file);
     assert_eq!(handcrafted.len(), 6);
     assert_eq!(loaded_off, handcrafted);
@@ -83,8 +86,8 @@ fn the_net_scores_only_while_use_nnue_is_on() {
     assert_eq!(with_net, again);
 }
 
-/// Each load is reported, a file the loader refuses is named with the reason and leaves no net,
-/// and a search asked for a net it does not have says so.
+/// Each load is reported, a file the loader refuses is named with the reason and leaves the net
+/// the build ships, or none, and a search asked for a net it does not have says so.
 #[test]
 fn a_net_file_is_reported_loaded_or_refused() {
     let external = Provenance::External("lichess-big3-resolved".to_string());
@@ -113,18 +116,28 @@ fn a_net_file_is_reported_loaded_or_refused() {
         whole - 1
     );
     assert!(said.contains(&refused), "{said:?}");
-    e.send("setoption name Use NNUE value true");
+    e.send(ON);
     e.send("go depth 2");
     let lines = e.read_until("bestmove ");
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.starts_with("info string Use NNUE is on and no net is loaded")),
-        "{lines:?}"
-    );
+    let none = lines
+        .iter()
+        .any(|l| l.starts_with("info string Use NNUE is on and no net is loaded"));
+    assert_eq!(none, !ships(), "{lines:?}");
     e.quit();
     let _ = std::fs::remove_file(good);
     let _ = std::fs::remove_file(short);
+}
+
+/// With no option set a search scores with the net the build ships, and with the handcrafted
+/// evaluation where it ships none.
+#[test]
+fn a_search_with_no_option_set_scores_as_the_build_ships() {
+    let position = format!("position fen {FEN}");
+    let go = "go depth 6";
+    let unset = searched(&Engine::go(&[&position], go));
+    let handcrafted = searched(&Engine::go(&[OFF, &position], go));
+    assert_eq!(unset.len(), 6);
+    assert_eq!(unset == handcrafted, !ships());
 }
 
 /// Each helper thread scores from accumulators of its own, so a net search on three threads
@@ -161,6 +174,74 @@ fn helper_threads_search_with_the_net() {
 fn a_search_leaves_the_accumulators_at_the_root() {
     let net = Arc::new(Network::seeded(11, Provenance::SelfPlay));
     for fen in support::corpus_fens().iter().take(16) {
+        let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+        let fresh = Position::with_net(board.duplicate(), Arc::clone(&net)).net_eval();
+        let mut pos = Position::with_net(board, Arc::clone(&net));
+        let stop = AtomicBool::new(false);
+        let tt = support::table();
+        let limits = Limits {
+            depth: Some(6),
+            nodes: Some(200_000),
+            ..Limits::default()
+        };
+        let mut search = support::search(limits, &stop, &tt);
+        let _ = search.run(&mut pos, &mut std::io::sink());
+        assert_eq!(pos.net_ply(), Some(0), "{fen}");
+        assert_eq!(pos.net_eval(), fresh, "{fen}");
+    }
+}
+
+/// A wide net loads through `EvalFile` by the width its header names, is reported as any net is, and
+/// scores a search on three threads that differs from the narrow net's and repeats exactly.
+#[test]
+fn a_wide_net_loads_and_scores_a_search() {
+    let wide = net_file(
+        "wide",
+        &Network::<WIDE>::generate(7, Provenance::SelfPlay).to_bytes(),
+    );
+    let narrow = net_file(
+        "narrow",
+        &Network::seeded(7, Provenance::SelfPlay).to_bytes(),
+    );
+    let load = |file: &PathBuf| format!("setoption name EvalFile value {}", file.display());
+    let (load_wide, load_narrow) = (load(&wide), load(&narrow));
+    let position = format!("position fen {FEN}");
+    let mut e = Engine::spawn();
+    e.send(&load_wide);
+    let said = e.sync();
+    let loaded = format!(
+        "info string EvalFile: {} loaded, provenance self-play, trainer {}",
+        wide.display(),
+        "0".repeat(40)
+    );
+    assert!(said.contains(&loaded), "{said:?}");
+    e.quit();
+    let go = "go depth 6";
+    let with_wide = searched(&Engine::go(&[&load_wide, ON, &position], go));
+    let again = searched(&Engine::go(&[ON, &load_wide, &position], go));
+    let with_narrow = searched(&Engine::go(&[&load_narrow, ON, &position], go));
+    let (_, lines) = Engine::go_within(
+        &[&load_wide, ON, "setoption name Threads value 3", &position],
+        "go depth 8",
+        Duration::from_secs(120),
+    );
+    let _ = std::fs::remove_file(wide);
+    let _ = std::fs::remove_file(narrow);
+    assert_eq!(with_wide.len(), 6);
+    assert_eq!(with_wide, again);
+    assert_ne!(with_wide, with_narrow);
+    let last = lines.last().expect("a bestmove line");
+    assert!(
+        last.starts_with("bestmove ") && last != "bestmove 0000",
+        "{lines:?}"
+    );
+}
+
+/// A wide net's search leaves its accumulators at the root as a narrow net's does.
+#[test]
+fn a_wide_search_leaves_the_accumulators_at_the_root() {
+    let net = Arc::new(Network::<WIDE>::generate(11, Provenance::SelfPlay));
+    for fen in support::corpus_fens().iter().take(8) {
         let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
         let fresh = Position::with_net(board.duplicate(), Arc::clone(&net)).net_eval();
         let mut pos = Position::with_net(board, Arc::clone(&net));
@@ -256,10 +337,10 @@ fn toggling_use_nnue_searches_as_a_fresh_table_does() {
         &Network::seeded(7, Provenance::SelfPlay).to_bytes(),
     );
     let load = format!("setoption name EvalFile value {}", file.display());
-    let to_net = after_switch(&[&load], &[ON]);
+    let to_net = after_switch(&[&load, OFF], &[ON]);
     let to_handcrafted = after_switch(&[&load, ON], &[OFF]);
     let fresh_net = fresh(&[&load, ON]);
-    let fresh_handcrafted = fresh(&[]);
+    let fresh_handcrafted = fresh(&[OFF]);
     let _ = std::fs::remove_file(file);
     assert_eq!(to_net.0.len(), 7);
     assert_eq!(to_net, fresh_net, "handcrafted, then the net");
