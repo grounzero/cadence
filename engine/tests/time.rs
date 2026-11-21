@@ -311,6 +311,20 @@ fn only_the_increment_past_the_overhead_is_spent() {
     }
 }
 
+/// Charged on every move, the default overhead takes no more than 5 ms from a move's budget, so a
+/// fast control keeps nearly all of its increment.
+#[test]
+fn the_default_overhead_takes_little_from_a_fast_increment() {
+    for (time, inc) in [(1000, 10), (8000, 80), (60_000, 600)] {
+        let free = clock_with_overhead(time, inc, 0);
+        let default = clock(time, inc, None);
+        assert!(
+            free.soft - default.soft <= 5,
+            "{time}+{inc}: {free:?} with no overhead, {default:?} with the default"
+        );
+    }
+}
+
 /// Where every move also costs the overhead outside the search, a game spending each soft budget
 /// settles well above the floor the cap at half the clock would hold it to.
 #[test]
