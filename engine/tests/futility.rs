@@ -80,7 +80,7 @@ fn the_margin_is_what_skips_the_move() {
 #[test]
 fn an_open_window_is_never_futile() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
-    let threshold = eval + futility_margin(1);
+    let threshold = eval + futility_margin(DEFAULT, 1);
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(MIDDLEGAME);
