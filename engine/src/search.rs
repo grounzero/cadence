@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Instant;
 
-use cadence_core::position::Board;
 use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList};
 
 use crate::conthist::{ContinuationHistory, Frame};
@@ -12,6 +11,7 @@ use crate::eval::PawnCache;
 use crate::history::History;
 use crate::level;
 use crate::picker::Slot;
+use crate::position::Position;
 use crate::score::{ABORTED, Score};
 use crate::syzygy::{Rank, Tables};
 use crate::time::{self, Budget};
@@ -109,8 +109,10 @@ pub struct Search<'a> {
     root_rank: Option<Rank>,
     /// Spelling in `info` lines only.
     chess960: bool,
-    /// `bench` builds its own searches, so it never sees a setting.
+    /// What this run reads: [`Tunables::HCE`] unless a net scores the position, and then `given`.
     tunables: Tunables,
+    /// A net's set, which only the UCI session moves off [`Tunables::DEFAULT`].
+    given: Tunables,
     /// Zero only where a gate compares against a search with no table, every node of which lacks a
     /// table move.
     iir_plies: u32,
@@ -205,7 +207,8 @@ struct Run {
     pv: Vec<Move>,
     /// Read by nothing that decides anything.
     seldepth: usize,
-    /// Empty without a budget, and taken from the soft-budget reading, so it adds no clock read.
+    /// Empty without a budget or a ponder's clock, and timed from the run's start through a hit.
+    /// Taken from the soft-budget reading, so it adds no clock read.
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
     roots: Vec<(Move, Score)>,
@@ -263,9 +266,8 @@ struct Clock {
     pondering: bool,
     /// Derived up front: the hit is absorbed where no board is at hand.
     budget_on_hit: Option<Budget>,
-    /// From a hit absorbed inside an iteration until that or a later one completes: it began with
-    /// no budget and rarely finishes in the one the hit brings, so the soft budget ends it.
-    unbudgeted_iteration: bool,
+    /// Milliseconds pondered before the hit, by which both deadlines move; zero without one.
+    hit_at: u64,
 }
 
 impl Clock {
@@ -278,7 +280,7 @@ impl Clock {
             budget: None,
             pondering: false,
             budget_on_hit: None,
-            unbudgeted_iteration: false,
+            hit_at: 0,
         }
     }
 
@@ -287,7 +289,7 @@ impl Clock {
         self.start = self.origin.take().unwrap_or_else(Instant::now);
         self.reported_from = self.start;
         self.pondering = limits.ponder;
-        self.unbudgeted_iteration = false;
+        self.hit_at = 0;
         self.budget = if limits.infinite {
             None
         } else {
@@ -309,7 +311,8 @@ impl<'a> Search<'a> {
             probing: None,
             root_rank: None,
             chess960: false,
-            tunables: Tunables::DEFAULT,
+            tunables: Tunables::HCE,
+            given: Tunables::DEFAULT,
             iir_plies: depth::IIR_REDUCTION,
             shared_nodes: None,
             worker_index: 0,
@@ -352,9 +355,19 @@ impl<'a> Search<'a> {
         self.chess960 = on;
     }
 
-    /// From the next run on.
+    /// From the next run on, and only where a net scores it: the handcrafted evaluation's search
+    /// reads [`Tunables::HCE`].
     pub fn set_tunables(&mut self, tunables: Tunables) {
-        self.tunables = tunables;
+        self.given = tunables;
+    }
+
+    /// The one place the set is chosen, from the evaluator scoring this search.
+    fn choose_tunables(&mut self, board: &Position) {
+        self.tunables = if board.scored_by_net() {
+            self.given
+        } else {
+            Tunables::HCE
+        };
     }
 
     pub fn set_multipv(&mut self, n: usize) {
@@ -408,7 +421,8 @@ impl<'a> Search<'a> {
     /// The clock origin is set here and moved only by a `ponderhit`. The settings, the pawn cache
     /// and the scratch rows outlive a run, and every other field is reset here or written before it
     /// is read.
-    fn begin(&mut self, board: &Board) {
+    fn begin(&mut self, board: &Position) {
+        self.choose_tunables(board);
         self.clock.begin(&self.limits, board.side_to_move());
         self.run.clear();
         self.heuristics.clear();

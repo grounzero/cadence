@@ -62,6 +62,7 @@ fn build() -> Build {
         target: "test-target-triple".to_string(),
         features: "+test".to_string(),
         cfg_features: "test".to_string(),
+        net_sha256: [0; 32],
     }
 }
 
@@ -155,7 +156,7 @@ fn a_refused_start_is_drawn_again_under_its_kind() {
             game::probe(board, SCREEN_NODES, tt)
         }
     };
-    let record = packed::play_with(chunk_seed(SEED, 0), 0, 100, &tt, &probe);
+    let record = packed::play_with(chunk_seed(SEED, 0), 0, 100, &tt, &probe, None);
     assert_eq!(record.kind, KIND_STANDARD);
     assert_eq!((record.white, record.black), (518, 518));
     assert_eq!(record.refused, 3);
@@ -170,7 +171,7 @@ fn a_chunk_holds_the_same_records_at_any_thread_count() {
             if index == 2 {
                 std::fs::write(dir.join("STOP"), "").expect("writes");
             }
-            packed::play(seed, index, share, tt)
+            packed::play(seed, index, share, tt, None)
         };
         let written = packed::run(&settings(&dir, 3, threads), &build(), &stop_after);
         assert_eq!(written.expect("a run").chunks, 1);

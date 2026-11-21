@@ -18,6 +18,7 @@ use cadence_engine::datagen::packed::{self, Build, Settings};
 use cadence_engine::datagen::{HASH_MB, verify};
 use cadence_engine::tt::Table;
 use cadence_engine::version::VERSION;
+use cadence_nnue::{AnyNetwork, Network, Provenance, WIDE};
 
 const SEED: u64 = 0xc0de;
 
@@ -33,6 +34,11 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Three real games in one chunk, written by the writer under a clean, known commit.
 fn written(dir: &Path, seed: u64) -> PathBuf {
+    written_by(dir, seed, None)
+}
+
+/// As `written`, played by `net` where one is given and its header naming it.
+fn written_by(dir: &Path, seed: u64, net: Option<&AnyNetwork>) -> PathBuf {
     let settings = Settings {
         dir: dir.to_path_buf(),
         run_seed: seed,
@@ -51,12 +57,13 @@ fn written(dir: &Path, seed: u64) -> PathBuf {
         target: "test-target-triple".to_string(),
         features: "+test".to_string(),
         cfg_features: "test".to_string(),
+        net_sha256: net.map_or([0; 32], |_| packed::shipped_net_sha256()),
     };
     let stop = |s: u64, index: u32, share: u8, tt: &Table| {
         if index == 2 {
             std::fs::write(dir.join("STOP"), "").expect("writes");
         }
-        packed::play(s, index, share, tt)
+        packed::play(s, index, share, tt, net)
     };
     packed::run(&settings, &build, &stop).expect("a run");
     std::fs::remove_file(dir.join("STOP")).expect("the stop is removed");
@@ -93,7 +100,7 @@ fn with_header(bytes: &[u8], edit: impl Fn(&mut Header)) -> Vec<u8> {
 }
 
 fn check(path: &Path, replay: Option<u32>) -> Result<verify::Summary, String> {
-    verify::chunk(path, replay, &Table::new(HASH_MB).expect("a table"))
+    verify::chunk(path, replay, &Table::new(HASH_MB).expect("a table"), None)
 }
 
 #[test]
@@ -107,6 +114,53 @@ fn a_written_chunk_verifies_and_regenerates_byte_for_byte() {
     assert_eq!((plain.games, plain.replayed), (3, 0));
     assert_eq!(plain.kinds[0] + plain.kinds[1], 3);
     assert_eq!(replayed.expect("regenerates").replayed, 3);
+}
+
+/// A run playing the build's net names it in the header and regenerates byte for byte with it, and
+/// its games are not the handcrafted evaluation's.
+#[test]
+fn a_chunk_played_by_the_shipped_net_names_it_and_regenerates_with_it() {
+    let net = packed::shipped_net()
+        .expect("the shipped net loads")
+        .expect("the build ships a net");
+    let dir = scratch("net");
+    let path = written_by(&dir, SEED, Some(&net));
+    let bytes = std::fs::read(&path).expect("the chunk");
+    let read = Chunk::read(&bytes).expect("reads");
+    let tt = Table::new(HASH_MB).expect("a table");
+    let replayed = verify::chunk(&path, Some(1), &tt, Some(&net));
+    let unloaded = verify::chunk(&path, Some(1), &tt, None);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(read.header.net_sha256, packed::shipped_net_sha256());
+    assert_eq!(replayed.expect("regenerates with the net").replayed, 3);
+    assert!(
+        unloaded
+            .expect_err("regenerated with no net")
+            .contains("none was loaded")
+    );
+    let first = &read.records[0];
+    let seed = packed::chunk_seed(SEED, 0);
+    let handcrafted = packed::play(seed, first.index, read.header.standard_share, &tt, None);
+    assert_ne!(
+        handcrafted.encode().expect("encodes"),
+        first.encode().expect("encodes"),
+        "the net's game is the handcrafted evaluation's"
+    );
+}
+
+/// A 512-wide self-play net passes the loader runs use and regenerates its run byte for byte, so a
+/// build that ships one still generates.
+#[test]
+fn a_chunk_played_by_a_wide_net_regenerates_with_it() {
+    let bytes = Network::<WIDE>::generate(13, Provenance::SelfPlay).to_bytes();
+    let net = AnyNetwork::for_datagen(&bytes).expect("a wide self-play net may generate data");
+    assert!(matches!(net, AnyNetwork::Wide(_)));
+    let dir = scratch("wide");
+    let path = written_by(&dir, SEED, Some(&net));
+    let tt = Table::new(HASH_MB).expect("a table");
+    let replayed = verify::chunk(&path, Some(1), &tt, Some(&net));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(replayed.expect("regenerates with the wide net").replayed, 3);
 }
 
 #[test]

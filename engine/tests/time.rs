@@ -14,7 +14,7 @@ use cadence_engine::position::Position;
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
     Budget, MOVE_OVERHEAD_MS, STABILITY_CALLS, STABILITY_SCALE, another_iteration_fits, budget,
-    soft_for_run,
+    soft_for_run, starts_another,
 };
 use cadence_engine::tt::Table;
 use support::Engine;
@@ -612,6 +612,47 @@ fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
     ));
 }
 
+/// A search that never pondered passes no offset, so it decides as the soft budget and the
+/// prediction did before a hit could move them; a hit's offset moves both deadlines and nothing else.
+#[test]
+fn a_search_without_a_hit_decides_as_before() {
+    let ladders: [&[u64]; 5] = [
+        &[1, 2, 5, 12, 30],
+        &[0, 0, 0, 2, 9, 46, 153],
+        &[3, 8, 20, 55, 140, 380],
+        &[40, 100, 260, 700],
+        &[5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    ];
+    for spec in [
+        "wtime 6000 btime 6000",
+        "wtime 6000 btime 6000 winc 2000 binc 2000",
+        "movetime 200",
+    ] {
+        let l = limits(spec);
+        let b = budget(&l, Colour::White).expect("a budget");
+        for ladder in ladders {
+            for k in 1..=ladder.len() {
+                let completed = &ladder[..k];
+                for run in [1, 2, 4, 9] {
+                    let before = completed[k - 1] < soft_for_run(&l, b, run)
+                        && another_iteration_fits(completed, b);
+                    assert_eq!(
+                        starts_another(&l, b, completed, run, 0),
+                        before,
+                        "`{spec}` over {completed:?} at run {run}"
+                    );
+                    assert_eq!(
+                        starts_another(&l, b, completed, run, 500),
+                        completed[k - 1] < soft_for_run(&l, b, run) + 500
+                            && another_iteration_fits(completed, b.moved(500)),
+                        "`{spec}` over {completed:?} at run {run}, 500 ms pondered"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The root move and score kept across iterations
 // ---------------------------------------------------------------------------
@@ -931,34 +972,6 @@ fn a_ponderhit_after_the_ponder_has_finished_is_answered() {
     }
 }
 
-/// Pondered past a 20 s clock's hard limit of 2.4 s and then hit, the move still waits for a search:
-/// were the pondering counted, the limit would have passed at the hit.
-#[test]
-fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
-    const PONDERED_MS: u64 = 3000;
-    const SEARCHED_MS: u64 = 150;
-
-    let after_hit = Engine::within(Duration::from_secs(30), || {
-        let mut e = Engine::spawn();
-        e.send("position startpos");
-        e.sync();
-        e.send("go ponder wtime 20000 btime 20000");
-        std::thread::sleep(Duration::from_millis(PONDERED_MS));
-        let hit = Instant::now();
-        e.send("ponderhit");
-        e.read_until("bestmove ");
-        let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
-        e.quit();
-        after_hit
-    });
-
-    assert!(
-        after_hit >= SEARCHED_MS,
-        "the move came {after_hit} ms after the hit, so the clock still counts the \
-         {PONDERED_MS} ms it spent pondering"
-    );
-}
-
 /// After a hit `time` counts from the `go`, as `nodes` does, so a line's `time` exceeds the time
 /// since the hit by the pondering. The hit is absorbed after the first iteration line that follows
 /// it, so the second is the one that can tell.
@@ -999,62 +1012,6 @@ fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
              the hit and not from the go"
         );
     }
-}
-
-/// The iteration a hit finds began unbudgeted and rarely finishes, so until one completes after the
-/// hit the move comes at the soft budget and not the hard one. An attempt where one does complete
-/// cannot tell, so the next ponders longer and meets an iteration at another point.
-#[test]
-fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
-    // No increment: the soft budget is a 25th of the clock and the hard one three times that.
-    const CLOCK: &str = "wtime 6000 btime 6000";
-    // A search's timing barely varies on one machine, so a retry at the same length meets the same
-    // iteration at the same point.
-    const PONDERED_MS: [u64; 5] = [3000, 3900, 5100, 6600, 8600];
-    const SLACK_MS: u64 = 150;
-
-    let b = budget(&limits(CLOCK), Colour::White).expect("a budget");
-    assert!(
-        b.soft + SLACK_MS < b.hard,
-        "{b:?} leaves no room to tell soft from hard"
-    );
-    for pondered in PONDERED_MS {
-        let (completed, after_hit) = Engine::within(Duration::from_secs(30), move || {
-            let mut e = Engine::spawn();
-            e.send("position startpos");
-            e.sync();
-            e.send(&format!("go ponder {CLOCK}"));
-            std::thread::sleep(Duration::from_millis(pondered));
-            e.sync();
-            let hit = Instant::now();
-            e.send("ponderhit");
-            let mut completed = false;
-            loop {
-                let line = e.read_until("").pop().expect("a line");
-                if line.starts_with("bestmove ") {
-                    break;
-                }
-                completed |= line.starts_with("info depth ");
-            }
-            let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
-            e.quit();
-            (completed, after_hit)
-        });
-        if completed {
-            continue;
-        }
-        assert!(
-            after_hit <= b.soft + SLACK_MS,
-            "no iteration completed after the hit, and the move came {after_hit} ms after it, \
-             past the soft budget of {} ms",
-            b.soft
-        );
-        return;
-    }
-    panic!(
-        "an iteration completed after the hit in each of {} attempts",
-        PONDERED_MS.len()
-    );
 }
 
 fn info_time(line: &str) -> u64 {
@@ -1203,8 +1160,8 @@ fn a_movetime_is_not_scaled() {
     }
 }
 
-/// The iterations pondered searched the same position, so the run they built survives the hit that
-/// clears the ladder; a new search clearing it is `the_entries_do_not_survive_into_the_next_search`.
+/// The iterations pondered searched the same position, so the run they built and their times survive
+/// the hit; a new search clearing them is `the_entries_do_not_survive_into_the_next_search`.
 #[test]
 fn the_run_survives_a_ponderhit() {
     let stop = AtomicBool::new(false);
@@ -1231,11 +1188,17 @@ fn the_run_survives_a_ponderhit() {
         "the hit dropped iterations from the run: {:?}",
         s.iteration_roots()
     );
-    assert!(
-        s.iterations_ms().len() < s.iteration_roots().len(),
-        "no iteration completed before the hit, so nothing crossed it: {:?} against {:?}",
+    assert_eq!(
+        s.iterations_ms().len(),
+        s.iteration_roots().len(),
+        "the hit dropped iteration times: {:?} against {:?}",
         s.iterations_ms(),
         s.iteration_roots()
+    );
+    assert!(
+        s.iterations_ms().first().is_some_and(|&ms| ms < 200),
+        "no iteration completed before the hit, so nothing crossed it: {:?}",
+        s.iterations_ms()
     );
     assert_the_run_is_the_trailing_one(&s);
 }
