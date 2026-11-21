@@ -304,7 +304,12 @@ impl Search<'_> {
         let Some(hit) = self.tt.probe(key) else {
             return (Move::NULL, None, false);
         };
-        if u32::from(hit.depth) < depth || board.halfmove_clock() >= CUTOFF_CLOCK {
+        // A result whose depth reaches the draw may rest on a line the clock now cuts short.
+        let clock = board.halfmove_clock();
+        if u32::from(hit.depth) < depth
+            || clock >= CUTOFF_CLOCK
+            || u32::from(clock) + u32::from(hit.depth) >= 100
+        {
             return (hit.mv, None, hit.pv);
         }
         let score = score::from_tt(hit.score, ply);
