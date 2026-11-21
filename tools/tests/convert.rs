@@ -801,8 +801,9 @@ fn training_keeps_at_most_the_cap_copies_of_an_input() {
     );
     assert!(again_ok, "{again}");
     let bytes = |unit: &Path, file: &str| std::fs::read(unit.join(file)).expect("reads");
-    let same_again = ["train.bin", "holdout.bin"]
+    let same_again = ["train.bin", "holdout.bin", "report.txt", "MANIFEST.tsv"]
         .map(|file| bytes(&units[0], file) == bytes(&again_units[0], file));
+    let same_unit = units[0].file_name() == again_units[0].file_name();
     let (train, holdout) = (
         records(&units[0].join("train.bin")).len(),
         records(&units[0].join("holdout.bin")).len(),
@@ -825,7 +826,8 @@ fn training_keeps_at_most_the_cap_copies_of_an_input() {
         "{whole}"
     );
     assert_eq!((train, holdout), (16, 13));
-    assert_eq!(same_again, [true, true], "the same seed kept other copies");
+    assert_eq!(same_again, [true; 4], "the same seed wrote other bytes");
+    assert!(same_unit, "the same seed published another unit");
     for line in [
         "standard training positions past 4 copies of their network input, dropped: 23",
         "standard training positions by copies of their network input: 1 0 2-8 16 9-64 0",
