@@ -77,11 +77,10 @@ fn assert_node(label: &str, board: &mut Board, legal: &[Move]) {
         );
     }
 
-    // The ep rule, stated directly at this node.
+    // The ep rule, stated directly at this node: the square hashes exactly where the independent
+    // generator offers a capture onto it.
     let us = board.side_to_move();
-    let ep_capturable = board.ep_square().is_some_and(|ep| {
-        (naive::attackers_to(board, ep, board.occupied()) & board.pieces(us, PieceType::Pawn)).any()
-    });
+    let ep_capturable = legal.iter().copied().any(Move::is_en_passant);
     let mut fields: Vec<&str> = fen.split_whitespace().collect();
     fields[3] = "-";
     let without_ep = Board::from_fen(&fields.join(" ")).expect("ep dropped");

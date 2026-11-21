@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 
 use cadence_core::position::Board;
 use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
@@ -82,7 +82,7 @@ struct NetOptions {
     on: bool,
     file: String,
     /// The shipped net until a file loads, and again once `EvalFile` is emptied or refuses a file.
-    net: Option<Arc<Network>>,
+    net: Option<AnyNetwork>,
     /// The SHA-256 of the bytes `net` came from, which tells one net from another.
     key: Option<[u8; 32]>,
     /// `None` where the build ships no net, else that net and its digest, or why it was refused.
@@ -90,7 +90,7 @@ struct NetOptions {
 }
 
 /// The net a build ships and the SHA-256 of its bytes.
-type Shipped = (Arc<Network>, [u8; 32]);
+type Shipped = (AnyNetwork, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,
