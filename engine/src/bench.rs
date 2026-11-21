@@ -5,13 +5,12 @@
 
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use cadence_core::Move;
 use cadence_core::position::Board;
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::position::Position;
@@ -89,12 +88,12 @@ fn on_search_stack(work: fn() -> Report) -> Report {
 
 /// The net the build ships, which scores the bench as it scores a game. A refused one panics,
 /// since a count from another evaluation would detect nothing.
-fn shipped_net() -> Option<Arc<Network>> {
-    Network::shipped(EMBEDDED)
-        .map(|loaded| Arc::new(loaded.unwrap_or_else(|e| panic!("the net this build ships: {e}"))))
+fn shipped_net() -> Option<AnyNetwork> {
+    AnyNetwork::shipped(EMBEDDED)
+        .map(|loaded| loaded.unwrap_or_else(|e| panic!("the net this build ships: {e}")))
 }
 
-fn search_positions(net: Option<&Arc<Network>>) -> Report {
+fn search_positions(net: Option<&AnyNetwork>) -> Report {
     let start = Instant::now();
     let stop = AtomicBool::new(false);
     #[expect(clippy::expect_used, reason = "sixteen mebibytes")]
@@ -106,7 +105,7 @@ fn search_positions(net: Option<&Arc<Network>>) -> Report {
         tt.clear();
         let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("bench position {fen}: {e:?}"));
         let mut pos = match net {
-            Some(net) => Position::with_net(board, Arc::clone(net)),
+            Some(net) => Position::with_net(board, net.clone()),
             None => Position::new(board),
         };
         let mut search = Search::new(&stop, &tt);

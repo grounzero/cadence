@@ -83,18 +83,18 @@ checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "cadence-core"
-version = "0.7.0-rc.1"
+version = "0.7.0-rc.3"
 
 [[package]]
 name = "cadence-dataset"
-version = "0.7.0-rc.1"
+version = "0.7.0-rc.3"
 dependencies = [
  "cadence-core",
 ]
 
 [[package]]
 name = "cadence-nnue"
-version = "0.7.0-rc.1"
+version = "0.7.0-rc.3"
 dependencies = [
  "cadence-core",
 ]
