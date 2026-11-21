@@ -25,14 +25,59 @@ result.
   copies of a position's network input, the first read, and counts the rest
   it drops; validation keeps every copy.
 
+### Fixed
+
+- Chess960: the position key names the rook each castling right belongs to,
+  so two positions that differ only in which rook may castle no longer share
+  a table entry.
+
+## [0.7.0-rc.3] - 2026-11-21
+
+A release candidate for 0.7.0, with a retrained network twice as wide.
+
+### Added
+
+- Training: `cadence-train run --lr-schedule step` lowers the learning rate
+  in five equal drops, in place of the cosine decay, to the same final rate.
+
 ### Changed
 
+- Evaluation: the built-in network is retrained on positions from games the
+  second network played, together with the positions the second was trained
+  on, and is twice as wide, 512 units a perspective in place of 256.
+- Tools: `datagen run` and `datagen verify` play and regenerate their games
+  with a built-in network of either width.
 - Tools: `cadence-tools convert` deals the records it keeps to bucket files
   on disk and shuffles each bucket in turn, rather than holding every record
   in memory, and reads its chunks once to choose the games and again to
   convert them. The same shuffle seed now gives a different order than
   before. Its report counts the training positions by how many copies of
   their network input the set holds.
+
+### Fixed
+
+- Search: a position's key counts its en passant square only where an en
+  passant capture is legal, so a position whose only such capture is pinned
+  is recognised as a repetition of the same position without the square.
+- Engine: after a `ponderhit` the search keeps the iteration times it
+  measured while pondering, and decides when to stop as a search started
+  without pondering would, with both time limits moved by the time pondered.
+  It no longer starts an iteration it cannot predict, which could run to the
+  hard limit, or spends its whole soft budget on an iteration begun while
+  pondering and then abandoned.
+
+Test 92, for the network: +95.86 (between +77.98 and +114.24), a
+self-play estimate against the build before it at the short control, from
+a sequential test stopped at its first crossing, so it leans high. At 40
+seconds plus 0.4, test 93: +110.32 (between +96.22 and +124.77). In
+Chess960 and double Chess960 at the short control, test 95: +147.19
+(between +126.11 and +169.35), a non-regression test, which asks only
+whether the network costs strength there, and it passed at 580 games. The
+en passant key passed its non-regression test, test 89, at 9,956 games:
++3.91 (between +0.54 and +7.27). The `ponderhit` change was not put to a
+test of games, since the test games do not ponder; its own tests reproduce a
+`ponderhit` and check that the decision to stop matches a search started
+fresh. These are not a rating.
 
 ## [0.7.0-rc.2] - 2026-11-19
 
@@ -104,7 +149,7 @@ Chess960 and double Chess960 at the short control, test 85: +448.95
 only whether the network costs strength there, and it passed at 392 games.
 They are not a rating.
 
-## [0.6.0] - 2026-11-13
+## [0.6.0] - 2026-11-14
 
 Everything since 0.5.23, published first as four release candidates, each
 a pre-release: 0.6.0-rc.1 (2026-11-06), 0.6.0-rc.2 (2026-11-08),
@@ -662,7 +707,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.3...main
+[0.7.0-rc.3]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...0.7.0-rc.3
 [0.7.0-rc.2]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...0.7.0-rc.2
 [0.7.0-rc.1]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0-rc.1
 [0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0

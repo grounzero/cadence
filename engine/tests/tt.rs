@@ -6,7 +6,6 @@
 
 mod support;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
@@ -20,7 +19,7 @@ use cadence_engine::{
     bench,
     uci::{DEFAULT_THREADS, MAX_THREADS, Session},
 };
-use cadence_nnue::Network;
+use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 use support::Rng;
 
@@ -49,8 +48,8 @@ fn nodes_without_iir(board: &mut Position, depth: u32, tt: &Table) -> u64 {
 /// The position as the bench builds it, scored by the net the build ships where it ships one.
 fn bench_position(fen: &str) -> Position {
     let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
-    match Network::shipped(EMBEDDED) {
-        Some(net) => Position::with_net(board, Arc::new(net.expect("the shipped net loads"))),
+    match AnyNetwork::shipped(EMBEDDED) {
+        Some(net) => Position::with_net(board, net.expect("the shipped net loads")),
         None => Position::new(board),
     }
 }

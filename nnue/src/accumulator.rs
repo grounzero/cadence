@@ -9,19 +9,19 @@ use cadence_core::{Colour, DirtyPieces, MAX_PLY, Piece, Square};
 
 use crate::net::{HIDDEN, Network};
 
-/// Indexed by the perspective's colour.
+/// Indexed by the perspective's colour, `H` lanes a perspective.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(64))]
-pub struct Accumulator {
-    pub sums: [[i16; HIDDEN]; 2],
+pub struct Accumulator<const H: usize = HIDDEN> {
+    pub sums: [[i16; H]; 2],
 }
 
 const COLOURS: [Colour; 2] = [Colour::White, Colour::Black];
 
-impl Network {
+impl<const H: usize> Network<H> {
     /// Every piece on the board added to the biases, the path an update must always agree with.
     #[must_use]
-    pub fn refresh(&self, board: &Board) -> Accumulator {
+    pub fn refresh(&self, board: &Board) -> Accumulator<H> {
         let mut acc = Accumulator {
             sums: [self.bias; 2],
         };
@@ -38,7 +38,7 @@ impl Network {
     /// Every subtraction before any addition: a DFRC castle can empty and fill one square, and
     /// a lane must never hold more than the board's pieces.
     #[must_use]
-    pub fn update(&self, parent: &Accumulator, dirty: &DirtyPieces) -> Accumulator {
+    pub fn update(&self, parent: &Accumulator<H>, dirty: &DirtyPieces) -> Accumulator<H> {
         let mut acc = *parent;
         for persp in COLOURS {
             let sums = &mut acc.sums[persp.index()];
@@ -56,14 +56,14 @@ impl Network {
         acc
     }
 
-    fn add(&self, sums: &mut [i16; HIDDEN], persp: Colour, piece: Piece, sq: Square) {
+    fn add(&self, sums: &mut [i16; H], persp: Colour, piece: Piece, sq: Square) {
         let column = &self.weights[feature_index(persp, piece, sq)];
         for (s, &w) in sums.iter_mut().zip(column) {
             *s += w;
         }
     }
 
-    fn sub(&self, sums: &mut [i16; HIDDEN], persp: Colour, piece: Piece, sq: Square) {
+    fn sub(&self, sums: &mut [i16; H], persp: Colour, piece: Piece, sq: Square) {
         let column = &self.weights[feature_index(persp, piece, sq)];
         for (s, &w) in sums.iter_mut().zip(column) {
             *s -= w;
@@ -73,16 +73,16 @@ impl Network {
 
 /// One accumulator a ply, allocated once and never resized, its cursor kept in step with the
 /// board's by whoever makes and unmakes the moves.
-pub struct AccumulatorStack {
-    stack: Box<[Accumulator; MAX_PLY + 1]>,
+pub struct AccumulatorStack<const H: usize = HIDDEN> {
+    stack: Box<[Accumulator<H>; MAX_PLY + 1]>,
     top: usize,
 }
 
-impl AccumulatorStack {
+impl<const H: usize> AccumulatorStack<H> {
     #[must_use]
-    pub fn new(net: &Network, board: &Board) -> AccumulatorStack {
+    pub fn new(net: &Network<H>, board: &Board) -> AccumulatorStack<H> {
         let root = net.refresh(board);
-        let stack: Box<[Accumulator; MAX_PLY + 1]> = vec![root; MAX_PLY + 1]
+        let stack: Box<[Accumulator<H>; MAX_PLY + 1]> = vec![root; MAX_PLY + 1]
             .into_boxed_slice()
             .try_into()
             .unwrap_or_else(|_| unreachable!("a vector of MAX_PLY + 1 is MAX_PLY + 1 long"));
@@ -90,14 +90,14 @@ impl AccumulatorStack {
     }
 
     #[must_use]
-    pub fn current(&self) -> &Accumulator {
+    pub fn current(&self) -> &Accumulator<H> {
         &self.stack[self.top]
     }
 
     /// # Panics
     ///
     /// Past `MAX_PLY` plies, which the search's own bound keeps it from reaching.
-    pub fn push(&mut self, net: &Network, dirty: &DirtyPieces) {
+    pub fn push(&mut self, net: &Network<H>, dirty: &DirtyPieces) {
         let child = net.update(&self.stack[self.top], dirty);
         self.top += 1;
         self.stack[self.top] = child;
@@ -121,7 +121,7 @@ impl AccumulatorStack {
     }
 
     /// The board a `position` command or a played game move leaves becomes the new root.
-    pub fn reset(&mut self, net: &Network, board: &Board) {
+    pub fn reset(&mut self, net: &Network<H>, board: &Board) {
         self.top = 0;
         self.stack[0] = net.refresh(board);
     }
