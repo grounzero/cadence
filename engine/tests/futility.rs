@@ -13,7 +13,11 @@ use cadence_core::{Move, START_FEN, generate_legal};
 use cadence_engine::eval;
 use cadence_engine::score::{MATE_IN_MAX_PLY, Score, mate_in, mated_in};
 use cadence_engine::search::{Limits, futile_node, futility_margin, futility_skips};
+use cadence_engine::tune::Tunables;
 use support::table;
+
+/// The compiled-in values every gate here pins.
+const DEFAULT: &Tunables = &Tunables::DEFAULT;
 
 /// Seven is the first depth every position in the set admits and skips; eight is one past it, so
 /// the next tree change cannot silently empty the gate.
@@ -46,12 +50,12 @@ fn one_node(fen: &str, depth: u32, alpha: Score) -> (Score, u64, u64, u64) {
 }
 
 /// At depth one every child is quiescence, which has no margin rule, so the counters are the root's
-/// own. Alpha sits exactly at `eval + futility_margin(1)` and then a centipawn lower; a rule keyed
-/// on anything but the margin answers the same on both.
+/// own. Alpha sits exactly at `eval + futility_margin(DEFAULT, 1)` and then a centipawn lower; a
+/// rule keyed on anything but the margin answers the same on both.
 #[test]
 fn the_margin_is_what_skips_the_move() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
-    let threshold = eval + futility_margin(1);
+    let threshold = eval + futility_margin(DEFAULT, 1);
 
     let (_, nodes_at, skipped_at, _) = one_node(MIDDLEGAME, 1, threshold);
     assert_eq!(nodes_at, 1, "the margin did not admit the node at alpha");
@@ -76,7 +80,7 @@ fn the_margin_is_what_skips_the_move() {
 #[test]
 fn a_node_that_skips_everything_still_has_an_answer() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
-    let (score, nodes, skipped, _) = one_node(MIDDLEGAME, 1, eval + futility_margin(1));
+    let (score, nodes, skipped, _) = one_node(MIDDLEGAME, 1, eval + futility_margin(DEFAULT, 1));
     assert_eq!(nodes, 1, "the node was not admitted");
     assert!(skipped > 0, "nothing was skipped");
     assert!(
@@ -127,7 +131,7 @@ fn a_quiet_check_survives_the_margin_and_the_mate_is_found() {
     let eval = eval::evaluate(&b);
     let alpha = 0;
     assert!(
-        futile_node(Some(eval), 3, alpha),
+        futile_node(DEFAULT, Some(eval), 3, alpha),
         "the gate's own node is not futile: eval {eval} against alpha {alpha}"
     );
 
@@ -151,7 +155,7 @@ fn a_node_in_check_is_never_futile() {
     for depth in 0..8 {
         for alpha in [-30_000, -100, 0, 100, 30_000] {
             assert!(
-                !futile_node(None, depth, alpha),
+                !futile_node(DEFAULT, None, depth, alpha),
                 "depth {depth} alpha {alpha}"
             );
         }
@@ -165,10 +169,10 @@ fn no_pruning_past_the_depth_limit() {
     // scale allows and only the depth can be refusing.
     let eval = -29_000;
     let alpha = 29_000;
-    assert!(futile_node(Some(eval), 3, alpha), "depth three");
+    assert!(futile_node(DEFAULT, Some(eval), 3, alpha), "depth three");
     for depth in 4..64 {
         assert!(
-            !futile_node(Some(eval), depth, alpha),
+            !futile_node(DEFAULT, Some(eval), depth, alpha),
             "depth {depth}: the gap decided where the limit should have"
         );
     }
@@ -181,11 +185,11 @@ fn a_mate_alpha_refuses_the_margin() {
     for depth in 1..4 {
         for ply in 0..8 {
             assert!(
-                !futile_node(Some(0), depth, mate_in(ply)),
+                !futile_node(DEFAULT, Some(0), depth, mate_in(ply)),
                 "depth {depth}: mate in {ply}"
             );
             assert!(
-                !futile_node(Some(0), depth, mated_in(ply)),
+                !futile_node(DEFAULT, Some(0), depth, mated_in(ply)),
                 "depth {depth}: mated in {ply}"
             );
         }
@@ -195,12 +199,12 @@ fn a_mate_alpha_refuses_the_margin() {
 /// A pawn and a half per ply, growing with the search under the node.
 #[test]
 fn the_margin_is_the_documented_margin() {
-    assert_eq!(futility_margin(1), 150);
-    assert_eq!(futility_margin(2), 300);
-    assert_eq!(futility_margin(3), 450);
+    assert_eq!(futility_margin(DEFAULT, 1), 150);
+    assert_eq!(futility_margin(DEFAULT, 2), 300);
+    assert_eq!(futility_margin(DEFAULT, 3), 450);
     for depth in 1..8 {
         assert!(
-            futility_margin(depth + 1) > futility_margin(depth),
+            futility_margin(DEFAULT, depth + 1) > futility_margin(DEFAULT, depth),
             "depth {depth}: the margin did not grow"
         );
     }

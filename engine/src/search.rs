@@ -39,13 +39,16 @@ pub use depth::{
 pub use expected::Call;
 pub use expected::{Expected, Via};
 pub use limits::Limits;
-pub(crate) use pruning::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
+pub(crate) use pruning::{
+    FUTILITY_MARGIN, LMP_MULTIPLIER, PROBCUT_MARGIN, REVERSE_FUTILITY_MARGIN,
+};
 pub use pruning::{
     PROBCUT_REDUCTION, futile_node, futility_margin, futility_skips, has_non_pawn_material,
     improving, lmp_count, lmp_index, lmp_skips, probcut_bound, reverse_futile,
     reverse_futility_margin,
 };
 use pv::PvTable;
+pub(crate) use root::ASPIRATION_DELTA;
 
 /// Nodes between clock reads; a power of two.
 const CLOCK_INTERVAL: u64 = 1024;

@@ -12,9 +12,10 @@ use crate::level;
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::time;
+use crate::tune::Tunable;
 
 /// Centipawns either side of the last completed iteration's score; doubled on each failure.
-const ASPIRATION_DELTA: Score = 24;
+pub(crate) const ASPIRATION_DELTA: Score = 24;
 
 /// Below it the iterations are too cheap and their scores too unsettled for a window to pay.
 const ASPIRATION_DEPTH: u32 = 4;
@@ -211,7 +212,7 @@ impl Search<'_> {
         let Some(centre) = centre else {
             return self.search_root(board, root, depth, out, -INFINITE, INFINITE);
         };
-        let mut delta = ASPIRATION_DELTA;
+        let mut delta = self.tunables.get(Tunable::AspirationDelta);
         let mut alpha = centre.saturating_sub(delta).max(-INFINITE);
         let mut beta = centre.saturating_add(delta).min(INFINITE);
         loop {

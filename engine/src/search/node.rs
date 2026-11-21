@@ -150,7 +150,7 @@ impl Search<'_> {
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts.
-        let futile = futile_node(self.heuristics.evals[ply], depth, alpha);
+        let futile = futile_node(&self.tunables, self.heuristics.evals[ply], depth, alpha);
         self.stats.futility_nodes.add_if(futile);
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
@@ -552,10 +552,12 @@ impl Search<'_> {
         kind: Expected,
     ) -> Option<Score> {
         let eval = self.heuristics.evals[ply];
-        let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
+        let Some(raised) = probcut_bound(&self.tunables, eval, depth, alpha, beta) else {
             // Asked as though the window were null, so the counter sees only nodes the window
             // alone refused.
-            if beta != alpha + 1 && probcut_bound(eval, depth, beta - 1, beta).is_some() {
+            if beta != alpha + 1
+                && probcut_bound(&self.tunables, eval, depth, beta - 1, beta).is_some()
+            {
                 self.stats.probcut_refused_window.add_one();
             }
             return None;

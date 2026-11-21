@@ -80,24 +80,25 @@ const FUTILITY_DEPTH: u32 = 3;
 
 /// Centipawns per ply. Linear because the material a search can win grows with its moves, not their
 /// square.
-const FUTILITY_MARGIN: Score = 150;
+pub(crate) const FUTILITY_MARGIN: Score = 150;
 
 #[must_use]
-pub fn futility_margin(depth: u32) -> Score {
+pub fn futility_margin(tunables: &Tunables, depth: u32) -> Score {
     // Saturating, so the function is total and a gate can pin it; [`futile_node`]'s saturating add
     // keeps the pair from overflowing at any depth.
-    FUTILITY_MARGIN.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
+    let per_ply = tunables.get(Tunable::FutilityMargin);
+    per_ply.saturating_mul(Score::try_from(depth).unwrap_or(Score::MAX))
 }
 
 /// Alpha on the decided scale refuses it; in check `eval` is `None`, so it cannot fire.
 #[must_use]
-pub fn futile_node(eval: Option<Score>, depth: u32, alpha: Score) -> bool {
+pub fn futile_node(tunables: &Tunables, eval: Option<Score>, depth: u32, alpha: Score) -> bool {
     let Some(eval) = eval else {
         return false;
     };
     depth <= FUTILITY_DEPTH
         && !score::is_decisive(alpha)
-        && eval.saturating_add(futility_margin(depth)) <= alpha
+        && eval.saturating_add(futility_margin(tunables, depth)) <= alpha
 }
 
 /// The check exemption is the caller's.
@@ -139,13 +140,19 @@ pub const PROBCUT_REDUCTION: u32 = 4;
 
 /// Read against the tree the other margins leave, so a change to reverse futility, futility or late
 /// move pruning reopens it.
-const PROBCUT_MARGIN: Score = 100;
+pub(crate) const PROBCUT_MARGIN: Score = 100;
 
 /// In check `eval` is `None`, so the rule never runs there.
 #[must_use]
-pub fn probcut_bound(eval: Option<Score>, depth: u32, alpha: Score, beta: Score) -> Option<Score> {
+pub fn probcut_bound(
+    tunables: &Tunables,
+    eval: Option<Score>,
+    depth: u32,
+    alpha: Score,
+    beta: Score,
+) -> Option<Score> {
     eval?;
-    let raised = beta.saturating_add(PROBCUT_MARGIN);
+    let raised = beta.saturating_add(tunables.get(Tunable::ProbcutMargin));
     (depth >= PROBCUT_DEPTH
         && beta == alpha + 1
         && !score::is_decisive(beta)
@@ -232,13 +239,13 @@ mod proofs {
         let scores = -score::INFINITE..=score::INFINITE;
         kani::assume(scores.contains(&alpha) && scores.contains(&beta));
         kani::assume(eval.is_none_or(|e| scores.contains(&e)));
-        if futile_node(eval, depth, alpha) {
+        if futile_node(&tunables, eval, depth, alpha) {
             assert!(eval.is_some() && !score::is_decisive(alpha));
         }
         if let Some(cut) = reverse_futile(&tunables, eval, depth, beta) {
             assert!(cut == beta && eval.is_some() && !score::is_decisive(beta));
         }
-        if let Some(raised) = probcut_bound(eval, depth, alpha, beta) {
+        if let Some(raised) = probcut_bound(&tunables, eval, depth, alpha, beta) {
             assert!(eval.is_some() && !score::is_decisive(beta) && !score::is_decisive(raised));
         }
     }
