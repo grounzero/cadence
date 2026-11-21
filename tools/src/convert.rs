@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,7 +19,7 @@ use cadence_core::rng::{Rng, splitmix64};
 use cadence_dataset::chunk::{Chunk, GameRecord, Header, NO_SCORE, decode_move, game_key};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND};
 use cadence_dataset::durable::{self, Disk, Steps, UNSYNCED};
-use cadence_dataset::sha256::{hex, sha256};
+use cadence_dataset::sha256::{Sha256, hex, sha256};
 use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
 const USAGE: &str = "usage: cadence-tools convert --manifest FILE [--manifest FILE]... --out DIR \
@@ -342,16 +342,163 @@ fn bucket(score: i16) -> usize {
     }
 }
 
-/// The positions kept, each with its record and its key, split by game.
-#[derive(Default)]
+/// The positions kept, split by game: their records dealt to buckets on disk, their keys and
+/// network inputs held in memory for the report.
 struct Kept {
-    train: Vec<[u8; RECORD_LEN]>,
-    holdout: Vec<[u8; RECORD_LEN]>,
-    train_keys: BTreeSet<u64>,
+    train: Buckets,
+    holdout: Buckets,
+    train_keys: Vec<u64>,
     holdout_keys: Vec<u64>,
     /// By start kind and network input, a reading only: each sorted once every position is kept.
     train_inputs: [Vec<u64>; 2],
     holdout_inputs: [Vec<u64>; 2],
+}
+
+impl Kept {
+    fn new(dir: &Path, seed: u64) -> Result<Kept, String> {
+        Ok(Kept {
+            train: Buckets::new(&dir.join("train"), TRAIN_BUCKETS, splitmix64(seed).0)?,
+            holdout: Buckets::new(&dir.join("holdout"), HOLDOUT_BUCKETS, splitmix64(!seed).0)?,
+            train_keys: Vec::new(),
+            holdout_keys: Vec::new(),
+            train_inputs: [Vec::new(), Vec::new()],
+            holdout_inputs: [Vec::new(), Vec::new()],
+        })
+    }
+}
+
+/// Files each split's records are dealt to as they are kept, each read whole later: about 0.5 GB
+/// a training bucket at two billion positions, and 144 files open, inside a default limit of 256.
+const TRAIN_BUCKETS: usize = 128;
+const HOLDOUT_BUCKETS: usize = 16;
+
+/// A two-pass shuffle: each record dealt to a bucket by a seeded draw, then each bucket shuffled
+/// whole and appended in turn, a uniform permutation when the deal and each shuffle are.
+struct Buckets {
+    dir: PathBuf,
+    files: Vec<BufWriter<File>>,
+    counts: Vec<u64>,
+    deal: Rng,
+}
+
+impl Buckets {
+    fn new(dir: &Path, n: usize, seed: u64) -> Result<Buckets, String> {
+        let failed = |e: io::Error| format!("{}: {e}", dir.display());
+        fs::create_dir_all(dir).map_err(failed)?;
+        let files = (0..n)
+            .map(|i| File::create(dir.join(format!("{i:04}"))).map(BufWriter::new))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(failed)?;
+        Ok(Buckets {
+            dir: dir.to_path_buf(),
+            files,
+            counts: vec![0; n],
+            deal: Rng::new(seed),
+        })
+    }
+
+    fn push(&mut self, record: &[u8; RECORD_LEN]) -> Result<(), String> {
+        let b = self.deal.below(self.files.len());
+        self.files[b]
+            .write_all(record)
+            .map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        self.counts[b] += 1;
+        Ok(())
+    }
+
+    fn len(&self) -> u64 {
+        self.counts.iter().sum()
+    }
+
+    /// Each bucket shuffled with `rng` and appended to `out` in turn, then removed; the file is
+    /// synced and its SHA-256 returned.
+    fn drain(self, out: &Path, rng: &mut Rng) -> Result<[u8; 32], String> {
+        let failed = |e: io::Error| format!("{}: {e}", out.display());
+        let n = self.files.len();
+        for file in self.files {
+            file.into_inner()
+                .map_err(|e| format!("{}: {}", self.dir.display(), e.error()))?;
+        }
+        let mut writer = BufWriter::new(File::create(out).map_err(failed)?);
+        let mut hash = Sha256::new();
+        for i in 0..n {
+            let path = self.dir.join(format!("{i:04}"));
+            let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut records = bytes.as_chunks::<RECORD_LEN>().0.to_vec();
+            drop(bytes);
+            shuffle(&mut records, rng);
+            for record in &records {
+                hash.update(record);
+                writer.write_all(record).map_err(failed)?;
+            }
+            fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        let file = writer.into_inner().map_err(|e| failed(e.into_error()))?;
+        file.sync_all().map_err(failed)?;
+        fs::remove_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        Ok(hash.finish())
+    }
+}
+
+/// Position keys by open addressing, at most about 19 bytes a key where a tree set holds several
+/// times that; zero, an empty slot's mark, is held apart.
+struct KeySet {
+    slots: Vec<u64>,
+    len: usize,
+    zero: bool,
+}
+
+impl KeySet {
+    fn new() -> KeySet {
+        KeySet {
+            slots: vec![0; 1 << 16],
+            len: 0,
+            zero: false,
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "masked below the slot count, a usize"
+    )]
+    fn slot(slots: &[u64], key: u64) -> usize {
+        let mask = slots.len() - 1;
+        let mut i = (splitmix64(key).0 & mask as u64) as usize;
+        while slots[i] != 0 && slots[i] != key {
+            i = (i + 1) & mask;
+        }
+        i
+    }
+
+    fn contains(&self, key: u64) -> bool {
+        if key == 0 {
+            return self.zero;
+        }
+        self.slots[KeySet::slot(&self.slots, key)] == key
+    }
+
+    /// Whether the key was new.
+    fn insert(&mut self, key: u64) -> bool {
+        if key == 0 {
+            return !std::mem::replace(&mut self.zero, true);
+        }
+        // Doubled past 85% full, where linear probing starts to slow sharply.
+        if (self.len + 1) * 20 > self.slots.len() * 17 {
+            let mut grown = vec![0; self.slots.len() * 2];
+            for &k in self.slots.iter().filter(|&&k| k != 0) {
+                let i = KeySet::slot(&grown, k);
+                grown[i] = k;
+            }
+            self.slots = grown;
+        }
+        let i = KeySet::slot(&self.slots, key);
+        if self.slots[i] == key {
+            return false;
+        }
+        self.slots[i] = key;
+        self.len += 1;
+        true
+    }
 }
 
 /// One start kind's positions read by network input, its holdout against both kinds' training.
@@ -363,11 +510,30 @@ struct ByInput {
     /// Positions in a split beyond the first with their input.
     train_repeats: usize,
     holdout_repeats: usize,
+    /// Training positions by their input's copies: 1, 2 to 8, 9 to 64, 65 to 512, and more.
+    copies: [u64; 5],
 }
 
 /// Entries of a sorted list beyond the first of each value.
 fn repeats(sorted: &[u64]) -> usize {
     sorted.windows(2).filter(|w| w[0] == w[1]).count()
+}
+
+/// A sorted list's entries by how many times their value appears, in `ByInput::copies`' bands.
+fn copies(sorted: &[u64]) -> [u64; 5] {
+    let mut held = [0; 5];
+    for run in sorted.chunk_by(|a, b| a == b) {
+        let n = run.len() as u64;
+        let band = match n {
+            1 => 0,
+            2..=8 => 1,
+            9..=64 => 2,
+            65..=512 => 3,
+            _ => 4,
+        };
+        held[band] += n;
+    }
+    held
 }
 
 /// The whole conversion up to its published unit's path; `steps` renames the unit and syncs, so a
@@ -386,12 +552,32 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
     for set in &sets {
         check_listing(set)?;
     }
-    let (games, repeated) = read_games(&sets)?;
-    let chosen = subsample(&games, request.standard_share);
+    let plan = plan_games(&sets, request.standard_share)?;
+    fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
+    let staging = request.out.join(format!(".staging-{}", std::process::id()));
+    fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    let converted = convert_into(request, &sets, &plan, &staging, steps);
+    if converted.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    converted
+}
+
+/// The two passes over the positions, into `staging`, and the unit published from it: each file
+/// synced and the manifest last, then the directory synced, renamed whole to its version id and
+/// its parent synced, so a failure before the rename publishes nothing.
+fn convert_into(
+    request: &Request,
+    sets: &[Dataset],
+    plan: &GamePlan,
+    staging: &Path,
+    steps: &mut dyn Steps,
+) -> Result<Converted, String> {
+    let buckets = staging.join("buckets");
     let mut counts = vec![[Counts::new(), Counts::new()]; sets.len()];
-    let mut kept = Kept::default();
-    let mut seen = BTreeSet::new();
-    for game in chosen {
+    let mut kept = Kept::new(&buckets, request.shuffle_seed)?;
+    let mut seen = KeySet::new();
+    for_each_game(sets, plan, |game| {
         positions(
             request,
             game,
@@ -399,20 +585,23 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
             &mut kept,
             &mut seen,
         )
-        .map_err(|e| format!("{} game {}: {e}", game.chunk, game.record.index))?;
-    }
-    if kept.train.is_empty() {
+        .map_err(|e| format!("{} game {}: {e}", game.chunk, game.record.index))
+    })?;
+    drop(seen);
+    let (train_len, holdout_len) = (kept.train.len(), kept.holdout.len());
+    if train_len == 0 {
         return Err("no training position is left after the filters; nothing was published".into());
     }
-    if kept.holdout.is_empty() {
+    if holdout_len == 0 {
         return Err(
             "no validation position is left after the filters; nothing was published".into(),
         );
     }
+    kept.train_keys.sort_unstable();
     let overlap = kept
         .holdout_keys
         .iter()
-        .filter(|k| kept.train_keys.contains(k))
+        .filter(|k| kept.train_keys.binary_search(k).is_ok())
         .count();
     for inputs in kept.train_inputs.iter_mut().chain(&mut kept.holdout_inputs) {
         inputs.sort_unstable();
@@ -426,13 +615,47 @@ pub fn convert(request: &Request, steps: &mut dyn Steps) -> Result<Converted, St
             overlap: holdout.iter().filter(|k| in_training(k)).count(),
             train_repeats: repeats(train),
             holdout_repeats: repeats(holdout),
+            copies: copies(train),
         }
     });
+    let report = report(sets, &counts, &plan.repeats, overlap, &by_input);
+    let Kept {
+        train,
+        holdout,
+        train_keys,
+        holdout_keys,
+        train_inputs,
+        holdout_inputs,
+    } = kept;
+    drop((train_keys, holdout_keys, train_inputs, holdout_inputs));
     let mut rng = Rng::new(request.shuffle_seed);
-    shuffle(&mut kept.train, &mut rng);
-    shuffle(&mut kept.holdout, &mut rng);
-    let report = report(&sets, &counts, &repeated, overlap, &by_input);
-    publish(request, &sets, &counts, &kept, &report, steps)
+    let train_sha = train.drain(&staging.join("train.bin"), &mut rng)?;
+    let holdout_sha = holdout.drain(&staging.join("holdout.bin"), &mut rng)?;
+    fs::remove_dir(&buckets).map_err(|e| format!("{}: {e}", buckets.display()))?;
+    write_synced(&staging.join("report.txt"), report.as_bytes())?;
+    let manifest = manifest(
+        request,
+        sets,
+        &counts,
+        (train_len, holdout_len),
+        (&train_sha, &holdout_sha),
+        &report,
+    );
+    write_synced(&staging.join("MANIFEST.tsv"), manifest.as_bytes())?;
+    let id = hex(&sha256(&[train_sha, holdout_sha].concat()))[..16].to_string();
+    let unit = request.out.join(&id);
+    if unit.exists() {
+        return Err(format!("{} already holds this unit", unit.display()));
+    }
+    steps
+        .sync_dir(staging)
+        .map_err(|e| format!("{}: {e}", staging.display()))?;
+    let published =
+        durable::publish(steps, staging, &unit).map_err(|e| format!("{}: {e}", unit.display()))?;
+    Ok(Converted {
+        unconfirmed: published.note(&unit),
+        unit,
+    })
 }
 
 /// Games of one start kind read, and those dropped as repeating an earlier game from another seed.
@@ -442,14 +665,22 @@ struct Repeats {
     dropped: u64,
 }
 
-/// Every chunk read and held together: no run seed and chunk index twice, and no game copied. A
-/// game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
-fn read_games(sets: &[Dataset]) -> Result<(Vec<Game>, [Repeats; 2]), String> {
+/// What the first read of the chunks decides: whether each game, in reading order, is converted,
+/// and the repeats it dropped.
+struct GamePlan {
+    chosen: Vec<bool>,
+    repeats: [Repeats; 2],
+}
+
+/// Every chunk read once to choose the games: no run seed and chunk index twice, and no game copied.
+/// A game repeating an earlier one from another seed is kept once, up to `REPEAT_BAR`.
+fn plan_games(sets: &[Dataset], share: Option<u8>) -> Result<GamePlan, String> {
     let mut chunks: BTreeMap<(u64, u32), String> = BTreeMap::new();
-    let mut keys: BTreeMap<[u8; 16], (String, u32, u64)> = BTreeMap::new();
+    let mut names: Vec<&str> = Vec::new();
+    let mut keys: BTreeMap<[u8; 16], (usize, u32, u64)> = BTreeMap::new();
     let mut repeats = [Repeats::default(); 2];
-    let mut games = Vec::new();
-    for (dataset, set) in sets.iter().enumerate() {
+    let (mut chosen, mut kinds) = (Vec::new(), Vec::new());
+    for set in sets {
         for (name, _) in &set.chunks {
             let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
             let chunk = Chunk::read(&bytes).map_err(|e| format!("{name}: {e}"))?;
@@ -461,27 +692,25 @@ fn read_games(sets: &[Dataset]) -> Result<(Vec<Game>, [Repeats; 2]), String> {
                     at.0, at.1
                 ));
             }
-            for record in chunk.records {
-                let key = game_key(&record);
+            names.push(name.as_str());
+            for record in &chunk.records {
+                let key = game_key(record);
                 let kind = &mut repeats[usize::from(record.kind)];
                 kind.read += 1;
-                if let Some((first, index, seed)) = keys.get(&key) {
-                    if *seed == record.seed {
+                kinds.push(record.kind);
+                if let Some(&(first, index, seed)) = keys.get(&key) {
+                    if seed == record.seed {
                         return Err(format!(
-                            "{name} game {} is the same game as {first} game {index}",
-                            record.index
+                            "{name} game {} is the same game as {} game {index}",
+                            record.index, names[first]
                         ));
                     }
                     kind.dropped += 1;
+                    chosen.push(false);
                     continue;
                 }
-                keys.insert(key, (name.clone(), record.index, record.seed));
-                games.push(Game {
-                    dataset,
-                    chunk: name.clone(),
-                    number: game_number(&chunk.header, record.index),
-                    record,
-                });
+                keys.insert(key, (names.len() - 1, record.index, record.seed));
+                chosen.push(true);
             }
         }
     }
@@ -494,7 +723,45 @@ fn read_games(sets: &[Dataset]) -> Result<(Vec<Game>, [Repeats; 2]), String> {
             ));
         }
     }
-    Ok((games, repeats))
+    subsample(&mut chosen, &kinds, share);
+    Ok(GamePlan { chosen, repeats })
+}
+
+/// The chosen games in reading order, each chunk read again, so one chunk's games are in memory at
+/// a time; a chunk whose games differ in number from the first read is refused.
+fn for_each_game(
+    sets: &[Dataset],
+    plan: &GamePlan,
+    mut each: impl FnMut(&Game) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut at = 0;
+    for (dataset, set) in sets.iter().enumerate() {
+        for (name, _) in &set.chunks {
+            let bytes = fs::read(set.dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
+            let Chunk {
+                header, records, ..
+            } = Chunk::read(&bytes).map_err(|e| format!("{name}: {e}"))?;
+            for record in records {
+                let chosen = *plan
+                    .chosen
+                    .get(at)
+                    .ok_or_else(|| format!("{name} changed between its two reads"))?;
+                at += 1;
+                if chosen {
+                    each(&Game {
+                        dataset,
+                        chunk: name.clone(),
+                        number: game_number(&header, record.index),
+                        record,
+                    })?;
+                }
+            }
+        }
+    }
+    if at != plan.chosen.len() {
+        return Err("a chunk changed between its two reads".into());
+    }
+    Ok(())
 }
 
 /// A game's place in its run, from its chunk's place and its own within the chunk.
@@ -502,14 +769,18 @@ fn game_number(header: &Header, index: u32) -> u64 {
     u64::from(header.chunk_index) * u64::from(header.games_planned) + u64::from(index)
 }
 
-/// Games of the more common kind dropped from the end until the standard share is the one asked,
-/// or every game kept when none is asked.
-fn subsample(games: &[Game], share: Option<u8>) -> Vec<&Game> {
+/// Chosen games of the more common kind dropped from the end until the standard share is the one
+/// asked, or every game kept when none is asked.
+fn subsample(chosen: &mut [bool], kinds: &[u8], share: Option<u8>) {
     let Some(share) = share else {
-        return games.iter().collect();
+        return;
     };
-    let standard = games.iter().filter(|g| g.record.kind == 1).count() as u64;
-    let uniform = games.len() as u64 - standard;
+    let standard = chosen
+        .iter()
+        .zip(kinds)
+        .filter(|&(&c, &k)| c && k == 1)
+        .count() as u64;
+    let uniform = chosen.iter().filter(|&&c| c).count() as u64 - standard;
     let (p, q) = (u64::from(share), 100 - u64::from(share));
     // Keep (u', s') with s' * q == u' * p, each at most what there is.
     let (keep_uniform, keep_standard) = if standard * q > uniform * p {
@@ -518,18 +789,18 @@ fn subsample(games: &[Game], share: Option<u8>) -> Vec<&Game> {
         ((standard * q).checked_div(p).unwrap_or(uniform), standard)
     };
     let (mut u, mut s) = (0, 0);
-    games
-        .iter()
-        .filter(|g| {
-            if g.record.kind == 1 {
-                s += 1;
-                s <= keep_standard
-            } else {
-                u += 1;
-                u <= keep_uniform
-            }
-        })
-        .collect()
+    for (c, &k) in chosen.iter_mut().zip(kinds) {
+        if !*c {
+            continue;
+        }
+        *c = if k == 1 {
+            s += 1;
+            s <= keep_standard
+        } else {
+            u += 1;
+            u <= keep_uniform
+        };
+    }
 }
 
 /// The positions of one game's moves that pass every filter, each before its move is played.
@@ -538,7 +809,7 @@ fn positions(
     game: &Game,
     counts: &mut Counts,
     kept: &mut Kept,
-    seen: &mut BTreeSet<u64>,
+    seen: &mut KeySet,
 ) -> Result<(), String> {
     let record = &game.record;
     let fen = dfrc_fen(u32::from(record.white), u32::from(record.black));
@@ -577,7 +848,7 @@ fn positions(
         } else {
             let key = board.key();
             let again = !this_game.insert(key);
-            let before = seen.contains(&key);
+            let before = seen.contains(key);
             counts.within_game += u64::from(again);
             counts.across_games += u64::from(!again && before);
             if request.dedup && (again || before) {
@@ -595,13 +866,13 @@ fn positions(
                 counts.scores[bucket(score)] += 1;
                 let kind = usize::from(record.kind);
                 if held {
-                    kept.holdout.push(bytes);
+                    kept.holdout.push(&bytes)?;
                     kept.holdout_keys.push(key);
                     kept.holdout_inputs[kind].push(input);
                     counts.holdout += 1;
                 } else {
-                    kept.train.push(bytes);
-                    kept.train_keys.insert(key);
+                    kept.train.push(&bytes)?;
+                    kept.train_keys.push(key);
                     kept.train_inputs[kind].push(input);
                     counts.train += 1;
                 }
@@ -740,60 +1011,14 @@ fn report(
             "{name} repeats by network input within training {} of {}, within holdout {} of {}",
             b.train_repeats, b.train, b.holdout_repeats, b.holdout
         );
+        let [one, few, some, many, most] = b.copies;
+        let _ = writeln!(
+            text,
+            "{name} training positions by copies of their network input: 1 {one} 2-8 {few} 9-64 \
+             {some} 65-512 {many} over-512 {most}"
+        );
     }
     text
-}
-
-/// Staged in a directory of its own, each file synced and the manifest last, then the directory
-/// synced, renamed whole to its version id and its parent synced; a failure before the rename
-/// publishes nothing.
-fn publish(
-    request: &Request,
-    sets: &[Dataset],
-    counts: &[[Counts; 2]],
-    kept: &Kept,
-    report: &str,
-    steps: &mut dyn Steps,
-) -> Result<Converted, String> {
-    fs::create_dir_all(&request.out).map_err(|e| format!("{}: {e}", request.out.display()))?;
-    let staging = request.out.join(format!(".staging-{}", std::process::id()));
-    fs::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
-    let staged = (|| {
-        let train: Vec<u8> = kept.train.concat();
-        let holdout: Vec<u8> = kept.holdout.concat();
-        let (train_sha, holdout_sha) = (sha256(&train), sha256(&holdout));
-        write_synced(&staging.join("train.bin"), &train)?;
-        write_synced(&staging.join("holdout.bin"), &holdout)?;
-        write_synced(&staging.join("report.txt"), report.as_bytes())?;
-        let manifest = manifest(
-            request,
-            sets,
-            counts,
-            kept,
-            &train_sha,
-            &holdout_sha,
-            report,
-        );
-        write_synced(&staging.join("MANIFEST.tsv"), manifest.as_bytes())?;
-        let id = hex(&sha256(&[train_sha, holdout_sha].concat()))[..16].to_string();
-        let unit = request.out.join(&id);
-        if unit.exists() {
-            return Err(format!("{} already holds this unit", unit.display()));
-        }
-        steps
-            .sync_dir(&staging)
-            .map_err(|e| format!("{}: {e}", staging.display()))?;
-        let published = durable::publish(steps, &staging, &unit)
-            .map_err(|e| format!("{}: {e}", unit.display()))?;
-        Ok(Converted {
-            unconfirmed: published.note(&unit),
-            unit,
-        })
-    })();
-    if staged.is_err() {
-        let _ = fs::remove_dir_all(&staging);
-    }
-    staged
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -808,9 +1033,8 @@ fn manifest(
     request: &Request,
     sets: &[Dataset],
     counts: &[[Counts; 2]],
-    kept: &Kept,
-    train_sha: &[u8; 32],
-    holdout_sha: &[u8; 32],
+    (train_len, holdout_len): (u64, u64),
+    (train_sha, holdout_sha): (&[u8; 32], &[u8; 32]),
     report: &str,
 ) -> String {
     let mut text = String::new();
@@ -858,17 +1082,12 @@ fn manifest(
             );
         }
     }
-    let _ = writeln!(
-        text,
-        "file\ttrain.bin\t{}\t{}",
-        hex(train_sha),
-        kept.train.len()
-    );
+    let _ = writeln!(text, "file\ttrain.bin\t{}\t{}", hex(train_sha), train_len);
     let _ = writeln!(
         text,
         "file\tholdout.bin\t{}\t{}",
         hex(holdout_sha),
-        kept.holdout.len()
+        holdout_len
     );
     let _ = writeln!(
         text,
@@ -883,7 +1102,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BUCKETS, RECORD_LEN, Request, bucket, convert, game_number, input_key, result_for_mover,
+        BUCKETS, Buckets, KeySet, RECORD_LEN, Request, bucket, convert, copies, game_number,
+        input_key, result_for_mover,
     };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
@@ -1107,5 +1327,111 @@ mod tests {
             let first_wrong = numbers.iter().zip(0..).position(|(&n, g)| n != g);
             assert_eq!(first_wrong, None, "chunks of {chunk_games}");
         }
+    }
+
+    /// Every record dealt and drained comes out once, in an order its two seeds fix, and the digest
+    /// returned is the file's.
+    #[test]
+    fn buckets_return_every_record_once_in_an_order_the_seeds_fix() {
+        let dir =
+            std::env::temp_dir().join(format!("cadence-convert-buckets-{}", std::process::id()));
+        let records: Vec<[u8; RECORD_LEN]> = (0..1_000u32)
+            .map(|i| {
+                let mut record = [0; RECORD_LEN];
+                record[..4].copy_from_slice(&i.to_le_bytes());
+                record
+            })
+            .collect();
+        let drained = |deal: u64, shuffle: u64, name: &str| {
+            let mut buckets = Buckets::new(&dir.join(name), 7, deal).expect("buckets");
+            for record in &records {
+                buckets.push(record).expect("pushes");
+            }
+            assert_eq!(buckets.len(), 1_000);
+            let out = dir.join(format!("{name}.bin"));
+            let digest = buckets.drain(&out, &mut Rng::new(shuffle)).expect("drains");
+            let bytes = std::fs::read(&out).expect("reads");
+            assert_eq!(digest, sha256(&bytes));
+            assert!(!dir.join(name).exists(), "the buckets were left behind");
+            bytes
+        };
+        let (first, again, reshuffled, redealt) = (
+            drained(1, 2, "a"),
+            drained(1, 2, "b"),
+            drained(1, 3, "c"),
+            drained(4, 2, "d"),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(first, again, "the same seeds gave another order");
+        assert_ne!(
+            first, reshuffled,
+            "another shuffle seed gave the same order"
+        );
+        assert_ne!(first, redealt, "another deal seed gave the same order");
+        let sorted = |bytes: &[u8]| {
+            let mut all: Vec<&[u8]> = bytes.chunks(RECORD_LEN).collect();
+            all.sort_unstable();
+            all.concat()
+        };
+        let original = sorted(&records.concat());
+        for out in [&first, &reshuffled, &redealt] {
+            assert_eq!(sorted(out), original, "a record was lost or repeated");
+        }
+    }
+
+    /// Three records through four buckets come out in each of their six orders about as often.
+    #[test]
+    fn the_two_pass_shuffle_is_uniform_over_three_records() {
+        let dir =
+            std::env::temp_dir().join(format!("cadence-convert-uniform-{}", std::process::id()));
+        let mut seen = std::collections::BTreeMap::new();
+        for seed in 0..1_200u64 {
+            let mut buckets = Buckets::new(&dir.join("b"), 4, seed).expect("buckets");
+            for i in 0..3u8 {
+                buckets.push(&[i; RECORD_LEN]).expect("pushes");
+            }
+            let out = dir.join("out.bin");
+            buckets.drain(&out, &mut Rng::new(!seed)).expect("drains");
+            let order: Vec<u8> = std::fs::read(&out)
+                .expect("reads")
+                .chunks(RECORD_LEN)
+                .map(|r| r[0])
+                .collect();
+            *seen.entry(order).or_insert(0u32) += 1;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(seen.len(), 6, "{seen:?}");
+        // 200 each is expected, its standard deviation about 13.
+        for (order, n) in &seen {
+            assert!((140..=260).contains(n), "{order:?} came {n} times in 1,200");
+        }
+    }
+
+    /// Each key is new once and held after, through the table's growth, zero included.
+    #[test]
+    fn the_key_set_holds_every_key_once_through_growth() {
+        let mut set = KeySet::new();
+        assert!(set.insert(0));
+        assert!(!set.insert(0));
+        let mut rng = Rng::new(9);
+        let keys: Vec<u64> = (0..200_000).map(|_| rng.next_u64() | 1).collect();
+        for &k in &keys {
+            assert!(set.insert(k), "{k} was taken as seen");
+        }
+        for &k in &keys {
+            assert!(!set.insert(k), "{k} was taken as new twice");
+            assert!(set.contains(k));
+        }
+        assert!(set.contains(0));
+        assert!(!set.contains(2), "an even key was never inserted");
+        assert_eq!(set.len, 200_000);
+    }
+
+    #[test]
+    fn copies_count_positions_by_how_often_their_value_appears() {
+        let mut sorted = vec![1, 2, 2, 3, 3, 3];
+        sorted.extend(std::iter::repeat_n(4, 9));
+        sorted.extend(std::iter::repeat_n(5, 600));
+        assert_eq!(copies(&sorted), [1, 5, 9, 0, 600]);
     }
 }
