@@ -756,3 +756,147 @@ fn the_overlap_and_the_repeats_are_read_by_start_kind() {
         assert!(text.contains(line), "no `{line}` in\n{text}");
     }
 }
+
+/// With a cap of four, each network input keeps four training copies, met in an order the shuffle
+/// seed fixes, and the rest are dropped and counted; validation and an uncapped run keep every
+/// copy.
+#[test]
+fn training_keeps_at_most_the_cap_copies_of_an_input() {
+    let plies = [
+        "e2e4", "e7e5", "g1f3", "g8f6", "f3g1", "f6g8", "b1c3", "b8c6",
+    ];
+    let filler = [
+        "c3b1", "c6b8", "b1c3", "b8c6", "c3b1", "c6b8", "b1c3", "b8c6",
+    ];
+    let cycle = ["g1f3", "g8f6", "f3g1", "f6g8"];
+    // Three cycles visit four inputs three times each, then a last move apart in each game keeps
+    // the games distinct while its position is the cycle's first again.
+    let game = |index: u32, last: &str| {
+        let moves: Vec<&str> = filler
+            .iter()
+            .chain(cycle.iter().cycle().take(12))
+            .chain(std::iter::once(&last))
+            .copied()
+            .collect();
+        scripted(index, &plies, &moves)
+    };
+    let chunk = vec![
+        game(0, "a2a3"),
+        game(1, "b2b3"),
+        game(2, "h2h3"),
+        game(3, "a2a4"),
+    ];
+    let dir = scratch("copies-cap");
+    let manifest = dataset(&dir.join("data"), 95, &[chunk]);
+    let (ok, text, units) = convert(
+        &[&manifest],
+        &dir.join("capped"),
+        &["--shuffle-seed", "1", "--max-copies", "4"],
+    );
+    assert!(ok, "{text}");
+    let (again_ok, again, again_units) = convert(
+        &[&manifest],
+        &dir.join("capped-again"),
+        &["--shuffle-seed", "1", "--max-copies", "4"],
+    );
+    assert!(again_ok, "{again}");
+    let bytes = |unit: &Path, file: &str| std::fs::read(unit.join(file)).expect("reads");
+    let same_again = ["train.bin", "holdout.bin", "report.txt", "MANIFEST.tsv"]
+        .map(|file| bytes(&units[0], file) == bytes(&again_units[0], file));
+    let same_unit = units[0].file_name() == again_units[0].file_name();
+    let (train, holdout) = (
+        records(&units[0].join("train.bin")).len(),
+        records(&units[0].join("holdout.bin")).len(),
+    );
+    let (whole_ok, whole, whole_units) =
+        convert(&[&manifest], &dir.join("whole"), &["--shuffle-seed", "1"]);
+    assert!(whole_ok, "{whole}");
+    let whole_train = records(&whole_units[0].join("train.bin")).len();
+    let manifest_text =
+        std::fs::read_to_string(units[0].join("MANIFEST.tsv")).expect("the unit's manifest");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        whole_train, 39,
+        "three training games of thirteen positions"
+    );
+    assert!(
+        whole.contains(
+            "standard training positions by copies of their network input: 1 0 2-8 0 9-64 39"
+        ),
+        "{whole}"
+    );
+    assert_eq!((train, holdout), (16, 13));
+    assert_eq!(same_again, [true; 4], "the same seed wrote other bytes");
+    assert!(same_unit, "the same seed published another unit");
+    for line in [
+        "standard training positions past 4 copies of their network input, dropped: 23",
+        "standard training positions by copies of their network input: 1 0 2-8 16 9-64 0",
+        // The three training games' 21 moves each; the held-out game's are not counted.
+        "copy counter sized for 63 training positions",
+    ] {
+        assert!(text.contains(line), "no `{line}` in\n{text}");
+    }
+    assert!(
+        manifest_text.contains("at most 4 training copies of a network input"),
+        "{manifest_text}"
+    );
+}
+
+/// The report's sample changes the report and nothing else: the same records in the same order, the
+/// sampled figures scaled and marked, and the manifest naming the sample.
+#[test]
+fn a_report_sample_leaves_the_records_as_they_were() {
+    let dir = scratch("report-sample");
+    let manifest = dataset(
+        &dir.join("data"),
+        97,
+        &[games(97, 40, |i| u8::from(i % 2 == 0))],
+    );
+    let (whole_ok, whole, whole_units) =
+        convert(&[&manifest], &dir.join("whole"), &["--shuffle-seed", "7"]);
+    let (ok, text, units) = convert(
+        &[&manifest],
+        &dir.join("sampled"),
+        &["--shuffle-seed", "7", "--report-sample", "4"],
+    );
+    assert!(whole_ok && ok, "{whole}\n{text}");
+    let bytes = |unit: &Path, file: &str| std::fs::read(unit.join(file)).expect("reads");
+    let same = ["train.bin", "holdout.bin"]
+        .map(|file| bytes(&whole_units[0], file) == bytes(&units[0], file));
+    let manifest_text =
+        std::fs::read_to_string(units[0].join("MANIFEST.tsv")).expect("the unit's manifest");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(same, [true, true], "the sample changed the records");
+    assert!(!whole.contains("keys, scaled"), "{whole}");
+    let scaled: Vec<&str> = text
+        .lines()
+        .filter(|l| l.ends_with("(1 in 4 keys, scaled)"))
+        .collect();
+    assert_eq!(scaled.len(), 10, "{text}");
+    for line in &scaled {
+        // The labels' own numbers go first, so only the figures are left to read.
+        let mut bare = line
+            .replace("(1 in 4 keys, scaled)", "")
+            .replace(": 1 ", ": ");
+        for label in ["over-512", "65-512", "9-64", "2-8", "768"] {
+            bare = bare.replace(label, " ");
+        }
+        // A game's own repeats are counted whole, and only the figure after them is sampled.
+        if let Some(at) = bare.find("within-game ") {
+            let end = bare[at..].find(" across").map_or(bare.len(), |e| at + e);
+            bare.replace_range(at..end, "");
+        }
+        let figures: Vec<u64> = bare
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|w| w.parse().ok())
+            .collect();
+        assert!(!figures.is_empty(), "no figure in `{line}`");
+        for figure in figures {
+            assert_eq!(figure % 4, 0, "{figure} in `{line}` is not scaled by 4");
+        }
+    }
+    assert!(
+        manifest_text.contains("report figures by key and input from 1 key in 4"),
+        "{manifest_text}"
+    );
+}
