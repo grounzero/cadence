@@ -47,6 +47,11 @@ result.
   and result disagree, and `--mate-score` keeps mate-scored positions at a
   ceiling.
 
+### Changed
+
+- Tools: datagen keeps one set of search histories through each game, emptied
+  at the start of every game, so the same seed now gives different games.
+
 ### Fixed
 
 - Search: a table result is not reused where its depth reaches the
