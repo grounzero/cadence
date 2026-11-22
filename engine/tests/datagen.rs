@@ -2,7 +2,7 @@
 
 //! A game ends by the rules alone, a game is a function of its seed and number, a run's file is the
 //! same at any thread count, a record replays to the ending it names, and extraction splits by game
-//! and keeps no position in check.
+//! and keeps no position in check. A game's searches share one set of histories, empty at its start.
 
 mod support;
 
@@ -12,13 +12,13 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_core::{FenStyle, Move, PieceType, generate_legal, parse_uci};
-use cadence_engine::datagen::game::{Ending, Outcome, ending};
+use cadence_engine::datagen::game::{Ending, Outcome, Played, ending};
 use cadence_engine::datagen::opening::{self, RANDOM_PLIES, WINDOW};
 use cadence_engine::datagen::record::Record;
 use cadence_engine::datagen::{self, extract, game};
 use cadence_engine::position::Position;
 use cadence_engine::score;
-use cadence_engine::search::Limits;
+use cadence_engine::search::{Learned, Limits};
 use cadence_engine::tt::Table;
 use cadence_engine::version::VERSION;
 
@@ -205,6 +205,117 @@ fn a_huge_thread_count_starts_no_more_workers_than_games() {
     let note = format!("is cut to {}", datagen::MAX_THREADS);
     let err = String::from_utf8(out.stderr).expect("utf-8");
     assert!(err.contains(&note), "{err}");
+}
+
+// Histories
+// ---------------------------------------------------------------------------
+
+/// Past the opening moves, so no reply is forced and the histories have quiet moves to learn from.
+const OPEN_GAME: &str = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+
+/// A game searched move by move as the generator plays one, the table cleared at its start and
+/// `learned`, where given, lent to every search and handed back at the end. Also returns which
+/// tables the search held written after the first move, in the order `learned_written` gives.
+fn by_hand(fen: &str, mut learned: Option<&mut Learned>, tt: &Table) -> (Played, [bool; 3]) {
+    tt.clear();
+    let stop = AtomicBool::new(false);
+    let limits = Limits {
+        soft_nodes: Some(datagen::NODES),
+        nodes: Some(datagen::NODE_CAP),
+        ..Limits::default()
+    };
+    let mut search = support::search(limits, &stop, tt);
+    if let Some(lent) = &mut learned {
+        search.swap_learned(lent);
+    }
+    let mut pos = Position::new(board(fen));
+    let mut moves = Vec::new();
+    let mut first = [false; 3];
+    let (ending, outcome) = loop {
+        if let Some(end) = ending(&pos) {
+            break end;
+        }
+        let best = search.run(&mut pos, &mut std::io::sink());
+        if moves.is_empty() {
+            first = search.learned_written();
+        }
+        moves.push((
+            best,
+            (search.completed_depth() > 0).then_some(search.score()),
+        ));
+        pos.play(best);
+    };
+    if let Some(lent) = learned {
+        search.swap_learned(lent);
+    }
+    let played = Played {
+        moves,
+        ending,
+        outcome,
+    };
+    (played, first)
+}
+
+/// The first move is searched from empty tables either way, and every later one from what the
+/// moves before it wrote, which the generator's game must match.
+#[test]
+fn a_games_searches_carry_one_set_of_histories_from_move_to_move() {
+    let (lent, written) = by_hand(OPEN_GAME, Some(&mut Learned::new()), &table());
+    let (unlent, _) = by_hand(OPEN_GAME, None, &table());
+    assert!(
+        written[0],
+        "the first search wrote no quiet history for the second to start from"
+    );
+    assert_eq!(
+        lent.moves[0], unlent.moves[0],
+        "the first search did not start from empty tables"
+    );
+    assert_ne!(
+        lent, unlent,
+        "carrying the histories changed nothing, so this cannot tell carried from emptied"
+    );
+    let played = game::play(
+        &mut Position::new(board(OPEN_GAME)),
+        datagen::NODES,
+        datagen::NODE_CAP,
+        &table(),
+    );
+    assert_eq!(
+        played, lent,
+        "the generator's searches do not carry one set of histories through the game"
+    );
+}
+
+/// A game played after another on the same table plays as a first game does, which an earlier
+/// game's histories would change.
+#[test]
+fn each_game_starts_from_empty_histories() {
+    let tt = table();
+    let _ = game::play(
+        &mut Position::new(board(cadence_core::START_FEN)),
+        datagen::NODES,
+        datagen::NODE_CAP,
+        &tt,
+    );
+    let second = game::play(
+        &mut Position::new(board(OPEN_GAME)),
+        datagen::NODES,
+        datagen::NODE_CAP,
+        &tt,
+    );
+    let (fresh, _) = by_hand(OPEN_GAME, Some(&mut Learned::new()), &table());
+    assert_eq!(
+        second, fresh,
+        "the second game did not play as a first game does"
+    );
+
+    let mut earlier = Learned::new();
+    let _ = by_hand(cadence_core::START_FEN, Some(&mut earlier), &table());
+    let (leaked, _) = by_hand(OPEN_GAME, Some(&mut earlier), &table());
+    assert_ne!(
+        leaked, fresh,
+        "an earlier game's histories changed nothing, so this cannot tell"
+    );
 }
 
 // Openings

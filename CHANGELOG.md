@@ -42,6 +42,11 @@ result.
   format 2, and the provenance line name the cap. The converter still reads
   format 1 chunks.
 
+### Changed
+
+- Tools: datagen keeps one set of search histories through each game, emptied
+  at the start of every game, so the same seed now gives different games.
+
 ### Fixed
 
 - Search: a table result is not reused where its depth reaches the
