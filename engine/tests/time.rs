@@ -871,7 +871,12 @@ fn an_abandoned_iteration_leaves_no_entry() {
             "the abandoned iteration left an entry: {:?}",
             s.iteration_roots()
         );
-        assert_eq!(s.iteration_roots().last(), Some(&(best, s.score())));
+        // The stopped iteration's move is played where it beat its window's floor.
+        let played = match s.unfinished_iteration() {
+            Some((mv, score, floor)) if score > floor => (mv, score),
+            _ => *s.iteration_roots().last().expect("a completed iteration"),
+        };
+        assert_eq!((best, s.score()), played);
     });
 }
 

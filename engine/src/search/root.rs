@@ -72,12 +72,12 @@ impl Search<'_> {
             // Each line skips the moves the lines before it took.
             let wanted = self.multipv.min(root_moves.len());
             self.run.lines.clear();
-            let mut partial = (root_moves[0], -INFINITE);
+            let mut partial = (root_moves[0], -INFINITE, -INFINITE);
             for _ in 0..wanted {
-                let (best, score) =
+                let (best, score, floor) =
                     self.aspirate(board, (&legal, &root_moves), depth, out, previous);
                 if self.run.aborted {
-                    partial = (best, score);
+                    partial = (best, score, floor);
                     break;
                 }
                 self.keep_line(best, score);
@@ -93,11 +93,13 @@ impl Search<'_> {
                         self.run.score = line.score;
                         self.run.pv.extend_from_slice(&line.pv);
                     } else {
-                        let (best, score) = partial;
+                        let (best, score, _) = partial;
                         self.run.best = best;
                         self.run.score = if score == -INFINITE { ABORTED } else { score };
                         self.run.pv.push(best);
                     }
+                } else if self.keep_unfinished(partial) {
+                    self.report_unfinished(board, out);
                 }
                 break;
             }
@@ -196,8 +198,26 @@ impl Search<'_> {
         self.run.pv.extend_from_slice(&line.pv);
     }
 
+    /// True where the unfinished iteration's move replaced the completed one's, which it does only
+    /// where its score beat its window's floor and no ponderhit refused the iteration. At or under
+    /// the floor it may be a fail low's bound, and a refused iteration is one a fresh search would
+    /// not have run.
+    fn keep_unfinished(&mut self, partial: (Move, Score, Score)) -> bool {
+        self.run.unfinished = Some(partial);
+        let (best, score, floor) = partial;
+        if self.multipv > 1 || score <= floor || self.run.refused_at_hit {
+            return false;
+        }
+        self.run.best = best;
+        self.run.score = score;
+        self.run.pv.clear();
+        self.run.pv.extend_from_slice(self.table.line(0));
+        true
+    }
+
     /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded
-    /// above by the first, so a window centred on the previous best would fail low on them.
+    /// above by the first, so a window centred on the previous best would fail low on them. The
+    /// third value is the floor of the window the returned move was searched in.
     fn aspirate(
         &mut self,
         board: &mut Position,
@@ -205,11 +225,12 @@ impl Search<'_> {
         depth: u32,
         out: &mut dyn Write,
         previous: Option<Score>,
-    ) -> (Move, Score) {
+    ) -> (Move, Score, Score) {
         let centre = previous
             .filter(|&p| self.multipv == 1 && depth >= ASPIRATION_DEPTH && !score::is_decisive(p));
         let Some(centre) = centre else {
-            return self.search_root(board, root, depth, out, -INFINITE, INFINITE);
+            let (best, score) = self.search_root(board, root, depth, out, -INFINITE, INFINITE);
+            return (best, score, -INFINITE);
         };
         let mut delta = ASPIRATION_DELTA;
         let mut alpha = centre.saturating_sub(delta).max(-INFINITE);
@@ -217,7 +238,7 @@ impl Search<'_> {
         loop {
             let (best, score) = self.search_root(board, root, depth, out, alpha, beta);
             if self.run.aborted {
-                return (best, score);
+                return (best, score, alpha);
             }
             // A decided score or one past the evaluation's range opens that side fully.
             let wider = delta.saturating_mul(2);
@@ -239,7 +260,7 @@ impl Search<'_> {
                     far
                 };
             } else {
-                return (best, score);
+                return (best, score, alpha);
             }
             delta = wider;
         }
@@ -308,5 +329,100 @@ impl Search<'_> {
             }
         }
         (best, best_score)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use cadence_core::position::Board;
+    use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
+
+    use crate::search::Search;
+    use crate::time::Budget;
+    use crate::tt::Table;
+
+    /// The completed iteration's move and the unfinished one's.
+    fn two_moves() -> (Move, Move) {
+        let board = Board::from_fen(START_FEN).expect("the start position");
+        let legal = generate_legal(&board);
+        let mv = |uci| parse_uci(&legal, uci).expect("a legal move");
+        (mv("e2e4"), mv("d2d4"))
+    }
+
+    /// Three iterations completed on `completed`, ending 100, 200 and 400 ms in, and the unfinished
+    /// iteration's line in the table.
+    fn completed_three<'a>(
+        stop: &'a AtomicBool,
+        tt: &'a Table,
+        (completed, unfinished): (Move, Move),
+    ) -> Search<'a> {
+        let mut search = Search::new(stop, tt);
+        search.run.completed_depth = 3;
+        search.run.best = completed;
+        search.run.score = 20;
+        search.run.pv.push(completed);
+        search.run.roots = vec![(completed, 20); 3];
+        search.run.iterations = vec![100, 200, 400];
+        search.table.update(0, unfinished);
+        search
+    }
+
+    /// The hit lands at once, and iterations doubling to 400 ms put the next one far past it plus
+    /// the hard budget, so a fresh search would not have started it. Its move beat the floor, and
+    /// is still not played.
+    #[test]
+    fn a_ponderhit_that_refuses_the_iteration_keeps_the_completed_move() {
+        let moves = two_moves();
+        let stop = AtomicBool::new(false);
+        let hit = AtomicBool::new(true);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = completed_three(&stop, &tt, moves);
+        search.set_ponder_hit(&hit);
+        search.clock.pondering = true;
+        search.clock.budget_on_hit = Some(Budget { soft: 10, hard: 30 });
+        assert!(
+            search.out_of_time(),
+            "the hit refuses the iteration running"
+        );
+        search.keep_unfinished((moves.1, 50, 0));
+        assert_eq!(search.run.best, moves.0);
+        assert_eq!(search.run.pv, [moves.0]);
+    }
+
+    /// A stop and the hard deadline each play the unfinished move that beat its window's floor,
+    /// with its line.
+    #[test]
+    fn a_stop_or_the_hard_deadline_plays_the_unfinished_move_that_beat_the_floor() {
+        let moves = two_moves();
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let stopped = AtomicBool::new(true);
+        let running = AtomicBool::new(false);
+        let mut by_stop = completed_three(&stopped, &tt, moves);
+        let mut by_clock = completed_three(&running, &tt, moves);
+        by_clock.clock.budget = Some(Budget { soft: 0, hard: 0 });
+        for search in [&mut by_stop, &mut by_clock] {
+            assert!(search.out_of_time(), "the limit stops the iteration");
+            search.keep_unfinished((moves.1, 50, 0));
+            assert_eq!(search.run.best, moves.1);
+            assert_eq!(search.run.pv, [moves.1]);
+        }
+    }
+
+    /// A different move at or under the floor may be a fail low's bound, so the completed move
+    /// stands.
+    #[test]
+    fn a_stop_keeps_the_completed_move_over_a_different_one_at_or_under_the_floor() {
+        let moves = two_moves();
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let stop = AtomicBool::new(true);
+        for score in [0, -30] {
+            let mut search = completed_three(&stop, &tt, moves);
+            assert!(search.out_of_time(), "the stop ends the iteration");
+            search.keep_unfinished((moves.1, score, 0));
+            assert_eq!(search.run.best, moves.0, "at {score} against a floor of 0");
+            assert_eq!(search.run.pv, [moves.0]);
+        }
     }
 }

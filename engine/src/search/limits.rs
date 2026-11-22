@@ -164,6 +164,7 @@ impl Search<'_> {
             // completed one answers.
             if self.absorb_ponder_hit() && !self.would_have_started() {
                 self.run.aborted = true;
+                self.run.refused_at_hit = true;
                 return true;
             }
             if let Some(b) = self.clock.budget

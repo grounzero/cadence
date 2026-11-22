@@ -43,10 +43,12 @@ fn since(origin: Instant) -> u64 {
     u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// One per completed iteration: a stop at the hard deadline may add the unfinished move's line,
+/// whose score is a lower bound.
 fn info_times(out: &[u8]) -> Vec<u64> {
     String::from_utf8_lossy(out)
         .lines()
-        .filter(|l| l.starts_with("info depth "))
+        .filter(|l| l.starts_with("info depth ") && !l.contains(" lowerbound "))
         .map(|l| {
             let toks: Vec<&str> = l.split_whitespace().collect();
             toks.iter()
