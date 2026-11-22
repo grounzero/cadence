@@ -30,6 +30,10 @@ result.
   repeats, overlaps and copies from one position key or network input in N
   and scales them, so its memory for them falls about N times; the records
   it writes are the same.
+- Tools: `cadence-tools convert`'s report counts the kept positions by the
+  output bucket their piece count picks and by the result for the side to
+  move, with what the in-check, capture and mate filters dropped beside
+  them, and again by exact piece count.
 
 ### Fixed
 

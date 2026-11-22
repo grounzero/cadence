@@ -264,6 +264,96 @@ fn every_position_is_counted_by_the_filter_that_dropped_it() {
     );
 }
 
+/// The report's rows by output bucket and by piece count are the kept positions and the three
+/// filters' drops, recounted here from the games.
+#[test]
+fn the_kept_and_the_dropped_are_counted_by_piece_count_and_result() {
+    let dir = scratch("pieces");
+    let chunk = games(4, 30, |_| 0);
+    let manifest = dataset(&dir.join("data"), 11, std::slice::from_ref(&chunk));
+    let (ok, text, _) = convert(&[&manifest], &dir.join("out"), &["--shuffle-seed", "5"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{text}");
+    let (mut kept, mut dropped, mut magnitudes) = ([[0_u64; 3]; 33], [[0_u64; 3]; 33], [0_u64; 33]);
+    for record in &chunk {
+        let mut board =
+            Board::from_fen(&dfrc_fen(u32::from(record.white), u32::from(record.black)))
+                .expect("a start");
+        for &bits in &record.plies {
+            board.play(
+                cadence_dataset::chunk::decode_move(&generate_legal(&board), bits).expect("legal"),
+            );
+        }
+        for (ply, &(bits, score)) in record.moves.iter().enumerate() {
+            let m =
+                cadence_dataset::chunk::decode_move(&generate_legal(&board), bits).expect("legal");
+            let pieces = board.occupied().count() as usize;
+            let white = board.side_to_move() == cadence_core::Colour::White;
+            // Win, draw, loss for the mover, from the record's result for White.
+            let column = match (record.outcome, white) {
+                (2, _) => 1,
+                (0, true) | (1, false) => 0,
+                _ => 2,
+            };
+            if !(FIRST_PLY..=LAST_PLY).contains(&ply) {
+            } else if board.in_check() {
+                dropped[pieces][0] += 1;
+            } else if m.is_noisy() {
+                dropped[pieces][1] += 1;
+            } else if score == NO_SCORE {
+            } else if score.unsigned_abs() >= MATE_BOUND.unsigned_abs() {
+                dropped[pieces][2] += 1;
+            } else {
+                kept[pieces][column] += 1;
+                magnitudes[pieces] += u64::from(score.unsigned_abs());
+            }
+            board.play(m);
+        }
+    }
+    let triple = |r: &[u64; 3]| format!("{} {} {}", r[0], r[1], r[2]);
+    let exact: Vec<String> = kept[2..].iter().map(triple).collect();
+    let line = format!(
+        "  uniform kept by pieces from 2 to 32, as win draw loss for the mover: {}\n",
+        exact.join("; ")
+    );
+    assert!(text.contains(&line), "{line}\n{text}");
+    let (mut by_bucket, mut drops) = (Vec::new(), Vec::new());
+    for rows in [2..6, 6..10, 10..14, 14..18, 18..22, 22..26, 26..30, 30..33] {
+        let (mut r, mut d, mut sum) = ([0_u64; 3], [0_u64; 3], 0);
+        for p in rows {
+            for i in 0..3 {
+                r[i] += kept[p][i];
+                d[i] += dropped[p][i];
+            }
+            sum += magnitudes[p];
+        }
+        let n: u64 = r.iter().sum();
+        by_bucket.push(format!(
+            "{} {}",
+            triple(&r),
+            sum.checked_div(n).unwrap_or(0)
+        ));
+        drops.push(triple(&d));
+    }
+    let line = format!(
+        "  uniform kept by output bucket of 4 pieces from 2, as win draw loss for the mover and \
+         mean score magnitude: {}\n",
+        by_bucket.join("; ")
+    );
+    assert!(text.contains(&line), "{line}\n{text}");
+    let line = format!(
+        "  uniform dropped by output bucket, as in-check noisy mate: {}\n",
+        drops.join("; ")
+    );
+    assert!(text.contains(&line), "{line}\n{text}");
+    let all: u64 = kept.iter().flatten().sum();
+    let decisive: u64 = kept.iter().map(|r| r[0] + r[2]).sum();
+    assert!(
+        all > decisive && decisive > 0 && dropped.iter().flatten().sum::<u64>() > 0,
+        "the games planted no draw, no decisive result or no drop"
+    );
+}
+
 /// Before any record is read, each listing fault is refused naming the file, and nothing is
 /// published.
 #[test]
