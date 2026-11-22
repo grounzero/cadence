@@ -58,8 +58,8 @@ pub const PARAMS: &[Param] = &[
         default: REVERSE_FUTILITY_MARGIN,
         hce: 150,
         min: 50,
-        max: 300,
-        c_end: 12.5,
+        max: 400,
+        c_end: 17.5,
         r_end: 0.002,
     },
     Param {
@@ -80,8 +80,8 @@ pub const PARAMS: &[Param] = &[
         default: FUTILITY_MARGIN,
         hce: 150,
         min: 50,
-        max: 300,
-        c_end: 12.5,
+        max: 400,
+        c_end: 17.5,
         r_end: 0.002,
     },
     Param {
