@@ -211,3 +211,71 @@ fn the_reference_is_measured_against_the_trainers_own_outputs() {
         "{refused}"
     );
 }
+
+/// The file with its output weights and bias replaced by `raw`'s times `factor`, quantised once,
+/// which is what an export with a scale factor writes.
+fn folded(file: &[u8], raw: &[u8], hidden: usize, factor: f64) -> Vec<u8> {
+    let words = (file.len() - HEADER_LEN) / 2;
+    let mut out = file.to_vec();
+    for i in words - 2 * hidden - 1..words {
+        let scale = if i == words - 1 { QA * QB } else { QB };
+        let mut float = [0; 4];
+        float.copy_from_slice(&raw[4 * i..4 * i + 4]);
+        let scaled = (f64::from(scale) * f64::from(f32::from_le_bytes(float)) * factor).round();
+        let at = HEADER_LEN + 2 * i;
+        out[at..at + 2].copy_from_slice(&(scaled as i16).to_le_bytes());
+    }
+    out
+}
+
+/// A net scaled at export is held to its unquantised weights times the factor, within the error
+/// the unscaled export already had and the bounds more; the wrong factor fails it.
+#[test]
+fn a_scaled_net_is_held_to_its_raw_weights_times_the_factor() {
+    let dir = scratch("scaled");
+    let file = Network::seeded(11, Provenance::SelfPlay).to_bytes();
+    let outputs = (file.len() - HEADER_LEN) / 2 - 2 * HIDDEN - 1;
+    // Each output weight a third of a step off its quantised value, as a trained one would be.
+    let unquantised = raw(
+        &file,
+        HIDDEN,
+        |i, x| {
+            if i >= outputs { x + 0.3 / 64.0 } else { x }
+        },
+    );
+    let net = write(&dir, "net.cdnn", &file);
+    let raw_path = write(&dir, "raw.bin", &unquantised);
+    let scaled = write(
+        &dir,
+        "scaled.cdnn",
+        &folded(&file, &unquantised, HIDDEN, 0.8),
+    );
+    let flags = ["--net", &scaled, "--raw", &raw_path, "--unscaled", &net];
+    let (held, text) = forward(&[&flags[..], &["--scale-factor", "0.8"]].concat());
+    let (wrong, other) = forward(&[&flags[..], &["--scale-factor", "0.2"]].concat());
+    let (reading, alone) = forward(&[
+        "--net",
+        &scaled,
+        "--raw",
+        &raw_path,
+        "--scale-factor",
+        "0.8",
+    ]);
+    let (bare, why) = forward(&["--net", &scaled, "--scale-factor", "0.8"]);
+    let (lone, lone_why) = forward(&["--net", &scaled, "--raw", &raw_path, "--unscaled", &net]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        held && text.contains("after scaling by 0.8") && text.contains(", PASS (the unscaled"),
+        "{text}"
+    );
+    assert!(!wrong && other.contains(", FAIL (the unscaled"), "{other}");
+    assert!(
+        reading && alone.contains("against the raw weights times 0.8"),
+        "{alone}"
+    );
+    assert!(!bare && why.contains("--scale-factor reads --raw"), "{why}");
+    assert!(
+        !lone && lone_why.contains("--unscaled is read with --scale-factor"),
+        "{lone_why}"
+    );
+}
