@@ -2,15 +2,21 @@
 
 //! A misspelled name, an unparsed float or an option reaching nothing all fail in silence, as a
 //! tune that moves nothing. So both printed forms are parsed and compared, malformed spellings
-//! shown refused, and every option shown to change a search through the tuner's pipe.
+//! shown refused, every option shown to change a net's search through the tuner's pipe, and none to
+//! reach the handcrafted evaluation's.
 
 mod support;
 
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 
-use cadence_engine::search::{Limits, REDUCTION_INDEX, lmp_count};
+use cadence_engine::position::Position;
+use cadence_engine::search::{Limits, REDUCTION_INDEX, lmp_count, probcut_bound};
 use cadence_engine::tune::{self, Kind, PARAMS, Param, Tunable, Tunables};
 use cadence_engine::uci::Session;
+use cadence_nnue::{Network, Provenance};
 use support::{Engine, talk};
 
 /// Every rule the table reaches has nodes to act on at `DEPTH`.
@@ -19,6 +25,9 @@ const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w
 /// Deep enough that each rule fires many times over, shallow enough that a subprocess per
 /// setting stays cheap.
 const DEPTH: u32 = 8;
+
+/// A net's search at `DEPTH` costs a subprocess many times the handcrafted one's.
+const NET_DEPTH: u32 = 6;
 
 /// A tunable spelled like one of these would be answered by the wrong handler.
 const FIXED_OPTIONS: [&str; 5] = ["UCI_Chess960", "Hash", "Threads", "MultiPV", "Ponder"];
@@ -64,13 +73,45 @@ fn token<'a>(toks: &'a [String], key: &str) -> Option<&'a str> {
     toks.get(at + 1).map(String::as_str)
 }
 
-/// Of the last iteration line, from `MIDDLEGAME` at `DEPTH`, after `setup`.
+/// A seeded net, written once for every test here, and the two lines that make it score.
+fn net_options() -> [String; 2] {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    let path = PATH.get_or_init(|| {
+        let path =
+            std::env::temp_dir().join(format!("cadence-tune-net-{}.cdnn", std::process::id()));
+        let bytes = Network::seeded(7, Provenance::SelfPlay).to_bytes();
+        std::fs::write(&path, bytes).expect("write the net file");
+        path
+    });
+    [
+        format!("setoption name EvalFile value {}", path.display()),
+        "setoption name Use NNUE value true".to_string(),
+    ]
+}
+
+/// Of the handcrafted evaluation's search from `MIDDLEGAME` at `DEPTH`, after `setup`; switched to
+/// explicitly, since a build that ships a net scores with it by default.
 fn nodes_after(setup: &[&str]) -> u64 {
+    let mut lines = vec!["setoption name Use NNUE value false"];
+    lines.extend_from_slice(setup);
+    nodes_at(&lines, DEPTH)
+}
+
+/// The same with the seeded net scoring, at `NET_DEPTH`.
+fn net_nodes_after(setup: &[&str]) -> u64 {
+    let net = net_options();
+    let mut lines: Vec<&str> = net.iter().map(String::as_str).collect();
+    lines.extend_from_slice(setup);
+    nodes_at(&lines, NET_DEPTH)
+}
+
+/// Of the last iteration line at `depth`.
+fn nodes_at(setup: &[&str], depth: u32) -> u64 {
     let position = format!("position fen {MIDDLEGAME}");
     let mut lines: Vec<&str> = setup.to_vec();
     lines.push(&position);
-    let out = Engine::go(&lines, &format!("go depth {DEPTH}"));
-    let prefix = format!("info depth {DEPTH} ");
+    let out = Engine::go(&lines, &format!("go depth {depth}"));
+    let prefix = format!("info depth {depth} ");
     let line = out
         .iter()
         .rfind(|l| l.starts_with(&prefix))
@@ -184,6 +225,57 @@ fn the_spsa_block_and_the_uci_declaration_agree() {
     }
 }
 
+/// By name and in order, with everything but the current value, so a row dropped from the table or
+/// declared with another range or step is seen here.
+#[test]
+fn the_spsa_block_is_the_five_declared_parameters() {
+    let (block, code) = spsa(&[]);
+    assert_eq!(code, Some(0));
+    let rows: Vec<Vec<&str>> = block
+        .split('\n')
+        .map(|l| l.split(',').map(str::trim).collect())
+        .collect();
+    let expected = [
+        [
+            "reverse_futility_margin",
+            "int",
+            "50",
+            "300",
+            "12.5",
+            "0.002",
+        ],
+        ["lmp_multiplier", "float", "0.000", "2.000", "0.1", "0.002"],
+        ["futility_margin", "int", "50", "300", "12.5", "0.002"],
+        ["probcut_margin", "int", "25", "250", "11.25", "0.002"],
+        ["aspiration_delta", "int", "8", "64", "2.8", "0.002"],
+    ];
+    assert_eq!(rows.len(), expected.len(), "{block:?}");
+    for (row, want) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 7, "{row:?}");
+        let got = [row[0], row[1], row[3], row[4], row[5], row[6]];
+        assert_eq!(got, want, "{block:?}");
+    }
+}
+
+/// A margin's declaration as a GUI reads it, its default the constant the search held before it was
+/// offered to a tune.
+#[test]
+fn the_three_margins_are_declared_as_integers_at_their_old_values() {
+    let out = talk("uci\nquit\n");
+    let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
+    for line in [
+        "option name futility_margin type spin default 150 min 50 max 300",
+        "option name probcut_margin type spin default 100 min 25 max 250",
+        "option name aspiration_delta type spin default 24 min 8 max 64",
+    ] {
+        let at = out
+            .lines()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("no `{line}` in {out:?}"));
+        assert!(at < uciok, "`{line}` is declared after uciok");
+    }
+}
+
 /// For `bench`'s reason: what it prints is fixed in the source.
 #[test]
 fn the_spsa_subcommand_refuses_arguments() {
@@ -266,13 +358,20 @@ fn an_integer_takes_an_integer() {
     for bad in ["150.0", "1e2", "0x96", "15O", "", "one fifty"] {
         assert_eq!(p.parse(bad), None, "`{bad}`");
     }
+    for p in PARAMS.iter().filter(|p| p.kind == Kind::Int) {
+        assert_eq!(p.parse(&(p.min - 1).to_string()), Some(p.min), "{}", p.name);
+        assert_eq!(p.parse(&(p.max + 1).to_string()), Some(p.max), "{}", p.name);
+        for stored in p.min..=p.max {
+            assert_eq!(p.parse(&p.spell(stored)), Some(stored), "{}", p.name);
+        }
+    }
 }
 
 /// The session names the value and what it kept, answers the next command, and searches the same
 /// tree.
 #[test]
 fn a_malformed_value_is_refused_and_the_search_is_untouched() {
-    let untouched = nodes_after(&[]);
+    let untouched = net_nodes_after(&[]);
     for p in PARAMS {
         let bad: &[&str] = match p.kind {
             Kind::Float => &[
@@ -309,7 +408,7 @@ fn a_malformed_value_is_refused_and_the_search_is_untouched() {
 
         let setup: Vec<&str> = setup.iter().map(String::as_str).collect();
         assert_eq!(
-            nodes_after(&setup),
+            net_nodes_after(&setup),
             untouched,
             "{}: a refused value reached the search",
             p.name
@@ -323,13 +422,46 @@ fn a_malformed_value_is_refused_and_the_search_is_untouched() {
 
 /// A declared, accepted option that reaches nothing is the failure a tune cannot report.
 #[test]
-fn every_option_changes_the_search_at_both_ends_of_its_range() {
+fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
+    let untouched = net_nodes_after(&[]);
+    for p in PARAMS {
+        // A shallow search barely reaches the probe, so its margin is read at the bound instead.
+        if p.tunable == Tunable::ProbcutMargin {
+            continue;
+        }
+        for end in [p.min, p.max] {
+            let set = format!("setoption name {} value {}", p.name, p.spell(end));
+            let nodes = net_nodes_after(&[&set]);
+            assert_ne!(nodes, untouched, "`{set}` searched the default tree");
+        }
+    }
+}
+
+/// The probe acts only where five plies or more are left, so `probcut_margin` is read where it
+/// raises beta: at both ends a deep null-window node at beta 1 is tried against 1 plus the margin.
+#[test]
+fn the_probcut_margin_raises_the_bound_it_tries_at_both_ends() {
+    let p = param(Tunable::ProbcutMargin);
+    for end in [p.min, p.max] {
+        let mut tunables = Tunables::DEFAULT;
+        p.set(&mut tunables, end);
+        assert_eq!(
+            probcut_bound(&tunables, Some(0), 10, 0, 1),
+            Some(1 + end),
+            "margin {end}"
+        );
+    }
+}
+
+/// The handcrafted evaluation searches with its own set, frozen, so no tune reaches it.
+#[test]
+fn the_handcrafted_search_reads_no_option_at_either_end_of_its_range() {
     let untouched = nodes_after(&[]);
     for p in PARAMS {
         for end in [p.min, p.max] {
             let set = format!("setoption name {} value {}", p.name, p.spell(end));
             let nodes = nodes_after(&[&set]);
-            assert_ne!(nodes, untouched, "`{set}` searched the default tree");
+            assert_eq!(nodes, untouched, "`{set}` moved the handcrafted search");
         }
     }
 }
@@ -337,14 +469,18 @@ fn every_option_changes_the_search_at_both_ends_of_its_range() {
 /// The point a tune starts from is the engine the tree already holds.
 #[test]
 fn every_option_at_its_default_is_the_untouched_search() {
+    let net = net_options();
     let position = format!("position fen {MIDDLEGAME}");
-    let go = format!("go depth {DEPTH}");
-    let untouched = Engine::go(&[&position], &go);
+    let go = format!("go depth {NET_DEPTH}");
+    let mut plain: Vec<&str> = net.iter().map(String::as_str).collect();
+    plain.push(&position);
+    let untouched = Engine::go(&plain, &go);
     let sets: Vec<String> = PARAMS
         .iter()
         .map(|p| format!("setoption name {} value {}", p.name, p.spell(p.default)))
         .collect();
-    let mut setup: Vec<&str> = sets.iter().map(String::as_str).collect();
+    let mut setup: Vec<&str> = net.iter().map(String::as_str).collect();
+    setup.extend(sets.iter().map(String::as_str));
     setup.push(&position);
     let asked = Engine::go(&setup, &go);
     // Everything on an iteration line but the two wall-clock readings.
@@ -365,7 +501,11 @@ fn every_option_at_its_default_is_the_untouched_search() {
             })
             .collect()
     };
-    assert_eq!(strip(&untouched).len(), DEPTH as usize);
+    let (last, lines) = (format!("info depth {NET_DEPTH} "), strip(&untouched));
+    assert!(
+        lines.last().is_some_and(|l| l.starts_with(&last)),
+        "{untouched:?}"
+    );
     assert_eq!(strip(&untouched), strip(&asked));
 }
 
@@ -401,16 +541,51 @@ fn a_setting_in_a_session_cannot_reach_bench() {
         .parse()
         .expect("a count");
     assert_eq!(cadence_engine::bench::bench().nodes, declared);
-    // And the session's values are the ones its own searches read, which is the other half.
-    let stop = std::sync::atomic::AtomicBool::new(false);
+    // And the session's values are the ones a net's search reads, which is the other half.
+    let net = Arc::new(Network::seeded(7, Provenance::SelfPlay));
+    let netted = || Position::with_net(support::position(MIDDLEGAME).into_board(), net.clone());
+    let stop = AtomicBool::new(false);
     let tt = support::table();
-    let mut moved = support::search(Limits::depth(DEPTH), &stop, &tt);
+    let mut moved = support::search(Limits::depth(NET_DEPTH), &stop, &tt);
     moved.set_tunables(*session.tunables());
-    let mut pos = support::position(MIDDLEGAME);
-    let _ = moved.run(&mut pos, &mut std::io::sink());
+    let _ = moved.run(&mut netted(), &mut std::io::sink());
+    tt.clear();
+    let mut plain = support::search(Limits::depth(NET_DEPTH), &stop, &tt);
+    let _ = plain.run(&mut netted(), &mut std::io::sink());
+    assert_ne!(moved.nodes(), plain.nodes());
+}
+
+/// The handcrafted evaluation's set, which a change to a net's defaults must leave where it is.
+#[test]
+fn the_handcrafted_set_holds_its_frozen_values() {
+    assert_eq!(Tunables::HCE.get(Tunable::ReverseFutilityMargin), 150);
+    assert_eq!(Tunables::HCE.get(Tunable::LmpMultiplier), 500);
+    // By name, so the lines read the table the UCI session reads.
+    for (name, frozen) in [
+        ("futility_margin", 150),
+        ("probcut_margin", 100),
+        ("aspiration_delta", 24),
+    ] {
+        let p = tune::find(name).unwrap_or_else(|| panic!("no `{name}`"));
+        assert_eq!(Tunables::HCE.get(p.tunable), frozen, "{name}");
+    }
+}
+
+/// Bench, datagen and every `go` build their searches apart, so the frozen set is held where the
+/// search starts and not by each caller.
+#[test]
+fn a_handcrafted_search_reads_its_frozen_set_whatever_it_is_given() {
+    let mut extreme = Tunables::DEFAULT;
+    for p in PARAMS {
+        p.set(&mut extreme, p.max);
+    }
+    let stop = AtomicBool::new(false);
+    let tt = support::table();
+    let mut given = support::search(Limits::depth(DEPTH), &stop, &tt);
+    given.set_tunables(extreme);
+    let _ = given.run(&mut support::position(MIDDLEGAME), &mut std::io::sink());
     tt.clear();
     let mut plain = support::search(Limits::depth(DEPTH), &stop, &tt);
-    let mut pos = support::position(MIDDLEGAME);
-    let _ = plain.run(&mut pos, &mut std::io::sink());
-    assert_ne!(moved.nodes(), plain.nodes());
+    let _ = plain.run(&mut support::position(MIDDLEGAME), &mut std::io::sink());
+    assert_eq!(given.nodes(), plain.nodes());
 }

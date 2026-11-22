@@ -12,9 +12,10 @@ use crate::level;
 use crate::position::Position;
 use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::time;
+use crate::tune::Tunable;
 
 /// Centipawns either side of the last completed iteration's score; doubled on each failure.
-const ASPIRATION_DELTA: Score = 24;
+pub(crate) const ASPIRATION_DELTA: Score = 24;
 
 /// Below it the iterations are too cheap and their scores too unsettled for a window to pay.
 const ASPIRATION_DEPTH: u32 = 4;
@@ -130,21 +131,27 @@ impl Search<'_> {
             {
                 break;
             }
-            // Before the budget is read, so the first clocked decision uses the new clock.
-            self.absorb_ponder_hit();
-            // An iteration has completed, so none is left running unbudgeted from a hit.
-            self.clock.unbudgeted_iteration = false;
-            if let Some(b) = self.clock.budget {
+            // A clocked ponder times its iterations too, so a hit decides on the whole record.
+            if self.clock.budget.or(self.clock.budget_on_hit).is_some() {
                 let elapsed = self.elapsed_ms();
                 self.run.iterations.push(elapsed);
-                // The soft budget, scaled by how long the move has stood and how far its score has
-                // fallen, says this move has had its share; the prediction says the next iteration
-                // would not finish.
-                let soft = time::soft_for_run(&self.limits, b, self.stable_iterations());
-                let soft = time::soft_for_drop(&self.limits, b, soft, self.drop_scale());
-                if elapsed >= soft || !time::another_iteration_fits(&self.run.iterations, b) {
-                    break;
-                }
+            }
+            // Before the budget is read, so the first clocked decision uses the hit's budget.
+            self.absorb_ponder_hit();
+            // The soft budget, scaled by how long the move has stood and how far its score has
+            // fallen, says this move has had its share; the prediction says the next iteration
+            // would not finish.
+            if let Some(b) = self.clock.budget
+                && !time::starts_another(
+                    &self.limits,
+                    b,
+                    &self.run.iterations,
+                    self.stable_iterations(),
+                    self.drop_scale(),
+                    self.clock.hit_at,
+                )
+            {
+                break;
             }
         }
         self.wait_if_open_ended();
@@ -207,7 +214,7 @@ impl Search<'_> {
         let Some(centre) = centre else {
             return self.search_root(board, root, depth, out, -INFINITE, INFINITE);
         };
-        let mut delta = ASPIRATION_DELTA;
+        let mut delta = self.tunables.get(Tunable::AspirationDelta);
         let mut alpha = centre.saturating_sub(delta).max(-INFINITE);
         let mut beta = centre.saturating_add(delta).min(INFINITE);
         loop {

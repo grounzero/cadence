@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The UCI options, the values a search reads and the `cadence spsa` block all come from
-//! [`PARAMS`]. Only the UCI session moves a search off [`Tunables::DEFAULT`], so `bench` reads the
-//! compiled-in values by construction.
+//! [`PARAMS`]. A net's search reads [`Tunables::DEFAULT`] or what the UCI session moved it to; the
+//! handcrafted evaluation's reads [`Tunables::HCE`], frozen, which `bench` reads by construction.
 
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::search::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
+use crate::search::{
+    ASPIRATION_DELTA, FUTILITY_MARGIN, LMP_MULTIPLIER, PROBCUT_MARGIN, REVERSE_FUTILITY_MARGIN,
+};
 
 /// The search reads integers only, so a float is converted once, here.
 pub const MILLI: i32 = 1000;
@@ -17,6 +19,9 @@ pub const MILLI: i32 = 1000;
 pub enum Tunable {
     ReverseFutilityMargin,
     LmpMultiplier,
+    FutilityMargin,
+    ProbcutMargin,
+    AspirationDelta,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,13 +32,16 @@ pub enum Kind {
     Float,
 }
 
-/// `default` is the compiled-in constant, and the range is where a tune may move it.
+/// `default` is the compiled-in constant a net's search starts from, and the range is where a tune
+/// may move it.
 #[derive(Clone, Copy, Debug)]
 pub struct Param {
     pub tunable: Tunable,
     pub name: &'static str,
     pub kind: Kind,
     pub default: i32,
+    /// What the handcrafted evaluation's search reads, `0.6.0`'s value and never tuned.
+    pub hce: i32,
     pub min: i32,
     pub max: i32,
     /// In declared units, printed for the tuner and read by nothing else.
@@ -48,6 +56,7 @@ pub const PARAMS: &[Param] = &[
         name: "reverse_futility_margin",
         kind: Kind::Int,
         default: REVERSE_FUTILITY_MARGIN,
+        hce: 150,
         min: 50,
         max: 300,
         c_end: 12.5,
@@ -58,9 +67,43 @@ pub const PARAMS: &[Param] = &[
         name: "lmp_multiplier",
         kind: Kind::Float,
         default: LMP_MULTIPLIER,
+        hce: MILLI / 2,
         min: 0,
         max: 2 * MILLI,
         c_end: 0.1,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::FutilityMargin,
+        name: "futility_margin",
+        kind: Kind::Int,
+        default: FUTILITY_MARGIN,
+        hce: 150,
+        min: 50,
+        max: 300,
+        c_end: 12.5,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::ProbcutMargin,
+        name: "probcut_margin",
+        kind: Kind::Int,
+        default: PROBCUT_MARGIN,
+        hce: 100,
+        min: 25,
+        max: 250,
+        c_end: 11.25,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::AspirationDelta,
+        name: "aspiration_delta",
+        kind: Kind::Int,
+        default: ASPIRATION_DELTA,
+        hce: 24,
+        min: 8,
+        max: 64,
+        c_end: 2.8,
         r_end: 0.002,
     },
 ];
@@ -75,6 +118,10 @@ const _: () = {
             "a default outside its range"
         );
         assert!(
+            p.min <= p.hce && p.hce <= p.max,
+            "a frozen value outside its range"
+        );
+        assert!(
             p.c_end > 0.0 && p.r_end > 0.0,
             "a step size that never moves"
         );
@@ -87,12 +134,23 @@ const _: () = {
 pub struct Tunables([i32; PARAMS.len()]);
 
 impl Tunables {
-    /// What `bench`, every test and a GUI that sets nothing search with.
+    /// What a net's search reads where a GUI sets nothing.
     pub const DEFAULT: Tunables = {
         let mut values = [0; PARAMS.len()];
         let mut i = 0;
         while i < PARAMS.len() {
             values[i] = PARAMS[i].default;
+            i += 1;
+        }
+        Tunables(values)
+    };
+
+    /// What every search the handcrafted evaluation scores reads, whatever it is given.
+    pub const HCE: Tunables = {
+        let mut values = [0; PARAMS.len()];
+        let mut i = 0;
+        while i < PARAMS.len() {
+            values[i] = PARAMS[i].hce;
             i += 1;
         }
         Tunables(values)

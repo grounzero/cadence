@@ -8,6 +8,7 @@ mod support;
 
 use std::sync::atomic::AtomicBool;
 
+use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{Move, Square, generate_legal};
 use cadence_engine::position::Position;
@@ -18,6 +19,8 @@ use cadence_engine::{
     bench,
     uci::{DEFAULT_THREADS, MAX_THREADS, Session},
 };
+use cadence_nnue::AnyNetwork;
+use cadence_nnue::net::EMBEDDED;
 use support::Rng;
 
 // ---------------------------------------------------------------------------
@@ -40,6 +43,15 @@ fn nodes_without_iir(board: &mut Position, depth: u32, tt: &Table) -> u64 {
     s.set_iir_reduction(0);
     s.run(board, &mut Vec::new());
     s.nodes()
+}
+
+/// The position as the bench builds it, scored by the net the build ships where it ships one.
+fn bench_position(fen: &str) -> Position {
+    let board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+    match AnyNetwork::shipped(EMBEDDED) {
+        Some(net) => Position::with_net(board, net.expect("the shipped net loads")),
+        None => Position::new(board),
+    }
 }
 
 fn table(mb: usize) -> Table {
@@ -873,7 +885,7 @@ fn the_bench_clears_the_table_between_positions() {
     assert_eq!(report.lines.len(), fens.len());
     for line in &report.lines {
         let (best, _, nodes) = search_with(
-            &mut support::position(&line.fen),
+            &mut bench_position(&line.fen),
             bench::DEPTH,
             &table(bench::HASH_MB),
         );
@@ -915,4 +927,93 @@ fn the_bench_records_the_table_size_it_ran_at() {
         out.contains(&format!("hash {} MB", bench::HASH_MB)),
         "the summary does not name the table size: {out}"
     );
+}
+
+/// A cutoff written early in a fifty-move window is not trusted late in it, since the key does not
+/// carry the clock: at a halfmove clock of 98 a warm table scores what an empty one does.
+#[test]
+fn a_table_cutoff_is_refused_late_in_the_fifty_move_window() {
+    let early = "7k/8/8/8/8/8/8/KQ6 w - - 0 1";
+    let late = "7k/8/8/8/8/8/8/KQ6 w - - 98 1";
+    let warm = table(tt::DEFAULT_HASH_MB);
+    let _ = search_with(&mut support::position(early), 2, &warm);
+    let (_, on_warm, _) = search_with(&mut support::position(late), 2, &warm);
+    let empty = table(tt::DEFAULT_HASH_MB);
+    let (_, on_empty, _) = search_with(&mut support::position(late), 2, &empty);
+    assert_eq!(
+        on_warm, on_empty,
+        "at a clock of 98 the warm table scored {on_warm} and an empty one {on_empty}"
+    );
+}
+
+/// The other way round: a score the fifty-move draw cut short late in a window is not reused early
+/// in one, so at a clock of 0 a table warmed at a clock of 98 scores what an empty one does.
+#[test]
+fn a_score_cut_short_by_the_fifty_move_rule_is_not_reused_early_in_the_window() {
+    let early = "7k/8/8/8/8/8/8/KQ6 w - - 0 1";
+    let late = "7k/8/8/8/8/8/8/KQ6 w - - 98 1";
+    let warm = table(tt::DEFAULT_HASH_MB);
+    let _ = search_with(&mut support::position(late), 2, &warm);
+    let (_, on_warm, _) = search_with(&mut support::position(early), 2, &warm);
+    let empty = table(tt::DEFAULT_HASH_MB);
+    let (_, on_empty, _) = search_with(&mut support::position(early), 2, &empty);
+    assert_eq!(
+        on_warm, on_empty,
+        "at a clock of 0 the table warmed at 98 scored {on_warm} and an empty one {on_empty}"
+    );
+}
+
+/// Below a clock of 90 a deep result can still reach past the fifty-move draw: warmed at depth 12
+/// from a clock of 0, the children of a clock-88 root hold depth 11 at a clock of 89.
+#[test]
+fn a_deep_result_is_refused_where_its_depth_reaches_the_fifty_move_draw() {
+    let early = "7k/8/8/8/8/8/8/KQ6 w - - 0 1";
+    let late = "7k/8/8/8/8/8/8/KQ6 w - - 88 1";
+    let warm = table(tt::DEFAULT_HASH_MB);
+    let _ = search_with(&mut support::position(early), 12, &warm);
+    let (_, on_warm, _) = search_with(&mut support::position(late), 2, &warm);
+    let empty = table(tt::DEFAULT_HASH_MB);
+    let (_, on_empty, _) = search_with(&mut support::position(late), 2, &empty);
+    assert_eq!(
+        on_warm, on_empty,
+        "at a clock of 88 the table warmed to depth 12 scored {on_warm} and an empty one {on_empty}"
+    );
+}
+
+/// A depth-0 store keeps only a move, so it gives way to a deeper result for the same position,
+/// even when its bound is exact.
+#[test]
+fn a_depth_zero_store_keeps_a_deeper_result_for_the_same_position() {
+    let t = one_bucket();
+    t.new_search();
+    let key = 0x0BAD_C0DE_0BAD_C0DE;
+    t.store(key, Move::NULL, 100, 8, Bound::Exact, false);
+    t.store(key, Move::NULL, 300, 0, Bound::Exact, false);
+    let hit = t.probe(key).expect("still there");
+    assert_eq!(
+        (hit.depth, hit.score),
+        (8, 100),
+        "the depth-0 store replaced depth 8"
+    );
+}
+
+/// Nor does a depth-0 store take a slot from a bucket of current deep results.
+#[test]
+fn a_depth_zero_store_takes_no_slot_from_a_deep_bucket() {
+    let t = one_bucket();
+    t.new_search();
+    let keys: Vec<u64> = (1..=4).map(|i| i * 0x0123_4567_89AB_CDEF).collect();
+    for &key in &keys {
+        t.store(key, Move::NULL, 10, 20, Bound::Exact, false);
+    }
+    t.store(
+        0xAAAA_BBBB_CCCC_DDDD,
+        Move::NULL,
+        10,
+        0,
+        Bound::Exact,
+        false,
+    );
+    let deep = keys.iter().filter(|&&k| t.probe(k).is_some()).count();
+    assert_eq!(deep, 4, "a depth-0 store left {deep} of 4 deep results");
 }

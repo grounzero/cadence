@@ -16,6 +16,7 @@ use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
     Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, STABILITY_CALLS,
     STABILITY_SCALE, another_iteration_fits, budget, drop_scale, soft_for_drop, soft_for_run,
+    starts_another,
 };
 use cadence_engine::tt::Table;
 use support::Engine;
@@ -290,6 +291,108 @@ fn the_increment_is_spent() {
     let with = clock(10_000, 1000, None);
     assert!(with.soft > without.soft, "{without:?} vs {with:?}");
     assert!(with.hard >= without.hard, "{without:?} vs {with:?}");
+}
+
+fn clock_with_overhead(time: u64, inc: u64, overhead: u64) -> Budget {
+    let mut l = limits(&format!("wtime {time} btime {time} winc {inc} binc {inc}"));
+    l.move_overhead = Some(overhead);
+    budget(&l, Colour::White).expect("a clock gives a budget")
+}
+
+/// Every move pays the overhead, so an increment no larger than it adds nothing to a move's budget.
+#[test]
+fn only_the_increment_past_the_overhead_is_spent() {
+    for overhead in [0, 20, 500] {
+        for time in [10_000, 180_000] {
+            let none = clock_with_overhead(time, 0, overhead);
+            let paid = clock_with_overhead(time, overhead, overhead);
+            assert_eq!(paid, none, "{time}+{overhead}, overhead {overhead}");
+            let past = clock_with_overhead(time, overhead + 400, overhead);
+            assert_eq!(past.soft, none.soft + 300, "{time}, overhead {overhead}");
+        }
+    }
+}
+
+/// Charged on every move, the default overhead takes no more than 5 ms from a move's budget, so a
+/// fast control keeps nearly all of its increment.
+#[test]
+fn the_default_overhead_takes_little_from_a_fast_increment() {
+    for (time, inc) in [(1000, 10), (8000, 80), (60_000, 600)] {
+        let free = clock_with_overhead(time, inc, 0);
+        let default = clock(time, inc, None);
+        assert!(
+            free.soft - default.soft <= 5,
+            "{time}+{inc}: {free:?} with no overhead, {default:?} with the default"
+        );
+    }
+}
+
+/// With no `Move Overhead` set the default is charged, and the budget is the arithmetic by hand.
+#[test]
+fn the_default_overhead_is_five_milliseconds_with_exact_budgets() {
+    assert_eq!(MOVE_OVERHEAD_MS, 5);
+    let l = limits("wtime 60000 btime 60000 winc 600 binc 600");
+    assert_eq!(l.move_overhead, None);
+    // avail 59995, cap 29997; soft 59995 / 25 + (595 * 3) / 4 = 2399 + 446, hard 3 * 2845.
+    assert_eq!(
+        budget(&l, Colour::White),
+        Some(Budget {
+            soft: 2845,
+            hard: 8535
+        })
+    );
+}
+
+/// An increment of 4, 5 or 6 ms against the default overhead gains at most 1 ms, and three quarters
+/// of that rounds to zero, so each row holds for all three. The cap at half of what is left binds
+/// the hard budget at 5 moves to go and both budgets at 1, and never at 20 or in sudden death.
+#[test]
+fn increments_about_the_default_overhead_give_exact_budgets() {
+    // (time, movestogo, soft, hard); avail is time - 5 and cap is avail / 2.
+    const ROWS: [(u64, Option<u32>, u64, u64); 8] = [
+        // 59995 / 25 = 2399, hard 7197 under cap 29997.
+        (60_000, None, 2399, 7197),
+        // 59995 / 20 = 2999, hard 8997 under cap 29997.
+        (60_000, Some(20), 2999, 8997),
+        // 59995 / 5 = 11999, hard 35997 cut to cap 29997.
+        (60_000, Some(5), 11_999, 29_997),
+        // 59995 / 1 cut to cap 29997, and hard with it.
+        (60_000, Some(1), 29_997, 29_997),
+        // 995 / 25 = 39, hard 117 under cap 497.
+        (1000, None, 39, 117),
+        // 995 / 20 = 49, hard 147 under cap 497.
+        (1000, Some(20), 49, 147),
+        // 995 / 5 = 199, hard 597 cut to cap 497.
+        (1000, Some(5), 199, 497),
+        // 995 / 1 cut to cap 497, and hard with it.
+        (1000, Some(1), 497, 497),
+    ];
+    for inc in [MOVE_OVERHEAD_MS - 1, MOVE_OVERHEAD_MS, MOVE_OVERHEAD_MS + 1] {
+        for (time, mtg, soft, hard) in ROWS {
+            assert_eq!(
+                clock(time, inc, mtg),
+                Budget { soft, hard },
+                "{time}+{inc} movestogo {mtg:?}"
+            );
+        }
+    }
+}
+
+/// Where every move also costs the overhead outside the search, a game spending each soft budget
+/// settles well above the floor the cap at half the clock would hold it to.
+#[test]
+fn a_game_paying_the_overhead_every_move_settles_above_the_cap() {
+    let (overhead, inc) = (600, 2000);
+    let mut t = 180_000u64;
+    for mv in 0..200 {
+        let b = clock_with_overhead(t, inc, overhead);
+        t = t
+            .checked_sub(b.soft + overhead)
+            .expect("the cap leaves the overhead")
+            + inc;
+        assert!(t > overhead, "move {mv}: {t} left");
+    }
+    assert!(t >= 6000, "{t} left after 200 moves");
 }
 
 #[test]
@@ -613,6 +716,47 @@ fn the_rule_is_inert_where_nothing_is_saved_by_stopping() {
     ));
 }
 
+/// A search that never pondered passes no offset, so it decides as the soft budget and the
+/// prediction did before a hit could move them; a hit's offset moves both deadlines and nothing else.
+#[test]
+fn a_search_without_a_hit_decides_as_before() {
+    let ladders: [&[u64]; 5] = [
+        &[1, 2, 5, 12, 30],
+        &[0, 0, 0, 2, 9, 46, 153],
+        &[3, 8, 20, 55, 140, 380],
+        &[40, 100, 260, 700],
+        &[5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    ];
+    for spec in [
+        "wtime 6000 btime 6000",
+        "wtime 6000 btime 6000 winc 2000 binc 2000",
+        "movetime 200",
+    ] {
+        let l = limits(spec);
+        let b = budget(&l, Colour::White).expect("a budget");
+        for ladder in ladders {
+            for k in 1..=ladder.len() {
+                let completed = &ladder[..k];
+                for run in [1, 2, 4, 9] {
+                    let before = completed[k - 1] < soft_for_run(&l, b, run)
+                        && another_iteration_fits(completed, b);
+                    assert_eq!(
+                        starts_another(&l, b, completed, run, 1000, 0),
+                        before,
+                        "`{spec}` over {completed:?} at run {run}"
+                    );
+                    assert_eq!(
+                        starts_another(&l, b, completed, run, 1000, 500),
+                        completed[k - 1] < soft_for_run(&l, b, run) + 500
+                            && another_iteration_fits(completed, b.moved(500)),
+                        "`{spec}` over {completed:?} at run {run}, 500 ms pondered"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The root move and score kept across iterations
 // ---------------------------------------------------------------------------
@@ -932,34 +1076,6 @@ fn a_ponderhit_after_the_ponder_has_finished_is_answered() {
     }
 }
 
-/// Pondered past a 20 s clock's hard limit of 2.4 s and then hit, the move still waits for a search:
-/// were the pondering counted, the limit would have passed at the hit.
-#[test]
-fn a_ponderhit_moves_the_clock_origin_to_the_hit() {
-    const PONDERED_MS: u64 = 3000;
-    const SEARCHED_MS: u64 = 150;
-
-    let after_hit = Engine::within(Duration::from_secs(30), || {
-        let mut e = Engine::spawn();
-        e.send("position startpos");
-        e.sync();
-        e.send("go ponder wtime 20000 btime 20000");
-        std::thread::sleep(Duration::from_millis(PONDERED_MS));
-        let hit = Instant::now();
-        e.send("ponderhit");
-        e.read_until("bestmove ");
-        let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
-        e.quit();
-        after_hit
-    });
-
-    assert!(
-        after_hit >= SEARCHED_MS,
-        "the move came {after_hit} ms after the hit, so the clock still counts the \
-         {PONDERED_MS} ms it spent pondering"
-    );
-}
-
 /// After a hit `time` counts from the `go`, as `nodes` does, so a line's `time` exceeds the time
 /// since the hit by the pondering. The hit is absorbed after the first iteration line that follows
 /// it, so the second is the one that can tell.
@@ -1000,62 +1116,6 @@ fn the_time_reported_after_a_ponderhit_counts_from_the_go() {
              the hit and not from the go"
         );
     }
-}
-
-/// The iteration a hit finds began unbudgeted and rarely finishes, so until one completes after the
-/// hit the move comes at the soft budget and not the hard one. An attempt where one does complete
-/// cannot tell, so the next ponders longer and meets an iteration at another point.
-#[test]
-fn a_ponderhit_stops_an_unfinished_iteration_at_the_soft_budget() {
-    // No increment: the soft budget is a 25th of the clock and the hard one three times that.
-    const CLOCK: &str = "wtime 6000 btime 6000";
-    // A search's timing barely varies on one machine, so a retry at the same length meets the same
-    // iteration at the same point.
-    const PONDERED_MS: [u64; 5] = [3000, 3900, 5100, 6600, 8600];
-    const SLACK_MS: u64 = 150;
-
-    let b = budget(&limits(CLOCK), Colour::White).expect("a budget");
-    assert!(
-        b.soft + SLACK_MS < b.hard,
-        "{b:?} leaves no room to tell soft from hard"
-    );
-    for pondered in PONDERED_MS {
-        let (completed, after_hit) = Engine::within(Duration::from_secs(30), move || {
-            let mut e = Engine::spawn();
-            e.send("position startpos");
-            e.sync();
-            e.send(&format!("go ponder {CLOCK}"));
-            std::thread::sleep(Duration::from_millis(pondered));
-            e.sync();
-            let hit = Instant::now();
-            e.send("ponderhit");
-            let mut completed = false;
-            loop {
-                let line = e.read_until("").pop().expect("a line");
-                if line.starts_with("bestmove ") {
-                    break;
-                }
-                completed |= line.starts_with("info depth ");
-            }
-            let after_hit = u64::try_from(hit.elapsed().as_millis()).unwrap_or(u64::MAX);
-            e.quit();
-            (completed, after_hit)
-        });
-        if completed {
-            continue;
-        }
-        assert!(
-            after_hit <= b.soft + SLACK_MS,
-            "no iteration completed after the hit, and the move came {after_hit} ms after it, \
-             past the soft budget of {} ms",
-            b.soft
-        );
-        return;
-    }
-    panic!(
-        "an iteration completed after the hit in each of {} attempts",
-        PONDERED_MS.len()
-    );
 }
 
 fn info_time(line: &str) -> u64 {
@@ -1204,8 +1264,8 @@ fn a_movetime_is_not_scaled() {
     }
 }
 
-/// The iterations pondered searched the same position, so the run they built survives the hit that
-/// clears the ladder; a new search clearing it is `the_entries_do_not_survive_into_the_next_search`.
+/// The iterations pondered searched the same position, so the run they built and their times survive
+/// the hit; a new search clearing them is `the_entries_do_not_survive_into_the_next_search`.
 #[test]
 fn the_run_survives_a_ponderhit() {
     let stop = AtomicBool::new(false);
@@ -1232,11 +1292,17 @@ fn the_run_survives_a_ponderhit() {
         "the hit dropped iterations from the run: {:?}",
         s.iteration_roots()
     );
-    assert!(
-        s.iterations_ms().len() < s.iteration_roots().len(),
-        "no iteration completed before the hit, so nothing crossed it: {:?} against {:?}",
+    assert_eq!(
+        s.iterations_ms().len(),
+        s.iteration_roots().len(),
+        "the hit dropped iteration times: {:?} against {:?}",
         s.iterations_ms(),
         s.iteration_roots()
+    );
+    assert!(
+        s.iterations_ms().first().is_some_and(|&ms| ms < 200),
+        "no iteration completed before the hit, so nothing crossed it: {:?}",
+        s.iterations_ms()
     );
     assert_the_run_is_the_trailing_one(&s);
 }

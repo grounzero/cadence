@@ -424,8 +424,8 @@ impl Search<'_> {
 
     #[cfg(feature = "counters")]
     #[must_use]
-    pub fn tunables(&self) -> &crate::tune::Tunables {
-        &self.tunables
+    pub fn given_tunables(&self) -> &crate::tune::Tunables {
+        &self.given
     }
 
     #[cfg(feature = "counters")]

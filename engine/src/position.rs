@@ -8,14 +8,25 @@ use std::sync::Arc;
 
 use cadence_core::position::Board;
 use cadence_core::{DirtyPieces, Move};
-use cadence_nnue::{AccumulatorStack, Network};
+use cadence_nnue::{AccumulatorStack, AnyNetwork, HIDDEN, Network, WIDE};
 
 use crate::score::{MAX_EVAL, Score};
 
-/// The net and the accumulators its search walks, one a ply.
-struct Inference {
-    net: Arc<Network>,
-    stack: AccumulatorStack,
+/// The net and the accumulators its search walks, one a ply, at the width the net's header names.
+enum Inference {
+    Narrow(Arc<Network<HIDDEN>>, AccumulatorStack<HIDDEN>),
+    Wide(Arc<Network<WIDE>>, AccumulatorStack<WIDE>),
+}
+
+/// The same body for either width, so the narrow net's code is exactly what it was before the wide
+/// one existed.
+macro_rules! each {
+    ($inference:expr, |$net:ident, $stack:ident| $body:expr) => {
+        match $inference {
+            Inference::Narrow($net, $stack) => $body,
+            Inference::Wide($net, $stack) => $body,
+        }
+    };
 }
 
 /// No `DerefMut`: the methods below are the only way to move the position, which keeps the
@@ -37,20 +48,31 @@ impl Position {
 
     /// Scored by `net` from here on, its accumulator refreshed from the board.
     #[must_use]
-    pub fn with_net(board: Board, net: Arc<Network>) -> Position {
-        let stack = AccumulatorStack::new(&net, &board);
+    pub fn with_net(board: Board, net: impl Into<AnyNetwork>) -> Position {
+        let inference = match net.into() {
+            AnyNetwork::Narrow(net) => {
+                let stack = AccumulatorStack::new(&net, &board);
+                Inference::Narrow(net, stack)
+            }
+            AnyNetwork::Wide(net) => {
+                let stack = AccumulatorStack::new(&net, &board);
+                Inference::Wide(net, stack)
+            }
+        };
         Position {
             board,
-            inference: Some(Inference { net, stack }),
+            inference: Some(inference),
         }
     }
 
     /// The same board and net with accumulators of its own, for a helper thread's search.
     #[must_use]
     pub fn fork(&self) -> Position {
+        let board = self.board.duplicate();
         match &self.inference {
-            Some(i) => Position::with_net(self.board.duplicate(), Arc::clone(&i.net)),
-            None => Position::new(self.board.duplicate()),
+            Some(Inference::Narrow(net, _)) => Position::with_net(board, Arc::clone(net)),
+            Some(Inference::Wide(net, _)) => Position::with_net(board, Arc::clone(net)),
+            None => Position::new(board),
         }
     }
 
@@ -68,24 +90,32 @@ impl Position {
     /// evaluation's range, as that evaluation is, below every mate and tablebase score.
     #[must_use]
     pub fn net_eval(&self) -> Option<Score> {
+        let stm = self.board.side_to_move();
         self.inference.as_ref().map(|i| {
-            i.net
-                .evaluate(i.stack.current(), self.board.side_to_move())
+            each!(i, |net, stack| net.evaluate(stack.current(), stm))
                 .clamp(-MAX_EVAL + 1, MAX_EVAL - 1)
         })
+    }
+
+    /// Which parameter set the search reads follows this.
+    #[must_use]
+    pub fn scored_by_net(&self) -> bool {
+        self.inference.is_some()
     }
 
     /// Plies the accumulators stand above their root, which every search must leave at zero.
     #[must_use]
     pub fn net_ply(&self) -> Option<usize> {
-        self.inference.as_ref().map(|i| i.stack.depth())
+        self.inference
+            .as_ref()
+            .map(|i| each!(i, |_net, stack| stack.depth()))
     }
 
     #[inline]
     pub fn make_move(&mut self, m: Move) -> DirtyPieces {
         let dirty = self.board.make_move(m);
         if let Some(i) = &mut self.inference {
-            i.stack.push(&i.net, &dirty);
+            each!(i, |net, stack| stack.push(net, &dirty));
         }
         dirty
     }
@@ -94,7 +124,7 @@ impl Position {
     pub fn unmake_move(&mut self, m: Move) {
         self.board.unmake_move(m);
         if let Some(i) = &mut self.inference {
-            i.stack.pop();
+            each!(i, |_net, stack| stack.pop());
         }
     }
 
@@ -102,7 +132,7 @@ impl Position {
     pub fn make_null_move(&mut self) -> DirtyPieces {
         let dirty = self.board.make_null_move();
         if let Some(i) = &mut self.inference {
-            i.stack.push_unchanged();
+            each!(i, |_net, stack| stack.push_unchanged());
         }
         dirty
     }
@@ -113,7 +143,8 @@ impl Position {
     pub fn play(&mut self, m: Move) {
         self.board.play(m);
         if let Some(i) = &mut self.inference {
-            i.stack.reset(&i.net, &self.board);
+            let board = &self.board;
+            each!(i, |net, stack| stack.reset(net, board));
         }
     }
 
@@ -121,7 +152,7 @@ impl Position {
     pub fn unmake_null_move(&mut self) {
         self.board.unmake_null_move();
         if let Some(i) = &mut self.inference {
-            i.stack.pop();
+            each!(i, |_net, stack| stack.pop());
         }
     }
 }

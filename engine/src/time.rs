@@ -9,7 +9,7 @@ use crate::score::{Score, is_decisive};
 use crate::search::Limits;
 
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
-pub const MOVE_OVERHEAD_MS: u64 = 20;
+pub const MOVE_OVERHEAD_MS: u64 = 5;
 
 /// Milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +18,17 @@ pub struct Budget {
     pub soft: u64,
     /// Stop, mid-iteration if need be.
     pub hard: u64,
+}
+
+impl Budget {
+    /// Both deadlines later by `offset`, the time pondered before a hit.
+    #[must_use]
+    pub fn moved(self, offset: u64) -> Budget {
+        Budget {
+            soft: self.soft.saturating_add(offset),
+            hard: self.hard.saturating_add(offset),
+        }
+    }
 }
 
 /// `None` with no `movetime` and no clock for either side; `movetime` wins over a clock.
@@ -44,8 +55,10 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
         Some(mtg) => avail / u64::from(mtg.max(1)),
         None => avail / 25,
     };
-    // Saturating, so a clock or increment near the limit bounds the budget rather than overflowing.
-    let soft = share.saturating_add(inc.saturating_mul(3) / 4).min(cap);
+    // Every move pays the overhead, so only the increment past it is new time. Saturating, so a
+    // clock or increment near the limit bounds the budget rather than overflowing.
+    let gained = inc.saturating_sub(overhead);
+    let soft = share.saturating_add(gained.saturating_mul(3) / 4).min(cap);
     let hard = soft.saturating_mul(3).min(cap);
     Some(Budget { soft, hard })
 }
@@ -166,6 +179,26 @@ pub fn another_iteration_fits(completed: &[u64], budget: Budget) -> bool {
     let ebf_milli = (elapsed.saturating_mul(1_000_000) / two_back).isqrt();
     let predicted = elapsed.saturating_mul(ebf_milli) / 1_000;
     predicted <= budget.hard
+}
+
+/// Whether a search whose last completed iteration ends `completed` starts another, the soft budget
+/// stretched by `scale` thousandths and both deadlines moved by `offset`. A hit passes the time
+/// pondered and every other search zero, so a hit decides as a fresh search with the same times.
+#[must_use]
+pub fn starts_another(
+    limits: &Limits,
+    budget: Budget,
+    completed: &[u64],
+    run: usize,
+    scale: u64,
+    offset: u64,
+) -> bool {
+    let Some(&elapsed) = completed.last() else {
+        return true;
+    };
+    let soft = soft_for_drop(limits, budget, soft_for_run(limits, budget, run), scale);
+    let soft = soft.saturating_add(offset);
+    elapsed < soft && another_iteration_fits(completed, budget.moved(offset))
 }
 
 #[cfg(kani)]
