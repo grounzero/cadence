@@ -257,6 +257,8 @@ fn target() -> String {
         (cfg!(target_feature = "ssse3"), "ssse3"),
         (cfg!(target_feature = "sse4.1"), "sse4.1"),
         (cfg!(target_feature = "avx2"), "avx2"),
+        (cfg!(target_feature = "avx512f"), "avx512f"),
+        (cfg!(target_feature = "avx512bw"), "avx512bw"),
         (cfg!(target_feature = "neon"), "neon"),
         (cfg!(target_feature = "dotprod"), "dotprod"),
     ] {

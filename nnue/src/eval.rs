@@ -11,6 +11,8 @@ use crate::net::{Network, QA, QB, SCALE};
 impl<const H: usize> Network<H> {
     /// The fast form, multiplying the clamped activation by its weight in `i16` and widening only
     /// the second product, which the load check keeps exact; the two perspectives add in `i64`.
+    // Never inlined on this branch, so a profile of the bench attributes its time by symbol.
+    #[inline(never)]
     #[must_use]
     pub fn evaluate(&self, acc: &Accumulator<H>, stm: Colour) -> i32 {
         let us = &acc.sums[stm.index()];

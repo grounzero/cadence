@@ -20,6 +20,8 @@ const COLOURS: [Colour; 2] = [Colour::White, Colour::Black];
 
 impl<const H: usize> Network<H> {
     /// Every piece on the board added to the biases, the path an update must always agree with.
+    // Never inlined on this branch, so a profile of the bench attributes its time by symbol.
+    #[inline(never)]
     #[must_use]
     pub fn refresh(&self, board: &Board) -> Accumulator<H> {
         let mut acc = Accumulator {
@@ -37,6 +39,8 @@ impl<const H: usize> Network<H> {
 
     /// Every subtraction before any addition: a DFRC castle can empty and fill one square, and
     /// a lane must never hold more than the board's pieces.
+    // Never inlined on this branch, so a profile of the bench attributes its time by symbol.
+    #[inline(never)]
     #[must_use]
     pub fn update(&self, parent: &Accumulator<H>, dirty: &DirtyPieces) -> Accumulator<H> {
         let mut acc = *parent;

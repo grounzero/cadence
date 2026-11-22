@@ -1,0 +1,7 @@
+# The AVX-512 tier for the safe SIMD measurement: config.toml's AVX2 set plus AVX512F and AVX512BW,
+# selected with `cargo --config .cargo/x86-64-avx512.toml` on top of config.toml.
+#
+# Cargo appends this array after config.toml's, so the binary carries both lists; it runs only on a
+# machine that reports both features, which the workflow checks before building it.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx512f,+avx512bw"]

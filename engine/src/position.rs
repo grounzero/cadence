@@ -88,6 +88,8 @@ impl Position {
 
     /// `None` where the handcrafted evaluation scores the position; held strictly inside the
     /// evaluation's range, as that evaluation is, below every mate and tablebase score.
+    // Never inlined on this branch, so a profile of the bench attributes its time by symbol.
+    #[inline(never)]
     #[must_use]
     pub fn net_eval(&self) -> Option<Score> {
         let stm = self.board.side_to_move();

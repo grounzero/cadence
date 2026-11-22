@@ -1,5 +1,6 @@
 # A diagnostic, run by hand: the accumulator update and the output layer timed as the crate
 # computes them and through two safe SIMD libraries, after a bit-for-bit check of all three.
+# A second job profiles the bench to find the share of search time the net's entry points take.
 
 name: diag-safe-simd
 
@@ -31,6 +32,15 @@ jobs:
             name: x86-64 generic
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-generic.toml
+            tag: generic
+          # Runs only where the runner's CPU reports AVX512F and AVX512BW, with the AVX2 build timed
+          # beside it on the same host.
+          - os: ubuntu-latest
+            name: x86-64 AVX-512
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-avx512.toml
+            tag: avx512
+            avx512: true
           - os: ubuntu-24.04-arm
             name: aarch64 Linux
             target: aarch64-unknown-linux-gnu
@@ -65,58 +75,106 @@ jobs:
             sysctl -n machdep.cpu.brand_string hw.ncpu || true
           fi
 
+      - name: Check the CPU for AVX-512
+        if: matrix.avx512
+        run: |
+          flags=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2-)
+          echo "model:$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2-)"
+          echo "flags:"
+          echo "$flags" | fold -s -w 120
+          echo "avx512 flags: $(tr ' ' '\n' <<<"$flags" | grep '^avx512' | tr '\n' ' ')"
+          if grep -qw avx512f <<<"$flags" && grep -qw avx512bw <<<"$flags"; then
+            echo "AVX512F and AVX512BW present: examined"
+          else
+            msg="AVX-512 not present on this runner: not examined"
+            echo "$msg"
+            echo "### ${{ matrix.name }}: $msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
       # The lock file does not name the two libraries, so this resolves them and is not `--locked`.
       - name: Build the measurement, release profile and the repository's per-target flags
+        if: env.SKIP != '1'
         run: |
           cargo build --release -p cadence-nnue --example diag_safe_simd \
             --features simd-wide,simd-pulp $CONFIG_ARG
           cargo tree -p cadence-nnue --features simd-wide,simd-pulp -e normal --depth 1
 
+      # The repository's AVX2 flags alone, so the AVX-512 build has a same-host comparison.
+      - name: Build the AVX2 measurement beside it
+        if: matrix.avx512 && env.SKIP != '1'
+        run: |
+          cargo build --release -p cadence-nnue --example diag_safe_simd \
+            --features simd-wide,simd-pulp --target-dir target/avx2
+
       - name: Five fresh processes
+        if: env.SKIP != '1'
+        env:
+          SAME_HOST_AVX2: ${{ matrix.avx512 && '1' || '' }}
         run: |
           set -euo pipefail
           mkdir -p diag-out
+          [ -z "$SAME_HOST_AVX2" ] || mkdir -p diag-out/avx2
           for i in 1 2 3 4 5; do
             echo "== run $i"
             ./target/release/examples/diag_safe_simd | tee "diag-out/run-$i.txt"
+            if [ -n "$SAME_HOST_AVX2" ]; then
+              echo "== run $i, AVX2 flags on the same host"
+              ./target/avx2/release/examples/diag_safe_simd | tee "diag-out/avx2/run-$i.txt"
+            fi
           done
 
       - name: Summarise
+        if: env.SKIP != '1'
         env:
           LEG: ${{ matrix.name }}
         run: |
           set -euo pipefail
           python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
           import glob, os, re, statistics as st
-          runs = sorted(glob.glob("diag-out/run-*.txt"))
-          head, rows = [], {}
-          for i, path in enumerate(runs):
-              for line in open(path):
-                  if i == 0 and line.split(":")[0] in ("target", "pulp", "net", "check"):
-                      head.append(line.strip())
-                  m = re.match(r"RESULT variant=(\S+) ns_update=(\S+) ns_eval=(\S+)", line)
-                  if m:
-                      rows.setdefault(m[1], []).append((float(m[2]), float(m[3])))
-          print(f"### {os.environ['LEG']}: {len(runs)} processes\n")
-          for h in head:
-              print(f"- {h}")
-          print()
-          print("| variant | ns/update median | min | max | ratio | ns/evaluate median | min | max | ratio |")
-          print("|---|---|---|---|---|---|---|---|---|")
-          base = rows["baseline"]
-          for name, vals in rows.items():
-              cells = [name]
-              for k in (0, 1):
-                  xs = [v[k] for v in vals]
-                  ratio = st.median(v[k] / b[k] for v, b in zip(vals, base))
-                  cells += [f"{st.median(xs):.2f}", f"{min(xs):.2f}", f"{max(xs):.2f}", f"{ratio:.3f}"]
-              print("| " + " | ".join(cells) + " |")
-          print("\nratio: the median over processes of the variant's time over the baseline's in the same process; below 1 is faster.\n")
+          def table(folder, title):
+              runs = sorted(glob.glob(f"{folder}/run-*.txt"))
+              head, rows = [], {}
+              for i, path in enumerate(runs):
+                  for line in open(path):
+                      if i == 0 and line.split(":")[0] in ("target", "pulp", "net", "check"):
+                          head.append(line.strip())
+                      m = re.match(r"RESULT variant=(\S+) ns_update=(\S+) ns_eval=(\S+)", line)
+                      if m:
+                          rows.setdefault(m[1], []).append((float(m[2]), float(m[3])))
+              print(f"### {title}: {len(runs)} processes\n")
+              for h in head:
+                  print(f"- {h}")
+              print()
+              print("| variant | ns/update median | min | max | ratio | ns/evaluate median | min | max | ratio |")
+              print("|---|---|---|---|---|---|---|---|---|")
+              base = rows["baseline"]
+              for name, vals in rows.items():
+                  cells = [name]
+                  for k in (0, 1):
+                      xs = [v[k] for v in vals]
+                      ratio = st.median(v[k] / b[k] for v, b in zip(vals, base))
+                      cells += [f"{st.median(xs):.2f}", f"{min(xs):.2f}", f"{max(xs):.2f}", f"{ratio:.3f}"]
+                  print("| " + " | ".join(cells) + " |")
+              print("\nratio: the median over processes of the variant's time over the baseline's in the same process; below 1 is faster.\n")
+              return rows
+          rows = table("diag-out", os.environ["LEG"])
+          if os.path.isdir("diag-out/avx2"):
+              other = table("diag-out/avx2", "AVX2 flags, same host, processes interleaved with the above")
+              print("| variant | AVX-512 over AVX2, ns/update | ns/evaluate |")
+              print("|---|---|---|")
+              for name in rows:
+                  cells = [name]
+                  for k in (0, 1):
+                      cells.append(f"{st.median(v[k] for v in rows[name]) / st.median(v[k] for v in other[name]):.3f}")
+                  print("| " + " | ".join(cells) + " |")
+              print("\nThe ratio of medians across the two builds; below 1 means the AVX-512 build is faster.\n")
           EOF
 
       # Optional: the vector instructions in each timed function, from a build without LTO so the
       # generic kernels are compiled in the example and keep their own symbols.
       - name: Instruction mix of the timed functions
+        if: env.SKIP != '1'
         continue-on-error: true
         env:
           CARGO_PROFILE_RELEASE_LTO: "off"
@@ -155,6 +213,7 @@ jobs:
                   c["total"] += 1
                   c[m[1]] += 1
                   ops = m[2]
+                  c["#zmm"] += "zmm" in ops
                   c["#ymm"] += "ymm" in ops
                   c["#xmm"] += "xmm" in ops
                   c["#neon"] += bool(re.search(r"\bv\d+\.\d*[bhsd]\b", ops))
@@ -164,13 +223,182 @@ jobs:
               if not want.search(f):
                   continue
               top = [k for k, _ in c.most_common() if not k.startswith("#") and k != "total"][:14]
-              print(f"{f}: {c['total']} instructions, {c['#ymm']} on ymm, {c['#xmm']} on xmm, {c['#neon']} on NEON vectors")
+              print(f"{f}: {c['total']} instructions, {c['#zmm']} on zmm, {c['#ymm']} on ymm, {c['#xmm']} on xmm, {c['#neon']} on NEON vectors")
               print("    " + " ".join(f"{k}={c[k]}" for k in top))
           print("```")
           EOF
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && env.SKIP != '1'
+        with:
+          name: diag-safe-simd-${{ matrix.target }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}
+          path: diag-out
+
+  # The share of the bench's time in the net, by self time per symbol under perf. The net's entry
+  # points and the position's evaluation are never inlined on this branch, so each keeps a symbol.
+  profile:
+    name: profile ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86-64 AVX2
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            name: aarch64 Linux
+            target: aarch64-unknown-linux-gnu
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "host triple: $host"
+          [ "$host" = "${{ matrix.target }}" ] \
+            || { echo "::error::expected ${{ matrix.target }}, runner is $host"; exit 1; }
+          lscpu | grep -E 'Model name|^CPU\(s\)|Vendor' || true
+
+      # The wrapper in /usr/bin refuses to run without the tools for the running kernel, so the
+      # fallback takes whichever perf binary any installed linux-tools package holds.
+      - name: Install perf
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q linux-tools-common "linux-tools-$(uname -r)" \
+            || sudo apt-get install -y -q linux-tools-common linux-tools-generic \
+            || true
+          if perf --version >/dev/null 2>&1; then
+            bin=$(command -v perf)
+          else
+            bin=$(ls -1 /usr/lib/linux-tools*/perf /usr/lib/linux-tools/*/perf 2>/dev/null | sort -V | tail -n 1)
+          fi
+          if [ -z "$bin" ] || ! "$bin" --version; then
+            echo "::warning::no working perf binary on this runner (kernel $(uname -r))"
+            exit 1
+          fi
+          echo "PERF=$bin" >> "$GITHUB_ENV"
+          sudo sysctl kernel.perf_event_paranoid=1
+          sudo sysctl kernel.kptr_restrict=0 || true
+
+      - name: Build the engine, release profile and the repository's per-target flags
+        run: |
+          cargo build --release -p cadence-engine --bin cadence --target-dir target/plain
+
+      - name: Build the engine again with line tables
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: |
+          cargo build --release -p cadence-engine --bin cadence
+
+      - name: Bench without perf, both builds
+        run: |
+          set -euo pipefail
+          mkdir -p prof-out
+          ./target/plain/release/cadence bench > prof-out/bench-plain.txt
+          ./target/release/cadence bench > prof-out/bench-lines.txt
+          echo "plain build:       $(tail -n 1 prof-out/bench-plain.txt)"
+          echo "line-tables build: $(tail -n 1 prof-out/bench-lines.txt)"
+          echo "bench.txt:         $(cat bench.txt) nodes"
+
+      # Self time does not depend on the call chains, which a build without frame pointers leaves
+      # unreliable; the fallback event serves a runner whose virtual machine exposes no cycle counter.
+      - name: Three profiled benches
+        if: env.PERF != ''
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          for i in 1 2 3; do
+            echo "== profiled run $i"
+            if ! "$PERF" record -F 999 -g -o "perf-$i.data" ./target/release/cadence bench \
+                > "prof-out/bench-perf-$i.txt"; then
+              echo "::warning::perf record failed on the default event, retrying on cpu-clock"
+              "$PERF" record -e cpu-clock -F 999 -g -o "perf-$i.data" ./target/release/cadence bench \
+                > "prof-out/bench-perf-$i.txt" || exit 1
+            fi
+            tail -n 1 "prof-out/bench-perf-$i.txt"
+            "$PERF" report -i "perf-$i.data" --no-children --sort symbol --stdio -n -g none \
+              > "prof-out/report-$i.txt" 2> "prof-out/report-$i.err" || { cat "prof-out/report-$i.err"; exit 1; }
+          done
+
+      - name: Summarise the profiles
+        if: env.PERF != ''
+        continue-on-error: true
+        env:
+          LEG: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, os, re, statistics as st
+          def bench(path):
+              m = re.match(r"(\d+) nodes (\d+) nps", open(path).read().strip().splitlines()[-1])
+              return (int(m[1]), int(m[2])) if m else (None, None)
+          def kind(sym):
+              s = re.sub(r"(::h[0-9a-f]{16}|17h[0-9a-f]{16}E)$", "", sym)
+              if "net_eval" in s:
+                  return "net_eval"
+              if "cadence_nnue" in s:
+                  for k in ("refresh", "update", "evaluate"):
+                      if re.search(rf"(::|\d){k}$", s):
+                          return k
+                  return "other nnue"
+              return None
+          print(f"### {os.environ['LEG']}: share of the bench's samples by self time\n")
+          shares = []
+          for path in sorted(glob.glob("prof-out/report-*.txt")):
+              run = re.search(r"report-(\d+)", path)[1]
+              header = [l.strip() for l in open(path) if re.match(r"# (Samples|Event count)", l)]
+              entries = []
+              for line in open(path):
+                  m = re.match(r"\s*([\d.]+)%\s+(\d+)\s+\[(.)\]\s+(.+?)\s*$", line)
+                  if m:
+                      entries.append((float(m[1]), int(m[2]), m[3], m[4]))
+              total = sum(e[1] for e in entries)
+              by = {}
+              for pct, n, _, sym in entries:
+                  k = kind(sym)
+                  if k:
+                      by[k] = by.get(k, 0) + n
+              pc = {k: 100 * v / max(total, 1) for k, v in by.items()}
+              net = sum(pc.get(k, 0) for k in ("refresh", "update", "evaluate"))
+              nodes, nps = bench(f"prof-out/bench-perf-{run}.txt")
+              shares.append((net, pc.get("net_eval", 0), pc.get("other nnue", 0), nps))
+              print(f"#### run {run}: {total} samples ({'; '.join(header)})\n")
+              print("```")
+              for pct, n, where, sym in entries[:25]:
+                  print(f"{pct:6.2f}% {n:8d} [{where}] {sym[:150]}")
+              print("```\n")
+              print(f"- run {run}: net refresh+update+evaluate {net:.2f}% "
+                    f"(refresh {pc.get('refresh', 0):.2f}%, update {pc.get('update', 0):.2f}%, "
+                    f"evaluate {pc.get('evaluate', 0):.2f}%), Position::net_eval self {pc.get('net_eval', 0):.2f}%, "
+                    f"other cadence_nnue symbols {pc.get('other nnue', 0):.2f}%, {total} samples, "
+                    f"bench {nodes} nodes {nps} nps\n")
+          if shares:
+              print("| | median over runs |")
+              print("|---|---|")
+              print(f"| net refresh+update+evaluate, self | {st.median(s[0] for s in shares):.2f}% |")
+              print(f"| Position::net_eval, self | {st.median(s[1] for s in shares):.2f}% |")
+              print(f"| other cadence_nnue symbols, self | {st.median(s[2] for s in shares):.2f}% |")
+              print(f"| nps under perf | {st.median(s[3] for s in shares if s[3])} |")
+          plain, lines = bench("prof-out/bench-plain.txt"), bench("prof-out/bench-lines.txt")
+          want = open("bench.txt").read().strip()
+          print(f"\n- plain release build, no perf: {plain[0]} nodes {plain[1]} nps")
+          print(f"- line-tables build, no perf: {lines[0]} nodes {lines[1]} nps")
+          print(f"- bench.txt: {want} nodes; the node counts {'agree' if str(plain[0]) == want == str(lines[0]) else 'DISAGREE'}")
+          print("- Both builds carry the never-inlined entry points, so set their nps against main's only approximately, and on the same runner class.\n")
+          EOF
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: diag-safe-simd-${{ matrix.target }}${{ matrix.config && '-generic' || '' }}
-          path: diag-out
+          name: diag-profile-${{ matrix.target }}
+          path: prof-out
