@@ -180,8 +180,8 @@ fn the_count_equals_bench_txt() {
     );
 }
 
-/// The handcrafted search's count, which its frozen set holds. A search feature goes into the net's
-/// set and leaves it alone; only a fix to both evaluations moves it, and declares the new count.
+/// The handcrafted search's count, declared as the bench is. A change that moves it, feature or fix,
+/// updates the file in the same pull request and names the new count.
 #[test]
 fn the_handcrafted_count_equals_handcrafted_bench_txt() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../handcrafted-bench.txt");
@@ -195,8 +195,8 @@ fn the_handcrafted_count_equals_handcrafted_bench_txt() {
     let got = bench::handcrafted().nodes;
     assert_eq!(
         got, expected,
-        "the handcrafted search took {got} nodes, handcrafted-bench.txt says {expected}: a search \
-         feature belongs in the net's settings only, and a fix to both evaluations updates the \
-         file and puts `Handcrafted: {got}` in the commit message"
+        "the handcrafted search took {got} nodes, handcrafted-bench.txt says {expected}: a change \
+         that moves it updates the file in the same pull request and puts `Handcrafted: {got}` in \
+         the commit message, as the bench is declared"
     );
 }
