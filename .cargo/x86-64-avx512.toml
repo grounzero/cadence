@@ -2,8 +2,7 @@
 # `cargo --config .cargo/x86-64-avx512.toml` on top of config.toml.
 #
 # Cargo appends this array after config.toml's, so only what this tier adds is named here, and
-# `+avx512f` brings FMA and F16C with it. The release workflow asserts that the features cargo passed
-# resolve to the AVX2 set plus these two, so a feature added here and not named there fails that leg.
+# `+avx512f` brings FMA and F16C with it.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+avx512f,+avx512bw"]
 
