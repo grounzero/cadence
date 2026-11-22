@@ -455,8 +455,8 @@ fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
     }
 }
 
-/// ProbCut acts only where five plies or more are left, so its margin's low end is read where the
-/// margin raises beta: a deep null-window node at beta 1 is tried against 1 plus the margin.
+/// The probe acts only where five plies or more are left, so `probcut_margin`'s low end is read
+/// where it raises beta: a deep null-window node at beta 1 is tried against 1 plus the margin.
 #[test]
 fn the_probcut_margin_s_low_end_raises_the_bound_it_tries() {
     let p = param(Tunable::ProbcutMargin);
