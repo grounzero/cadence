@@ -362,3 +362,4 @@ Moves are in king-takes-rook notation.
 Schema: `name<TAB>depth<TAB>move<TAB>nodes`
 
 Machine-readable data: [`perft-divide`](../../tests/fixtures/perft-corpus.txt).
+
