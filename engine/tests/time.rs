@@ -291,6 +291,108 @@ fn the_increment_is_spent() {
     assert!(with.hard >= without.hard, "{without:?} vs {with:?}");
 }
 
+fn clock_with_overhead(time: u64, inc: u64, overhead: u64) -> Budget {
+    let mut l = limits(&format!("wtime {time} btime {time} winc {inc} binc {inc}"));
+    l.move_overhead = Some(overhead);
+    budget(&l, Colour::White).expect("a clock gives a budget")
+}
+
+/// Every move pays the overhead, so an increment no larger than it adds nothing to a move's budget.
+#[test]
+fn only_the_increment_past_the_overhead_is_spent() {
+    for overhead in [0, 20, 500] {
+        for time in [10_000, 180_000] {
+            let none = clock_with_overhead(time, 0, overhead);
+            let paid = clock_with_overhead(time, overhead, overhead);
+            assert_eq!(paid, none, "{time}+{overhead}, overhead {overhead}");
+            let past = clock_with_overhead(time, overhead + 400, overhead);
+            assert_eq!(past.soft, none.soft + 300, "{time}, overhead {overhead}");
+        }
+    }
+}
+
+/// Charged on every move, the default overhead takes no more than 5 ms from a move's budget, so a
+/// fast control keeps nearly all of its increment.
+#[test]
+fn the_default_overhead_takes_little_from_a_fast_increment() {
+    for (time, inc) in [(1000, 10), (8000, 80), (60_000, 600)] {
+        let free = clock_with_overhead(time, inc, 0);
+        let default = clock(time, inc, None);
+        assert!(
+            free.soft - default.soft <= 5,
+            "{time}+{inc}: {free:?} with no overhead, {default:?} with the default"
+        );
+    }
+}
+
+/// With no `Move Overhead` set the default is charged, and the budget is the arithmetic by hand.
+#[test]
+fn the_default_overhead_is_five_milliseconds_with_exact_budgets() {
+    assert_eq!(MOVE_OVERHEAD_MS, 5);
+    let l = limits("wtime 60000 btime 60000 winc 600 binc 600");
+    assert_eq!(l.move_overhead, None);
+    // avail 59995, cap 29997; soft 59995 / 25 + (595 * 3) / 4 = 2399 + 446, hard 3 * 2845.
+    assert_eq!(
+        budget(&l, Colour::White),
+        Some(Budget {
+            soft: 2845,
+            hard: 8535
+        })
+    );
+}
+
+/// An increment of 4, 5 or 6 ms against the default overhead gains at most 1 ms, and three quarters
+/// of that rounds to zero, so each row holds for all three. The cap at half of what is left binds
+/// the hard budget at 5 moves to go and both budgets at 1, and never at 20 or in sudden death.
+#[test]
+fn increments_about_the_default_overhead_give_exact_budgets() {
+    // (time, movestogo, soft, hard); avail is time - 5 and cap is avail / 2.
+    const ROWS: [(u64, Option<u32>, u64, u64); 8] = [
+        // 59995 / 25 = 2399, hard 7197 under cap 29997.
+        (60_000, None, 2399, 7197),
+        // 59995 / 20 = 2999, hard 8997 under cap 29997.
+        (60_000, Some(20), 2999, 8997),
+        // 59995 / 5 = 11999, hard 35997 cut to cap 29997.
+        (60_000, Some(5), 11_999, 29_997),
+        // 59995 / 1 cut to cap 29997, and hard with it.
+        (60_000, Some(1), 29_997, 29_997),
+        // 995 / 25 = 39, hard 117 under cap 497.
+        (1000, None, 39, 117),
+        // 995 / 20 = 49, hard 147 under cap 497.
+        (1000, Some(20), 49, 147),
+        // 995 / 5 = 199, hard 597 cut to cap 497.
+        (1000, Some(5), 199, 497),
+        // 995 / 1 cut to cap 497, and hard with it.
+        (1000, Some(1), 497, 497),
+    ];
+    for inc in [MOVE_OVERHEAD_MS - 1, MOVE_OVERHEAD_MS, MOVE_OVERHEAD_MS + 1] {
+        for (time, mtg, soft, hard) in ROWS {
+            assert_eq!(
+                clock(time, inc, mtg),
+                Budget { soft, hard },
+                "{time}+{inc} movestogo {mtg:?}"
+            );
+        }
+    }
+}
+
+/// Where every move also costs the overhead outside the search, a game spending each soft budget
+/// settles well above the floor the cap at half the clock would hold it to.
+#[test]
+fn a_game_paying_the_overhead_every_move_settles_above_the_cap() {
+    let (overhead, inc) = (600, 2000);
+    let mut t = 180_000u64;
+    for mv in 0..200 {
+        let b = clock_with_overhead(t, inc, overhead);
+        t = t
+            .checked_sub(b.soft + overhead)
+            .expect("the cap leaves the overhead")
+            + inc;
+        assert!(t > overhead, "move {mv}: {t} left");
+    }
+    assert!(t >= 6000, "{t} left after 200 moves");
+}
+
 #[test]
 fn few_moves_to_go_means_more_per_move() {
     let sudden_death = clock(10_000, 0, None);
