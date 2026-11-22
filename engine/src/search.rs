@@ -215,6 +215,9 @@ struct Run {
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
     roots: Vec<(Move, Score)>,
+    /// The moves the root searches, after `searchmoves` and the root's ranking; zero before it is
+    /// read.
+    root_count: usize,
     /// Best first once the iteration is accepted.
     lines: Vec<RootLine>,
     /// What a level samples among; separate from `lines`, which an aborted iteration leaves
@@ -234,6 +237,7 @@ impl Run {
             seldepth: 0,
             iterations: Vec::new(),
             roots: Vec::new(),
+            root_count: 0,
             lines: Vec::new(),
             accepted: Vec::new(),
         }
@@ -249,6 +253,7 @@ impl Run {
         self.seldepth = 0;
         self.iterations.clear();
         self.roots.clear();
+        self.root_count = 0;
         self.lines.clear();
         self.accepted.clear();
     }

@@ -131,6 +131,7 @@ pub const DROP_STEP: u64 = 5;
 pub const DROP_SCALE_MAX: u64 = 1600;
 
 /// Thousandths of the soft budget for a search whose iteration scores are `scores`, oldest first.
+/// Only the last `DROP_WINDOW + 1` are read, so a caller may pass just those.
 #[must_use]
 pub fn drop_scale(scores: &[Score]) -> u64 {
     let Some((&last, before)) = scores.split_last() else {

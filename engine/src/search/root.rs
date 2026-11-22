@@ -63,6 +63,7 @@ impl Search<'_> {
         // The list is not empty, so the remainder is safe.
         let root_count = root_moves.len();
         root_moves.rotate_left(self.worker_index % root_count);
+        self.run.root_count = root_count;
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         let mut previous: Option<Score> = None;
