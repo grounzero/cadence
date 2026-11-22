@@ -62,6 +62,7 @@ const USAGE: &str =
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
+           [--scale-factor F]
        cadence-train book --in FILE --out FILE --seed HEX [--every N]
        cadence-train overfit --out DIR [--data FILE... --manifest FILE...]
        cadence-train eval --checkpoint DIR --fens FILE";
@@ -448,7 +449,23 @@ fn export(flags: &Flags) -> Result<(), String> {
         ));
     }
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let quantised = read(&checkpoint.join("quantised.bin"))?;
+    let mut quantised = read(&checkpoint.join("quantised.bin"))?;
+    let factor = match flags.get("--scale-factor").and_then(|v| v.first()) {
+        Some(value) => match value.parse::<f32>() {
+            Ok(f) if f.is_finite() && f > 0.0 => Some(f),
+            _ => {
+                return Err(format!(
+                    "--scale-factor {value}, where a factor is above 0\n{USAGE}"
+                ));
+            }
+        },
+        None => None,
+    };
+    if let Some(factor) = factor {
+        let raw = read(&checkpoint.join("raw.bin"))?;
+        quantised =
+            cadence_train::export::fold(&quantised, &raw, factor).map_err(|e| e.to_string())?;
+    }
     let run = checkpoint.parent().unwrap_or(Path::new("."));
     let commit_file = run.join(COMMIT_FILE);
     let trainer = String::from_utf8_lossy(&read(&commit_file)?)
@@ -466,6 +483,12 @@ fn export(flags: &Flags) -> Result<(), String> {
         net.trainer(),
         hex(&net.manifest())
     );
+    if let Some(factor) = factor {
+        println!(
+            "  output weights and bias scaled by {factor} from the unquantised weights, quantised \
+             once; the file does not record the factor"
+        );
+    }
     Ok(())
 }
 

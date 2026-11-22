@@ -21,6 +21,11 @@ result.
 
 ### Added
 
+- Training: `cadence-train export --scale-factor F` multiplies a net's
+  evaluations by F by scaling its output weights and bias from the
+  unquantised weights and quantising them once, and `cadence-tools forward
+  --scale-factor F --unscaled FILE` holds the scaled net to those weights
+  times F within the unscaled net's own error and a little more.
 - Tools: `cadence-tools convert --max-copies N` keeps at most N training
   copies of a position's network input, a position and its colour-flipped
   mirror counting as one, meets the games in an order the shuffle seed fixes

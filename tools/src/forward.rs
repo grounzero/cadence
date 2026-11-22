@@ -25,7 +25,8 @@ const DEFAULT_SEED: u64 = 0x2026_1115_f0f0_0001;
 /// Random plies from each start, so the positions run from the opening into the middlegame.
 const LONGEST_WALK: usize = 120;
 
-const USAGE: &str = "forward --net FILE [--raw FILE [--against FILE]] [--positions N] [--seed HEX]";
+const USAGE: &str = "forward --net FILE [--raw FILE [--against FILE] [--scale-factor F [--unscaled \
+                     FILE]]] [--positions N] [--seed HEX]";
 
 /// Weights in the file's order, as numbers in the units the trained network used, `H` a perspective.
 struct Reference<const H: usize> {
@@ -218,7 +219,7 @@ fn against<const H: usize>(
 pub fn run(args: &[String]) -> Result<ExitCode, String> {
     let (mut net_path, mut raw_path, mut count, mut seed) =
         (None, None, MIN_POSITIONS, DEFAULT_SEED);
-    let mut against_path = None;
+    let (mut against_path, mut factor, mut unscaled_path) = (None, None, None);
     let mut words = args.iter();
     while let Some(flag) = words.next() {
         let value = words
@@ -228,6 +229,11 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
             "--net" => net_path = Some(value.clone()),
             "--raw" => raw_path = Some(value.clone()),
             "--against" => against_path = Some(value.clone()),
+            "--unscaled" => unscaled_path = Some(value.clone()),
+            "--scale-factor" => match value.parse::<f64>() {
+                Ok(f) if f.is_finite() && f > 0.0 => factor = Some(f),
+                _ => return Err(format!("--scale-factor {value}, where a factor is above 0")),
+            },
             "--positions" => count = value.parse().map_err(|_| format!("--positions {value}"))?,
             "--seed" => {
                 seed = u64::from_str_radix(value, 16).map_err(|_| format!("--seed {value}"))?;
@@ -255,7 +261,15 @@ pub fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         None => None,
     };
+    let unscaled = match unscaled_path {
+        Some(p) => Some((read(&p)?, p)),
+        None => None,
+    };
     let reading = Reading {
+        factor,
+        unscaled: unscaled
+            .as_ref()
+            .map(|(bytes, p)| (bytes.as_slice(), p.as_str())),
         file: &file,
         boards: &positions(count, seed),
         raw: raw
@@ -288,6 +302,11 @@ struct Reading<'a> {
     raw: Option<(&'a [u8], &'a str)>,
     against: Option<(&'a str, &'a str)>,
     seed: u64,
+    /// What the net's output layer was scaled by at export, the raw weights' evaluation times it
+    /// being what the net is then read against.
+    factor: Option<f64>,
+    /// The same checkpoint's export without the factor, which the scaled net's error is held to.
+    unscaled: Option<(&'a [u8], &'a str)>,
 }
 
 impl Reading<'_> {
@@ -297,6 +316,12 @@ impl Reading<'_> {
             Some((bytes, p)) => Some(Reference::<H>::raw(bytes).map_err(|e| format!("{p}: {e}"))?),
             None => None,
         };
+        if self.factor.is_some() && (raw.is_none() || self.against.is_some()) {
+            return Err("--scale-factor reads --raw, and not --against".to_string());
+        }
+        if self.unscaled.is_some() && self.factor.is_none() {
+            return Err("--unscaled is read with --scale-factor".to_string());
+        }
         if let Some((text, path)) = self.against {
             let raw = raw
                 .as_ref()
@@ -317,18 +342,45 @@ impl Reading<'_> {
             self.seed,
             if passed { "PASS" } else { "FAIL" }
         );
-        if let Some(raw) = raw {
-            let (largest, mean) = deltas(net, |b| raw.evaluate(b), self.boards);
+        let Some(raw) = raw else {
+            return Ok(passed);
+        };
+        let factor = self.factor.unwrap_or(1.0);
+        let (largest, mean) = deltas(net, |b| factor * raw.evaluate(b), self.boards);
+        let Some((bytes, path)) = self.unscaled else {
             println!(
-                "forward: against the raw weights, a training-time reading that decides nothing: \
-                 max |delta| {largest:.3} cp, mean {mean:.3} cp, {} the bounds",
+                "forward: against the raw weights{}, a training-time reading that decides \
+                 nothing: max |delta| {largest:.3} cp, mean {mean:.3} cp, {} the bounds",
+                self.factor
+                    .map_or_else(String::new, |f| format!(" times {f}")),
                 if within(largest, mean) {
                     "within"
                 } else {
                     "outside"
                 }
             );
-        }
-        Ok(passed)
+            return Ok(passed);
+        };
+        let before = Network::<H>::load(bytes).map_err(|e| format!("{path}: {e}"))?;
+        let (was_largest, was_mean) = deltas(&before, |b| raw.evaluate(b), self.boards);
+        // Scaling up multiplies the error the net had; scaling down may keep it and no more.
+        let grown = factor.max(1.0);
+        let kept =
+            largest <= grown * was_largest + MAX_DELTA && mean <= grown * was_mean + MEAN_DELTA;
+        println!(
+            "forward: after scaling by {factor}, against the raw weights times it: max |delta| \
+             {largest:.3} cp, mean {mean:.3} cp, {} (the unscaled net's {was_largest:.3} and \
+             {was_mean:.3}{}, and at most {MAX_DELTA} and {MEAN_DELTA} more); an exact scaling \
+             would leave {:.3} and {:.3}",
+            if kept { "PASS" } else { "FAIL" },
+            if factor > 1.0 {
+                " times the factor"
+            } else {
+                ""
+            },
+            factor * was_largest,
+            factor * was_mean
+        );
+        Ok(passed && kept)
     }
 }
