@@ -33,6 +33,8 @@ result.
 
 ### Fixed
 
+- Search: a table result is not reused where its depth reaches the
+  fifty-move draw, which the position key does not carry.
 - Chess960: the position key names the rook each castling right belongs to,
   so two positions that differ only in which rook may castle no longer share
   a table entry.

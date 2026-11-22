@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, REDUCTION_INDEX, lmp_count};
+use cadence_engine::search::{Limits, REDUCTION_INDEX, lmp_count, probcut_bound};
 use cadence_engine::tune::{self, Kind, PARAMS, Param, Tunable, Tunables};
 use cadence_engine::uci::Session;
 use cadence_nnue::{Network, Provenance};
@@ -225,6 +225,57 @@ fn the_spsa_block_and_the_uci_declaration_agree() {
     }
 }
 
+/// By name and in order, with everything but the current value, so a row dropped from the table or
+/// declared with another range or step is seen here.
+#[test]
+fn the_spsa_block_is_the_five_declared_parameters() {
+    let (block, code) = spsa(&[]);
+    assert_eq!(code, Some(0));
+    let rows: Vec<Vec<&str>> = block
+        .split('\n')
+        .map(|l| l.split(',').map(str::trim).collect())
+        .collect();
+    let expected = [
+        [
+            "reverse_futility_margin",
+            "int",
+            "50",
+            "300",
+            "12.5",
+            "0.002",
+        ],
+        ["lmp_multiplier", "float", "0.000", "2.000", "0.1", "0.002"],
+        ["futility_margin", "int", "50", "300", "12.5", "0.002"],
+        ["probcut_margin", "int", "25", "250", "11.25", "0.002"],
+        ["aspiration_delta", "int", "8", "64", "2.8", "0.002"],
+    ];
+    assert_eq!(rows.len(), expected.len(), "{block:?}");
+    for (row, want) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 7, "{row:?}");
+        let got = [row[0], row[1], row[3], row[4], row[5], row[6]];
+        assert_eq!(got, want, "{block:?}");
+    }
+}
+
+/// A margin's declaration as a GUI reads it, its default the constant the search held before it was
+/// offered to a tune.
+#[test]
+fn the_three_margins_are_declared_as_integers_at_their_old_values() {
+    let out = talk("uci\nquit\n");
+    let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
+    for line in [
+        "option name futility_margin type spin default 150 min 50 max 300",
+        "option name probcut_margin type spin default 100 min 25 max 250",
+        "option name aspiration_delta type spin default 24 min 8 max 64",
+    ] {
+        let at = out
+            .lines()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("no `{line}` in {out:?}"));
+        assert!(at < uciok, "`{line}` is declared after uciok");
+    }
+}
+
 /// For `bench`'s reason: what it prints is fixed in the source.
 #[test]
 fn the_spsa_subcommand_refuses_arguments() {
@@ -307,6 +358,13 @@ fn an_integer_takes_an_integer() {
     for bad in ["150.0", "1e2", "0x96", "15O", "", "one fifty"] {
         assert_eq!(p.parse(bad), None, "`{bad}`");
     }
+    for p in PARAMS.iter().filter(|p| p.kind == Kind::Int) {
+        assert_eq!(p.parse(&(p.min - 1).to_string()), Some(p.min), "{}", p.name);
+        assert_eq!(p.parse(&(p.max + 1).to_string()), Some(p.max), "{}", p.name);
+        for stored in p.min..=p.max {
+            assert_eq!(p.parse(&p.spell(stored)), Some(stored), "{}", p.name);
+        }
+    }
 }
 
 /// The session names the value and what it kept, answers the next command, and searches the same
@@ -367,11 +425,31 @@ fn a_malformed_value_is_refused_and_the_search_is_untouched() {
 fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
     let untouched = net_nodes_after(&[]);
     for p in PARAMS {
+        // A shallow search barely reaches the probe, so its margin is read at the bound instead.
+        if p.tunable == Tunable::ProbcutMargin {
+            continue;
+        }
         for end in [p.min, p.max] {
             let set = format!("setoption name {} value {}", p.name, p.spell(end));
             let nodes = net_nodes_after(&[&set]);
             assert_ne!(nodes, untouched, "`{set}` searched the default tree");
         }
+    }
+}
+
+/// The probe acts only where five plies or more are left, so `probcut_margin` is read where it
+/// raises beta: at both ends a deep null-window node at beta 1 is tried against 1 plus the margin.
+#[test]
+fn the_probcut_margin_raises_the_bound_it_tries_at_both_ends() {
+    let p = param(Tunable::ProbcutMargin);
+    for end in [p.min, p.max] {
+        let mut tunables = Tunables::DEFAULT;
+        p.set(&mut tunables, end);
+        assert_eq!(
+            probcut_bound(&tunables, Some(0), 10, 0, 1),
+            Some(1 + end),
+            "margin {end}"
+        );
     }
 }
 
@@ -482,6 +560,15 @@ fn a_setting_in_a_session_cannot_reach_bench() {
 fn the_handcrafted_set_holds_its_frozen_values() {
     assert_eq!(Tunables::HCE.get(Tunable::ReverseFutilityMargin), 150);
     assert_eq!(Tunables::HCE.get(Tunable::LmpMultiplier), 500);
+    // By name, so the lines read the table the UCI session reads.
+    for (name, frozen) in [
+        ("futility_margin", 150),
+        ("probcut_margin", 100),
+        ("aspiration_delta", 24),
+    ] {
+        let p = tune::find(name).unwrap_or_else(|| panic!("no `{name}`"));
+        assert_eq!(Tunables::HCE.get(p.tunable), frozen, "{name}");
+    }
 }
 
 /// Bench, datagen and every `go` build their searches apart, so the frozen set is held where the

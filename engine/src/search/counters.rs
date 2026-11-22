@@ -345,6 +345,35 @@ impl Search<'_> {
         &self.heuristics.conthist
     }
 
+    /// Whether the quiet, continuation and correction tables the search holds now, its own or a
+    /// lent set, have any entry written, in that order.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn learned_written(&self) -> [bool; 3] {
+        [
+            !self.heuristics.history.is_clear(),
+            !self.heuristics.conthist.is_clear(),
+            !self.heuristics.corrhist.is_clear(),
+        ]
+    }
+
+    /// Whether the killers, the move frames and the per-ply evaluations hold anything, in that
+    /// order. A run with no legal move at the root returns straight after `begin`, so it reads them
+    /// as `begin` left them.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn per_ply_written(&self) -> [bool; 3] {
+        [
+            self.heuristics
+                .killers
+                .iter()
+                .flatten()
+                .any(|&m| m != Move::NULL),
+            self.heuristics.frames.iter().any(Option::is_some),
+            self.heuristics.evals.iter().any(Option::is_some),
+        ]
+    }
+
     /// Continuation entries the cutoffs credited.
     #[cfg(feature = "counters")]
     #[must_use]

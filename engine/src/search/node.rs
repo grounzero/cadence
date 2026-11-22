@@ -25,6 +25,20 @@ use crate::see;
 use crate::syzygy::Wdl;
 use crate::tt::Bound;
 
+/// The key does not carry the fifty-move clock, so from here a cutoff could rest on a line the draw
+/// has since cut short; only the entry's move is kept.
+const CUTOFF_CLOCK: u8 = 90;
+
+/// Once a line from a node can reach the fifty-move draw, which the key does not carry, its entry
+/// is stored at depth 0, where no probe cuts with the score, and only its move is used.
+fn stored_depth(board: &Board, depth: u32) -> u32 {
+    if u32::from(board.halfmove_clock()) + depth >= 100 {
+        0
+    } else {
+        depth
+    }
+}
+
 impl Search<'_> {
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
@@ -151,7 +165,7 @@ impl Search<'_> {
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts. An open window refuses
         // it, as it refuses every other margin rule.
-        let futile = !pv && futile_node(self.heuristics.evals[ply], depth, alpha);
+        let futile = !pv && futile_node(&self.tunables, self.heuristics.evals[ply], depth, alpha);
         self.stats.futility_nodes.add_if(futile);
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
@@ -223,7 +237,7 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
-        self.store(key, ply, depth, best, best_move, bound);
+        self.store(key, ply, stored_depth(board, depth), best, best_move, bound);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
@@ -291,7 +305,12 @@ impl Search<'_> {
         let Some(hit) = self.tt.probe(key) else {
             return (Move::NULL, None, false);
         };
-        if u32::from(hit.depth) < depth || board.halfmove_clock() >= 100 {
+        // A result whose depth reaches the draw may rest on a line the clock now cuts short.
+        let clock = board.halfmove_clock();
+        if u32::from(hit.depth) < depth
+            || clock >= CUTOFF_CLOCK
+            || u32::from(clock) + u32::from(hit.depth) >= 100
+        {
             return (hit.mv, None, hit.pv);
         }
         let score = score::from_tt(hit.score, ply);
@@ -553,10 +572,12 @@ impl Search<'_> {
         kind: Expected,
     ) -> Option<Score> {
         let eval = self.heuristics.evals[ply];
-        let Some(raised) = probcut_bound(eval, depth, alpha, beta) else {
+        let Some(raised) = probcut_bound(&self.tunables, eval, depth, alpha, beta) else {
             // Asked as though the window were null, so the counter sees only nodes the window
             // alone refused.
-            if beta != alpha + 1 && probcut_bound(eval, depth, beta - 1, beta).is_some() {
+            if beta != alpha + 1
+                && probcut_bound(&self.tunables, eval, depth, beta - 1, beta).is_some()
+            {
                 self.stats.probcut_refused_window.add_one();
             }
             return None;

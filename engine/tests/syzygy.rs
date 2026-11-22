@@ -19,6 +19,7 @@ use cadence_engine::score::{
 use cadence_engine::search::{Limits, futile_node, probcut_bound};
 use cadence_engine::syzygy::{Rank, Ranked, Tables, Wdl};
 use cadence_engine::tt::Bound;
+use cadence_engine::tune::Tunables;
 use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded};
 use support::{Engine, table};
 
@@ -1020,14 +1021,14 @@ fn a_tablebase_bound_refuses_the_margins() {
     for ply in 1..8 {
         for depth in 1..4 {
             assert!(
-                !futile_node(Some(0), depth, tb_win_in(ply)),
+                !futile_node(&Tunables::DEFAULT, Some(0), depth, tb_win_in(ply)),
                 "depth {depth}"
             );
         }
         for depth in 5..12 {
             for beta in [tb_win_in(ply), tb_loss_in(ply)] {
                 assert!(
-                    probcut_bound(Some(0), depth, beta - 1, beta).is_none(),
+                    probcut_bound(&Tunables::DEFAULT, Some(0), depth, beta - 1, beta).is_none(),
                     "{beta}"
                 );
             }
