@@ -16,6 +16,13 @@ const DEPTH: u32 = 6;
 /// The UCI half's depth, which `tests/tt.rs` already runs through the binary.
 const UCI_DEPTH: u32 = 7;
 
+/// White is mated, so a run returns straight after its start and leaves what `begin` left.
+const MATED: &str = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3";
+
+/// In the order `Search::learned_written` and `Search::per_ply_written` report them.
+const LEARNED: [&str; 3] = ["quiet", "continuation", "correction"];
+const PER_PLY: [&str; 3] = ["killers", "frames", "evaluations"];
+
 /// A fresh table each time, so only the histories can carry anything from one search to the next.
 fn fresh_nodes(fen: &str) -> u64 {
     let stop = AtomicBool::new(false);
@@ -83,6 +90,128 @@ fn cleared_histories_search_as_a_fresh_engine_does() {
     nodes_with(&fen, &mut learned);
     learned.clear();
     assert_eq!(nodes_with(&fen, &mut learned), fresh_nodes(&fen));
+}
+
+/// Each table comes back written, a later run's start keeps it, and `clear` empties it.
+#[test]
+fn each_history_outlives_a_search_and_is_emptied_by_clear() {
+    let fen = support::standard_fen("kiwipete");
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut learned = Learned::new();
+    let mut first = support::search(Limits::depth(DEPTH), &stop, &tt);
+    first.swap_learned(&mut learned);
+    first.run(&mut support::position(&fen), &mut Vec::new());
+    first.swap_learned(&mut learned);
+    assert_eq!(
+        first.learned_written(),
+        [false; 3],
+        "{fen}: a written table stayed with the search"
+    );
+
+    let mut later = support::search(Limits::depth(DEPTH), &stop, &tt);
+    later.swap_learned(&mut learned);
+    later.run(&mut support::position(MATED), &mut Vec::new());
+    for (name, written) in LEARNED.iter().zip(later.learned_written()) {
+        assert!(
+            written,
+            "{fen}: the {name} history did not come through a search and a later run's start"
+        );
+    }
+    later.swap_learned(&mut learned);
+    learned.clear();
+    later.swap_learned(&mut learned);
+    for (name, written) in LEARNED.iter().zip(later.learned_written()) {
+        assert!(!written, "the {name} history survived `clear`");
+    }
+}
+
+/// Once the lent set is handed back, the search's own tables are cleared at its next start, as a
+/// fresh search's are.
+#[test]
+fn a_search_that_handed_its_tables_back_clears_its_own() {
+    let fen = support::standard_fen("kiwipete");
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut search = support::search(Limits::depth(DEPTH), &stop, &tt);
+    search.run(&mut support::position(&fen), &mut Vec::new());
+    assert_eq!(
+        search.learned_written(),
+        [true; 3],
+        "{fen}: the search wrote too little to tell"
+    );
+    let mut learned = Learned::new();
+    search.swap_learned(&mut learned);
+    search.swap_learned(&mut learned);
+    search.run(&mut support::position(MATED), &mut Vec::new());
+    assert_eq!(
+        search.learned_written(),
+        [false; 3],
+        "the search kept its own tables through a start as if they were still lent"
+    );
+}
+
+/// The killers, frames and per-ply evaluations start every run empty, lent tables or not.
+#[test]
+fn a_search_with_lent_tables_still_clears_its_per_ply_state() {
+    let fen = support::standard_fen("kiwipete");
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut learned = Learned::new();
+    let mut search = support::search(Limits::depth(DEPTH), &stop, &tt);
+    search.swap_learned(&mut learned);
+    search.run(&mut support::position(&fen), &mut Vec::new());
+    for (name, written) in PER_PLY.iter().zip(search.per_ply_written()) {
+        assert!(written, "{fen}: the search left no {name} to clear");
+    }
+    search.run(&mut support::position(MATED), &mut Vec::new());
+    for (name, written) in PER_PLY.iter().zip(search.per_ply_written()) {
+        assert!(
+            !written,
+            "the {name} outlived a run's start with tables lent"
+        );
+    }
+    search.swap_learned(&mut learned);
+}
+
+/// Two threads: each set is lent to its thread, handed back, and lent again at the next `go`, and
+/// `ucinewgame` empties both.
+#[test]
+fn every_thread_s_histories_come_back_for_the_next_go() {
+    let go = format!("go depth {UCI_DEPTH}");
+    let mut engine = support::Engine::spawn();
+    engine.send("setoption name Threads value 2");
+    engine.sync();
+    let mut reports = Vec::new();
+    for between in [None, None, Some("ucinewgame")] {
+        if let Some(line) = between {
+            engine.send(line);
+        }
+        engine.send("position startpos");
+        engine.send(&go);
+        let lines = engine.read_until("bestmove ");
+        let mut held: Vec<String> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("info string search learned "))
+            .map(str::to_string)
+            .collect();
+        held.sort_unstable();
+        reports.push(held);
+    }
+    // Still answering, so no search thread took the session down.
+    engine.sync();
+    engine.quit();
+    let empty = ["0 [false, false, false]", "1 [false, false, false]"];
+    let written = ["0 [true, true, true]", "1 [true, true, true]"];
+    assert_eq!(
+        reports[0], empty,
+        "the first search was lent written tables"
+    );
+    assert_eq!(
+        reports[1], written,
+        "a thread's set did not come back from the first search"
+    );
+    assert_eq!(reports[2], empty, "ucinewgame left a thread's set written");
 }
 
 /// Three searches of the start position in one process, `between` sent before the third.

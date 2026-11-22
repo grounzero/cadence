@@ -150,7 +150,7 @@ impl Session {
     }
 
     /// The search thread prints its `bestmove` on the way out and returns the histories it was
-    /// lent; a thread that panicked returns none, and the next `go` starts empty.
+    /// lent. One that failed to start or panicked took them with it, so the next `go` starts empty.
     pub(super) fn stop_search(&mut self) {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
@@ -211,12 +211,11 @@ struct ParallelGo<'a> {
     decided: bool,
     /// Only the primary reports, so only it is given what the tables read at the root.
     rank: Option<Rank>,
-    /// One set per thread, the primary's first; each worker searches with its own.
-    learned: &'a mut [Learned],
+    /// One set per thread, the primary's first; each worker searches with its own, moved to it and
+    /// back without a replacement being built.
+    learned: &'a mut Vec<Learned>,
 }
 
-/// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
-/// about the group.
 /// One thread, which reports and samples a level's move itself.
 fn single_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let ParallelGo {
@@ -259,6 +258,8 @@ fn single_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     (best, search.pv().to_vec())
 }
 
+/// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
+/// about the group.
 fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
     let ParallelGo {
         board,
@@ -284,9 +285,9 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         .collect::<Vec<_>>()
         .into();
     let mut helpers = Vec::with_capacity(threads.saturating_sub(1));
-    let (primary, others) = learned.split_at_mut(1);
-    for (worker_index, slot) in (1..threads).zip(others.iter_mut()) {
-        let mut helper_learned = std::mem::take(slot);
+    // Moved out by value, the vector keeping its buffer, so the sets are pushed back without a
+    // reallocation.
+    for (worker_index, mut helper_learned) in (1..threads).zip(learned.drain(1..)) {
         let mut helper_board = board.fork();
         let helper_stop = Arc::clone(stop);
         let helper_ponder_hit = Arc::clone(ponder_hit);
@@ -319,7 +320,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 helper_learned
             });
         match result {
-            Ok(helper) => helpers.push((helper, slot)),
+            Ok(helper) => helpers.push(helper),
             Err(e) => say(format_args!(
                 "info string go: could not start helper {worker_index}: {e}"
             )),
@@ -328,7 +329,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
 
     let mut out = std::io::stdout();
     let mut search = Search::new(stop, tt);
-    search.swap_learned(&mut primary[0]);
+    search.swap_learned(&mut learned[0]);
     search.set_limits(limits);
     search.set_clock_origin(received);
     search.set_ponder_hit(ponder_hit);
@@ -348,20 +349,22 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         best = search.sample(policy, board, &mut out);
     }
     let pv = search.pv().to_vec();
-    search.swap_learned(&mut primary[0]);
+    search.swap_learned(&mut learned[0]);
 
     // Helpers check the flag at every node, so this is the whole shutdown.
     stop.store(true, Ordering::Relaxed);
-    for (helper, slot) in helpers {
+    // A helper that failed to start or panicked took its set with it: the sets after it move down a
+    // thread, and the next `go` pads the last with an empty one.
+    for helper in helpers {
         if let Ok(returned) = helper.join() {
-            *slot = returned;
+            learned.push(returned);
         }
     }
     (best, pv)
 }
 
 /// Test builds only: what a thread's search holds as it starts, so a gate can hold every helper to
-/// the primary.
+/// the primary. The learned tables go on a line of their own, which differs by thread.
 #[cfg(feature = "counters")]
 fn report_given(worker_index: usize, search: &Search<'_>) {
     say(format_args!(
@@ -370,6 +373,10 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
         search.given_tunables(),
         search.root_filter(),
         search.probes()
+    ));
+    say(format_args!(
+        "info string search learned {worker_index} {:?}",
+        search.learned_written()
     ));
 }
 

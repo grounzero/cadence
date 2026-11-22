@@ -76,6 +76,13 @@ impl ContinuationHistory {
         self.rows.fill(0);
     }
 
+    /// For the gates: whether every entry reads as a new table's.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn is_clear(&self) -> bool {
+        self.rows.iter().all(|&v| v == 0)
+    }
+
     /// Indexed by a move's [`piece_to`].
     #[must_use]
     pub fn row(&self, context: u16) -> &[i16] {

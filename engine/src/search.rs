@@ -159,7 +159,7 @@ struct RootLine {
 }
 
 /// What a run learns, and the per-ply stacks it learns from, cleared together in `begin` so a
-/// reused search starts where a fresh one would. Once a game's tables are swapped in, `begin` clears
+/// reused search starts where a fresh one would. While a game's tables are lent in, `begin` clears
 /// the per-ply stacks and the killers only.
 struct Heuristics {
     killers: [[Move; 2]; MAX_PLY],
@@ -171,7 +171,8 @@ struct Heuristics {
     corrhist: CorrectionHistory,
     /// `None` in check: a position under attack has no quiet reading worth comparing.
     evals: [Option<Score>; MAX_PLY],
-    /// Set by [`Search::swap_learned`]; never set where `bench` or datagen runs.
+    /// True while [`Search::swap_learned`] has a caller's tables lent in, false once they are
+    /// handed back; never set where `bench` or datagen runs.
     kept: bool,
 }
 
@@ -455,13 +456,13 @@ impl<'a> Search<'a> {
         self.root_filter = moves.to_vec();
     }
 
-    /// Trades the search's learned tables for `learned`, by pointer, and no later run clears them.
-    /// Called once before a run to hand a game's tables in and once after to take them back.
+    /// Trades the search's learned tables for `learned`, by pointer: the first call lends them in,
+    /// where no run clears them, and the next call with the same set hands them back.
     pub fn swap_learned(&mut self, learned: &mut Learned) {
         std::mem::swap(&mut self.heuristics.history, &mut learned.history);
         std::mem::swap(&mut self.heuristics.conthist, &mut learned.conthist);
         std::mem::swap(&mut self.heuristics.corrhist, &mut learned.corrhist);
-        self.heuristics.kept = true;
+        self.heuristics.kept = !self.heuristics.kept;
     }
 
     /// The clock origin is set here and moved only by a `ponderhit`. The settings, the pawn cache,
