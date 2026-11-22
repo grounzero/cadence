@@ -240,12 +240,12 @@ fn the_spsa_block_is_the_five_declared_parameters() {
             "reverse_futility_margin",
             "int",
             "50",
-            "300",
-            "12.5",
+            "400",
+            "17.5",
             "0.002",
         ],
         ["lmp_multiplier", "float", "0.000", "2.000", "0.1", "0.002"],
-        ["futility_margin", "int", "50", "300", "12.5", "0.002"],
+        ["futility_margin", "int", "50", "400", "17.5", "0.002"],
         ["probcut_margin", "int", "25", "250", "11.25", "0.002"],
         ["aspiration_delta", "int", "8", "64", "2.8", "0.002"],
     ];
@@ -264,7 +264,7 @@ fn the_three_margins_are_declared_as_integers_at_their_old_values() {
     let out = talk("uci\nquit\n");
     let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
     for line in [
-        "option name futility_margin type spin default 150 min 50 max 300",
+        "option name futility_margin type spin default 150 min 50 max 400",
         "option name probcut_margin type spin default 100 min 25 max 250",
         "option name aspiration_delta type spin default 24 min 8 max 64",
     ] {
