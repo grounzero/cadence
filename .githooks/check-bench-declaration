@@ -92,3 +92,53 @@ if [ -n "$DECLARED" ] && [ "$DECLARED" != "$STAGED" ]; then
          "It takes the last BENCH or NODES followed by a number, in any case, anywhere" \
          "in the message. Write the number before the word: \"1,234 nodes\"."
 fi
+
+# The handcrafted search's count moves only with a fix to both evaluations, declared as the bench
+# is. The key names neither BENCH nor NODES, so OpenBench never reads it as the bench.
+HAND_FILE="handcrafted-bench.txt"
+HAND=""
+HAND_CHANGED=""
+if [ -n "$COMMIT" ]; then
+    if git cat-file -e "$COMMIT:$HAND_FILE" 2>/dev/null; then
+        HAND=$(git show "$COMMIT:$HAND_FILE" | tr -d '[:space:]')
+        HAND_CHANGED=$HAND_FILE
+        for parent in $(git rev-list --parents -n 1 "$COMMIT" | cut -s -d' ' -f2-); do
+            before=$(git show "$parent:$HAND_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+            if [ "$before" = "$HAND" ]; then
+                HAND_CHANGED=""
+            fi
+        done
+    fi
+else
+    HAND=$(git show ":$HAND_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+    HAND_CHANGED=$(git diff --cached --name-only -- "$HAND_FILE")
+fi
+HAND_LINES=$(printf '%s\n' "$TRAILERS" | grep -c '^Handcrafted:' || true)
+HAND_VALUE=$(printf '%s\n' "$TRAILERS" | sed -n 's/^Handcrafted:[[:space:]]*//p' | head -n 1)
+
+if [ "$HAND_LINES" -gt 1 ]; then
+    fail "$HAND_LINES \`Handcrafted:\` trailers in one message. Keep one."
+fi
+
+if [ "$HAND_LINES" -eq 1 ] && ! printf '%s' "$HAND_VALUE" | grep -qE '^[0-9]+$'; then
+    fail "\`Handcrafted: $HAND_VALUE\` is not a node count." \
+         "The trailer must be \`Handcrafted: <n>\` with n a plain decimal integer."
+fi
+
+if [ -n "$HAND_CHANGED" ]; then
+    if [ "$HAND_LINES" -eq 0 ]; then
+        fail "this commit changes $HAND_FILE but declares no handcrafted count." \
+             "Only a correctness fix, which changes both evaluations, moves it. Add:" \
+             "" \
+             "    Handcrafted: $HAND" \
+             "" \
+             "A search feature goes into the net's settings and leaves this number alone."
+    fi
+    if [ "$HAND_VALUE" != "$HAND" ]; then
+        fail "trailer says \`Handcrafted: $HAND_VALUE\`, $HAND_FILE says \`$HAND\`." \
+             "These have to be the same number."
+    fi
+elif [ "$HAND_LINES" -eq 1 ] && [ "$HAND_VALUE" != "$HAND" ]; then
+    fail "trailer says \`Handcrafted: $HAND_VALUE\` but $HAND_FILE says \`$HAND\`," \
+         "and this commit does not change $HAND_FILE."
+fi

@@ -71,6 +71,21 @@ fn the_margin_is_what_skips_the_move() {
     );
 }
 
+/// Alpha where the null window admits the node, with beta far above it: an open window is a
+/// principal variation node, which every other margin rule refuses too.
+#[test]
+fn an_open_window_is_never_futile() {
+    let eval = eval::evaluate(&board(MIDDLEGAME));
+    let threshold = eval + futility_margin(1);
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut b = support::position(MIDDLEGAME);
+    let mut s = support::search(Limits::depth(1), &stop, &tt);
+    let _ = s.node_window(&mut b, 1, 0, threshold, threshold + 200);
+    assert_eq!(s.futility_nodes(), 0, "an open window was admitted");
+    assert_eq!(s.futility_skipped(), 0, "an open window skipped moves");
+}
+
 /// The first move is exempt for this reason: without it a node returns the sentinel it started
 /// from, not a wrong score.
 #[test]
