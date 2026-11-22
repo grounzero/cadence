@@ -60,9 +60,17 @@ impl History {
         }
     }
 
-    /// Called where the killers are cleared, so the two share one lifetime.
+    /// Called with the other learned tables: at a run's start unless a game lent them, and by
+    /// `Learned::clear`.
     pub fn clear(&mut self) {
         self.rows.fill(0);
+    }
+
+    /// For the gates: whether every entry reads as a new table's.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn is_clear(&self) -> bool {
+        self.rows.iter().all(|&v| v == 0)
     }
 
     /// A caller with no table passes an empty slice, and every move reads zero.

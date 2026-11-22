@@ -12,7 +12,7 @@ use super::say::say;
 use super::{Running, Session};
 use crate::level;
 use crate::position::Position;
-use crate::search::{Limits, Search};
+use crate::search::{Learned, Limits, Search};
 use crate::syzygy::{Rank, Tables};
 use crate::time;
 use crate::tt::Table;
@@ -70,6 +70,9 @@ impl Session {
         let ponder = self.ponder;
         let threads = self.threads;
         let tunables = self.tunables;
+        // Lent to the thread and returned by it, padded or cut to one set per thread.
+        let mut learned = std::mem::take(&mut self.learned);
+        learned.resize_with(threads, Learned::new);
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -90,43 +93,28 @@ impl Session {
                         tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
                     let mut pos = position_for(board, net);
                     // So the `bestmove` is spelled in one place whatever `Threads` is.
+                    let go = ParallelGo {
+                        board: &mut pos,
+                        limits,
+                        received,
+                        stop: &stop,
+                        ponder_hit: &ponder_hit,
+                        tt: &tt,
+                        chess960,
+                        threads,
+                        multipv,
+                        level,
+                        tunables,
+                        root_filter: &root_filter,
+                        tables: tables.as_ref(),
+                        decided,
+                        rank,
+                        learned: &mut learned,
+                    };
                     let (best, pv) = if threads == 1 {
-                        let mut out = std::io::stdout();
-                        let mut search = Search::new(&stop, &tt);
-                        search.set_limits(limits);
-                        search.set_clock_origin(received);
-                        search.set_ponder_hit(&ponder_hit);
-                        search.set_chess960(chess960);
-                        search.set_lines(multipv, level);
-                        search.set_tunables(tunables);
-                        search.set_root_filter(&root_filter);
-                        if let Some(tables) = &tables {
-                            search.set_tables(tables, decided);
-                        }
-                        search.set_root_rank(rank);
-                        let mut best = search.run(&mut pos, &mut out);
-                        if let Some(policy) = level {
-                            best = search.sample(policy, &mut pos, &mut out);
-                        }
-                        (best, search.pv().to_vec())
+                        single_search(go)
                     } else {
-                        parallel_search(ParallelGo {
-                            board: &mut pos,
-                            limits,
-                            received,
-                            stop: &stop,
-                            ponder_hit: &ponder_hit,
-                            tt: &tt,
-                            chess960,
-                            threads,
-                            multipv,
-                            level,
-                            tunables,
-                            root_filter: &root_filter,
-                            tables: tables.as_ref(),
-                            decided,
-                            rank,
-                        })
+                        parallel_search(go)
                     };
                     let spelled = to_uci(best, &legal, chess960);
                     // Only when the GUI said it ponders; otherwise the line is the one it always
@@ -138,6 +126,7 @@ impl Session {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
                         None => say(format_args!("bestmove {spelled}")),
                     }
+                    learned
                 })
         };
         match thread {
@@ -160,12 +149,22 @@ impl Session {
         }
     }
 
-    /// The search thread prints its `bestmove` on the way out.
+    /// The search thread prints its `bestmove` on the way out and returns the histories it was
+    /// lent. One that failed to start or panicked took them with it, so the next `go` starts empty.
     pub(super) fn stop_search(&mut self) {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
             // The panic hook has already reported a panic in the search thread.
-            let _ = running.thread.join();
+            if let Ok(learned) = running.thread.join() {
+                self.learned = learned;
+            }
+        }
+    }
+
+    /// After `stop_search`, which has the search's histories back.
+    pub(super) fn clear_learned(&mut self) {
+        for learned in &mut self.learned {
+            learned.clear();
         }
     }
 }
@@ -212,6 +211,51 @@ struct ParallelGo<'a> {
     decided: bool,
     /// Only the primary reports, so only it is given what the tables read at the root.
     rank: Option<Rank>,
+    /// One set per thread, the primary's first; each worker searches with its own, moved to it and
+    /// back without a replacement being built.
+    learned: &'a mut Vec<Learned>,
+}
+
+/// One thread, which reports and samples a level's move itself.
+fn single_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
+    let ParallelGo {
+        board,
+        limits,
+        received,
+        stop,
+        ponder_hit,
+        tt,
+        chess960,
+        multipv,
+        level,
+        tunables,
+        root_filter,
+        tables,
+        decided,
+        rank,
+        learned,
+        ..
+    } = go;
+    let mut out = std::io::stdout();
+    let mut search = Search::new(stop, tt);
+    search.swap_learned(&mut learned[0]);
+    search.set_limits(limits);
+    search.set_clock_origin(received);
+    search.set_ponder_hit(ponder_hit);
+    search.set_chess960(chess960);
+    search.set_lines(multipv, level);
+    search.set_tunables(tunables);
+    search.set_root_filter(root_filter);
+    if let Some(tables) = tables {
+        search.set_tables(tables, decided);
+    }
+    search.set_root_rank(rank);
+    let mut best = search.run(board, &mut out);
+    if let Some(policy) = level {
+        best = search.sample(policy, board, &mut out);
+    }
+    search.swap_learned(&mut learned[0]);
+    (best, search.pv().to_vec())
 }
 
 /// The generation advances once here, not per worker; the shared node slots keep `nodes` and `nps`
@@ -233,6 +277,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         tables,
         decided,
         rank,
+        learned,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -240,7 +285,9 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         .collect::<Vec<_>>()
         .into();
     let mut helpers = Vec::with_capacity(threads.saturating_sub(1));
-    for worker_index in 1..threads {
+    // Moved out by value, the vector keeping its buffer, so the sets are pushed back without a
+    // reallocation.
+    for (worker_index, mut helper_learned) in (1..threads).zip(learned.drain(1..)) {
         let mut helper_board = board.fork();
         let helper_stop = Arc::clone(stop);
         let helper_ponder_hit = Arc::clone(ponder_hit);
@@ -254,6 +301,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
             .spawn(move || {
                 let mut sink = std::io::sink();
                 let mut search = Search::new(&helper_stop, &helper_tt);
+                search.swap_learned(&mut helper_learned);
                 search.set_limits(limits);
                 search.set_clock_origin(received);
                 search.set_ponder_hit(&helper_ponder_hit);
@@ -267,7 +315,9 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
                 }
                 #[cfg(feature = "counters")]
                 report_given(worker_index, &search);
-                search.run_in_current_generation(&mut helper_board, &mut sink)
+                search.run_in_current_generation(&mut helper_board, &mut sink);
+                search.swap_learned(&mut helper_learned);
+                helper_learned
             });
         match result {
             Ok(helper) => helpers.push(helper),
@@ -279,6 +329,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
 
     let mut out = std::io::stdout();
     let mut search = Search::new(stop, tt);
+    search.swap_learned(&mut learned[0]);
     search.set_limits(limits);
     search.set_clock_origin(received);
     search.set_ponder_hit(ponder_hit);
@@ -298,17 +349,22 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         best = search.sample(policy, board, &mut out);
     }
     let pv = search.pv().to_vec();
+    search.swap_learned(&mut learned[0]);
 
     // Helpers check the flag at every node, so this is the whole shutdown.
     stop.store(true, Ordering::Relaxed);
+    // A helper that failed to start or panicked took its set with it: the sets after it move down a
+    // thread, and the next `go` pads the last with an empty one.
     for helper in helpers {
-        let _ = helper.join();
+        if let Ok(returned) = helper.join() {
+            learned.push(returned);
+        }
     }
     (best, pv)
 }
 
 /// Test builds only: what a thread's search holds as it starts, so a gate can hold every helper to
-/// the primary.
+/// the primary. The learned tables go on a line of their own, which differs by thread.
 #[cfg(feature = "counters")]
 fn report_given(worker_index: usize, search: &Search<'_>) {
     say(format_args!(
@@ -317,6 +373,10 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
         search.given_tunables(),
         search.root_filter(),
         search.probes()
+    ));
+    say(format_args!(
+        "info string search learned {worker_index} {:?}",
+        search.learned_written()
     ));
 }
 

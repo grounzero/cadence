@@ -11,7 +11,11 @@ use std::sync::atomic::AtomicBool;
 use cadence_engine::score::{MATE_IN_MAX_PLY, mate_in};
 use cadence_engine::search::{Limits, bound_for, probcut_bound};
 use cadence_engine::tt::Bound;
+use cadence_engine::tune::Tunables;
 use support::table;
+
+/// The compiled-in values every gate here pins.
+const DEFAULT: &Tunables = &Tunables::DEFAULT;
 
 /// Past the rule's minimum by enough that the probe runs at several depths, still a fraction of a
 /// second in debug.
@@ -98,40 +102,45 @@ fn the_full_window_refuses_the_probe() {
 #[test]
 fn the_bound_refuses_what_the_rule_may_not_touch() {
     let deep = 64;
-    let raised = probcut_bound(Some(0), deep, 0, 1).expect("a deep null-window node is admitted");
+    let raised =
+        probcut_bound(DEFAULT, Some(0), deep, 0, 1).expect("a deep null-window node is admitted");
     assert!(raised > 1, "the raised beta {raised} is not above beta");
 
     assert_eq!(
-        probcut_bound(None, deep, 0, 1),
+        probcut_bound(DEFAULT, None, deep, 0, 1),
         None,
         "no static reading, which is in check"
     );
     assert_eq!(
-        probcut_bound(Some(0), deep, -100, 100),
+        probcut_bound(DEFAULT, Some(0), deep, -100, 100),
         None,
         "a full window"
     );
-    assert_eq!(probcut_bound(Some(0), 0, 0, 1), None, "the horizon");
+    assert_eq!(
+        probcut_bound(DEFAULT, Some(0), 0, 0, 1),
+        None,
+        "the horizon"
+    );
 
     let beta = mate_in(3);
     assert_eq!(
-        probcut_bound(Some(0), deep, beta - 1, beta),
+        probcut_bound(DEFAULT, Some(0), deep, beta - 1, beta),
         None,
         "beta on the mate scale"
     );
     let beta = MATE_IN_MAX_PLY - 1;
     assert_eq!(
-        probcut_bound(Some(0), deep, beta - 1, beta),
+        probcut_bound(DEFAULT, Some(0), deep, beta - 1, beta),
         None,
         "a raised beta that crosses onto the mate scale"
     );
 
     // Admission is a floor on depth: once a depth admits, every deeper one does.
     let first = (0..=deep)
-        .find(|&d| probcut_bound(Some(0), d, 0, 1).is_some())
+        .find(|&d| probcut_bound(DEFAULT, Some(0), d, 0, 1).is_some())
         .expect("some depth admits");
     assert!(
-        (first..=deep).all(|d| probcut_bound(Some(0), d, 0, 1).is_some()),
+        (first..=deep).all(|d| probcut_bound(DEFAULT, Some(0), d, 0, 1).is_some()),
         "admission is not monotone in depth"
     );
 }

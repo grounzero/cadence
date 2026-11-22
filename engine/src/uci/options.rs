@@ -99,6 +99,7 @@ impl Session {
             // `ucinewgame`'s table half, under the name a GUI's button sends.
             self.stop_search();
             self.tt.clear();
+            self.clear_learned();
         } else if name.eq_ignore_ascii_case("SyzygyPath") {
             self.set_syzygy_path(path);
         } else if name.eq_ignore_ascii_case("Use NNUE") {
@@ -270,6 +271,7 @@ impl Session {
         if self.evaluator() != before {
             self.stop_search();
             self.tt.clear();
+            self.clear_learned();
         }
     }
 
@@ -343,7 +345,10 @@ impl Session {
         // `bestmove` comes at once, and two tables are never resident.
         self.stop_search();
         match Table::new(mb) {
-            Some(table) => self.tt = Arc::new(table),
+            Some(table) => {
+                self.tt = Arc::new(table);
+                self.clear_learned();
+            }
             None => say(format_args!(
                 "info string setoption Hash: {mb} MB could not be allocated, keeping {} MB",
                 self.tt.bytes() >> 20

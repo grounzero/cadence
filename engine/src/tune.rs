@@ -7,7 +7,9 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::search::{LMP_MULTIPLIER, REVERSE_FUTILITY_MARGIN};
+use crate::search::{
+    ASPIRATION_DELTA, FUTILITY_MARGIN, LMP_MULTIPLIER, PROBCUT_MARGIN, REVERSE_FUTILITY_MARGIN,
+};
 
 /// The search reads integers only, so a float is converted once, here.
 pub const MILLI: i32 = 1000;
@@ -17,6 +19,9 @@ pub const MILLI: i32 = 1000;
 pub enum Tunable {
     ReverseFutilityMargin,
     LmpMultiplier,
+    FutilityMargin,
+    ProbcutMargin,
+    AspirationDelta,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,8 +58,8 @@ pub const PARAMS: &[Param] = &[
         default: REVERSE_FUTILITY_MARGIN,
         hce: 150,
         min: 50,
-        max: 300,
-        c_end: 12.5,
+        max: 400,
+        c_end: 17.5,
         r_end: 0.002,
     },
     Param {
@@ -66,6 +71,39 @@ pub const PARAMS: &[Param] = &[
         min: 0,
         max: 2 * MILLI,
         c_end: 0.1,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::FutilityMargin,
+        name: "futility_margin",
+        kind: Kind::Int,
+        default: FUTILITY_MARGIN,
+        hce: 150,
+        min: 50,
+        max: 400,
+        c_end: 17.5,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::ProbcutMargin,
+        name: "probcut_margin",
+        kind: Kind::Int,
+        default: PROBCUT_MARGIN,
+        hce: 100,
+        min: 25,
+        max: 250,
+        c_end: 11.25,
+        r_end: 0.002,
+    },
+    Param {
+        tunable: Tunable::AspirationDelta,
+        name: "aspiration_delta",
+        kind: Kind::Int,
+        default: ASPIRATION_DELTA,
+        hce: 24,
+        min: 8,
+        max: 64,
+        c_end: 2.8,
         r_end: 0.002,
     },
 ];

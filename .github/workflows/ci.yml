@@ -340,7 +340,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=900
+          floor=940
           [ "$passed" -ge "$floor" ] || { echo "::error::only $passed tests passed, under the floor of $floor"; exit 1; }
           # A floor far under the count would pass a run that lost a whole test file, so it is kept near.
           [ $((passed - 40)) -lt "$floor" ] \
@@ -438,18 +438,20 @@ jobs:
         run: |
           bin="$PWD/target/release/cadence"
           if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -w "$bin.exe"); fi
+          # Both read lines only a test build prints.
           skip=every_search_thread_is_given_the_primary_s_limits_and_tunables
+          skip2=every_thread_s_histories_come_back_for_the_next_go
           listed=$(cargo test --locked -p cadence-engine --tests $CONFIG_ARG -- --list 2>/dev/null \
             | grep -c ': test$')
           CADENCE_BIN="$bin" cargo test --locked -p cadence-engine --tests $CONFIG_ARG \
-            -- --exact --skip "$skip" 2>&1 | tee release-uci.log
+            -- --exact --skip "$skip" --skip "$skip2" 2>&1 | tee release-uci.log
           status=${PIPESTATUS[0]}
           read -r passed ignored skipped < <(grep -h '^test result:' release-uci.log \
             | awk '{p += $4; i += $8; s += $12} END {print p + 0, i + 0, s + 0}')
           echo "### Engine tests on the release binary" >> "$GITHUB_STEP_SUMMARY"
           echo "$passed passed, $ignored ignored, $skipped skipped, of $listed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          [ "$skipped" -eq 1 ] || { echo "::error::the skip matched $skipped tests and not one"; exit 1; }
+          [ "$skipped" -eq 2 ] || { echo "::error::the skips matched $skipped tests and not two"; exit 1; }
           [ $((passed + ignored + skipped)) -eq "$listed" ] \
             || { echo "::error::$passed passed, $ignored ignored and $skipped skipped of $listed"; exit 1; }
 
