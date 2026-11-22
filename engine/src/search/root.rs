@@ -72,6 +72,7 @@ impl Search<'_> {
             // Each line skips the moves the lines before it took.
             let wanted = self.multipv.min(root_moves.len());
             self.run.lines.clear();
+            self.run.iteration_nodes.clear();
             let mut partial = (root_moves[0], -INFINITE);
             for _ in 0..wanted {
                 let (best, score) =
@@ -113,6 +114,11 @@ impl Search<'_> {
             // Only accepted iterations reach here, so a run of equal moves is a run of completed
             // ones.
             self.run.roots.push((best, score));
+            let shares = (
+                best_share(&self.run.iteration_nodes, best),
+                best_share(&self.run.search_nodes, best),
+            );
+            self.run.shares.push(shares);
             self.run.pv.clear();
             self.run.pv.extend_from_slice(&self.run.lines[0].pv);
             for number in 1..=self.run.lines.len().min(self.shown) {
@@ -275,6 +281,7 @@ impl Search<'_> {
                 best = m;
             }
             self.name_current(m, i + 1, legal, out);
+            let before = self.run.nodes;
             self.make(board, 0, m);
             // The root extends a checking move like any node.
             let ext = extension(board.in_check(), 1, depth);
@@ -291,6 +298,9 @@ impl Search<'_> {
                 score = -self.negamax(board, child, 1, -beta, -alpha, open);
             }
             board.unmake_move(m);
+            let spent = self.run.nodes - before;
+            credit(&mut self.run.iteration_nodes, m, spent);
+            credit(&mut self.run.search_nodes, m, spent);
             searched += 1;
             if self.run.aborted {
                 break;
@@ -309,4 +319,26 @@ impl Search<'_> {
         }
         (best, best_score)
     }
+}
+
+/// Every search of a root move adds to its count, the windows an aspiration widened included.
+fn credit(counts: &mut Vec<(Move, u64)>, m: Move, nodes: u64) {
+    match counts.iter_mut().find(|(c, _)| *c == m) {
+        Some((_, n)) => *n += nodes,
+        None => counts.push((m, nodes)),
+    }
+}
+
+/// Thousandths of the counted nodes that lay under `best`, and 0 where none were counted.
+fn best_share(root_nodes: &[(Move, u64)], best: Move) -> u32 {
+    let total: u64 = root_nodes.iter().map(|&(_, n)| n).sum();
+    let under: u64 = root_nodes
+        .iter()
+        .filter(|&&(m, _)| m == best)
+        .map(|&(_, n)| n)
+        .sum();
+    if total == 0 {
+        return 0;
+    }
+    u32::try_from(under.saturating_mul(1000) / total).unwrap_or(1000)
 }

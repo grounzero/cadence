@@ -212,6 +212,13 @@ struct Run {
     iterations: Vec<u64>,
     /// Kept under every limit: it costs no clock read and decides nothing.
     roots: Vec<(Move, Score)>,
+    /// Thousandths of each completed iteration's root nodes that lay under its best move, counting
+    /// the iteration alone and then the whole search so far, beside `roots`. Kept under every
+    /// limit, and read by nothing that decides anything.
+    shares: Vec<(u32, u32)>,
+    /// The nodes under each root move in this iteration's root searches, and in the whole search's.
+    iteration_nodes: Vec<(Move, u64)>,
+    search_nodes: Vec<(Move, u64)>,
     /// Best first once the iteration is accepted.
     lines: Vec<RootLine>,
     /// What a level samples among; separate from `lines`, which an aborted iteration leaves
@@ -231,6 +238,9 @@ impl Run {
             seldepth: 0,
             iterations: Vec::new(),
             roots: Vec::new(),
+            shares: Vec::new(),
+            iteration_nodes: Vec::new(),
+            search_nodes: Vec::new(),
             lines: Vec::new(),
             accepted: Vec::new(),
         }
@@ -246,6 +256,9 @@ impl Run {
         self.seldepth = 0;
         self.iterations.clear();
         self.roots.clear();
+        self.shares.clear();
+        self.iteration_nodes.clear();
+        self.search_nodes.clear();
         self.lines.clear();
         self.accepted.clear();
     }
