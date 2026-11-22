@@ -21,6 +21,10 @@ result.
 
 ### Added
 
+- Training: `cadence-train run --result-share-end F` moves the weight on the
+  game result on a line across the run, and `--from CHECKPOINT` with
+  `--lr-start F` continues a saved net at a lower first rate, which with a
+  result share of 1 is a final stage on the game result alone.
 - Tools: `cadence-tools convert --max-copies N` keeps at most N training
   copies of a position's network input, a position and its colour-flipped
   mirror counting as one, meets the games in an order the shuffle seed fixes
@@ -34,9 +38,19 @@ result.
   output bucket their piece count picks and by the result for the side to
   move, with what the in-check, capture and mate filters dropped beside
   them, and again by exact piece count.
+- Tools: `cadence-tools convert` takes four filters, each off unless asked
+  for and each drawing its random choices from the shuffle seed:
+  `--adjudicate` with `--adjudicate-share` cuts a share of games where
+  their scores decide them and keeps each game's own result,
+  `--piece-keep` thins positions by piece count to a table the manifest
+  names by its SHA-256, `--contradiction-skip` skips positions whose score
+  and result disagree, and `--mate-score` keeps mate-scored positions at a
+  ceiling.
 
 ### Changed
 
+- Tools: datagen keeps one set of search histories through each game, emptied
+  at the start of every game, so the same seed now gives different games.
 - Tools: datagen's searches stop at the end of the first iteration past
   their node count, with a cap far above it, and the chunk header, now
   format 2, and the provenance line name the cap. The converter still reads

@@ -14,7 +14,7 @@ use cadence_core::{generate_legal, parse_uci};
 use cadence_dataset::chunk::{Chunk, GameRecord, Header, NO_SCORE, chunk_name, encode_move};
 use cadence_dataset::constants::{FIRST_PLY, LAST_PLY, MATE_BOUND, RANDOM_PLIES};
 use cadence_dataset::sha256::{hex, sha256};
-use cadence_dataset::trainer::{DRAW, RECORD_LEN, encode};
+use cadence_dataset::trainer::{DRAW, LOSS, RECORD_LEN, WIN, encode};
 
 /// One fault planted in a dataset directory.
 type Fault = fn(&Path);
@@ -1024,4 +1024,222 @@ fn a_report_sample_leaves_the_records_as_they_were() {
         manifest_text.contains("report figures by key and input from 1 key in 4"),
         "{manifest_text}"
     );
+}
+
+/// A record's score and its result for the mover, read from the layout.
+fn label(record: &[u8]) -> (i16, u8) {
+    (i16::from_le_bytes([record[24], record[25]]), record[26])
+}
+
+fn all_records(unit: &Path) -> Vec<Vec<u8>> {
+    let mut all = records(&unit.join("train.bin"));
+    all.extend(records(&unit.join("holdout.bin")));
+    all
+}
+
+/// Twelve games whose scores give White 30 until ply 19 and 800 from ply 20, so a rule of 750 over
+/// 6 plies holds at ply 25 in each; a third of them are White's win by their own result.
+fn decided_games() -> Vec<GameRecord> {
+    let mut chunk = games(21, 12, |_| 1);
+    for record in &mut chunk {
+        assert!(record.moves.len() > 30, "a game too short to cut");
+        for (ply, m) in record.moves.iter_mut().enumerate() {
+            let white = if ply < 20 { 30 } else { 800 };
+            m.1 = if ply % 2 == 0 { white } else { -white };
+        }
+    }
+    chunk
+}
+
+/// A cut drops every position after the ply the rule holds at and nothing before it, counts the
+/// games whose own result the rule did not name, and leaves each kept record its game's result.
+#[test]
+fn a_game_is_cut_after_its_scores_hold_the_rule_and_keeps_its_result() {
+    let dir = scratch("cut");
+    let chunk = decided_games();
+    let manifest = dataset(&dir.join("data"), 21, std::slice::from_ref(&chunk));
+    let (ok, plain, units) = convert(&[&manifest], &dir.join("plain"), &["--shuffle-seed", "5"]);
+    assert!(ok, "{plain}");
+    let before = all_records(&units[0]);
+    let flags = ["--shuffle-seed", "5", "--adjudicate", "750,6,10,12"];
+    let (ok, text, units) = convert(&[&manifest], &dir.join("cut"), &flags);
+    assert!(ok, "{text}");
+    let after = all_records(&units[0]);
+    let filters = std::fs::read_to_string(units[0].join("MANIFEST.tsv")).expect("a manifest");
+    let _ = std::fs::remove_dir_all(&dir);
+    let dropped: usize = chunk.iter().map(|r| r.moves.len() - 26).sum();
+    let line = format!(
+        "  standard adjudication rule held in games as a win 12 as a draw 0, against the game's \
+         result 8; games cut 12, positions after the cut dropped {dropped}\n"
+    );
+    assert!(text.contains(&line), "{line}\n{text}");
+    assert!(!plain.contains("adjudication"), "{plain}");
+    let late = |r: &Vec<u8>| label(r).0.unsigned_abs() == 800;
+    assert_eq!(
+        after.len(),
+        before.iter().filter(|r| !late(r)).count() + after.iter().filter(|r| late(r)).count()
+    );
+    assert!(after.iter().filter(|r| late(r)).count() < before.iter().filter(|r| late(r)).count());
+    assert!(
+        after.iter().any(|r| label(r) == (30, LOSS)),
+        "no record kept the result of a game the rule called for White and Black won"
+    );
+    assert!(
+        filters
+            .contains("100% of games cut after 750 cp over 6 plies or under 10 cp over 12 plies"),
+        "{filters}"
+    );
+}
+
+/// The share of games cut is drawn from the shuffle seed: the same seed cuts the same games, and a
+/// share of half cuts some and not all.
+#[test]
+fn the_share_of_games_cut_is_drawn_from_the_shuffle_seed() {
+    let dir = scratch("cut-share");
+    let manifest = dataset(&dir.join("data"), 22, &[decided_games()]);
+    let flags = [
+        "--shuffle-seed",
+        "5",
+        "--adjudicate",
+        "750,6,10,12",
+        "--adjudicate-share",
+        "50",
+    ];
+    let (ok, first, a) = convert(&[&manifest], &dir.join("a"), &flags);
+    assert!(ok, "{first}");
+    let (ok, second, b) = convert(&[&manifest], &dir.join("b"), &flags);
+    assert!(ok, "{second}");
+    let same = std::fs::read(a[0].join("train.bin")).expect("reads")
+        == std::fs::read(b[0].join("train.bin")).expect("reads");
+    let (refused, why, _) = convert(
+        &[&manifest],
+        &dir.join("c"),
+        &["--shuffle-seed", "5", "--adjudicate-share", "50"],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(same, "one seed cut different games");
+    assert!(
+        !refused && why.contains("--adjudicate-share needs --adjudicate"),
+        "{why}"
+    );
+    let cut: u32 = first
+        .split("standard adjudication")
+        .nth(1)
+        .expect("the standard games' row")
+        .split("games cut ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|n| n.parse().ok())
+        .expect("the count of games cut");
+    assert!((1..12).contains(&cut), "half of twelve games cut {cut}");
+}
+
+/// A piece count the table keeps none of leaves no record, the rest are untouched in number, and
+/// the manifest names the table by its SHA-256.
+#[test]
+fn a_piece_count_is_thinned_to_its_table_and_the_table_is_named() {
+    let dir = scratch("thin");
+    let manifest = dataset(&dir.join("data"), 23, &[games(23, 20, |_| 0)]);
+    let table = dir.join("keep.txt");
+    std::fs::write(&table, "# pieces percent\n32 0\n").expect("writes");
+    let digest = hex(&sha256(&std::fs::read(&table).expect("reads")));
+    let flags = [
+        "--shuffle-seed",
+        "5",
+        "--piece-keep",
+        table.to_str().expect("a path"),
+    ];
+    let (ok, text, units) = convert(&[&manifest], &dir.join("out"), &flags);
+    assert!(ok, "{text}");
+    let filters = std::fs::read_to_string(units[0].join("MANIFEST.tsv")).expect("a manifest");
+    let (ok, plain, _) = convert(&[&manifest], &dir.join("plain"), &["--shuffle-seed", "5"]);
+    assert!(ok, "{plain}");
+    std::fs::write(&table, "40 50\n").expect("writes");
+    let (refused, why, _) = convert(&[&manifest], &dir.join("bad"), &flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    let full = |report: &str| -> String {
+        let row = report
+            .lines()
+            .find(|l| l.contains("uniform kept by pieces from 2 to 32"))
+            .expect("the row by piece count");
+        row.rsplit("; ").next().expect("the last count").to_string()
+    };
+    assert_eq!(full(&text), "0 0 0", "{text}");
+    assert_ne!(
+        full(&plain),
+        "0 0 0",
+        "the games never held 32 pieces in the window"
+    );
+    assert!(
+        !text.contains("uniform thinned by piece count 0\n"),
+        "{text}"
+    );
+    assert!(
+        filters.contains(&format!("kept by piece count from the table {digest}")),
+        "{filters}"
+    );
+    assert!(
+        !refused && why.contains("is not a piece count from 2 to 32"),
+        "{why}"
+    );
+}
+
+/// At a slope of 1 a score of 40 or more is a certain win or loss, so a record whose result says
+/// the opposite is always skipped and one that agrees never is.
+#[test]
+fn a_position_whose_score_contradicts_its_result_is_skipped() {
+    let dir = scratch("skip");
+    let manifest = dataset(&dir.join("data"), 24, &[games(24, 30, |_| 0)]);
+    let (ok, plain, units) = convert(&[&manifest], &dir.join("plain"), &["--shuffle-seed", "5"]);
+    assert!(ok, "{plain}");
+    let before = all_records(&units[0]);
+    let flags = ["--shuffle-seed", "5", "--contradiction-skip", "1"];
+    let (ok, text, units) = convert(&[&manifest], &dir.join("out"), &flags);
+    assert!(ok, "{text}");
+    let after = all_records(&units[0]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let clear = |r: &&Vec<u8>| label(r).0.unsigned_abs() >= 40 && label(r).1 != DRAW;
+    let agrees = |r: &&Vec<u8>| (label(r).0 > 0) == (label(r).1 == WIN);
+    assert!(
+        before.iter().filter(clear).any(|r| !agrees(&r)),
+        "no contradiction was planted"
+    );
+    assert!(
+        after.iter().filter(clear).all(|r| agrees(&r)),
+        "a contradicted record was kept"
+    );
+    assert_eq!(
+        after.iter().filter(clear).count(),
+        before.iter().filter(clear).filter(agrees).count(),
+        "a record whose labels agree was skipped"
+    );
+    let skipped = before.len() - after.len();
+    assert!(
+        text.contains(&format!("uniform contradiction-skipped {skipped}\n")),
+        "{text}"
+    );
+}
+
+/// A mate score is dropped without the flag and kept at the ceiling with it, its sign its own.
+#[test]
+fn a_mate_score_is_kept_at_the_ceiling_it_is_given() {
+    let dir = scratch("mates");
+    let manifest = dataset(&dir.join("data"), 25, &[games(25, 30, |_| 0)]);
+    let (ok, plain, units) = convert(&[&manifest], &dir.join("plain"), &["--shuffle-seed", "5"]);
+    assert!(ok, "{plain}");
+    let before = all_records(&units[0]);
+    let flags = ["--shuffle-seed", "5", "--mate-score", "2000"];
+    let (ok, text, units) = convert(&[&manifest], &dir.join("out"), &flags);
+    assert!(ok, "{text}");
+    let after = all_records(&units[0]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let mates = after.iter().filter(|r| label(r).0 == 2000).count();
+    assert!(mates > 0, "no planted mate reached the window");
+    assert_eq!(after.len(), before.len() + mates);
+    assert!(before.iter().all(|r| label(r).0.unsigned_abs() < 2000));
+    assert!(
+        text.contains(&format!("uniform mates kept {mates}\n")),
+        "{text}"
+    );
+    assert!(text.contains(" mate 0 "), "{text}");
 }

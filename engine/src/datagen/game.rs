@@ -11,7 +11,7 @@ use cadence_core::{Colour, Move, generate_legal};
 
 use crate::position::Position;
 use crate::score::Score;
-use crate::search::{Limits, Search};
+use crate::search::{Learned, Limits, Search};
 use crate::tt::Table;
 
 /// Every variant is a rule of chess.
@@ -121,8 +121,10 @@ pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Option<Score> {
     label(&search)
 }
 
-/// The same board and node counts give the same game, whatever `tt` held before. Each move's search
-/// stops at the end of the first iteration past `nodes`, or at once at `cap`.
+/// The same board and node counts give the same game, whatever `tt` or an earlier game left behind;
+/// each move's search stops at the end of the first iteration past `nodes`, or at once at `cap`. One
+/// set of histories is lent to every search of the game, so each move starts from what the moves
+/// before it learned, and the first from empty tables.
 ///
 /// # Panics
 ///
@@ -136,14 +138,12 @@ pub fn play(board: &mut Position, nodes: u64, cap: u64, tt: &Table) -> Played {
         nodes: Some(cap),
         ..Limits::default()
     });
+    let mut learned = Learned::new();
+    search.swap_learned(&mut learned);
     let mut moves = Vec::new();
-    loop {
-        if let Some((ending, outcome)) = ending(board) {
-            return Played {
-                moves,
-                ending,
-                outcome,
-            };
+    let (ending, outcome) = loop {
+        if let Some(end) = ending(board) {
+            break end;
         }
         let best = search.run(board, &mut io::sink());
         assert!(
@@ -152,6 +152,12 @@ pub fn play(board: &mut Position, nodes: u64, cap: u64, tt: &Table) -> Played {
         );
         moves.push((best, label(&search)));
         board.play(best);
+    };
+    search.swap_learned(&mut learned);
+    Played {
+        moves,
+        ending,
+        outcome,
     }
 }
 
