@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
+
 use cadence_core::{Move, START_FEN, generate_legal};
 use cadence_engine::position::Position;
 use cadence_engine::search::Limits;
