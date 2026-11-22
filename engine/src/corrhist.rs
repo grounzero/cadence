@@ -42,6 +42,13 @@ impl CorrectionHistory {
         self.slots.fill(0);
     }
 
+    /// For the gates: whether every entry reads as a new table's.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn is_clear(&self) -> bool {
+        self.slots.iter().all(|&v| v == 0)
+    }
+
     #[must_use]
     pub fn correction(&self, pawn_key: u64, side: Colour) -> Score {
         let stored = self.slots[Self::index(pawn_key, side)];
