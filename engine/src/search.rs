@@ -199,8 +199,11 @@ impl Heuristics {
 struct Run {
     nodes: u64,
     /// An unfinished iteration's result stands if it is the first, or if its move beat its window's
-    /// floor.
+    /// floor and no ponderhit refused the iteration.
     aborted: bool,
+    /// Set where a ponderhit stops an iteration a fresh search with the same times would not have
+    /// started, so the last completed iteration answers.
+    refused_at_hit: bool,
     completed_depth: u32,
     best: Move,
     score: Score,
@@ -228,6 +231,7 @@ impl Run {
         Run {
             nodes: 0,
             aborted: false,
+            refused_at_hit: false,
             completed_depth: 0,
             best: Move::NULL,
             score: ABORTED,
@@ -244,6 +248,7 @@ impl Run {
     fn clear(&mut self) {
         self.nodes = 0;
         self.aborted = false;
+        self.refused_at_hit = false;
         self.completed_depth = 0;
         self.best = Move::NULL;
         self.score = ABORTED;

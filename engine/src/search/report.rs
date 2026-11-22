@@ -42,7 +42,24 @@ impl Search<'_> {
 
     /// `multipv` is left out at one line, which is what every rating list reads.
     pub(super) fn report(&self, board: &mut Position, number: usize, out: &mut dyn Write) {
-        self.write_line(board, &self.run.lines[number - 1], number, out);
+        self.write_line(board, &self.run.lines[number - 1], number, "", out);
+    }
+
+    /// The move a stopped iteration put in place of the completed one's, at the depth last
+    /// completed, so the last line a GUI reads is the move played. Its score beat the window's
+    /// floor and bounds the root from below, except where the tables ranked the root.
+    pub(super) fn report_unfinished(&self, board: &mut Position, out: &mut dyn Write) {
+        let played = RootLine {
+            mv: self.run.best,
+            score: self.run.score,
+            pv: self.run.pv.clone(),
+        };
+        let bound = if self.root_rank.is_none() {
+            " lowerbound"
+        } else {
+            ""
+        };
+        self.write_line(board, &played, 1, bound, out);
     }
 
     /// After `sample`, the set it drew from as `info string` lines, and the played move's own line
@@ -66,7 +83,7 @@ impl Search<'_> {
                 .iter()
                 .find(|line| line.mv == self.run.best)
         {
-            self.write_line(board, played, 1, out);
+            self.write_line(board, played, 1, "", out);
         }
         let _ = out.flush();
     }
@@ -76,11 +93,13 @@ impl Search<'_> {
         self.root_rank.map_or(score, |rank| rank.reported(score))
     }
 
+    /// `bound` follows the score, empty for an exact one.
     fn write_line(
         &self,
         board: &mut Position,
         reported: &RootLine,
         number: usize,
+        bound: &str,
         out: &mut dyn Write,
     ) {
         let ms = self.reported_ms();
@@ -95,7 +114,7 @@ impl Search<'_> {
             .tables
             .map_or(String::new(), |tables| format!(" tbhits {}", tables.hits()));
         let mut line = format!(
-            "info depth {} seldepth {}{numbered} score {} nodes {} nps {nps} hashfull {}{tbhits} time {ms} pv",
+            "info depth {} seldepth {}{numbered} score {}{bound} nodes {} nps {nps} hashfull {}{tbhits} time {ms} pv",
             self.run.completed_depth,
             self.run.seldepth,
             score::uci(self.shown_score(reported.score)),

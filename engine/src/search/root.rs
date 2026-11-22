@@ -98,8 +98,8 @@ impl Search<'_> {
                         self.run.score = if score == -INFINITE { ABORTED } else { score };
                         self.run.pv.push(best);
                     }
-                } else {
-                    self.keep_unfinished(partial);
+                } else if self.keep_unfinished(partial) {
+                    self.report_unfinished(board, out);
                 }
                 break;
             }
@@ -198,18 +198,21 @@ impl Search<'_> {
         self.run.pv.extend_from_slice(&line.pv);
     }
 
-    /// The unfinished iteration's move replaces the completed one's only where its score beat the
-    /// floor of its window. At or under the floor it may be a fail low's bound, and proves nothing.
-    fn keep_unfinished(&mut self, partial: (Move, Score, Score)) {
+    /// True where the unfinished iteration's move replaced the completed one's, which it does only
+    /// where its score beat its window's floor and no ponderhit refused the iteration. At or under
+    /// the floor it may be a fail low's bound, and a refused iteration is one a fresh search would
+    /// not have run.
+    fn keep_unfinished(&mut self, partial: (Move, Score, Score)) -> bool {
         self.run.unfinished = Some(partial);
         let (best, score, floor) = partial;
-        if self.multipv > 1 || score <= floor {
-            return;
+        if self.multipv > 1 || score <= floor || self.run.refused_at_hit {
+            return false;
         }
         self.run.best = best;
         self.run.score = score;
         self.run.pv.clear();
         self.run.pv.extend_from_slice(self.table.line(0));
+        true
     }
 
     /// Only where the root reports one line: at `MultiPV` above one the later lines are bounded
