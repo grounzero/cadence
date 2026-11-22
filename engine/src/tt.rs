@@ -299,8 +299,8 @@ impl Table {
             };
             if word0 ^ word1 == key {
                 // A deeper result is kept against a shallower bound, which tells the next probe
-                // less.
-                if depth < hit.depth && bound != Bound::Exact {
+                // less, and against a depth-0 store, which keeps only a move.
+                if depth < hit.depth && (bound != Bound::Exact || depth == 0) {
                     return;
                 }
                 slot.write(key, fresh);
@@ -312,6 +312,10 @@ impl Table {
                 worst = worth;
                 victim = i;
             }
+        }
+        // A depth-0 store keeps only a move, so it takes no slot that still holds a deeper result.
+        if depth == 0 && worst > 0 {
+            return;
         }
         bucket.slots[victim].write(key, fresh);
     }
