@@ -685,10 +685,11 @@ mod tests {
     use cadence_core::position::Board;
     use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 
+    use super::mate_window;
     use crate::conthist;
     use crate::eval;
     use crate::position::Position;
-    use crate::score::Score;
+    use crate::score::{INFINITE, MATE_IN_MAX_PLY, Score, mate_in, mated_in};
     use crate::search::{Call, Expected, Search, Via};
     use crate::tt::{Bound, Table};
 
@@ -946,5 +947,87 @@ mod tests {
             written(root_frame),
             "no node below the null move read the root's move"
         );
+    }
+
+    /// A ply clear of both ends, so the bounds below are `mated_in(3)` = -31,997 and `mate_in(4)` =
+    /// 31,996.
+    const PLY: usize = 3;
+
+    #[test]
+    fn a_full_window_is_narrowed_to_being_mated_here_and_mating_next() {
+        assert_eq!(
+            mate_window(1, -INFINITE, INFINITE),
+            Ok((mated_in(1), mate_in(2)))
+        );
+        assert_eq!(mate_window(1, -INFINITE, INFINITE), Ok((-31_999, 31_998)));
+        // Inside both bounds nothing moves.
+        assert_eq!(mate_window(PLY, -100, 100), Ok((-100, 100)));
+    }
+
+    #[test]
+    fn a_beta_at_or_below_being_mated_here_is_answered_by_that_bound() {
+        let worst = mated_in(PLY);
+        assert_eq!(mate_window(PLY, -INFINITE, worst), Err(worst));
+        assert_eq!(mate_window(PLY, -INFINITE, worst), Err(-31_997));
+        assert_eq!(mate_window(PLY, -INFINITE, worst - 1), Err(worst));
+    }
+
+    #[test]
+    fn an_alpha_at_or_above_mating_next_is_answered_by_that_bound() {
+        let best = mate_in(PLY + 1);
+        assert_eq!(mate_window(PLY, best, INFINITE), Err(best));
+        assert_eq!(mate_window(PLY, best, INFINITE), Err(31_996));
+        assert_eq!(mate_window(PLY, best + 1, INFINITE), Err(best));
+    }
+
+    /// An open window the clamp would leave one point wide stays as it was, at either end; one it
+    /// would leave two points wide is narrowed.
+    #[test]
+    fn an_open_window_is_never_narrowed_to_one_point() {
+        let (worst, best) = (mated_in(PLY), mate_in(PLY + 1));
+        assert_eq!(
+            mate_window(PLY, best - 1, INFINITE),
+            Ok((best - 1, INFINITE))
+        );
+        assert_eq!(
+            mate_window(PLY, -INFINITE, worst + 1),
+            Ok((-INFINITE, worst + 1))
+        );
+        assert_eq!(mate_window(PLY, best - 2, INFINITE), Ok((best - 2, best)));
+        assert_eq!(mate_window(PLY, best - 2, INFINITE), Ok((31_994, 31_996)));
+        assert_eq!(
+            mate_window(PLY, -INFINITE, worst + 2),
+            Ok((worst, worst + 2))
+        );
+        assert_eq!(
+            mate_window(PLY, -INFINITE, worst + 2),
+            Ok((-31_997, -31_995))
+        );
+    }
+
+    /// The deepest ply a node reaches the table at, since a node at `MAX_PLY` returns before it.
+    /// Mating at the next ply there is `mate_in(MAX_PLY)`, the edge of the mate range.
+    #[test]
+    fn the_deepest_ply_bounds_the_window_at_the_edge_of_the_mate_range() {
+        let ply = MAX_PLY - 1;
+        let (worst, best) = (-MATE_IN_MAX_PLY - 1, MATE_IN_MAX_PLY);
+        assert_eq!((worst, best), (-31_745, 31_744));
+        assert_eq!((mated_in(ply), mate_in(ply + 1)), (worst, best));
+        assert_eq!(mate_window(ply, -INFINITE, INFINITE), Ok((worst, best)));
+        assert_eq!(mate_window(ply, -INFINITE, worst), Err(worst));
+        assert_eq!(mate_window(ply, best, INFINITE), Err(best));
+        assert_eq!(mate_window(ply, worst, worst + 1), Ok((worst, worst + 1)));
+        assert_eq!(mate_window(ply, best - 1, best), Ok((best - 1, best)));
+    }
+
+    /// A null window touching a bound from outside is answered by it, and one just inside passes
+    /// through unchanged.
+    #[test]
+    fn a_null_window_is_answered_at_a_bound_and_unchanged_just_inside_it() {
+        let (worst, best) = (mated_in(PLY), mate_in(PLY + 1));
+        assert_eq!(mate_window(PLY, worst - 1, worst), Err(worst));
+        assert_eq!(mate_window(PLY, best, best + 1), Err(best));
+        assert_eq!(mate_window(PLY, worst, worst + 1), Ok((worst, worst + 1)));
+        assert_eq!(mate_window(PLY, best - 1, best), Ok((best - 1, best)));
     }
 }
