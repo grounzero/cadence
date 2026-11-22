@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 pub mod accumulator;
+#[cfg(any(feature = "simd-wide", feature = "simd-pulp"))]
+pub mod diag;
 pub mod eval;
 pub mod net;
 

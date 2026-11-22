@@ -12,6 +12,17 @@ name = "cadence_nnue"
 
 [dependencies]
 cadence-core = { path = "../core" }
+# Diagnostic only: the two safe SIMD libraries timed against the portable loops.
+wide = { version = "=1.7.1", optional = true }
+pulp = { version = "=0.22.3", optional = true }
+
+[features]
+simd-wide = ["dep:wide"]
+simd-pulp = ["dep:pulp"]
+
+[[example]]
+name              = "diag_safe_simd"
+required-features = ["simd-wide", "simd-pulp"]
 
 [lints]
 workspace = true

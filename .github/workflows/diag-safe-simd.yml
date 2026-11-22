@@ -1,0 +1,176 @@
+# A diagnostic, run by hand: the accumulator update and the output layer timed as the crate
+# computes them and through two safe SIMD libraries, after a bit-for-bit check of all three.
+
+name: diag-safe-simd
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [diag-safe-simd]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  measure:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86-64 AVX2
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            name: x86-64 generic
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-generic.toml
+          - os: ubuntu-24.04-arm
+            name: aarch64 Linux
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            name: aarch64 Apple
+            target: aarch64-apple-darwin
+    env:
+      CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml pins the version; this installs it as a visible step.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version --verbose
+          cargo --version
+
+      - name: Assert the runner's triple and show its CPU
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "host triple: $host"
+          [ "$host" = "${{ matrix.target }}" ] \
+            || { echo "::error::expected ${{ matrix.target }}, runner is $host"; exit 1; }
+          if [ -r /proc/cpuinfo ]; then
+            lscpu | grep -E 'Model name|^CPU\(s\)|Flags' | cut -c1-400 || true
+          else
+            sysctl -n machdep.cpu.brand_string hw.ncpu || true
+          fi
+
+      # The lock file does not name the two libraries, so this resolves them and is not `--locked`.
+      - name: Build the measurement, release profile and the repository's per-target flags
+        run: |
+          cargo build --release -p cadence-nnue --example diag_safe_simd \
+            --features simd-wide,simd-pulp $CONFIG_ARG
+          cargo tree -p cadence-nnue --features simd-wide,simd-pulp -e normal --depth 1
+
+      - name: Five fresh processes
+        run: |
+          set -euo pipefail
+          mkdir -p diag-out
+          for i in 1 2 3 4 5; do
+            echo "== run $i"
+            ./target/release/examples/diag_safe_simd | tee "diag-out/run-$i.txt"
+          done
+
+      - name: Summarise
+        env:
+          LEG: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, os, re, statistics as st
+          runs = sorted(glob.glob("diag-out/run-*.txt"))
+          head, rows = [], {}
+          for i, path in enumerate(runs):
+              for line in open(path):
+                  if i == 0 and line.split(":")[0] in ("target", "pulp", "net", "check"):
+                      head.append(line.strip())
+                  m = re.match(r"RESULT variant=(\S+) ns_update=(\S+) ns_eval=(\S+)", line)
+                  if m:
+                      rows.setdefault(m[1], []).append((float(m[2]), float(m[3])))
+          print(f"### {os.environ['LEG']}: {len(runs)} processes\n")
+          for h in head:
+              print(f"- {h}")
+          print()
+          print("| variant | ns/update median | min | max | ratio | ns/evaluate median | min | max | ratio |")
+          print("|---|---|---|---|---|---|---|---|---|")
+          base = rows["baseline"]
+          for name, vals in rows.items():
+              cells = [name]
+              for k in (0, 1):
+                  xs = [v[k] for v in vals]
+                  ratio = st.median(v[k] / b[k] for v, b in zip(vals, base))
+                  cells += [f"{st.median(xs):.2f}", f"{min(xs):.2f}", f"{max(xs):.2f}", f"{ratio:.3f}"]
+              print("| " + " | ".join(cells) + " |")
+          print("\nratio: the median over processes of the variant's time over the baseline's in the same process; below 1 is faster.\n")
+          EOF
+
+      # Optional: the vector instructions in each timed function, from a build without LTO so the
+      # generic kernels are compiled in the example and keep their own symbols.
+      - name: Instruction mix of the timed functions
+        continue-on-error: true
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "off"
+        run: |
+          set -euo pipefail
+          cargo rustc --release -p cadence-nnue --example diag_safe_simd \
+            --features simd-wide,simd-pulp $CONFIG_ARG --target-dir target/asm -- --emit asm
+          asm=$(find target/asm -name 'diag_safe_simd*.s' | head -n 1)
+          echo "assembly: $asm"
+          python3 - "$asm" <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import collections, re, sys
+          def name(sym):
+              s = sym.lstrip("_")
+              if not s.startswith("ZN"):
+                  return sym
+              s, parts = s[2:], []
+              while s and s[0].isdigit():
+                  n = int(re.match(r"\d+", s)[0])
+                  s = s[len(str(n)):]
+                  parts.append(s[:n])
+                  s = s[n:]
+              if parts and re.fullmatch(r"h[0-9a-f]{16}", parts[-1]):
+                  parts.pop()
+              return "::".join(parts)
+          want = re.compile(r"(baseline|wide|pulp)_(update|evaluate)$|imp_fastcall$|via_pulp::|via_wide::")
+          funcs, cur = {}, None
+          for line in open(sys.argv[1]):
+              m = re.match(r"^(_[\w.$]*):", line)
+              if m:
+                  cur = name(m[1])
+                  funcs.setdefault(cur, collections.Counter())
+                  continue
+              m = re.match(r"^\s+([a-z][\w.]*)\s*(.*)", line)
+              if cur and m and not m[1].startswith("."):
+                  c = funcs[cur]
+                  c["total"] += 1
+                  c[m[1]] += 1
+                  ops = m[2]
+                  c["#ymm"] += "ymm" in ops
+                  c["#xmm"] += "xmm" in ops
+                  c["#neon"] += bool(re.search(r"\bv\d+\.\d*[bhsd]\b", ops))
+          print("### instruction mix (no LTO)\n")
+          print("```")
+          for f, c in funcs.items():
+              if not want.search(f):
+                  continue
+              top = [k for k, _ in c.most_common() if not k.startswith("#") and k != "total"][:14]
+              print(f"{f}: {c['total']} instructions, {c['#ymm']} on ymm, {c['#xmm']} on xmm, {c['#neon']} on NEON vectors")
+              print("    " + " ".join(f"{k}={c[k]}" for k in top))
+          print("```")
+          EOF
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: diag-safe-simd-${{ matrix.target }}${{ matrix.config && '-generic' || '' }}
+          path: diag-out
