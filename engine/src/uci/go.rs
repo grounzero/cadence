@@ -390,8 +390,14 @@ fn probing_allowed(
     hard: Option<Duration>,
     on_hit: Option<(&PonderHit, Duration)>,
 ) -> bool {
-    let _ = on_hit;
-    !stop.load(Ordering::Relaxed) && hard.is_none_or(|hard| received.elapsed() < hard)
+    if stop.load(Ordering::Relaxed) {
+        return false;
+    }
+    // A ponder probes on until it is hit, and from the hit as a fresh search would.
+    if let Some((hit, hard)) = on_hit {
+        return hit.received().is_none_or(|at| at.elapsed() < hard);
+    }
+    hard.is_none_or(|hard| received.elapsed() < hard)
 }
 
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says

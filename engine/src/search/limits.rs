@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use cadence_core::Colour;
 
+use super::counters::run_of;
 use super::{CLOCK_INTERVAL, Search};
 use crate::time;
 
@@ -215,25 +216,37 @@ impl Search<'_> {
     /// The clock and the record are kept and the deadlines move by the time pondered, so every
     /// decision after the hit is a fresh search's over the same times. True when it absorbs one.
     pub(super) fn absorb_ponder_hit(&mut self) -> bool {
-        if !self.clock.pondering || self.ponder_hit.is_none_or(|h| h.received().is_none()) {
+        if !self.clock.pondering {
             return false;
         }
+        let Some(at) = self.ponder_hit.and_then(PonderHit::received) else {
+            return false;
+        };
         self.clock.pondering = false;
-        self.clock.hit_at = self.elapsed_ms();
+        let pondered = at.saturating_duration_since(self.clock.start).as_millis();
+        self.clock.hit_at = u64::try_from(pondered).unwrap_or(u64::MAX);
         self.clock.budget = self.clock.budget_on_hit;
         true
     }
 
-    /// The decision skipped while pondering, taken at the last completed iteration. With none, the
+    /// The decisions skipped while pondering, taken in order at each completed iteration as a
+    /// fresh search with the same times takes them, so the first refusal stops it. With none, the
     /// iteration running is the first and goes on.
-    fn would_have_started(&self) -> bool {
-        self.clock.budget.is_none_or(|b| {
+    pub(super) fn would_have_started(&self) -> bool {
+        let Some(b) = self.clock.budget else {
+            return true;
+        };
+        let (times, roots) = (&self.run.iterations, &self.run.roots);
+        // Matched from the last: each time has its iteration's root, which may follow older ones.
+        let older = roots.len().saturating_sub(times.len());
+        (1..=times.len()).all(|k| {
+            let roots = &roots[..older + k];
             time::starts_another(
                 &self.limits,
                 b,
-                &self.run.iterations,
-                self.stable_iterations(),
-                self.drop_scale(),
+                &times[..k],
+                run_of(roots),
+                self.drop_scale_of(roots),
                 self.clock.hit_at,
             )
         })
