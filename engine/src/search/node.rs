@@ -16,6 +16,7 @@ use crate::picker::{Picker, Tables};
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::tt::Bound;
+use lookup::Lookup;
 
 mod late_move;
 mod lookup;
@@ -112,8 +113,8 @@ impl Search<'_> {
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
         let (tt_move, tb) = match self.lookup(board, key, depth, ply, &mut alpha, &mut beta) {
-            Ok(found) => found,
-            Err(score) => return score,
+            Lookup::Search { tt_move, bounds } => (tt_move, bounds),
+            Lookup::Cutoff(score) => return score,
         };
 
         // Written even if unread here: a rule at `p + 2` compares against it.

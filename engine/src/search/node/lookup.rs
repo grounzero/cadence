@@ -68,9 +68,20 @@ impl Search<'_> {
     }
 }
 
+/// What the table and tablebase reads say about a node before its moves are generated.
+pub(super) enum Lookup {
+    /// The node's value, which the search returns at once.
+    Cutoff(Score),
+    /// The table's move to try first, and the floor and ceiling the node keeps.
+    Search {
+        tt_move: Move,
+        bounds: (Score, Score),
+    },
+}
+
 impl Search<'_> {
-    /// The mate bounds, which narrow the window in place, then the table and the tablebases: `Err`
-    /// is the node's value, and otherwise the table's move and the floor and ceiling it keeps.
+    /// The mate bounds, which narrow the window in place, then the table and the tablebases. The
+    /// node's value when one of them answers it, and otherwise what its search starts from.
     pub(super) fn lookup(
         &mut self,
         board: &Board,
@@ -79,20 +90,25 @@ impl Search<'_> {
         ply: usize,
         alpha: &mut Score,
         beta: &mut Score,
-    ) -> Result<(Move, (Score, Score)), Score> {
-        (*alpha, *beta) = mate_window(ply, *alpha, *beta)?;
+    ) -> Lookup {
+        (*alpha, *beta) = match mate_window(ply, *alpha, *beta) {
+            Ok(window) => window,
+            Err(score) => return Lookup::Cutoff(score),
+        };
         let (alpha, beta) = (*alpha, *beta);
         let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
         if let Some(score) = cutoff {
-            return Err(score);
+            return Lookup::Cutoff(score);
         }
         // Before any child is searched, since a child that fails low reads it, and before the
         // tablebases, whose stored entry reads it.
         self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
         // After the table, so a hit saves the probe, and before the static readings, which an
         // ending the tables decide makes moot.
-        let tb = self.tablebase(board, key, depth, ply, alpha, beta, tt_move)?;
-        Ok((tt_move, tb))
+        match self.tablebase(board, key, depth, ply, alpha, beta, tt_move) {
+            Ok(bounds) => Lookup::Search { tt_move, bounds },
+            Err(score) => Lookup::Cutoff(score),
+        }
     }
 }
 
