@@ -421,6 +421,23 @@ impl Search<'_> {
             .count()
     }
 
+    /// Thousandths of the soft budget the iteration scores earn, read in place from the tail of
+    /// [`Search::iteration_roots`] the rule compares. A root with one move to search has no other
+    /// move to find, so it is not stretched.
+    #[must_use]
+    pub fn drop_scale(&self) -> u64 {
+        if self.run.root_count == 1 {
+            return 1000;
+        }
+        let roots = &self.run.roots;
+        let tail = &roots[roots.len().saturating_sub(crate::time::DROP_WINDOW + 1)..];
+        let mut scores: [Score; crate::time::DROP_WINDOW + 1] = [0; crate::time::DROP_WINDOW + 1];
+        for (slot, &(_, s)) in scores.iter_mut().zip(tail) {
+            *slot = s;
+        }
+        crate::time::drop_scale(&scores[..tail.len()])
+    }
+
     /// Zero before any iteration completes.
     #[must_use]
     pub fn completed_depth(&self) -> u32 {

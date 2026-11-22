@@ -98,7 +98,7 @@ fn a_search_without_a_hit_stops_where_it_did_over_the_bench_ladders() {
                     let run = steps[..k].iter().rev().take_while(|s| &s.1 == last).count();
                     let old = before(&l, b, &times[..k], run);
                     assert_eq!(
-                        starts_another(&l, b, &times[..k], run, 0),
+                        starts_another(&l, b, &times[..k], run, 1000, 0),
                         old,
                         "`{spec}`, bench position {}, {rate} nodes a ms, after iteration {k} of \
                          {times:?}",

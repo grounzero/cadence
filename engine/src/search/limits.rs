@@ -203,6 +203,7 @@ impl Search<'_> {
                 b,
                 &self.run.iterations,
                 self.stable_iterations(),
+                self.drop_scale(),
                 self.clock.hit_at,
             )
         })
@@ -222,8 +223,13 @@ impl Search<'_> {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    use cadence_core::position::Board;
+    use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
+
     use super::{CLOCK_INTERVAL, Limits, Search};
-    use crate::time::Budget;
+    use crate::position::Position;
+    use crate::score::Score;
+    use crate::time::{self, Budget};
     use crate::tt::Table;
 
     fn member<'a>(
@@ -275,5 +281,243 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         let mut stopped = member(&stop, &tt, &slots, 0);
         assert!(stopped.out_of_time(), "so does stop");
+    }
+
+    /// Five completed iterations on one move, the last 100 centipawns under the four before it.
+    const FALLING: [Score; 5] = [30, 30, 30, 30, -70];
+
+    /// The same run with nothing lost.
+    const STEADY: [Score; 5] = [30; 5];
+
+    /// The king's one move takes the queen giving check.
+    const ONE_MOVE: &str = "k7/8/8/8/8/8/1q6/K7 w - - 0 1";
+
+    /// Sudden death, whose hard budget is three times the soft one, so a stretch has room under it.
+    fn clock() -> Limits {
+        Limits::parse("wtime 6000 btime 6000".split_whitespace())
+    }
+
+    fn budget() -> Budget {
+        time::budget(&clock(), Colour::White).expect("a clock gives a budget")
+    }
+
+    /// What the five-iteration run is allowed before any stretch.
+    fn steady_soft(b: Budget) -> u64 {
+        time::soft_for_run(&clock(), b, FALLING.len())
+    }
+
+    /// As if the completed iterations scored `scores` on one move and ended at `ladder`, under
+    /// `b`.
+    fn record(search: &mut Search<'_>, scores: &[Score], ladder: &[u64], b: Budget) {
+        search.run.roots = scores.iter().map(|&s| (Move::NULL, s)).collect();
+        search.run.iterations = ladder.to_vec();
+        search.clock.budget = Some(b);
+    }
+
+    /// Searched to depth two with `only` the root's one move where given, then given a falling
+    /// score at the steady soft budget.
+    fn searched_then_fallen<'a>(
+        stop: &'a AtomicBool,
+        tt: &'a Table,
+        fen: &str,
+        only: Option<&str>,
+    ) -> Search<'a> {
+        let mut search = Search::new(stop, tt);
+        search.set_limits(Limits::depth(2));
+        let board = Board::from_fen(fen).expect("a position");
+        if let Some(uci) = only {
+            let mv = parse_uci(&generate_legal(&board), uci).expect("a legal move");
+            search.set_root_filter(&[mv]);
+        }
+        search.run(&mut Position::new(board), &mut std::io::sink());
+        let b = budget();
+        record(&mut search, &FALLING, &[steady_soft(b)], b);
+        search
+    }
+
+    /// The steady run has spent its soft budget and stops; the same times after a falling score go
+    /// on, the next iteration predicted inside the hard budget.
+    #[test]
+    fn a_falling_score_starts_an_iteration_a_steady_one_does_not() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        search.set_limits(clock());
+        let b = budget();
+        let soft = steady_soft(b);
+        let ladder = [soft / 2, soft * 7 / 10, soft];
+        assert!(
+            time::another_iteration_fits(&ladder, b),
+            "{ladder:?} under {b:?}"
+        );
+
+        record(&mut search, &STEADY, &ladder, b);
+        assert_eq!(
+            search.drop_scale(),
+            1000,
+            "a steady score stretches nothing"
+        );
+        assert!(
+            !search.would_have_started(),
+            "a steady score at {soft} ms of {b:?}"
+        );
+
+        record(&mut search, &FALLING, &ladder, b);
+        assert!(search.drop_scale() > 1000, "a fall of 100 stretches");
+        assert!(
+            search.would_have_started(),
+            "a falling score at {soft} ms of {b:?}"
+        );
+    }
+
+    /// However far the score has fallen, an iteration predicted to pass the hard budget is not
+    /// started, even inside the soft budget.
+    #[test]
+    fn the_prediction_stops_a_falling_score() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        search.set_limits(clock());
+        let b = budget();
+        let elapsed = steady_soft(b) / 2;
+        let ladder = [elapsed / 100, elapsed / 10, elapsed];
+        assert!(
+            !time::another_iteration_fits(&ladder, b),
+            "{ladder:?} under {b:?}"
+        );
+
+        record(&mut search, &[30, 30, 30, 30, -500], &ladder, b);
+        assert_eq!(search.drop_scale(), time::DROP_SCALE_MAX);
+        assert!(
+            !search.would_have_started(),
+            "the largest stretch started {ladder:?} under {b:?}"
+        );
+    }
+
+    /// The scores of the last search are gone when the next begins, so it starts with no drop.
+    #[test]
+    fn a_reused_search_starts_with_no_drop() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = Search::new(&stop, &tt);
+        search.set_limits(Limits::depth(1));
+        let b = budget();
+        record(&mut search, &FALLING, &[steady_soft(b)], b);
+        assert!(search.drop_scale() > 1000, "the drop a last search left");
+
+        let board = Board::from_fen(START_FEN).expect("the start position");
+        search.run(&mut Position::new(board), &mut std::io::sink());
+        assert_eq!(
+            search.iteration_roots().len(),
+            1,
+            "{:?}",
+            search.iteration_roots()
+        );
+        assert_eq!(
+            search.drop_scale(),
+            1000,
+            "the last search's drop carried over"
+        );
+    }
+
+    /// The scores pondered survive the hit on purpose, and the decision taken at it stretches the
+    /// budget by them.
+    #[test]
+    fn a_hit_decides_on_the_scores_pondered() {
+        let stop = AtomicBool::new(false);
+        let flag = AtomicBool::new(true);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let ponder = Limits::parse("ponder wtime 6000 btime 6000".split_whitespace());
+        let b = time::hit_budget(&ponder, Colour::White).expect("a ponder with a clock");
+        let mut search = Search::new(&stop, &tt);
+        search.set_limits(ponder);
+        search.set_ponder_hit(&flag);
+        search.clock.pondering = true;
+        search.clock.budget_on_hit = Some(b);
+        search.run.roots = FALLING.iter().map(|&s| (Move::NULL, s)).collect();
+
+        assert!(search.absorb_ponder_hit(), "the raised flag is a hit");
+        assert_eq!(search.clock.budget, Some(b), "the hit brought its budget");
+        assert_eq!(
+            search.iteration_roots().len(),
+            FALLING.len(),
+            "the hit kept the scores"
+        );
+        // Spent to the steady soft budget after the time pondered, where a steady score stops.
+        let ladder = [steady_soft(b) + search.clock.hit_at];
+        search.run.iterations = ladder.to_vec();
+        assert!(
+            search.would_have_started(),
+            "the pondered fall at {ladder:?}"
+        );
+
+        search.run.roots = STEADY.iter().map(|&s| (Move::NULL, s)).collect();
+        assert!(
+            !search.would_have_started(),
+            "a steady ponder at {ladder:?}"
+        );
+    }
+
+    /// Each worker of a group decides on its own scores, so a helper's steady run neither stops the
+    /// primary's falling one nor is stretched by it.
+    #[test]
+    fn the_primary_decides_on_its_own_scores() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let slots: Vec<AtomicU64> = (0..2).map(|_| AtomicU64::new(0)).collect();
+        let b = budget();
+        let ladder = [steady_soft(b)];
+        let mut primary = member(&stop, &tt, &slots, 0);
+        let mut helper = member(&stop, &tt, &slots, 1);
+        record(&mut primary, &FALLING, &ladder, b);
+        record(&mut helper, &STEADY, &ladder, b);
+        slots[1].store(1_000_000, Ordering::Relaxed);
+
+        assert!(
+            primary.would_have_started(),
+            "the helper's run stopped the primary"
+        );
+        assert!(
+            !helper.would_have_started(),
+            "the primary's fall stretched the helper"
+        );
+    }
+
+    /// With one legal move there is no other move to find, so a falling score earns no stretch.
+    #[test]
+    fn one_legal_move_is_not_stretched() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let board = Board::from_fen(ONE_MOVE).expect("the position");
+        assert_eq!(generate_legal(&board).len(), 1, "{ONE_MOVE} has one move");
+        let search = searched_then_fallen(&stop, &tt, ONE_MOVE, None);
+        assert_eq!(
+            search.drop_scale(),
+            1000,
+            "one legal move stretched by a fall"
+        );
+        assert!(!search.would_have_started(), "one legal move went on");
+    }
+
+    /// `searchmoves` with one move leaves the root one move to search, so it is not stretched
+    /// either; with every move the same fall is.
+    #[test]
+    fn one_searchmoves_move_is_not_stretched() {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let every = searched_then_fallen(&stop, &tt, START_FEN, None);
+        assert!(every.drop_scale() > 1000, "every move and a fall of 100");
+        assert!(
+            every.would_have_started(),
+            "every move went on after a fall"
+        );
+
+        let one = searched_then_fallen(&stop, &tt, START_FEN, Some("e2e4"));
+        assert_eq!(
+            one.drop_scale(),
+            1000,
+            "one searchmoves move stretched by a fall"
+        );
+        assert!(!one.would_have_started(), "one searchmoves move went on");
     }
 }

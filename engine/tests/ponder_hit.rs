@@ -13,7 +13,9 @@ use cadence_core::Colour;
 use cadence_core::position::Board;
 use cadence_engine::position::Position;
 use cadence_engine::search::Limits;
-use cadence_engine::time::{Budget, another_iteration_fits, hit_budget, soft_for_run};
+use cadence_engine::time::{
+    Budget, another_iteration_fits, drop_scale, hit_budget, soft_for_drop, soft_for_run,
+};
 use cadence_engine::tt::Table;
 
 /// Bench position 16, so nothing here is chosen to make a number come out.
@@ -65,6 +67,8 @@ struct Hit {
     reported: Vec<u64>,
     /// Completed iterations in a row on one move, at each completed iteration.
     runs: Vec<usize>,
+    /// Thousandths of the soft budget the scores so far earn, at each completed iteration.
+    scales: Vec<u64>,
     /// When the flag was raised, in ms from the origin.
     raised: u64,
     /// When the search returned, in ms from the origin.
@@ -102,10 +106,15 @@ fn reproduce(pondered: u64) -> Hit {
             roots[..k].iter().rev().take_while(|r| r.0 == last).count()
         })
         .collect();
+    let scores: Vec<_> = roots.iter().map(|r| r.1).collect();
+    let scales = (1..=scores.len())
+        .map(|k| drop_scale(&scores[..k]))
+        .collect();
     Hit {
         ladder: s.iterations_ms().to_vec(),
         reported: info_times(&out),
         runs,
+        scales,
         raised,
         returned,
     }
@@ -122,14 +131,15 @@ enum End {
 
 /// The fresh search's decisions over `ladder`, its deadlines moved by `offset`: none while it
 /// ponders, the one it skipped at the hit, then one after each completed iteration.
-fn fresh(ladder: &[u64], runs: &[usize], b: Budget, offset: u64) -> End {
+fn fresh(ladder: &[u64], runs: &[usize], scales: &[u64], b: Budget, offset: u64) -> End {
     let clocked = limits("wtime 6000 btime 6000");
     let moved = Budget {
         soft: b.soft + offset,
         hard: b.hard + offset,
     };
     let goes_on = |k: usize| {
-        let soft = soft_for_run(&clocked, b, runs[k - 1]) + offset;
+        let soft = soft_for_run(&clocked, b, runs[k - 1]);
+        let soft = soft_for_drop(&clocked, b, soft, scales[k - 1]) + offset;
         ladder[k - 1] < soft && another_iteration_fits(&ladder[..k], moved)
     };
     let pondered = ladder.iter().take_while(|&&t| t <= offset).count();
@@ -184,7 +194,7 @@ fn a_ponderhit_stops_where_a_fresh_search_with_the_same_times_would() {
             hit.ladder.len()
         );
         let matches = (hit.raised..=hit.raised + ABSORBED_WITHIN_MS).any(|offset| {
-            match fresh(&hit.ladder, &hit.runs, b, offset) {
+            match fresh(&hit.ladder, &hit.runs, &hit.scales, b, offset) {
                 End::After(n) => n == completed,
                 End::AtHard(n) => {
                     n == completed
@@ -200,7 +210,7 @@ fn a_ponderhit_stops_where_a_fresh_search_with_the_same_times_would() {
             hit.raised,
             hit.returned,
             hit.ladder,
-            fresh(&hit.ladder, &hit.runs, b, hit.raised)
+            fresh(&hit.ladder, &hit.runs, &hit.scales, b, hit.raised)
         );
     }
 }

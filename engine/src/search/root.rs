@@ -63,6 +63,7 @@ impl Search<'_> {
         // The list is not empty, so the remainder is safe.
         let root_count = root_moves.len();
         root_moves.rotate_left(self.worker_index % root_count);
+        self.run.root_count = root_count;
 
         let max_depth = self.limits.depth.unwrap_or(u32::MAX).clamp(1, MAX_DEPTH);
         let mut previous: Option<Score> = None;
@@ -138,14 +139,16 @@ impl Search<'_> {
             }
             // Before the budget is read, so the first clocked decision uses the hit's budget.
             self.absorb_ponder_hit();
-            // The soft budget, scaled by how long the move has stood, says this move has had its
-            // share; the prediction says the next iteration would not finish.
+            // The soft budget, scaled by how long the move has stood and how far its score has
+            // fallen, says this move has had its share; the prediction says the next iteration
+            // would not finish.
             if let Some(b) = self.clock.budget
                 && !time::starts_another(
                     &self.limits,
                     b,
                     &self.run.iterations,
                     self.stable_iterations(),
+                    self.drop_scale(),
                     self.clock.hit_at,
                 )
             {
