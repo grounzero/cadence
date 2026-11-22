@@ -27,7 +27,7 @@ const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w
 const DEPTH: u32 = 8;
 
 /// A net's search at `DEPTH` costs a subprocess many times the handcrafted one's.
-const NET_DEPTH: u32 = 7;
+const NET_DEPTH: u32 = 6;
 
 /// A tunable spelled like one of these would be answered by the wrong handler.
 const FIXED_OPTIONS: [&str; 5] = ["UCI_Chess960", "Hash", "Threads", "MultiPV", "Ponder"];
