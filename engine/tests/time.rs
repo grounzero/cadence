@@ -325,6 +325,57 @@ fn the_default_overhead_takes_little_from_a_fast_increment() {
     }
 }
 
+/// With no `Move Overhead` set the default is charged, and the budget is the arithmetic by hand.
+#[test]
+fn the_default_overhead_is_five_milliseconds_with_exact_budgets() {
+    assert_eq!(MOVE_OVERHEAD_MS, 5);
+    let l = limits("wtime 60000 btime 60000 winc 600 binc 600");
+    assert_eq!(l.move_overhead, None);
+    // avail 59995, cap 29997; soft 59995 / 25 + (595 * 3) / 4 = 2399 + 446, hard 3 * 2845.
+    assert_eq!(
+        budget(&l, Colour::White),
+        Some(Budget {
+            soft: 2845,
+            hard: 8535
+        })
+    );
+}
+
+/// An increment of 4, 5 or 6 ms against the default overhead gains at most 1 ms, and three quarters
+/// of that rounds to zero, so each row holds for all three. The cap at half of what is left binds
+/// the hard budget at 5 moves to go and both budgets at 1, and never at 20 or in sudden death.
+#[test]
+fn increments_about_the_default_overhead_give_exact_budgets() {
+    // (time, movestogo, soft, hard); avail is time - 5 and cap is avail / 2.
+    const ROWS: [(u64, Option<u32>, u64, u64); 8] = [
+        // 59995 / 25 = 2399, hard 7197 under cap 29997.
+        (60_000, None, 2399, 7197),
+        // 59995 / 20 = 2999, hard 8997 under cap 29997.
+        (60_000, Some(20), 2999, 8997),
+        // 59995 / 5 = 11999, hard 35997 cut to cap 29997.
+        (60_000, Some(5), 11_999, 29_997),
+        // 59995 / 1 cut to cap 29997, and hard with it.
+        (60_000, Some(1), 29_997, 29_997),
+        // 995 / 25 = 39, hard 117 under cap 497.
+        (1000, None, 39, 117),
+        // 995 / 20 = 49, hard 147 under cap 497.
+        (1000, Some(20), 49, 147),
+        // 995 / 5 = 199, hard 597 cut to cap 497.
+        (1000, Some(5), 199, 497),
+        // 995 / 1 cut to cap 497, and hard with it.
+        (1000, Some(1), 497, 497),
+    ];
+    for inc in [MOVE_OVERHEAD_MS - 1, MOVE_OVERHEAD_MS, MOVE_OVERHEAD_MS + 1] {
+        for (time, mtg, soft, hard) in ROWS {
+            assert_eq!(
+                clock(time, inc, mtg),
+                Budget { soft, hard },
+                "{time}+{inc} movestogo {mtg:?}"
+            );
+        }
+    }
+}
+
 /// Where every move also costs the overhead outside the search, a game spending each soft budget
 /// settles well above the floor the cap at half the clock would hold it to.
 #[test]
