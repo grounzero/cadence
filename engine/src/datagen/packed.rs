@@ -27,7 +27,8 @@ use cadence_nnue::net::EMBEDDED;
 use super::game::{self, Ending, Outcome};
 use super::opening::{self, Probe};
 use super::{
-    AHEAD, HASH_MB, MAX_THREADS, NODES, game_seed, number, panic_text, spawn_search, split,
+    AHEAD, HASH_MB, MAX_THREADS, NODE_CAP, NODES, game_seed, number, panic_text, spawn_search,
+    split,
 };
 use crate::tt::Table;
 use crate::version;
@@ -102,7 +103,7 @@ pub fn play_with(
     let kind = start_kind(&mut rng, share);
     let (mut start, refused) =
         opening::next_of_kind(&mut rng, tt, kind == KIND_STANDARD, probe, net);
-    let played = game::play(&mut start.board, NODES, tt);
+    let played = game::play(&mut start.board, NODES, NODE_CAP, tt);
     let label = |score: Option<i32>| {
         score.map_or(NO_SCORE, |s| {
             i16::try_from(s)
@@ -714,6 +715,7 @@ fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header
         net_sha256: build.net_sha256,
         modified: u8::from(build.modified),
         cfg_sha256: sha256(build.cfg_features.as_bytes()),
+        node_cap: 0,
     })
 }
 

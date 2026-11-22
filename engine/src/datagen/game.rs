@@ -126,7 +126,7 @@ pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Option<Score> {
 /// # Panics
 ///
 /// If the search returns an illegal move.
-pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
+pub fn play(board: &mut Position, nodes: u64, _cap: u64, tt: &Table) -> Played {
     tt.clear();
     let stop = AtomicBool::new(false);
     let mut search = Search::new(&stop, tt);

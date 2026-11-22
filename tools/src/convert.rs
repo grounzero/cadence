@@ -1473,6 +1473,7 @@ mod tests {
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [0; 32],
+            node_cap: 0,
         }
     }
 

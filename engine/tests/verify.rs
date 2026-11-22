@@ -197,8 +197,9 @@ fn each_header_field_is_held_to_this_build() {
     let dir = scratch("header");
     let path = written(&dir, SEED);
     let whole = std::fs::read(&path).expect("the chunk");
-    let edits: [(&str, Edit); 8] = [
+    let edits: [(&str, Edit); 9] = [
         ("nodes", |h| h.nodes = 4_000),
+        ("node cap", |h| h.node_cap = 40_000),
         ("screen nodes", |h| h.screen_nodes = 4_000),
         ("hash", |h| h.hash_mb = 8),
         ("random plies", |h| h.random_plies = 7),

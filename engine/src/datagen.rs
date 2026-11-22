@@ -35,6 +35,8 @@ use record::Record;
 /// it.
 pub const NODES: u64 = cadence_dataset::constants::NODES;
 
+pub const NODE_CAP: u64 = cadence_dataset::constants::NODE_CAP;
+
 /// Cleared at the start of every game.
 pub const HASH_MB: usize = cadence_dataset::constants::HASH_MB;
 
@@ -58,7 +60,7 @@ pub fn game_seed(seed: u64, number: u64) -> u64 {
 pub fn play(seed: u64, number: u64, tt: &Table) -> Record {
     let mut rng = Rng::new(game_seed(seed, number));
     let (mut opening, refused) = opening::next(&mut rng, tt);
-    let played = game::play(&mut opening.board, NODES, tt);
+    let played = game::play(&mut opening.board, NODES, NODE_CAP, tt);
     Record::new(number, &opening, played, refused)
 }
 

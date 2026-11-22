@@ -16,6 +16,9 @@ pub struct Limits {
     /// After completing iteration N.
     pub depth: Option<u32>,
     pub nodes: Option<u64>,
+    /// Past this many nodes the search stops at the end of an iteration, and `nodes` is only a cap.
+    /// Datagen sets it; `go` never does.
+    pub soft_nodes: Option<u64>,
     /// Exactly N milliseconds.
     pub movetime: Option<u64>,
     /// Do not return before `stop`.

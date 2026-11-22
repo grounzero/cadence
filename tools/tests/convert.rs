@@ -93,6 +93,7 @@ fn header(run_seed: u64, chunk_index: u32) -> Header {
         net_sha256: [0; 32],
         modified: 0,
         cfg_sha256: [0; 32],
+        node_cap: 0,
     }
 }
 
@@ -761,6 +762,40 @@ fn a_manifest_whose_provenance_disagrees_with_the_headers_is_refused() {
         !ok_removed && text_removed.contains("names no window"),
         "{text_removed}"
     );
+}
+
+/// A manifest written before the cap was recorded names none, and reads as zero, the cap of a chunk
+/// whose node count was its limit; one that names a cap is held to it like any other field.
+#[test]
+fn a_manifest_naming_no_node_cap_reads_as_zero_and_one_naming_a_cap_is_held_to_it() {
+    let dir = scratch("node-cap");
+    let manifest = dataset(&dir.join("data"), 83, &[games(83, 3, |_| 0)]);
+    let text = std::fs::read_to_string(&manifest).expect("reads");
+    assert!(!text.contains("node-cap"), "{text}");
+    let mut results = Vec::new();
+    for cap in [None, Some(0), Some(50_000)] {
+        let named = cap.map_or(text.clone(), |c| {
+            text.replacen("nodes\t5000\n", &format!("nodes\t5000\nnode-cap\t{c}\n"), 1)
+        });
+        std::fs::write(&manifest, named).expect("writes");
+        let out = dir.join(format!("out-{cap:?}"));
+        results.push((cap, convert(&[&manifest], &out, &["--shuffle-seed", "1"])));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    for (cap, (ok, out, units)) in results {
+        if cap == Some(50_000) {
+            assert!(
+                !ok && units.is_empty(),
+                "a cap the chunks lack was accepted"
+            );
+            assert!(
+                out.contains(": node-cap 0 in its header, and the manifest says 50000"),
+                "{out}"
+            );
+        } else {
+            assert!(ok, "{cap:?}: {out}");
+        }
+    }
 }
 
 /// Two positions with the same pieces and side to move and different castling rights share the

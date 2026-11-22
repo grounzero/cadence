@@ -94,6 +94,7 @@ pub fn header(run_seed: u64, chunk_index: u32) -> Header {
         net_sha256: [0; 32],
         modified: 0,
         cfg_sha256: [0; 32],
+        node_cap: 0,
     }
 }
 

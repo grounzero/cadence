@@ -567,6 +567,52 @@ fn the_node_limit_stops_the_search() {
     assert!(generate_legal(&b).contains(r.best));
 }
 
+/// A soft count stops the search at the end of the first iteration to pass it, so the search is
+/// that depth's to the node, and the iteration before it ended under the count.
+#[test]
+fn a_soft_node_count_stops_the_search_only_between_iterations() {
+    let fen = support::standard_fen("kiwipete");
+    for soft in [1u64, 2_000, 5_000, 20_000] {
+        let limits = Limits {
+            soft_nodes: Some(soft),
+            nodes: Some(2_000_000),
+            ..Limits::default()
+        };
+        let r = search(&mut support::position(&fen), limits);
+        assert!(r.nodes >= soft, "soft {soft}: stopped at {}", r.nodes);
+        let whole = search(&mut support::position(&fen), Limits::depth(r.depth));
+        assert_eq!(r, whole, "soft {soft}: not the search of depth {}", r.depth);
+        if r.depth > 1 {
+            let before = search(&mut support::position(&fen), Limits::depth(r.depth - 1));
+            assert!(
+                before.nodes < soft,
+                "soft {soft}: depth {} passed it",
+                r.depth - 1
+            );
+        }
+    }
+}
+
+/// The node count still cuts an iteration short beside a soft count, as it does alone.
+#[test]
+fn the_node_count_caps_a_soft_count() {
+    let fen = support::standard_fen("kiwipete");
+    let hard = Limits {
+        nodes: Some(3_000),
+        ..Limits::default()
+    };
+    let capped = Limits {
+        soft_nodes: Some(1_000_000),
+        ..hard
+    };
+    assert_eq!(
+        search(&mut support::position(&fen), capped),
+        search(&mut support::position(&fen), hard)
+    );
+    let parsed = Limits::parse("nodes 3000".split_whitespace());
+    assert_eq!(parsed, hard, "go nodes set a soft count");
+}
+
 /// A count past any mate the search can score once overflowed: a debug build panicked and a release
 /// build stopped after one ply.
 #[test]

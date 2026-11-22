@@ -95,6 +95,9 @@ pub struct Header {
     pub modified: u8,
     /// Of the whole `cfg` feature string, which the 64-byte field cannot hold.
     pub cfg_sha256: [u8; 32],
+    /// Where a move's search stopped whatever its iteration. Zero where `nodes` was that limit, as
+    /// in every chunk of format 1.
+    pub node_cap: u32,
 }
 
 /// Where each string field starts and how long it is.
@@ -180,6 +183,7 @@ impl Header {
             net_sha256,
             modified: b[MODIFIED_AT],
             cfg_sha256,
+            node_cap: 0,
         })
     }
 }
@@ -543,6 +547,7 @@ mod tests {
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [7; 32],
+            node_cap: 50_000,
         }
     }
 
@@ -617,6 +622,21 @@ mod tests {
             bad[at] ^= 1;
             assert!(Header::decode(&bad).is_err(), "a changed {what} was read");
         }
+    }
+
+    /// A format 1 header, written before the cap was, reads with none; its cap's bytes were reserved
+    /// then, so one with them set is refused.
+    #[test]
+    fn a_format_1_header_reads_with_no_cap() {
+        let old = Header {
+            node_cap: 0,
+            ..header()
+        };
+        let mut bytes = old.encode().expect("encodes");
+        bytes[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        assert_eq!(Header::decode(&bytes).expect("a format 1 header"), old);
+        bytes[291] = 1;
+        assert!(Header::decode(&bytes).is_err(), "a format 1 cap was read");
     }
 
     #[test]

@@ -7,6 +7,7 @@
 mod support;
 
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
 
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
@@ -17,6 +18,7 @@ use cadence_engine::datagen::record::Record;
 use cadence_engine::datagen::{self, extract, game};
 use cadence_engine::position::Position;
 use cadence_engine::score;
+use cadence_engine::search::Limits;
 use cadence_engine::tt::Table;
 use cadence_engine::version::VERSION;
 
@@ -135,13 +137,44 @@ fn a_game_is_a_function_of_its_seed_and_number_alone() {
 #[test]
 fn a_game_from_a_position_ignores_what_the_table_held() {
     let fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
-    let fresh = game::play(&mut Position::new(board(fen)), datagen::NODES, &table());
+    let play = |nodes, tt: &Table| {
+        game::play(&mut Position::new(board(fen)), nodes, datagen::NODE_CAP, tt)
+    };
+    let fresh = play(datagen::NODES, &table());
     let dirty = table();
     // The same game played deeper leaves entries for the very positions the game will reach.
-    let _ = game::play(&mut Position::new(board(fen)), 4 * datagen::NODES, &dirty);
+    let _ = play(4 * datagen::NODES, &dirty);
+    assert_eq!(play(datagen::NODES, &dirty), fresh);
+}
+
+/// A game's first move is a search of the datagen count and cap from empty tables, so the count
+/// stops it only between iterations.
+#[test]
+fn a_games_first_move_stops_at_the_end_of_an_iteration() {
+    let fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+    let played = game::play(
+        &mut Position::new(board(fen)),
+        datagen::NODES,
+        datagen::NODE_CAP,
+        &table(),
+    );
+    let limits = Limits {
+        soft_nodes: Some(datagen::NODES),
+        nodes: Some(datagen::NODE_CAP),
+        ..Limits::default()
+    };
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    let mut search = support::search(limits, &stop, &tt);
+    let best = search.run(&mut Position::new(board(fen)), &mut std::io::sink());
+    assert_eq!(played.moves[0], (best, Some(search.score())));
+    let mut whole = support::search(Limits::depth(search.completed_depth()), &stop, &tt);
+    tt.clear();
+    whole.run(&mut Position::new(board(fen)), &mut std::io::sink());
     assert_eq!(
-        game::play(&mut Position::new(board(fen)), datagen::NODES, &dirty),
-        fresh
+        search.nodes(),
+        whole.nodes(),
+        "the count cut an iteration short"
     );
 }
 
@@ -196,7 +229,7 @@ fn a_start_that_passes_is_inside_the_window_after_its_random_plies() {
 #[test]
 fn a_move_whose_search_did_not_finish_carries_no_score() {
     let start = || Position::new(board(cadence_core::START_FEN));
-    let starved = game::play(&mut start(), 1, &table());
+    let starved = game::play(&mut start(), 1, 1, &table());
     assert_ne!(starved.moves, Vec::new(), "no move was played");
     let scored: Vec<_> = starved.moves.iter().filter(|(_, s)| s.is_some()).collect();
     assert_eq!(
@@ -204,7 +237,7 @@ fn a_move_whose_search_did_not_finish_carries_no_score() {
         [] as [&(Move, Option<i32>); 0],
         "scored at one node"
     );
-    let fed = game::play(&mut start(), datagen::NODES, &table());
+    let fed = game::play(&mut start(), datagen::NODES, datagen::NODE_CAP, &table());
     assert!(fed.moves[0].1.is_some(), "no score at the full count");
 }
 
@@ -669,7 +702,7 @@ fn extraction_holds_a_provenance_line_to_this_build() {
         words[at] = "4000";
         words.join(" ")
     };
-    for name in ["nodes", "hash", "plies", "window", "screen"] {
+    for name in ["nodes", "cap", "hash", "plies", "window", "screen"] {
         let error = extract_error(&with(&edit(name)));
         let want = format!("line 1: the provenance names {name} 4000 and this build's is ");
         assert!(error.starts_with(&want), "{error}");

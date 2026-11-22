@@ -3,8 +3,12 @@
 //! The settings that shape every game, defined once so the writer, `verify` and the converter cannot
 //! disagree. The engine declares each under its own name with the value from here.
 
-/// Nodes a move, compiled in so a record's provenance names every setting that shaped it.
+/// Nodes a move, compiled in so a record's provenance names every setting that shaped it. A move's
+/// search stops at the end of the first iteration to pass it.
 pub const NODES: u64 = 5_000;
+
+/// Where a move's search stops whatever its iteration, far enough above `NODES` that few reach it.
+pub const NODE_CAP: u64 = 50_000;
 
 /// Cleared at the start of every game.
 pub const HASH_MB: usize = 16;
