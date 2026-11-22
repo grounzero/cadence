@@ -34,5 +34,9 @@ cadence-engine = { path = ".", features = ["counters"] }
 name = "diag_soft_nodes"
 required-features = ["packed-datagen"]
 
+[[example]]
+name = "diag_soft_match"
+required-features = ["packed-datagen"]
+
 [lints]
 workspace = true
