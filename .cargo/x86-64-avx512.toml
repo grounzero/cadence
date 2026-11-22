@@ -1,7 +1,12 @@
-# The AVX-512 tier for the safe SIMD measurement: config.toml's AVX2 set plus AVX512F and AVX512BW,
-# selected with `cargo --config .cargo/x86-64-avx512.toml` on top of config.toml.
+# The AVX-512 x86-64 tier: the AVX2 tier's features plus AVX-512F and AVX-512BW, selected with
+# `cargo --config .cargo/x86-64-avx512.toml` on top of config.toml.
 #
-# Cargo appends this array after config.toml's, so the binary carries both lists; it runs only on a
-# machine that reports both features, which the workflow checks before building it.
+# Cargo appends this array after config.toml's, so only what this tier adds is named here, and
+# `+avx512f` brings FMA and F16C with it. The release workflow asserts that the features cargo passed
+# resolve to the AVX2 set plus these two, so a feature added here and not named there fails that leg.
 [target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+avx512f,+avx512bw"]
+
+# The same tier for Windows, with config.toml's static C runtime kept.
+[target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+avx512f,+avx512bw"]

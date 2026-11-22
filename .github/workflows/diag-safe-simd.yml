@@ -402,3 +402,50 @@ jobs:
         with:
           name: diag-profile-${{ matrix.target }}
           path: prof-out
+
+  bench-avx512:
+    name: bench with the AVX-512 config
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain
+      - name: Check the CPU for AVX-512
+        id: cpu
+        run: |
+          flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+          sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 1
+          case " $flags " in
+            *" avx512f "*" avx512bw "* | *" avx512bw "*" avx512f "*) echo "run=true" >> "$GITHUB_OUTPUT"; echo "AVX-512F and AVX-512BW present" ;;
+            *) echo "run=false" >> "$GITHUB_OUTPUT"; echo "AVX-512 not present on this runner: not examined" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+          esac
+      - name: Build both tiers
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          cargo build --release -p cadence-engine --bin cadence --target-dir target/avx2
+          cargo build --release -p cadence-engine --bin cadence --target-dir target/avx512 --config .cargo/x86-64-avx512.toml
+      - name: Bench each five times, alternating
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          for i in 1 2 3 4 5; do
+            for tier in avx2 avx512; do
+              line=$(./target/$tier/release/cadence bench | tail -n 1)
+              echo "$tier $line" | tee -a runs.txt
+            done
+          done
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import statistics as st
+          runs = {"avx2": [], "avx512": []}
+          nodes = {"avx2": set(), "avx512": set()}
+          for line in open("runs.txt"):
+              tier, n, _, nps, _ = line.split()
+              runs[tier].append(int(nps)); nodes[tier].add(int(n))
+          print("| tier | nodes | nps median | min | max |")
+          print("|---|---|---|---|---|")
+          for t in ("avx2", "avx512"):
+              r = runs[t]
+              print(f"| {t} | {sorted(nodes[t])} | {st.median(r)} | {min(r)} | {max(r)} |")
+          print(f"\nnps ratio avx512/avx2 (medians): {st.median(runs['avx512']) / st.median(runs['avx2']):.3f}")
+          print(f"bench counts equal: {nodes['avx2'] == nodes['avx512'] and len(nodes['avx2']) == 1}")
+          PY
