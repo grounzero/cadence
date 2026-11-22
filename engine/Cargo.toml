@@ -29,5 +29,10 @@ shakmaty-syzygy = { version = "=0.28.1", default-features = false }
 [dev-dependencies]
 cadence-engine = { path = ".", features = ["counters"] }
 
+# A diagnostic run by its own workflow.
+[[example]]
+name = "diag_soft_nodes"
+required-features = ["packed-datagen"]
+
 [lints]
 workspace = true
