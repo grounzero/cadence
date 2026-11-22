@@ -21,6 +21,10 @@ result.
 
 ### Added
 
+- Training: `cadence-train run --result-share-end F` moves the weight on the
+  game result on a line across the run, and `--from CHECKPOINT` with
+  `--lr-start F` continues a saved net at a lower first rate, which with a
+  result share of 1 is a final stage on the game result alone.
 - Tools: `cadence-tools convert --max-copies N` keeps at most N training
   copies of a position's network input, a position and its colour-flipped
   mirror counting as one, meets the games in an order the shuffle seed fixes
