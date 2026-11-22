@@ -27,6 +27,11 @@ const USAGE: &str = "usage: cadence-tools convert --manifest FILE [--manifest FI
      [--dedup] [--max-copies N] [--report-sample N]";
 
 /// The last band holds every ply past it, as `datagen extract`'s does.
+/// Pieces a network's output bucket spans, the first from 2.
+const BUCKET_PIECES: usize = 4;
+const OUTPUT_BUCKETS: usize = 8;
+/// One past the most pieces a board holds, so a piece count indexes a row.
+const PIECE_ROWS: usize = 33;
 const PLY_BAND: usize = 10;
 const PLY_BANDS: usize = 30;
 
@@ -336,6 +341,12 @@ struct Counts {
     zeros: Vec<u64>,
     unscored: Vec<u64>,
     scores: Vec<u64>,
+    /// Kept positions by piece count, then by the mover's result as the record holds it.
+    results: Vec<[u64; 3]>,
+    /// The kept scores' magnitudes summed, by piece count.
+    magnitudes: Vec<u64>,
+    /// Positions dropped in check, as noisy and as mates, by piece count.
+    dropped: Vec<[u64; 3]>,
 }
 
 impl Counts {
@@ -345,6 +356,9 @@ impl Counts {
             zeros: vec![0; PLY_BANDS],
             unscored: vec![0; PLY_BANDS],
             scores: vec![0; BUCKETS],
+            results: vec![[0; 3]; PIECE_ROWS],
+            magnitudes: vec![0; PIECE_ROWS],
+            dropped: vec![[0; 3]; PIECE_ROWS],
             ..Counts::default()
         }
     }
@@ -997,17 +1011,21 @@ fn positions(
         let m = decode_move(&generate_legal(&board), bits).ok_or("a move that is not legal")?;
         counts.visited += 1;
         let band = (ply / PLY_BAND).min(PLY_BANDS - 1);
+        let pieces = (board.occupied().count() as usize).min(PIECE_ROWS - 1);
         if !(FIRST_PLY..=LAST_PLY).contains(&ply) {
             counts.outside += 1;
         } else if board.in_check() {
             counts.in_check += 1;
+            counts.dropped[pieces][0] += 1;
         } else if m.is_noisy() {
             counts.noisy += 1;
+            counts.dropped[pieces][1] += 1;
         } else if score == NO_SCORE {
             counts.no_score += 1;
             counts.unscored[band] += 1;
         } else if score.unsigned_abs() >= MATE_BOUND.unsigned_abs() {
             counts.mate += 1;
+            counts.dropped[pieces][2] += 1;
         } else if request
             .score_cap
             .is_some_and(|cap| score.unsigned_abs() > cap.unsigned_abs())
@@ -1047,6 +1065,8 @@ fn positions(
                     counts.plies[band] += 1;
                     counts.zeros[band] += u64::from(score == 0);
                     counts.scores[bucket(score)] += 1;
+                    counts.results[pieces][usize::from(result)] += 1;
+                    counts.magnitudes[pieces] += u64::from(score.unsigned_abs());
                     let n = request.report_sample;
                     let (keys, inputs) = if held {
                         kept.holdout.push(&bytes)?;
@@ -1202,6 +1222,7 @@ fn report(
                     row.join(" ")
                 );
             }
+            by_pieces(&mut text, name, c);
             let total: u64 = c.scores.iter().sum();
             let row: Vec<String> = c
                 .scores
@@ -1224,6 +1245,59 @@ fn report(
     }
     sampled_figures(&mut text, overlap, by_input, s, &note);
     text
+}
+
+/// The kept positions by the output bucket their piece count picks and by the mover's result, what
+/// three filters dropped beside them, and the kept again by exact piece count.
+fn by_pieces(text: &mut String, name: &str, c: &Counts) {
+    let (win, draw, loss) = (usize::from(WIN), usize::from(DRAW), usize::from(LOSS));
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for b in 0..OUTPUT_BUCKETS {
+        let rows =
+            (2..PIECE_ROWS).filter(|&p| ((p - 2) / BUCKET_PIECES).min(OUTPUT_BUCKETS - 1) == b);
+        let (mut r, mut d, mut magnitude) = ([0_u64; 3], [0_u64; 3], 0);
+        for p in rows {
+            for i in 0..3 {
+                r[i] += c.results[p][i];
+                d[i] += c.dropped[p][i];
+            }
+            magnitude += c.magnitudes[p];
+        }
+        let n: u64 = r.iter().sum();
+        kept.push(format!(
+            "{} {} {} {}",
+            r[win],
+            r[draw],
+            r[loss],
+            magnitude.checked_div(n).unwrap_or(0)
+        ));
+        dropped.push(format!("{} {} {}", d[0], d[1], d[2]));
+    }
+    let _ = writeln!(
+        text,
+        "  {name} kept by output bucket of {BUCKET_PIECES} pieces from 2, as win draw loss for the \
+         mover and mean score magnitude: {}",
+        kept.join("; ")
+    );
+    let _ = writeln!(
+        text,
+        "  {name} dropped by output bucket, as in-check noisy mate: {}",
+        dropped.join("; ")
+    );
+    let exact: Vec<String> = (2..PIECE_ROWS)
+        .map(|p| {
+            format!(
+                "{} {} {}",
+                c.results[p][win], c.results[p][draw], c.results[p][loss]
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        text,
+        "  {name} kept by pieces from 2 to {}, as win draw loss for the mover: {}",
+        PIECE_ROWS - 1,
+        exact.join("; ")
+    );
 }
 
 /// The report's figures read by key and by network input, each scaled by `s` and marked with `note`
