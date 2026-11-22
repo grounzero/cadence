@@ -5,7 +5,7 @@
 
 /// Nodes a move, compiled in so a record's provenance names every setting that shaped it. A move's
 /// search stops at the end of the first iteration to pass it.
-pub const NODES: u64 = 5_000;
+pub const NODES: u64 = 1_690;
 
 /// Where a move's search stops whatever its iteration, far enough above `NODES` that few reach it.
 pub const NODE_CAP: u64 = 50_000;
@@ -16,7 +16,7 @@ pub const HASH_MB: usize = 16;
 /// Half for each side.
 pub const RANDOM_PLIES: usize = 8;
 
-/// The same as a game move's.
+/// A hard count, the mean a game move's search spends.
 pub const SCREEN_NODES: u64 = 5_000;
 
 /// Drops gross imbalance without trying to keep a start balanced.
