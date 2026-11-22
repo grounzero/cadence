@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A node limit that stops an iteration after one has completed. The unfinished iteration's move is
-//! played only where its score beat the floor of the window it was searched in.
+//! A limit that stops an iteration after one has completed, in process and through the binary. The
+//! unfinished iteration's move is played only where its score beat the floor of the window it was
+//! searched in.
 
 mod support;
 
@@ -11,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::Move;
 use cadence_engine::score::{INFINITE, Score};
 use cadence_engine::search::Limits;
-use support::table;
+use support::{Engine, table};
 
 /// Middlegames whose best move changes between iterations, and opening traps whose bait is refuted
 /// only deeper, so some stops land after a change and some inside the fail low a refutation brings.
@@ -137,4 +138,92 @@ fn a_stopped_search_keeps_the_finished_move_where_the_unfinished_one_did_not_bea
         );
         assert_eq!(run.pv.first(), Some(&run.played), "{}", run.fen);
     }
+}
+
+/// Every third limit of the ladder, so the binary meets stops at the same depths in fewer searches.
+const UCI_STEP: usize = 3;
+
+/// Short enough to stop mid-iteration at every depth a debug build reaches, long enough that one
+/// iteration completes first.
+const MOVETIMES: [u64; 3] = [60, 150, 300];
+
+/// What an `info depth` line with a `pv` says.
+struct Info {
+    depth: u32,
+    lower: bool,
+    first: String,
+}
+
+fn infos(lines: &[String]) -> Vec<Info> {
+    lines
+        .iter()
+        .filter(|l| l.starts_with("info depth "))
+        .filter_map(|l| {
+            let toks: Vec<&str> = l.split_whitespace().collect();
+            let pv = toks.iter().position(|t| *t == "pv")?;
+            Some(Info {
+                depth: toks[2].parse().expect("a depth"),
+                lower: toks.contains(&"lowerbound"),
+                first: (*toks.get(pv + 1)?).to_string(),
+            })
+        })
+        .collect()
+}
+
+/// One search from a fresh table, as `stop_at` runs in process: every line printed and the move
+/// played.
+fn search_through_binary(e: &mut Engine, fen: &str, go: &str) -> (Vec<Info>, String) {
+    e.send("ucinewgame");
+    e.send(&format!("position fen {fen}"));
+    e.send(go);
+    let lines = e.read_until("bestmove ");
+    let played = support::bestmove(&lines.join("\n"));
+    (infos(&lines), played)
+}
+
+/// Through the binary, the last line printed names the move played, and where a stopped iteration
+/// replaced the completed move that line keeps the completed depth and calls its score a lower
+/// bound.
+#[test]
+fn the_last_info_line_names_the_move_played_after_a_node_limit() {
+    let mut e = Engine::spawn();
+    let mut replaced = 0;
+    for fen in FENS {
+        let mut nodes = 2_000u64;
+        for i in 0..LIMITS {
+            if i % UCI_STEP == 0 {
+                let (infos, played) =
+                    search_through_binary(&mut e, fen, &format!("go nodes {nodes}"));
+                if let Some(last) = infos.last() {
+                    assert_eq!(last.first, played, "{fen} at {nodes} nodes");
+                    if last.lower {
+                        let completed = infos.iter().rev().nth(1).expect("a completed line");
+                        assert_eq!(last.depth, completed.depth, "{fen} at {nodes} nodes");
+                        replaced += usize::from(completed.first != last.first);
+                    }
+                }
+            }
+            nodes += nodes / 10;
+        }
+    }
+    e.quit();
+    assert!(
+        replaced > 0,
+        "no stop replaced the completed move with a different one"
+    );
+}
+
+/// Under `movetime` a search ends at its hard deadline inside an iteration, the path a clock takes.
+/// Timing decides where, so this asserts only that the last line names the move played.
+#[test]
+fn the_last_info_line_names_the_move_played_after_a_movetime() {
+    let mut e = Engine::spawn();
+    for fen in FENS {
+        for ms in MOVETIMES {
+            let (infos, played) = search_through_binary(&mut e, fen, &format!("go movetime {ms}"));
+            let last = infos.last().expect("a completed iteration's line");
+            assert_eq!(last.first, played, "{fen} at {ms} ms");
+        }
+    }
+    e.quit();
 }

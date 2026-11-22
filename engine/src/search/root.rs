@@ -328,3 +328,98 @@ impl Search<'_> {
         (best, best_score)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use cadence_core::position::Board;
+    use cadence_core::{Move, START_FEN, generate_legal, parse_uci};
+
+    use crate::search::Search;
+    use crate::time::Budget;
+    use crate::tt::Table;
+
+    /// The completed iteration's move and the unfinished one's.
+    fn two_moves() -> (Move, Move) {
+        let board = Board::from_fen(START_FEN).expect("the start position");
+        let legal = generate_legal(&board);
+        let mv = |uci| parse_uci(&legal, uci).expect("a legal move");
+        (mv("e2e4"), mv("d2d4"))
+    }
+
+    /// Three iterations completed on `completed`, ending 100, 200 and 400 ms in, and the unfinished
+    /// iteration's line in the table.
+    fn completed_three<'a>(
+        stop: &'a AtomicBool,
+        tt: &'a Table,
+        (completed, unfinished): (Move, Move),
+    ) -> Search<'a> {
+        let mut search = Search::new(stop, tt);
+        search.run.completed_depth = 3;
+        search.run.best = completed;
+        search.run.score = 20;
+        search.run.pv.push(completed);
+        search.run.roots = vec![(completed, 20); 3];
+        search.run.iterations = vec![100, 200, 400];
+        search.table.update(0, unfinished);
+        search
+    }
+
+    /// The hit lands at once, and iterations doubling to 400 ms put the next one far past it plus
+    /// the hard budget, so a fresh search would not have started it. Its move beat the floor, and
+    /// is still not played.
+    #[test]
+    fn a_ponderhit_that_refuses_the_iteration_keeps_the_completed_move() {
+        let moves = two_moves();
+        let stop = AtomicBool::new(false);
+        let hit = AtomicBool::new(true);
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let mut search = completed_three(&stop, &tt, moves);
+        search.set_ponder_hit(&hit);
+        search.clock.pondering = true;
+        search.clock.budget_on_hit = Some(Budget { soft: 10, hard: 30 });
+        assert!(
+            search.out_of_time(),
+            "the hit refuses the iteration running"
+        );
+        search.keep_unfinished((moves.1, 50, 0));
+        assert_eq!(search.run.best, moves.0);
+        assert_eq!(search.run.pv, [moves.0]);
+    }
+
+    /// A stop and the hard deadline each play the unfinished move that beat its window's floor,
+    /// with its line.
+    #[test]
+    fn a_stop_or_the_hard_deadline_plays_the_unfinished_move_that_beat_the_floor() {
+        let moves = two_moves();
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let stopped = AtomicBool::new(true);
+        let running = AtomicBool::new(false);
+        let mut by_stop = completed_three(&stopped, &tt, moves);
+        let mut by_clock = completed_three(&running, &tt, moves);
+        by_clock.clock.budget = Some(Budget { soft: 0, hard: 0 });
+        for search in [&mut by_stop, &mut by_clock] {
+            assert!(search.out_of_time(), "the limit stops the iteration");
+            search.keep_unfinished((moves.1, 50, 0));
+            assert_eq!(search.run.best, moves.1);
+            assert_eq!(search.run.pv, [moves.1]);
+        }
+    }
+
+    /// A different move at or under the floor may be a fail low's bound, so the completed move
+    /// stands.
+    #[test]
+    fn a_stop_keeps_the_completed_move_over_a_different_one_at_or_under_the_floor() {
+        let moves = two_moves();
+        let tt = Table::new(1).expect("a one mebibyte table");
+        let stop = AtomicBool::new(true);
+        for score in [0, -30] {
+            let mut search = completed_three(&stop, &tt, moves);
+            assert!(search.out_of_time(), "the stop ends the iteration");
+            search.keep_unfinished((moves.1, score, 0));
+            assert_eq!(search.run.best, moves.0, "at {score} against a floor of 0");
+            assert_eq!(search.run.pv, [moves.0]);
+        }
+    }
+}
