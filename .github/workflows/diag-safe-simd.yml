@@ -425,27 +425,30 @@ jobs:
         run: |
           cargo build --release -p cadence-engine --bin cadence --target-dir target/avx2
           cargo build --release -p cadence-engine --bin cadence --target-dir target/avx512 --config .cargo/x86-64-avx512.toml
+          cargo build --release -p cadence-engine --bin cadence --target-dir target/v4 \
+            --config 'target.x86_64-unknown-linux-gnu.rustflags=["-C", "target-feature=+avx512f,+avx512bw,+avx512vl,+avx512dq,+avx512cd"]'
       - name: Bench each five times, alternating
         if: steps.cpu.outputs.run == 'true'
         run: |
           for i in 1 2 3 4 5; do
-            for tier in avx2 avx512; do
+            for tier in avx2 avx512 v4; do
               line=$(./target/$tier/release/cadence bench | tail -n 1)
               echo "$tier $line" | tee -a runs.txt
             done
           done
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import statistics as st
-          runs = {"avx2": [], "avx512": []}
-          nodes = {"avx2": set(), "avx512": set()}
+          runs = {"avx2": [], "avx512": [], "v4": []}
+          nodes = {"avx2": set(), "avx512": set(), "v4": set()}
           for line in open("runs.txt"):
               tier, n, _, nps, _ = line.split()
               runs[tier].append(int(nps)); nodes[tier].add(int(n))
           print("| tier | nodes | nps median | min | max |")
           print("|---|---|---|---|---|")
-          for t in ("avx2", "avx512"):
+          for t in ("avx2", "avx512", "v4"):
               r = runs[t]
               print(f"| {t} | {sorted(nodes[t])} | {st.median(r)} | {min(r)} | {max(r)} |")
-          print(f"\nnps ratio avx512/avx2 (medians): {st.median(runs['avx512']) / st.median(runs['avx2']):.3f}")
-          print(f"bench counts equal: {nodes['avx2'] == nodes['avx512'] and len(nodes['avx2']) == 1}")
+          for t in ("avx512", "v4"):
+              print(f"\nnps ratio {t}/avx2 (medians): {st.median(runs[t]) / st.median(runs['avx2']):.3f}")
+          print(f"\nbench counts equal: {nodes['avx2'] == nodes['avx512'] == nodes['v4'] and len(nodes['avx2']) == 1}")
           PY
