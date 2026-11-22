@@ -1,33 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `null_move`, `probcut` and `late_move` call `negamax` back, which is why they live here.
+//! A node's preamble and move loop. The table reads, the null move, `ProbCut` and the late-move
+//! search are child modules, which call `negamax` back.
 
 use cadence_core::position::Board;
-use cadence_core::{
-    Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, generate_noisy, has_legal_move,
-};
+use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, has_legal_move};
 
 #[cfg(debug_assertions)]
 use super::Call;
-use super::depth::{
-    cut_node_reduction, extension, history_reduction, iir_reduction, losing_capture, move_history,
-    null_reduction, pv_reduction, reduced_depth, reduction,
-};
-use super::pruning::{
-    PROBCUT_REDUCTION, futile_node, has_non_pawn_material, lmp_index, probcut_bound,
-};
+use super::depth::{extension, iir_reduction, losing_capture, move_history, reduction};
+use super::pruning::{futile_node, lmp_index};
 use super::{Expected, Search, Via, bound_for, order_first, remember_killer};
 use crate::conthist::{self, OFFSETS};
-use crate::picker::{self, Picker, Tables};
+use crate::picker::{Picker, Tables};
 use crate::position::Position;
-use crate::score::{self, ABORTED, DRAW, INFINITE, Score, mated_in};
-use crate::see;
-use crate::syzygy::Wdl;
+use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::tt::Bound;
 
-/// The key does not carry the fifty-move clock, so from here a cutoff could rest on a line the draw
-/// has since cut short; only the entry's move is kept.
-const CUTOFF_CLOCK: u8 = 90;
+mod late_move;
+mod lookup;
+mod null_move;
+mod probcut;
 
 /// Once a line from a node can reach the fifty-move draw, which the key does not carry, its entry
 /// is stored at depth 0, where no probe cuts with the score, and only its move is used.
@@ -291,37 +284,6 @@ impl Search<'_> {
         depth - r
     }
 
-    /// The move comes back whatever the depth says, so the two halves return separately, and the
-    /// hit's flag beside them.
-    fn probe(
-        &self,
-        board: &Board,
-        key: u64,
-        depth: u32,
-        ply: usize,
-        alpha: Score,
-        beta: Score,
-    ) -> (Move, Option<Score>, bool) {
-        let Some(hit) = self.tt.probe(key) else {
-            return (Move::NULL, None, false);
-        };
-        // A result whose depth reaches the draw may rest on a line the clock now cuts short.
-        let clock = board.halfmove_clock();
-        if u32::from(hit.depth) < depth
-            || clock >= CUTOFF_CLOCK
-            || u32::from(clock) + u32::from(hit.depth) >= 100
-        {
-            return (hit.mv, None, hit.pv);
-        }
-        let score = score::from_tt(hit.score, ply);
-        let cutoff = match hit.bound {
-            Bound::Exact => true,
-            Bound::Lower => score >= beta,
-            Bound::Upper => score <= alpha,
-        };
-        (hit.mv, cutoff.then_some(score), hit.pv)
-    }
-
     /// Checked against the window in a debug build, and recorded there once a gate asks.
     pub(super) fn expect(
         &mut self,
@@ -367,94 +329,6 @@ impl Search<'_> {
         parent.child(via)
     }
 
-    /// The one store, and where a node failing low takes its parent's flag.
-    fn store(&mut self, key: u64, ply: usize, depth: u32, best: Score, mv: Move, bound: Bound) {
-        // An aborted node's value is `ABORTED` and not a bound, and the draw score besides.
-        debug_assert!(!self.run.aborted, "a store after the stop");
-        let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
-        let score = score::to_tt(best, ply);
-        // Nothing here beat alpha, so the move into it may have been the good one.
-        let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
-        self.tt.store(key, mv, score, stored_depth, bound, pv);
-    }
-
-    /// The mate bounds, which narrow the window in place, then the table and the tablebases: `Err`
-    /// is the node's value, and otherwise the table's move and the floor and ceiling it keeps.
-    fn lookup(
-        &mut self,
-        board: &Board,
-        key: u64,
-        depth: u32,
-        ply: usize,
-        alpha: &mut Score,
-        beta: &mut Score,
-    ) -> Result<(Move, (Score, Score)), Score> {
-        (*alpha, *beta) = mate_window(ply, *alpha, *beta)?;
-        let (alpha, beta) = (*alpha, *beta);
-        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
-        if let Some(score) = cutoff {
-            return Err(score);
-        }
-        // Before any child is searched, since a child that fails low reads it, and before the
-        // tablebases, whose stored entry reads it.
-        self.tt_pv[ply] = beta > alpha + 1 || hit_pv;
-        // After the table, so a hit saves the probe, and before the static readings, which an
-        // ending the tables decide makes moot.
-        let tb = self.tablebase(board, key, depth, ply, alpha, beta, tt_move)?;
-        Ok((tt_move, tb))
-    }
-
-    /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
-    /// every other node and wherever no table answers.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
-    )]
-    fn tablebase(
-        &mut self,
-        board: &Board,
-        key: u64,
-        depth: u32,
-        ply: usize,
-        alpha: Score,
-        beta: Score,
-        tt_move: Move,
-    ) -> Result<(Score, Score), Score> {
-        let open = (-INFINITE, INFINITE);
-        let Some(tables) = self.probing else {
-            return Ok(open);
-        };
-        // Only after a capture or a pawn move, where the answer is exact as to the fifty-move rule:
-        // a later quiet move's position is reached through the entry this one stores.
-        if board.halfmove_clock() != 0 || !tables.covers(board) {
-            return Ok(open);
-        }
-        let Some(wdl) = tables.probe_wdl(board) else {
-            return Ok(open);
-        };
-        let (score, bound) = match wdl {
-            Wdl::Win => (score::tb_win_in(ply), Bound::Lower),
-            Wdl::Loss => (score::tb_loss_in(ply), Bound::Upper),
-            Wdl::Draw => (DRAW, Bound::Exact),
-        };
-        let cuts = match bound {
-            Bound::Exact => true,
-            Bound::Lower => score >= beta,
-            Bound::Upper => score <= alpha,
-        };
-        if cuts {
-            // The table's move stays, so a later visit that does not cut still tries it first.
-            self.store(key, ply, depth, score, tt_move, bound);
-            return Err(score);
-        }
-        // A mate inside the table's territory is still searched for, and found, under the bound.
-        Ok(match bound {
-            _ if beta == alpha + 1 => open,
-            Bound::Lower => (score, INFINITE),
-            _ => (-INFINITE, score),
-        })
-    }
-
     /// The child searched with the node's own window, as the first move is and a later one that
     /// beat alpha is again.
     #[allow(
@@ -473,151 +347,6 @@ impl Search<'_> {
     ) -> Score {
         let derived = self.derive(kind, via);
         -self.negamax(board, child, ply + 1, -beta, -alpha, derived)
-    }
-
-    /// A reduced search that beats alpha is re-run at full depth before it is believed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "passing these separately measured +0.21% faster than a shared node type (pull request 233 timing, 2026-11-08)"
-    )]
-    fn late_move(
-        &mut self,
-        board: &mut Position,
-        child: u32,
-        base: u32,
-        history: i32,
-        ply: usize,
-        alpha: Score,
-        pv: bool,
-        kind: Expected,
-    ) -> Score {
-        // The history term first, then the PV and cut-node terms on what each leaves, each counted
-        // where it acted.
-        let shifted = history_reduction(base, history);
-        self.stats.history_reduced_less.add_if(shifted < base);
-        self.stats.history_reduced_more.add_if(shifted > base);
-        let lessened = pv_reduction(shifted, pv);
-        self.stats.lmr_pv_lessened.add_if(lessened < shifted);
-        let r = cut_node_reduction(lessened, kind == Expected::Cut);
-        self.stats.lmr_cut_reduced_more.add_if(r > lessened);
-        if r == 0 {
-            let full = self.derive(kind, Via::Null);
-            return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
-        }
-        self.stats.lmr_reductions.add_one();
-        let reduced = reduced_depth(child, r);
-        let cut = self.derive(kind, Via::Reduced);
-        let score = -self.negamax(board, reduced, ply + 1, -alpha - 1, -alpha, cut);
-        if score > alpha && !self.run.aborted {
-            self.stats.lmr_researches.add_one();
-            let full = self.derive(kind, Via::Null);
-            return -self.negamax(board, child, ply + 1, -alpha - 1, -alpha, full);
-        }
-        score
-    }
-
-    fn null_move(
-        &mut self,
-        board: &mut Position,
-        depth: u32,
-        ply: usize,
-        alpha: Score,
-        beta: Score,
-    ) -> Option<Score> {
-        let admitted = self.heuristics.evals[ply].is_some_and(|eval| eval >= beta)
-            && beta == alpha + 1
-            && !score::is_decisive(beta)
-            && board.plies_from_null() != 0
-            && board.halfmove_clock() < 100;
-        if !admitted {
-            return None;
-        }
-        if !has_non_pawn_material(board) {
-            self.stats.null_refused_material.add_one();
-            return None;
-        }
-        self.stats.null_attempts.add_one();
-        let reduced = depth.saturating_sub(1 + null_reduction(depth));
-        // No move, so the child reads none one ply up.
-        self.heuristics.frames[ply] = None;
-        #[cfg(debug_assertions)]
-        {
-            self.moved[ply] = Move::NULL;
-        }
-        let _ = board.make_null_move();
-        // The pass hands the move over, and the null move cuts only where that child fails low.
-        let score = -self.negamax(board, reduced, ply + 1, -beta, -beta + 1, Expected::All);
-        board.unmake_null_move();
-        if self.run.aborted {
-            return Some(ABORTED);
-        }
-        if score >= beta {
-            self.stats.null_cutoffs.add_one();
-            return Some(if score::is_decisive(score) {
-                beta
-            } else {
-                score
-            });
-        }
-        None
-    }
-
-    /// Each capture is screened by the quiescence search before the reduced search; a cutoff is
-    /// never on the decided scale.
-    fn probcut(
-        &mut self,
-        board: &mut Position,
-        depth: u32,
-        ply: usize,
-        alpha: Score,
-        beta: Score,
-        kind: Expected,
-    ) -> Option<Score> {
-        let eval = self.heuristics.evals[ply];
-        let Some(raised) = probcut_bound(&self.tunables, eval, depth, alpha, beta) else {
-            // Asked as though the window were null, so the counter sees only nodes the window
-            // alone refused.
-            if beta != alpha + 1
-                && probcut_bound(&self.tunables, eval, depth, beta - 1, beta).is_some()
-            {
-                self.stats.probcut_refused_window.add_one();
-            }
-            return None;
-        };
-        if board.halfmove_clock() >= 100 {
-            return None;
-        }
-        let eval = eval?;
-        self.stats.probcut_attempts.add_one();
-        let mut noisy = generate_noisy(board);
-        picker::sort_noisy(board, &mut noisy);
-        let child = depth.saturating_sub(PROBCUT_REDUCTION);
-        for m in noisy.iter() {
-            self.stats.probcut_exchanges.add_one();
-            if !see::see_ge(board, m, raised - eval) {
-                continue;
-            }
-            self.make(board, ply, m);
-            let mut score = -self.quiesce(board, ply + 1, -raised, -raised + 1);
-            if score >= raised {
-                self.stats.probcut_searches.add_one();
-                let flipped = self.derive(kind, Via::Null);
-                score = -self.negamax(board, child, ply + 1, -raised, -raised + 1, flipped);
-            }
-            board.unmake_move(m);
-            if self.run.aborted {
-                return Some(ABORTED);
-            }
-            if score >= raised {
-                self.stats.probcut_cutoffs.add_one();
-                return Some(if score::is_decisive(score) {
-                    raised
-                } else {
-                    score
-                });
-            }
-        }
-        None
     }
 }
 
@@ -657,25 +386,6 @@ fn unless_stalemate(board: &Board, value: Score) -> Score {
     } else {
         DRAW
     }
-}
-
-/// No score at `ply` beats mating at the next ply or falls below being mated there, so `Err` is a
-/// bound that already answers the window, and otherwise the window is narrowed to that range.
-fn mate_window(ply: usize, alpha: Score, beta: Score) -> Result<(Score, Score), Score> {
-    let (worst, best) = (mated_in(ply), score::mate_in(ply + 1));
-    if worst >= beta {
-        return Err(worst);
-    }
-    if best <= alpha {
-        return Err(best);
-    }
-    let (low, high) = (alpha.max(worst), beta.min(best));
-    // Not where an open window would be left one point wide, since a node's kind reads the width.
-    Ok(if high > low + 1 || beta <= alpha + 1 {
-        (low, high)
-    } else {
-        (alpha, beta)
-    })
 }
 
 #[cfg(test)]

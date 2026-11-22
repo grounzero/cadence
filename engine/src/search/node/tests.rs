@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 
-use super::mate_window;
+use super::lookup::mate_window;
 use crate::conthist;
 use crate::eval;
 use crate::position::Position;
