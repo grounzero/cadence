@@ -98,6 +98,13 @@ impl Entry {
         ((self.0 >> AGE_SHIFT) as u8) & AGE_MASK
     }
 
+    /// The same entry at another age, every other field kept.
+    #[must_use]
+    const fn with_age(self, age: u8) -> Entry {
+        let mask = (AGE_MASK as u64) << AGE_SHIFT;
+        Entry((self.0 & !mask) | (((age & AGE_MASK) as u64) << AGE_SHIFT))
+    }
+
     /// The bound decides: zero is not a bound, so a never-written slot decodes to nothing whatever
     /// its other bits say.
     #[must_use]
@@ -255,12 +262,19 @@ impl Table {
         self.generation.load(Ordering::Relaxed)
     }
 
+    /// A hit on an entry from an earlier search moves it to this one, so a full bucket gives up an
+    /// entry nobody has read first.
     #[must_use]
     pub fn probe(&self, key: u64) -> Option<Hit> {
         let bucket = self.bucket(key)?;
         for slot in &bucket.slots {
             let (word0, word1) = slot.read();
             if let Some(hit) = verify(word0, word1, key) {
+                let entry = Entry::from_bits(word1);
+                let generation = self.generation();
+                if entry.age() != generation {
+                    slot.write(key, entry.with_age(generation));
+                }
                 return Some(hit);
             }
         }

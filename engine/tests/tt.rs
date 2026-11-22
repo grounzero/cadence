@@ -929,6 +929,72 @@ fn the_bench_records_the_table_size_it_ran_at() {
     );
 }
 
+/// Five hand-built positions whose keys all land in a one-bucket table.
+const AGED_FENS: [&str; 5] = [
+    "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+    "4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1",
+    "r3k3/8/8/8/8/8/8/4K2R w Kq - 0 1",
+    "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2",
+    "4k3/8/8/8/8/8/8/R3K3 b Q - 0 1",
+];
+
+fn aged_keys() -> Vec<u64> {
+    AGED_FENS
+        .iter()
+        .map(|fen| Board::from_fen(fen).expect("a position").key())
+        .collect()
+}
+
+/// An entry the search has just read is in use, so a full bucket gives up an entry nobody read
+/// since an earlier search instead.
+#[test]
+fn a_probe_keeps_an_old_entry_from_being_the_first_evicted() {
+    let keys = aged_keys();
+    let t = one_bucket();
+    t.new_search();
+    for &key in &keys[..4] {
+        t.store(key, Move::NULL, 10, 6, Bound::Exact, false);
+    }
+    t.new_search();
+    assert!(
+        t.probe(keys[0]).is_some(),
+        "the first position was not stored"
+    );
+    t.store(keys[4], Move::NULL, 20, 6, Bound::Exact, false);
+    assert!(t.probe(keys[4]).is_some(), "the newcomer was not stored");
+    assert!(
+        t.probe(keys[0]).is_some(),
+        "the entry probed in this search was evicted"
+    );
+    let mut gone = 0;
+    for &key in &keys[1..4] {
+        gone += usize::from(t.probe(key).is_none());
+    }
+    assert_eq!(
+        gone, 1,
+        "one entry unread since the last search goes, {gone} went"
+    );
+}
+
+/// The refresh moves the entry's age and nothing else, so the next probe reads what was stored.
+#[test]
+fn a_refreshed_entry_reads_as_it_was_stored() {
+    let key = aged_keys()[2];
+    let board = Board::from_fen(AGED_FENS[2]).expect("a position");
+    let mv = generate_legal(&board).as_slice()[0];
+    let t = one_bucket();
+    t.new_search();
+    t.store(key, mv, -37, 9, Bound::Lower, true);
+    for _ in 0..3 {
+        t.new_search();
+        let hit = t.probe(key).expect("still there");
+        assert_eq!(
+            (hit.mv, hit.score, hit.depth, hit.bound, hit.pv),
+            (mv, -37, 9, Bound::Lower, true)
+        );
+    }
+}
+
 /// A cutoff written early in a fifty-move window is not trusted late in it, since the key does not
 /// carry the clock: at a halfmove clock of 98 a warm table scores what an empty one does.
 #[test]
