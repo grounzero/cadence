@@ -34,6 +34,14 @@ result.
   output bucket their piece count picks and by the result for the side to
   move, with what the in-check, capture and mate filters dropped beside
   them, and again by exact piece count.
+- Tools: `cadence-tools convert` takes four filters, each off unless asked
+  for and each drawing its random choices from the shuffle seed:
+  `--adjudicate` with `--adjudicate-share` cuts a share of games where
+  their scores decide them and keeps each game's own result,
+  `--piece-keep` thins positions by piece count to a table the manifest
+  names by its SHA-256, `--contradiction-skip` skips positions whose score
+  and result disagree, and `--mate-score` keeps mate-scored positions at a
+  ceiling.
 
 ### Fixed
 

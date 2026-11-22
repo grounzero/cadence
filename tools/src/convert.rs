@@ -24,7 +24,8 @@ use cadence_dataset::trainer::{self, DRAW, LOSS, RECORD_LEN, WIN};
 
 const USAGE: &str = "usage: cadence-tools convert --manifest FILE [--manifest FILE]... --out DIR \
      --shuffle-seed HEX|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] \
-     [--dedup] [--max-copies N] [--report-sample N]";
+     [--dedup] [--max-copies N] [--report-sample N] [--adjudicate WIN,PLIES,DRAW,PLIES \
+     [--adjudicate-share P]] [--piece-keep FILE] [--contradiction-skip K] [--mate-score N]";
 
 /// The last band holds every ply past it, as `datagen extract`'s does.
 /// Pieces a network's output bucket spans, the first from 2.
@@ -47,12 +48,26 @@ const REPEAT_BAR: u64 = 1_000;
 
 /// Set apart from the shuffle seed to give the capped visiting order a stream of its own.
 const VISIT_SALT: u64 = 0x7669_7369_745f_6f72;
+/// One salt a seeded choice, so the cut, the thinning and the skip draw apart from one seed.
+const CUT_SALT: u64 = 0x6375_745f_6761_6d65;
+const THIN_SALT: u64 = 0x7468_696e_5f70_6373;
+const SKIP_SALT: u64 = 0x736b_6970_5f72_6573;
 
 /// The unit published, and the line reporting it when the sync after its rename failed.
 #[derive(Debug)]
 pub struct Converted {
     pub unit: PathBuf,
     pub unconfirmed: Option<String>,
+}
+
+/// Where a game's scores decide it: this many centipawns for one side over this many plies running,
+/// or every score under the draw bound over its own run. A run of 0 plies turns its half off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Adjudication {
+    pub win_cp: i16,
+    pub win_plies: usize,
+    pub draw_cp: i16,
+    pub draw_plies: usize,
 }
 
 /// What the command line asks.
@@ -70,6 +85,16 @@ pub struct Request {
     pub max_copies: Option<u8>,
     /// The report's figures by key and by input read from 1 key in this many, and scaled by it.
     pub report_sample: u32,
+    /// Games cut after the ply their scores first hold the rule, in `adjudicate_share` percent of
+    /// games; the result stays the game's own.
+    pub adjudicate: Option<Adjudication>,
+    pub adjudicate_share: u8,
+    /// The percent of positions kept at each piece count, and the table file's SHA-256.
+    pub piece_keep: Option<([u8; PIECE_ROWS], String)>,
+    /// The slope, in centipawns, at which a score is read as the mover's chance of winning.
+    pub contradiction_skip: Option<u16>,
+    /// The magnitude a mate score is kept at, where without it the position is dropped.
+    pub mate_score: Option<i16>,
 }
 
 /// # Errors
@@ -120,8 +145,13 @@ fn request_from(args: &[String]) -> Result<Request, String> {
         dedup: false,
         max_copies: None,
         report_sample: 1,
+        adjudicate: None,
+        adjudicate_share: 100,
+        piece_keep: None,
+        contradiction_skip: None,
+        mate_score: None,
     };
-    let (mut out, mut seed) = (None, None);
+    let (mut out, mut seed, mut share) = (None, None, None);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if arg == "--dedup" {
@@ -160,8 +190,31 @@ fn request_from(args: &[String]) -> Result<Request, String> {
                 Ok(n) if n >= 1 => request.report_sample = n,
                 _ => return Err(format!("bad {arg} `{value}`: 1 reads every key")),
             },
+            "--adjudicate" => request.adjudicate = Some(parse_rule(value).ok_or_else(bad)?),
+            "--adjudicate-share" => match value.parse::<u8>() {
+                Ok(p) if (1..=100).contains(&p) => share = Some(p),
+                _ => return Err(format!("bad {arg} `{value}`: a percent of games, 1 to 100")),
+            },
+            "--piece-keep" => request.piece_keep = Some(read_piece_keep(Path::new(value))?),
+            "--contradiction-skip" => match value.parse::<u16>() {
+                Ok(k) if k >= 1 => request.contradiction_skip = Some(k),
+                _ => {
+                    return Err(format!(
+                        "bad {arg} `{value}`: a slope in centipawns, 1 or more"
+                    ));
+                }
+            },
+            "--mate-score" => match value.parse::<i16>() {
+                Ok(n) if (1..MATE_BOUND).contains(&n) => request.mate_score = Some(n),
+                _ => return Err(format!("bad {arg} `{value}`: 1 to {}", MATE_BOUND - 1)),
+            },
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    match (share, request.adjudicate) {
+        (Some(_), None) => return Err("--adjudicate-share needs --adjudicate".to_string()),
+        (Some(p), Some(_)) => request.adjudicate_share = p,
+        (None, _) => {}
     }
     if request.manifests.is_empty() {
         return Err("--manifest is required".to_string());
@@ -170,6 +223,53 @@ fn request_from(args: &[String]) -> Result<Request, String> {
     request.shuffle_seed =
         seed.ok_or("--shuffle-seed is required: a hex seed, or fresh to draw one")?;
     Ok(request)
+}
+
+/// `WIN,PLIES,DRAW,PLIES`: the two bounds in centipawns, each with its run of plies.
+fn parse_rule(value: &str) -> Option<Adjudication> {
+    let fields: Vec<&str> = value.split(',').collect();
+    let [win, win_plies, draw, draw_plies] = fields.as_slice() else {
+        return None;
+    };
+    let rule = Adjudication {
+        win_cp: win.parse().ok()?,
+        win_plies: win_plies.parse().ok()?,
+        draw_cp: draw.parse().ok()?,
+        draw_plies: draw_plies.parse().ok()?,
+    };
+    (rule.win_cp > 0 && rule.draw_cp >= 0 && rule.win_plies + rule.draw_plies > 0).then_some(rule)
+}
+
+/// A table of `PIECES PERCENT` lines, a piece count it leaves out kept whole, with the file's
+/// SHA-256 for the manifest.
+fn read_piece_keep(path: &Path) -> Result<([u8; PIECE_ROWS], String), String> {
+    let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| format!("{}: not text", path.display()))?;
+    let mut table = [100_u8; PIECE_ROWS];
+    for line in text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+    {
+        let mut fields = line.split_whitespace();
+        let row = (fields.next(), fields.next(), fields.next());
+        let (Some(pieces), Some(percent), None) = row else {
+            return Err(format!(
+                "{}: `{line}` is not PIECES PERCENT",
+                path.display()
+            ));
+        };
+        match (pieces.parse::<usize>(), percent.parse::<u8>()) {
+            (Ok(p), Ok(keep)) if (2..PIECE_ROWS).contains(&p) && keep <= 100 => table[p] = keep,
+            _ => {
+                return Err(format!(
+                    "{}: `{line}` is not a piece count from 2 to {} and a percent to 100",
+                    path.display(),
+                    PIECE_ROWS - 1
+                ));
+            }
+        }
+    }
+    Ok((table, hex(&sha256(&bytes))))
 }
 
 /// Hex, or `fresh` for one drawn from the per-process hasher keys, the time and the process.
@@ -347,6 +447,15 @@ struct Counts {
     magnitudes: Vec<u64>,
     /// Positions dropped in check, as noisy and as mates, by piece count.
     dropped: Vec<[u64; 3]>,
+    /// Games whose scores hold the adjudication rule as a win and as a draw, and those among them
+    /// whose own result is another.
+    rule_held: [u64; 2],
+    rule_wrong: u64,
+    cut_games: u64,
+    after_cut: u64,
+    thinned: u64,
+    contradicted: u64,
+    mates_kept: u64,
 }
 
 impl Counts {
@@ -987,6 +1096,81 @@ fn subsample(chosen: &mut [bool], kinds: &[u8], share: Option<u8>) {
     }
 }
 
+/// A position every filter passed, with what its record and the counts read of it.
+struct Passed<'a> {
+    board: &'a Board,
+    score: i16,
+    result: u8,
+    mated: bool,
+    held: bool,
+    kind: usize,
+    band: usize,
+    pieces: usize,
+}
+
+/// Writes a passed position's record to its split and counts it, unless it repeats one under
+/// `--dedup` or is past the cap on copies.
+fn keep(
+    request: &Request,
+    p: &Passed<'_>,
+    counts: &mut Counts,
+    kept: &mut Kept,
+    seen: &mut KeySet,
+    this_game: &mut BTreeSet<u64>,
+) -> Result<(), String> {
+    let key = p.board.key();
+    let again = !this_game.insert(key);
+    // Deduplication needs every key; the report alone reads its sample.
+    let tracked = request.dedup || in_sample(key, request.report_sample);
+    let before = tracked && seen.contains(key);
+    counts.within_game += u64::from(again);
+    counts.across_games += u64::from(!again && before);
+    if request.dedup && (again || before) {
+        counts.repeated_dropped += 1;
+        return Ok(());
+    }
+    if tracked {
+        seen.insert(key);
+    }
+    let bytes = trainer::encode(p.board, p.score, p.result);
+    let input = input_key(
+        &bytes,
+        p.board.side_to_move() == cadence_core::Colour::White,
+    );
+    // The cap reads training only, so validation keeps every copy it held before.
+    if !p.held
+        && request
+            .max_copies
+            .is_some_and(|cap| !kept.copies.take(copy_key(&bytes), cap))
+    {
+        counts.past_copies += 1;
+        return Ok(());
+    }
+    counts.plies[p.band] += 1;
+    counts.mates_kept += u64::from(p.mated);
+    counts.zeros[p.band] += u64::from(p.score == 0);
+    counts.scores[bucket(p.score)] += 1;
+    counts.results[p.pieces][usize::from(p.result)] += 1;
+    counts.magnitudes[p.pieces] += u64::from(p.score.unsigned_abs());
+    let n = request.report_sample;
+    let (keys, inputs) = if p.held {
+        kept.holdout.push(&bytes)?;
+        counts.holdout += 1;
+        (&mut kept.holdout_keys, &mut kept.holdout_inputs[p.kind])
+    } else {
+        kept.train.push(&bytes)?;
+        counts.train += 1;
+        (&mut kept.train_keys, &mut kept.train_inputs[p.kind])
+    };
+    if in_sample(key, n) {
+        keys.push(key);
+    }
+    if in_sample(input, n) {
+        inputs.push(input);
+    }
+    Ok(())
+}
+
 /// The positions of one game's moves that pass every filter, each before its move is played.
 fn positions(
     request: &Request,
@@ -1005,6 +1189,8 @@ fn positions(
     }
     counts.games += 1;
     let held = request.every > 0 && game.number.is_multiple_of(u64::from(request.every));
+    let white_first = board.side_to_move() == cadence_core::Colour::White;
+    let cut_at = cut_ply(request, record, white_first, counts);
     let mut decided = false;
     let mut this_game = BTreeSet::new();
     for (ply, &(bits, score)) in record.moves.iter().enumerate() {
@@ -1012,7 +1198,19 @@ fn positions(
         counts.visited += 1;
         let band = (ply / PLY_BAND).min(PLY_BANDS - 1);
         let pieces = (board.occupied().count() as usize).min(PIECE_ROWS - 1);
-        if !(FIRST_PLY..=LAST_PLY).contains(&ply) {
+        let mated = score != NO_SCORE && score.unsigned_abs() >= MATE_BOUND.unsigned_abs();
+        // A mate kept at a ceiling is labelled by it; the swing cap below still reads the score.
+        let label = match request.mate_score {
+            Some(n) if mated => n * score.signum(),
+            _ => score,
+        };
+        let mover = result_for_mover(
+            record.outcome,
+            board.side_to_move() == cadence_core::Colour::White,
+        );
+        if cut_at.is_some_and(|cut| ply > cut) {
+            counts.after_cut += 1;
+        } else if !(FIRST_PLY..=LAST_PLY).contains(&ply) {
             counts.outside += 1;
         } else if board.in_check() {
             counts.in_check += 1;
@@ -1023,68 +1221,41 @@ fn positions(
         } else if score == NO_SCORE {
             counts.no_score += 1;
             counts.unscored[band] += 1;
-        } else if score.unsigned_abs() >= MATE_BOUND.unsigned_abs() {
+        } else if label.unsigned_abs() >= MATE_BOUND.unsigned_abs() {
             counts.mate += 1;
             counts.dropped[pieces][2] += 1;
         } else if request
             .score_cap
-            .is_some_and(|cap| score.unsigned_abs() > cap.unsigned_abs())
+            .is_some_and(|cap| label.unsigned_abs() > cap.unsigned_abs())
         {
             counts.capped += 1;
         } else if decided {
             counts.swung += 1;
+        } else if request.piece_keep.as_ref().is_some_and(|(table, _)| {
+            chance(request, THIN_SALT, &board, record) % 100 >= u64::from(table[pieces])
+        }) {
+            counts.thinned += 1;
+        } else if request.contradiction_skip.is_some_and(|slope| {
+            contradicts(
+                slope,
+                label,
+                mover,
+                chance(request, SKIP_SALT, &board, record),
+            )
+        }) {
+            counts.contradicted += 1;
         } else {
-            let key = board.key();
-            let again = !this_game.insert(key);
-            // Deduplication needs every key; the report alone reads its sample.
-            let tracked = request.dedup || in_sample(key, request.report_sample);
-            let before = tracked && seen.contains(key);
-            counts.within_game += u64::from(again);
-            counts.across_games += u64::from(!again && before);
-            if request.dedup && (again || before) {
-                counts.repeated_dropped += 1;
-            } else {
-                if tracked {
-                    seen.insert(key);
-                }
-                let result = result_for_mover(
-                    record.outcome,
-                    board.side_to_move() == cadence_core::Colour::White,
-                );
-                let bytes = trainer::encode(&board, score, result);
-                let input = input_key(&bytes, board.side_to_move() == cadence_core::Colour::White);
-                let kind = usize::from(record.kind);
-                // The cap reads training only, so validation keeps every copy it held before.
-                if !held
-                    && request
-                        .max_copies
-                        .is_some_and(|cap| !kept.copies.take(copy_key(&bytes), cap))
-                {
-                    counts.past_copies += 1;
-                } else {
-                    counts.plies[band] += 1;
-                    counts.zeros[band] += u64::from(score == 0);
-                    counts.scores[bucket(score)] += 1;
-                    counts.results[pieces][usize::from(result)] += 1;
-                    counts.magnitudes[pieces] += u64::from(score.unsigned_abs());
-                    let n = request.report_sample;
-                    let (keys, inputs) = if held {
-                        kept.holdout.push(&bytes)?;
-                        counts.holdout += 1;
-                        (&mut kept.holdout_keys, &mut kept.holdout_inputs[kind])
-                    } else {
-                        kept.train.push(&bytes)?;
-                        counts.train += 1;
-                        (&mut kept.train_keys, &mut kept.train_inputs[kind])
-                    };
-                    if in_sample(key, n) {
-                        keys.push(key);
-                    }
-                    if in_sample(input, n) {
-                        inputs.push(input);
-                    }
-                }
-            }
+            let passed = Passed {
+                board: &board,
+                score: label,
+                result: mover,
+                mated,
+                held,
+                kind: usize::from(record.kind),
+                band,
+                pieces,
+            };
+            keep(request, &passed, counts, kept, seen, &mut this_game)?;
         }
         // A score past the swing cap decides the game, and the positions after it are dropped.
         decided |= request
@@ -1093,6 +1264,103 @@ fn positions(
         board.play(m);
     }
     Ok(())
+}
+
+/// The ply a game is cut after, where its scores hold the rule and the seed chose it; every game
+/// the rule holds in is counted, cut or not, with whether the rule named its result.
+fn cut_ply(
+    request: &Request,
+    record: &GameRecord,
+    white_first: bool,
+    counts: &mut Counts,
+) -> Option<usize> {
+    let (ply, verdict) = rule_holds(request.adjudicate?, &record.moves, white_first)?;
+    counts.rule_held[usize::from(verdict == 2)] += 1;
+    counts.rule_wrong += u64::from(verdict != record.outcome);
+    let draw = splitmix64(request.shuffle_seed ^ CUT_SALT ^ record.seed).0;
+    let chosen = draw % 100 < u64::from(request.adjudicate_share);
+    counts.cut_games += u64::from(chosen);
+    chosen.then_some(ply)
+}
+
+/// The first ply at which the scores, each the mover's, hold a rule, and the result it names as a
+/// record does: 0 for White, 1 for Black, 2 for a draw. A move with no score ends every run.
+fn rule_holds(rule: Adjudication, moves: &[(u16, i16)], white_first: bool) -> Option<(usize, u8)> {
+    let (mut white, mut black, mut level) = (0, 0, 0);
+    for (ply, &(_, score)) in moves.iter().enumerate() {
+        if score == NO_SCORE {
+            (white, black, level) = (0, 0, 0);
+            continue;
+        }
+        let for_white = if (ply % 2 == 0) == white_first {
+            i32::from(score)
+        } else {
+            -i32::from(score)
+        };
+        white = if for_white >= i32::from(rule.win_cp) {
+            white + 1
+        } else {
+            0
+        };
+        black = if for_white <= -i32::from(rule.win_cp) {
+            black + 1
+        } else {
+            0
+        };
+        level = if score.unsigned_abs() < rule.draw_cp.unsigned_abs() {
+            level + 1
+        } else {
+            0
+        };
+        if rule.win_plies > 0 && white >= rule.win_plies {
+            return Some((ply, 0));
+        }
+        if rule.win_plies > 0 && black >= rule.win_plies {
+            return Some((ply, 1));
+        }
+        if rule.draw_plies > 0 && level >= rule.draw_plies {
+            return Some((ply, 2));
+        }
+    }
+    None
+}
+
+/// One seeded draw for a position in its game, apart for each salt.
+fn chance(request: &Request, salt: u64, board: &Board, record: &GameRecord) -> u64 {
+    splitmix64(request.shuffle_seed ^ salt ^ board.key() ^ record.seed.rotate_left(32)).0
+}
+
+/// Whether `draw` falls inside the gap between the mover's result and the chance the score gives
+/// it at `slope`, so a position is skipped the more surely the more its two labels disagree.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "53 bits of the draw against a probability scaled to 53 bits"
+)]
+fn contradicts(slope: u16, score: i16, result: u8, draw: u64) -> bool {
+    let target = match result {
+        WIN => 1.0,
+        DRAW => 0.5,
+        _ => 0.0,
+    };
+    let gap = (target - logistic(f64::from(score) / f64::from(slope))).abs();
+    (draw >> 11) < (gap * (1_u64 << 53) as f64) as u64
+}
+
+/// The logistic by arithmetic alone, a short series for the exponential raised by ten squarings.
+/// A library's `exp` may differ in its last bit between hosts, and a bit here moves a record.
+fn logistic(x: f64) -> f64 {
+    let y = -x.clamp(-40.0, 40.0) / 1024.0;
+    let (mut term, mut sum) = (1.0, 1.0);
+    for n in 1..=12 {
+        term *= y / f64::from(n);
+        sum += term;
+    }
+    for _ in 0..10 {
+        sum *= sum;
+    }
+    1.0 / (1.0 + sum)
 }
 
 /// The network's input, its 768 piece-square features and the side to move, hashed: the record's
@@ -1223,6 +1491,7 @@ fn report(
                 );
             }
             by_pieces(&mut text, name, c);
+            chosen_filters(&mut text, name, c, request);
             let total: u64 = c.scores.iter().sum();
             let row: Vec<String> = c
                 .scores
@@ -1245,6 +1514,28 @@ fn report(
     }
     sampled_figures(&mut text, overlap, by_input, s, &note);
     text
+}
+
+/// The filters a flag turns on, each row written only with its flag, so a plain run's report is
+/// what it was.
+fn chosen_filters(text: &mut String, name: &str, c: &Counts, request: &Request) {
+    if request.adjudicate.is_some() {
+        let _ = writeln!(
+            text,
+            "  {name} adjudication rule held in games as a win {} as a draw {}, against the game's \
+             result {}; games cut {}, positions after the cut dropped {}",
+            c.rule_held[0], c.rule_held[1], c.rule_wrong, c.cut_games, c.after_cut
+        );
+    }
+    if request.piece_keep.is_some() {
+        let _ = writeln!(text, "  {name} thinned by piece count {}", c.thinned);
+    }
+    if request.contradiction_skip.is_some() {
+        let _ = writeln!(text, "  {name} contradiction-skipped {}", c.contradicted);
+    }
+    if request.mate_score.is_some() {
+        let _ = writeln!(text, "  {name} mates kept {}", c.mates_kept);
+    }
 }
 
 /// The kept positions by the output bucket their piece count picks and by the mover's result, what
@@ -1400,6 +1691,26 @@ fn manifest(
             ", at most {cap} training copies of a network input"
         );
     }
+    if let Some(rule) = request.adjudicate {
+        let _ = write!(
+            filters,
+            ", {}% of games cut after {} cp over {} plies or under {} cp over {} plies, each result \
+             its game's own",
+            request.adjudicate_share, rule.win_cp, rule.win_plies, rule.draw_cp, rule.draw_plies
+        );
+    }
+    if let Some((_, table)) = &request.piece_keep {
+        let _ = write!(filters, ", kept by piece count from the table {table}");
+    }
+    if let Some(slope) = request.contradiction_skip {
+        let _ = write!(
+            filters,
+            ", skipped by the gap between result and score at a slope of {slope}"
+        );
+    }
+    if let Some(n) = request.mate_score {
+        let _ = write!(filters, ", mate scores kept at {n}");
+    }
     if request.report_sample > 1 {
         let _ = write!(
             filters,
@@ -1441,7 +1752,7 @@ mod tests {
 
     use super::{
         BUCKETS, Buckets, CopyCounts, KeySet, RECORD_LEN, Request, bucket, convert, copies,
-        copy_key, game_number, in_sample, input_key, request_from, result_for_mover,
+        copy_key, game_number, in_sample, input_key, logistic, request_from, result_for_mover,
     };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
@@ -1451,6 +1762,21 @@ mod tests {
     use cadence_dataset::durable::{Logged, Step};
     use cadence_dataset::sha256::{hex, sha256};
     use cadence_dataset::trainer::{self, DRAW, LOSS, WIN};
+
+    /// The logistic is the library's to twelve places and, bit for bit, the value every host must
+    /// reach, since one bit apart skips another record.
+    #[test]
+    fn the_logistic_is_the_same_bits_on_every_host() {
+        for x in [-40.0, -3.5, -0.25, 0.0, 1.0, 7.75, 40.0] {
+            let library = 1.0 / (1.0 + f64::exp(-x));
+            assert!((logistic(x) - library).abs() < 1e-12, "{x}");
+        }
+        assert_eq!(logistic(0.0).to_bits(), 0.5_f64.to_bits());
+        assert_eq!(
+            [logistic(1.0).to_bits(), logistic(-3.5).to_bits()],
+            [4_604_760_009_829_884_550, 4_584_105_896_703_732_481]
+        );
+    }
 
     /// The header of chunk 0 of run 1, planned at two games.
     fn test_header() -> Header {
@@ -1513,6 +1839,11 @@ mod tests {
             dedup: false,
             max_copies: None,
             report_sample: 1,
+            adjudicate: None,
+            adjudicate_share: 100,
+            piece_keep: None,
+            contradiction_skip: None,
+            mate_score: None,
         }
     }
 
