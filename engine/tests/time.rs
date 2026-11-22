@@ -1454,3 +1454,88 @@ fn the_search_reads_the_scale_of_its_own_iterations() {
         assert_eq!(s.drop_scale(), drop_scale(&scores), "{scores:?}");
     });
 }
+
+/// At every clock and run the decision turns where the soft budget stretched by `scale` ends, moved
+/// by the time pondered.
+#[test]
+fn starts_another_honours_the_scale() {
+    for time in TIMES {
+        for inc in INCS {
+            for mtg in MTG {
+                let l = clocked(time, inc, mtg);
+                let b = budget(&l, Colour::White).expect("a clock gives a budget");
+                for run in [1, 2, 4, 9] {
+                    for scale in [1000, 1300, DROP_SCALE_MAX] {
+                        let soft = soft_for_drop(&l, b, soft_for_run(&l, b, run), scale);
+                        for offset in [0, 500] {
+                            let at = soft + offset;
+                            assert!(
+                                at == 0 || starts_another(&l, b, &[at - 1], run, scale, offset),
+                                "{time}+{inc} at run {run}, {scale}: stopped at {}",
+                                at - 1
+                            );
+                            assert!(
+                                !starts_another(&l, b, &[at], run, scale, offset),
+                                "{time}+{inc} at run {run}, {scale}: went on at {at}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// With the same times a falling score starts the iteration a steady one stops before, and after a
+/// hit too, both deadlines moved by the time pondered.
+#[test]
+fn a_falling_score_goes_on_where_a_steady_one_stops() {
+    let l = limits("wtime 6000 btime 6000");
+    let b = budget(&l, Colour::White).expect("a clock gives a budget");
+    let scale = drop_scale(&[30, 30, 30, 30, -70]);
+    for run in [1, 2, 4, 9] {
+        let soft = soft_for_run(&l, b, run);
+        assert!(
+            soft_for_drop(&l, b, soft, scale) > soft,
+            "no room to stretch under {b:?} at run {run}"
+        );
+        for offset in [0, 150, 1500] {
+            let completed = [soft + offset];
+            assert!(
+                !starts_another(&l, b, &completed, run, 1000, offset),
+                "a steady score went on at run {run}, {offset} ms pondered"
+            );
+            assert!(
+                starts_another(&l, b, &completed, run, scale, offset),
+                "a falling score stopped at run {run}, {offset} ms pondered"
+            );
+        }
+    }
+}
+
+/// The largest stretch leaves the prediction against the hard deadline in force: an iteration
+/// predicted not to finish is not started, though the stretched soft budget would allow it.
+#[test]
+fn the_prediction_stops_the_largest_stretch() {
+    let l = limits("wtime 6000 btime 6000");
+    let b = budget(&l, Colour::White).expect("a clock gives a budget");
+    for run in [1, 2, 4, 9] {
+        let stretched = soft_for_drop(&l, b, soft_for_run(&l, b, run), DROP_SCALE_MAX);
+        for offset in [0, 500] {
+            let elapsed = soft_for_run(&l, b, run) + offset;
+            let completed = [elapsed / 100, elapsed / 10, elapsed];
+            assert!(
+                elapsed < stretched + offset,
+                "the soft budget alone stops {elapsed} at run {run}"
+            );
+            assert!(
+                !another_iteration_fits(&completed, b.moved(offset)),
+                "{completed:?} fits {b:?} moved by {offset}"
+            );
+            assert!(
+                !starts_another(&l, b, &completed, run, DROP_SCALE_MAX, offset),
+                "{completed:?} went on at run {run}, {offset} ms pondered"
+            );
+        }
+    }
+}
