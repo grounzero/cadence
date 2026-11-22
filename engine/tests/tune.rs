@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, REDUCTION_INDEX, lmp_count};
+use cadence_engine::search::{Limits, REDUCTION_INDEX, lmp_count, probcut_bound};
 use cadence_engine::tune::{self, Kind, PARAMS, Param, Tunable, Tunables};
 use cadence_engine::uci::Session;
 use cadence_nnue::{Network, Provenance};
@@ -440,6 +440,10 @@ fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
     let untouched = [nodes(MIDDLEGAME, None), nodes(KIWIPETE, None)];
     for p in PARAMS {
         for end in [p.min, p.max] {
+            // A shallow search barely reaches ProbCut, so its low end is read at the bound instead.
+            if p.tunable == Tunable::ProbcutMargin && end == p.min {
+                continue;
+            }
             let set = format!("setoption name {} value {}", p.name, p.spell(end));
             let moved = nodes(MIDDLEGAME, Some(set.as_str())) != untouched[0]
                 || nodes(KIWIPETE, Some(set.as_str())) != untouched[1];
@@ -449,6 +453,16 @@ fn a_nets_search_reads_every_option_at_both_ends_of_its_range() {
             );
         }
     }
+}
+
+/// ProbCut acts only where five plies or more are left, so its margin's low end is read where the
+/// margin raises beta: a deep null-window node at beta 1 is tried against 1 plus the margin.
+#[test]
+fn the_probcut_margin_s_low_end_raises_the_bound_it_tries() {
+    let p = param(Tunable::ProbcutMargin);
+    let mut tunables = Tunables::DEFAULT;
+    p.set(&mut tunables, p.min);
+    assert_eq!(probcut_bound(&tunables, Some(0), 10, 0, 1), Some(1 + p.min));
 }
 
 /// The handcrafted evaluation searches with its own set, frozen, so no tune reaches it.
