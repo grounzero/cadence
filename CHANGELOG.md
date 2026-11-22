@@ -31,6 +31,11 @@ result.
   and scales them, so its memory for them falls about N times; the records
   it writes are the same.
 
+### Changed
+
+- Tools: datagen keeps one set of search histories through each game, emptied
+  at the start of every game, so the same seed now gives different games.
+
 ### Fixed
 
 - Search: a table result is not reused where its depth reaches the

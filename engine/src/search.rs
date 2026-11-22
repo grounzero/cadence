@@ -175,7 +175,7 @@ struct Heuristics {
     /// `None` in check: a position under attack has no quiet reading worth comparing.
     evals: [Option<Score>; MAX_PLY],
     /// True while [`Search::swap_learned`] has a caller's tables lent in, false once they are
-    /// handed back; never set where `bench` or datagen runs.
+    /// handed back; never set where `bench` runs.
     kept: bool,
 }
 
@@ -204,7 +204,8 @@ impl Heuristics {
     }
 }
 
-/// The tables a run learns that a UCI session keeps from one `go` to the next, one set per thread.
+/// The tables a run learns that a UCI session keeps from one `go` to the next, one set per thread,
+/// and a datagen game from one move to the next.
 /// Emptied where the transposition table is, so a new game starts as a fresh engine does.
 pub struct Learned {
     history: History,
