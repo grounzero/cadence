@@ -163,8 +163,9 @@ impl Search<'_> {
         let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
-        // so the placement saves the test at every node the null move cuts.
-        let futile = futile_node(self.heuristics.evals[ply], depth, alpha);
+        // so the placement saves the test at every node the null move cuts. An open window refuses
+        // it, as it refuses every other margin rule.
+        let futile = !pv && futile_node(self.heuristics.evals[ply], depth, alpha);
         self.stats.futility_nodes.add_if(futile);
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is

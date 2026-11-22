@@ -19,6 +19,18 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Tools: `cadence-tools convert --max-copies N` keeps at most N training
+  copies of a position's network input, a position and its colour-flipped
+  mirror counting as one, meets the games in an order the shuffle seed fixes
+  so no dataset is favoured for being listed first, and counts the copies it
+  drops; validation keeps every copy.
+- Tools: `cadence-tools convert --report-sample N` reads its report's
+  repeats, overlaps and copies from one position key or network input in N
+  and scales them, so its memory for them falls about N times; the records
+  it writes are the same.
+
 ### Fixed
 
 - Search: a table result is not reused where its depth reaches the
@@ -26,6 +38,9 @@ result.
 - Chess960: the position key names the rook each castling right belongs to,
   so two positions that differ only in which rook may castle no longer share
   a table entry.
+- Time: a move's budget counts only the part of the increment past
+  `Move Overhead`, since every move pays it, and the default `Move Overhead`
+  is 5 ms in place of 20.
 
 ## [0.7.0-rc.3] - 2026-11-21
 
