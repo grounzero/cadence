@@ -215,7 +215,7 @@ impl Search<'_> {
     /// The clock and the record are kept and the deadlines move by the time pondered, so every
     /// decision after the hit is a fresh search's over the same times. True when it absorbs one.
     pub(super) fn absorb_ponder_hit(&mut self) -> bool {
-        if !self.clock.pondering || !self.ponder_hit.is_some_and(|h| h.received().is_some()) {
+        if !self.clock.pondering || self.ponder_hit.is_none_or(|h| h.received().is_none()) {
             return false;
         }
         self.clock.pondering = false;
