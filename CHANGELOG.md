@@ -35,6 +35,13 @@ result.
   move, with what the in-check, capture and mate filters dropped beside
   them, and again by exact piece count.
 
+### Changed
+
+- Tools: datagen's searches stop at the end of the first iteration past
+  their node count, with a cap far above it, and the chunk header, now
+  format 2, and the provenance line name the cap. The converter still reads
+  format 1 chunks.
+
 ### Fixed
 
 - Search: a table result is not reused where its depth reaches the

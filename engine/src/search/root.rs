@@ -132,6 +132,12 @@ impl Search<'_> {
             {
                 break;
             }
+            // Between iterations only, so what the search answers rests on every node it spent.
+            if let Some(n) = self.limits.soft_nodes
+                && self.reported_nodes() >= n
+            {
+                break;
+            }
             // A clocked ponder times its iterations too, so a hit decides on the whole record.
             if self.clock.budget.or(self.clock.budget_on_hit).is_some() {
                 let elapsed = self.elapsed_ms();

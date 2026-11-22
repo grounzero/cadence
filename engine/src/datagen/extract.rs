@@ -12,7 +12,7 @@ use cadence_dataset::sha256::{Sha256, hex, sha256};
 use super::game::{Ending, Outcome, ending};
 use super::opening::{RANDOM_PLIES, SCREEN_NODES, WINDOW};
 use super::record::Record;
-use super::{HASH_MB, NODES};
+use super::{HASH_MB, NODE_CAP, NODES};
 use crate::eval::{self, PHASE_MAX};
 use crate::score;
 use crate::tt::Table;
@@ -283,8 +283,8 @@ impl Run {
 const PROVENANCE: [&str; 3] = ["#", "cadence", "datagen"];
 
 /// The fields after `self-play`, in the order `provenance` writes them.
-const FIELDS: [&str; 7] = [
-    "seed", "games", "nodes", "hash", "plies", "window", "screen",
+const FIELDS: [&str; 8] = [
+    "seed", "games", "nodes", "cap", "hash", "plies", "window", "screen",
 ];
 
 /// A run's provenance line.
@@ -320,9 +320,10 @@ impl Header {
         if words.next().is_some() {
             return Err(refused());
         }
-        let [seed, games, nodes, hash, plies, window, screen] = values;
+        let [seed, games, nodes, cap, hash, plies, window, screen] = values;
         for (name, named, built) in [
             ("nodes", nodes, NODES),
+            ("cap", cap, NODE_CAP),
             ("hash", hash, HASH_MB as u64),
             ("plies", plies, RANDOM_PLIES as u64),
             ("window", window, u64::from(WINDOW.unsigned_abs())),

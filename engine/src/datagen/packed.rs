@@ -715,7 +715,7 @@ fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header
         net_sha256: build.net_sha256,
         modified: u8::from(build.modified),
         cfg_sha256: sha256(build.cfg_features.as_bytes()),
-        node_cap: 0,
+        node_cap: u32::try_from(NODE_CAP).map_err(|e| e.to_string())?,
     })
 }
 

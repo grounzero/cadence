@@ -121,16 +121,21 @@ pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Option<Score> {
     label(&search)
 }
 
-/// The same board and node count give the same game, whatever `tt` held before.
+/// The same board and node counts give the same game, whatever `tt` held before. Each move's search
+/// stops at the end of the first iteration past `nodes`, or at once at `cap`.
 ///
 /// # Panics
 ///
 /// If the search returns an illegal move.
-pub fn play(board: &mut Position, nodes: u64, _cap: u64, tt: &Table) -> Played {
+pub fn play(board: &mut Position, nodes: u64, cap: u64, tt: &Table) -> Played {
     tt.clear();
     let stop = AtomicBool::new(false);
     let mut search = Search::new(&stop, tt);
-    search.set_limits(node_limit(nodes));
+    search.set_limits(Limits {
+        soft_nodes: Some(nodes),
+        nodes: Some(cap),
+        ..Limits::default()
+    });
     let mut moves = Vec::new();
     loop {
         if let Some((ending, outcome)) = ending(board) {

@@ -69,7 +69,7 @@ pub fn play(seed: u64, number: u64, tt: &Table) -> Record {
 pub fn provenance(seed: u64, games: u64) -> String {
     format!(
         "# cadence datagen {VERSION} self-play seed {seed} games {games} nodes {NODES} \
-         hash {HASH_MB} plies {} window {} screen {}",
+         cap {NODE_CAP} hash {HASH_MB} plies {} window {} screen {}",
         opening::RANDOM_PLIES,
         opening::WINDOW,
         opening::SCREEN_NODES

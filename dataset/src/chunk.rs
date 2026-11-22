@@ -10,7 +10,10 @@ use crate::crc32::crc32;
 
 pub const MAGIC: [u8; 4] = *b"CDG\0";
 pub const TRAILER_MAGIC: [u8; 4] = *b"CDT\0";
-pub const FORMAT_VERSION: u16 = 1;
+pub const FORMAT_VERSION: u16 = 2;
+
+/// Read beside this format: its header is this one's with no cap, whose bytes it held reserved.
+pub const FORMAT_VERSION_UNCAPPED: u16 = 1;
 pub const HEADER_LEN: usize = 512;
 pub const TRAILER_LEN: usize = 20;
 
@@ -107,7 +110,8 @@ const FEATURES_FIELD: (usize, usize) = (92, 64);
 const HOST_FIELD: (usize, usize) = (186, 32);
 const MODIFIED_AT: usize = 258;
 const CFG_AT: usize = 259;
-const RESERVED_AT: usize = 291;
+const CAP_AT: usize = 291;
+const RESERVED_AT: usize = 295;
 
 impl Header {
     /// # Errors
@@ -135,7 +139,8 @@ impl Header {
         b[218..226].copy_from_slice(&self.start_time.to_le_bytes());
         b[226..258].copy_from_slice(&self.net_sha256);
         b[MODIFIED_AT] = self.modified;
-        b[CFG_AT..RESERVED_AT].copy_from_slice(&self.cfg_sha256);
+        b[CFG_AT..CAP_AT].copy_from_slice(&self.cfg_sha256);
+        b[CAP_AT..RESERVED_AT].copy_from_slice(&self.node_cap.to_le_bytes());
         Ok(b)
     }
 
@@ -148,14 +153,16 @@ impl Header {
             return Err("not a chunk: the magic is wrong".to_string());
         }
         let version = u16_at(b, 4);
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_UNCAPPED {
             return Err(format!("format version {version}, not {FORMAT_VERSION}"));
         }
         let length = u16_at(b, 6);
         if usize::from(length) != HEADER_LEN {
             return Err(format!("header length {length}, not {HEADER_LEN}"));
         }
-        if b[RESERVED_AT..].iter().any(|&byte| byte != 0) {
+        let node_cap = u32_at(b, CAP_AT);
+        let uncapped = version == FORMAT_VERSION_UNCAPPED;
+        if b[RESERVED_AT..].iter().any(|&byte| byte != 0) || (uncapped && node_cap != 0) {
             return Err("a reserved header byte is not zero".to_string());
         }
         let mut commit = [0; 20];
@@ -163,7 +170,7 @@ impl Header {
         let mut net_sha256 = [0; 32];
         net_sha256.copy_from_slice(&b[226..258]);
         let mut cfg_sha256 = [0; 32];
-        cfg_sha256.copy_from_slice(&b[CFG_AT..RESERVED_AT]);
+        cfg_sha256.copy_from_slice(&b[CFG_AT..CAP_AT]);
         Ok(Header {
             commit,
             version: get_text(b, VERSION_FIELD, "version")?,
@@ -183,7 +190,7 @@ impl Header {
             net_sha256,
             modified: b[MODIFIED_AT],
             cfg_sha256,
-            node_cap: 0,
+            node_cap,
         })
     }
 }

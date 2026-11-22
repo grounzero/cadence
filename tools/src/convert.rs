@@ -243,6 +243,7 @@ fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String>
         ("commit", hex(&h.commit)),
         ("version", h.version.clone()),
         ("nodes", h.nodes.to_string()),
+        ("node-cap", h.node_cap.to_string()),
         ("screen-nodes", h.screen_nodes.to_string()),
         ("hash", h.hash_mb.to_string()),
         ("random-plies", h.random_plies.to_string()),
@@ -252,14 +253,16 @@ fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String>
         ("run-seeds", format!("{:016x}", h.run_seed)),
     ];
     for (field, have) in fields {
-        let want = set
-            .provenance
-            .get(field)
-            .ok_or_else(|| format!("{}: names no {field}", set.manifest.display()))?;
+        let want = match set.provenance.get(field) {
+            Some(want) => want.as_str(),
+            // Written before the cap was, so its chunks have none.
+            None if field == "node-cap" => "0",
+            None => return Err(format!("{}: names no {field}", set.manifest.display())),
+        };
         let agrees = if field == "run-seeds" {
             want.split_whitespace().any(|seed| seed == have)
         } else {
-            *want == have
+            want == have
         };
         if !agrees {
             return Err(format!(

@@ -18,7 +18,7 @@ use super::extract::{BALANCE_CAP, balance};
 use super::game::{Ending, Outcome, ending};
 use super::opening::{RANDOM_PLIES, SCREEN_NODES, WINDOW};
 use super::packed::{self, chunk_seed};
-use super::{HASH_MB, NODES, game_seed};
+use super::{HASH_MB, NODE_CAP, NODES, game_seed};
 use crate::eval::{self, PHASE_MAX};
 use crate::position::Position;
 use crate::tt::Table;
@@ -126,11 +126,16 @@ fn sidecar(path: &Path, name: &str, digest: &str) -> Result<(), String> {
 
 /// The settings that shaped the games are this build's, and the build was a clean, known commit.
 fn built_here(header: &Header, shipped: [u8; 32]) -> Result<(), String> {
-    let built: [(&str, i64, i64); 5] = [
+    let built: [(&str, i64, i64); 6] = [
         (
             "nodes",
             header.nodes.into(),
             i64::try_from(NODES).unwrap_or(i64::MAX),
+        ),
+        (
+            "node cap",
+            header.node_cap.into(),
+            i64::try_from(NODE_CAP).unwrap_or(i64::MAX),
         ),
         (
             "screen nodes",
@@ -281,6 +286,7 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
             h.features.clone(),
             h.cfg_sha256,
             h.nodes,
+            h.node_cap,
             h.screen_nodes,
             h.hash_mb,
             h.random_plies,
@@ -313,8 +319,8 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
     let _ = writeln!(text, "version\t{}", h.version);
     let _ = writeln!(
         text,
-        "nodes\t{}\nscreen-nodes\t{}\nhash\t{}",
-        h.nodes, h.screen_nodes, h.hash_mb
+        "nodes\t{}\nnode-cap\t{}\nscreen-nodes\t{}\nhash\t{}",
+        h.nodes, h.node_cap, h.screen_nodes, h.hash_mb
     );
     let _ = writeln!(
         text,
