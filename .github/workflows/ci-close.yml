@@ -1,0 +1,21 @@
+# Cancels a pull request's ci run when the pull request is closed or merged, by joining the concurrency
+# group that run holds, spelled from the pull request's number: a merged pull request's closed event carries
+# the base branch as its ref, and a group spelled from that cancelled main's own run.
+name: ci-close
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+concurrency:
+  group: ci-ci-refs/pull/${{ github.event.pull_request.number }}/merge
+  cancel-in-progress: true
+
+jobs:
+  cancel:
+    name: cancel the closed pull request's ci run
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "closed; a ci run still going on pull request ${{ github.event.pull_request.number }} was cancelled by this run's concurrency group"

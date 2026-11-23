@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use cadence_core::features::NUM_INPUTS;
 
-/// Units a perspective in every net so far, and the width every width-generic type here takes
-/// unless told otherwise.
+/// Units a perspective at the narrow width, which every width-generic type here takes unless told
+/// otherwise. The shipped net may be wider, so a caller that loads it takes `AnyNetwork`.
 pub const HIDDEN: usize = 256;
 /// The other width a net may have; its header names which of the two it is.
 pub const WIDE: usize = 512;
@@ -268,8 +268,8 @@ pub struct Network<const H: usize = HIDDEN> {
     origin: Origin,
 }
 
-/// The narrow width's names, so a caller that never asks for a width gets the one every net so far
-/// has had.
+/// The narrow width's names, so a caller that never asks for a width gets 256 units a perspective.
+/// `AnyNetwork` holds a net of either width.
 impl Network {
     /// # Errors
     ///

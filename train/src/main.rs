@@ -58,10 +58,12 @@ const DIRTY: &str = env!("CADENCE_TRAIN_DIRTY");
 const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
-           [--hidden 256|512] [--lr-schedule cosine|step]
+           [--hidden 256|512] [--lr-schedule cosine|step] [--result-share-end F]
+           [--from CHECKPOINT] [--lr-start F]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
+           [--scale-factor F]
        cadence-train book --in FILE --out FILE --seed HEX [--every N]
        cadence-train overfit --out DIR [--data FILE... --manifest FILE...]
        cadence-train eval --checkpoint DIR --fens FILE";
@@ -184,9 +186,9 @@ fn training<LR: lr::LrScheduler>(
     id: &str,
     batches: usize,
     superbatches: usize,
-    result_share: f32,
+    result_share: (f32, f32),
     lr_scheduler: LR,
-) -> TrainingSchedule<LR, wdl::ConstantWDL> {
+) -> TrainingSchedule<LR, wdl::LinearWDL> {
     TrainingSchedule {
         net_id: id.to_string(),
         eval_scale: f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX)),
@@ -196,9 +198,7 @@ fn training<LR: lr::LrScheduler>(
             start_superbatch: 1,
             end_superbatch: superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL {
-            value: result_share,
-        },
+        wdl_scheduler: schedule::share(result_share.0, result_share.1),
         lr_scheduler,
         save_rate: SAVE_RATE.min(superbatches),
     }
@@ -226,13 +226,17 @@ fn run(flags: &Flags) -> Result<(), String> {
     let batches = parsed(flags, "--batches", BATCHES_PER_SUPERBATCH)?;
     let result_share = parsed(flags, "--result-share", RESULT_SHARE)?;
     let positions = parsed(flags, "--validation-positions", VALIDATION_POSITIONS)?;
+    let share_end = parsed(flags, "--result-share-end", result_share)?;
     let hidden = width_flag(flags)?;
     let stepped = stepped_flag(flags)?;
-    if superbatches == 0 || batches == 0 || !(0.0..=1.0).contains(&result_share) {
+    let shares = [result_share, share_end];
+    if superbatches == 0 || batches == 0 || shares.iter().any(|s| !(0.0..=1.0).contains(s)) {
         return Err(format!(
-            "--superbatches and --batches must be positive and --result-share in [0, 1]\n{USAGE}"
+            "--superbatches and --batches must be positive and each result share in [0, 1]\n{USAGE}"
         ));
     }
+    let lr_start = first_rate(flags, stepped)?;
+    let from = continued(flags, hidden)?;
     let data: Vec<&str> = flags
         .get("--data")
         .map(|d| d.iter().map(String::as_str).collect())
@@ -248,7 +252,8 @@ fn run(flags: &Flags) -> Result<(), String> {
     std::fs::write(&commit_file, format!("{COMMIT}\n"))
         .map_err(|e| format!("{}: {e}", commit_file.display()))?;
     cadence_train::data::record_manifests(Path::new(out), &verified)?;
-    cadence_train::data::record_result_share(Path::new(out), result_share)?;
+    // A share that moves is recorded, and scored below, as the share the run ends on.
+    cadence_train::data::record_result_share(Path::new(out), share_end)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let watcher = {
@@ -268,13 +273,16 @@ fn run(flags: &Flags) -> Result<(), String> {
         output_directory: out,
         batch_queue_size: BATCH_QUEUE,
     };
+    if let Some(checkpoint) = &from {
+        trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
+    }
     let loader = DirectSequentialDataLoader::new(&data);
-    let (sb, share) = (superbatches, result_share);
+    let (sb, share) = (superbatches, (result_share, share_end));
     if stepped {
         let lr = schedule::stepped(sb);
         trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
     } else {
-        let lr = schedule::cosine(sb);
+        let lr = schedule::cosine_from(lr_start, sb);
         trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
     }
     // Freed before the checkpoints are read back, each into a trainer of its own.
@@ -291,7 +299,45 @@ fn run(flags: &Flags) -> Result<(), String> {
     let checked =
         cadence_train::checkpoint::check_all(Path::new(out), id, hidden, &checkpoints, &mut seen)?;
     println!("checkpoints: {checked} loaded as an export would load them, every one the run saved");
-    validation(&checkpoints, holdout, positions, result_share, result_share)
+    validation(&checkpoints, holdout, positions, share_end, share_end)
+}
+
+/// `--lr-start`, the cosine's first rate where a run continues another; the recipe's without it.
+fn first_rate(flags: &Flags, stepped: bool) -> Result<f32, String> {
+    let rate = parsed(flags, "--lr-start", schedule::INITIAL_LR)?;
+    if flags.contains_key("--lr-start") && stepped {
+        return Err(format!(
+            "--lr-start sets the cosine's first rate, not the steps'\n{USAGE}"
+        ));
+    }
+    if rate > schedule::FINAL_LR && rate <= schedule::INITIAL_LR {
+        Ok(rate)
+    } else {
+        Err(format!(
+            "--lr-start {rate}, where a first rate is above {} and at most {}\n{USAGE}",
+            schedule::FINAL_LR,
+            schedule::INITIAL_LR
+        ))
+    }
+}
+
+/// `--from`, a saved checkpoint whose weights and optimiser state the run starts from, which must
+/// be of the width the run trains.
+fn continued(flags: &Flags, hidden: usize) -> Result<Option<PathBuf>, String> {
+    let Some(checkpoint) = flags.get("--from").and_then(|v| v.first()) else {
+        return Ok(None);
+    };
+    let checkpoint = PathBuf::from(checkpoint);
+    saved(std::slice::from_ref(&checkpoint))?;
+    let width = width(&checkpoint)?;
+    if width == hidden {
+        Ok(Some(checkpoint))
+    } else {
+        Err(format!(
+            "{} was trained at {width} units and this run is at {hidden}",
+            checkpoint.display()
+        ))
+    }
 }
 
 /// Loads each checkpoint as it is saved and ends the process at the first the engine's loader
@@ -448,7 +494,23 @@ fn export(flags: &Flags) -> Result<(), String> {
         ));
     }
     let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let quantised = read(&checkpoint.join("quantised.bin"))?;
+    let mut quantised = read(&checkpoint.join("quantised.bin"))?;
+    let factor = match flags.get("--scale-factor").and_then(|v| v.first()) {
+        Some(value) => match value.parse::<f32>() {
+            Ok(f) if f.is_finite() && f > 0.0 => Some(f),
+            _ => {
+                return Err(format!(
+                    "--scale-factor {value}, where a factor is above 0\n{USAGE}"
+                ));
+            }
+        },
+        None => None,
+    };
+    if let Some(factor) = factor {
+        let raw = read(&checkpoint.join("raw.bin"))?;
+        quantised =
+            cadence_train::export::fold(&quantised, &raw, factor).map_err(|e| e.to_string())?;
+    }
     let run = checkpoint.parent().unwrap_or(Path::new("."));
     let commit_file = run.join(COMMIT_FILE);
     let trainer = String::from_utf8_lossy(&read(&commit_file)?)
@@ -466,6 +528,12 @@ fn export(flags: &Flags) -> Result<(), String> {
         net.trainer(),
         hex(&net.manifest())
     );
+    if let Some(factor) = factor {
+        println!(
+            "  output weights and bias scaled by {factor} from the unquantised weights, quantised \
+             once; the file does not record the factor"
+        );
+    }
     Ok(())
 }
 
@@ -474,11 +542,17 @@ fn short_schedule(
     id: &str,
     superbatches: usize,
     batches: usize,
-) -> TrainingSchedule<lr::CosineDecayLR, wdl::ConstantWDL> {
+) -> TrainingSchedule<lr::CosineDecayLR, wdl::LinearWDL> {
     let lr = schedule::cosine(superbatches);
     TrainingSchedule {
         save_rate: superbatches,
-        ..training(id, batches, superbatches, OVERFIT_SHARE, lr)
+        ..training(
+            id,
+            batches,
+            superbatches,
+            (OVERFIT_SHARE, OVERFIT_SHARE),
+            lr,
+        )
     }
 }
 
