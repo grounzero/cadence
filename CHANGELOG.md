@@ -27,6 +27,10 @@ result.
   that perspective's sums when the king crosses the middle, by a step or by
   a castle. Every shipped net is plain, and an earlier build refuses a
   mirrored file.
+- Releases: Windows and Linux x86-64 each gain an AVX-512 build, for
+  processors with AVX-512F and AVX-512BW, so a release builds nine
+  binaries. The install scripts take it where the processor has both, and
+  the AVX2 build from a release without one; `--build avx512` asks for it.
 
 ## [0.7.0-rc.5] - 2026-11-23
 
