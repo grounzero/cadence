@@ -19,6 +19,21 @@ result.
 
 ## [Unreleased]
 
+### Fixed
+
+- Installers: a binary whose checksum, attestation or bench does not match
+  the release's stops the install with a message that the file may be
+  corrupt or tampered with, and is never replaced by a build from source.
+- Installers: a download that fails for the network is tried once more, then
+  the install stops and says so.
+- Installers: Cadence is built from source only with `--source`, or where
+  the release has no binary for the system, and the installers say which.
+- Installers: `install.ps1` checks for BMI1 and LZCNT beside AVX2, and tries
+  the generic binary where the one it chose cannot run its bench.
+- Installers: `--uninstall` keeps the install record for what the user keeps,
+  removes the empty folders and the profile's blank line it added, and names
+  any compiler or Rust toolchain it installed.
+
 ### Added
 
 - Networks: a net file's header names its input layout, plain or mirrored,
