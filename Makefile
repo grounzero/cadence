@@ -15,7 +15,7 @@
 # host CPU, and for them that is free Elo. For Cadence it would break the
 # bench determinism contract: the node count must be a
 # function of the code alone, and it is checked for agreement on every
-# machine that runs it, dev against base, across the fleet. A binary whose
+# machine that runs it, dev against base, on every test machine. A binary whose
 # code generation depends on the host it was compiled on is the kind of
 # non-reproducibility that contract exists to exclude -- it does not
 # reproduce under investigation -- so every worker builds the same portable

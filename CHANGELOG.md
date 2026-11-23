@@ -49,10 +49,22 @@ result.
   binaries. The install scripts take it where the processor has both, and
   the AVX2 build from a release without one; `--build avx512` asks for it.
 
+### Fixed
+
+- UCI: `go searchmoves` with no legal move in its list answers
+  `bestmove 0000`, where it searched every move.
+- UCI: a byte-order mark at the start of an input line is ignored.
+- UCI: `UCI_LimitStrength` engages whatever order the options arrive in. A
+  level searches on one thread and shows one line, whatever `Threads` and
+  `MultiPV` say, and both apply again once it is off.
+- UCI: a `position` line discarded for being longer than 1 MiB counts as a
+  failed position, so the next `go` answers `bestmove 0000`.
+- UCI: `EvalFile` checks a file's header and size before reading the rest,
+  and names a file that is not a net as "not a Cadence net file".
+
 ## [0.7.0-rc.5] - 2026-11-23
 
-The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build
-a release. The changes are listed under 0.7.0-rc.4.
+rc.4's tag was lightweight, so it was never released; rc.5 is the same code.
 
 ## [0.7.0-rc.4] - 2026-11-23
 
@@ -137,16 +149,17 @@ change costs strength: futility at an open window, test 102, +0.73
 (between -1.21 and +2.67); the table's cutoff near the fifty-move draw,
 test 104, +0.36 (between -1.16 and +1.88); `Move Overhead` charged on
 every move, test 97, +1.27 (between -0.94 and +3.48). The mate-score bound
-and the futility fix were also tested in Chess960, tests 112 and 113, and
-stopped as not costing strength: +0.21 (between -1.65 and +2.07) and +0.29
-(between -1.98 and +2.55). The mate-score bound's standard test, test 108,
-ended unresolved at -0.42 (between -1.66 and +0.81), and the castling
-rooks in the key in Chess960, test 94, ended unresolved at -0.95 (between
--2.57 and +0.67); the bound was kept on its Chess960 result and the key as
-a correction. Thinking longer when the score falls did not show a gain,
-test 114, +0.44 (between -1.26 and +2.14), and was kept as a correction to
-how the engine spends its time. The `ponderhit` change was not put to a
-test of games, since the test games do not ponder. These are not a rating.
+and the futility fix were also tested in Chess960, tests 112 and 113,
+which were stopped unresolved with -3 excluded at 95%: +0.21 (between
+-1.65 and +2.07) and +0.29 (between -1.98 and +2.55). The mate-score
+bound's standard test, test 108, ended unresolved at -0.42 (between -1.66
+and +0.81), and the castling rooks in the key in Chess960, test 94, ended
+unresolved at -0.95 (between -2.57 and +0.67); the bound was kept on its
+Chess960 result and the key as a correction. Thinking longer when the
+score falls did not show a gain, test 114, +0.44 (between -1.26 and
++2.14), and was kept as a correction to how the engine spends its time.
+The `ponderhit` change was not put to a test of games, since the test
+games do not ponder. These are not a rating.
 
 ## [0.7.0-rc.3] - 2026-11-21
 

@@ -60,19 +60,25 @@ impl Session {
         let stop = Arc::new(AtomicBool::new(false));
         let ponder_hit = Arc::new(PonderHit::new());
         let mut board = self.board.duplicate();
-        let root_filter = search_moves(&tokens, &generate_legal(&board));
+        let Some(root_filter) = search_moves(&tokens, &generate_legal(&board)) else {
+            say(format_args!(
+                "info string go: no move in searchmoves is legal here; searching nothing"
+            ));
+            say(format_args!("bestmove 0000"));
+            return;
+        };
         // Owed whatever happens next, so spelled before anything can fail to start.
         let fallback = first_answer(&board, &root_filter, self.chess960);
         let (tables, net) = (self.tables.clone(), self.active_net());
         let chess960 = self.chess960;
         let level = self.level();
-        let multipv = self.multipv;
+        let (threads, multipv) = self.threads_and_lines(level.is_some());
         let ponder = self.ponder;
-        let threads = self.threads;
         let tunables = self.tunables;
-        // Lent to the thread and returned by it, padded or cut to one set per thread.
+        // Lent to the thread and returned by it, padded or cut to one set per thread the option
+        // names, so a level keeps the helpers' sets.
         let mut learned = std::mem::take(&mut self.learned);
-        learned.resize_with(threads, Learned::new);
+        learned.resize_with(self.threads, Learned::new);
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -141,6 +147,21 @@ impl Session {
             }
             Err(e) => not_started(&e, &fallback),
         }
+    }
+
+    /// The threads and lines a `go` searches with: a level owns the line count, and its move is
+    /// reproducible only on one thread, so it takes one of each and says so.
+    fn threads_and_lines(&self, level: bool) -> (usize, usize) {
+        if !level {
+            return (self.threads, self.multipv);
+        }
+        if self.threads > 1 || self.multipv > 1 {
+            say(format_args!(
+                "info string go: UCI_LimitStrength is on, so this search runs on one thread \
+                 and shows one line"
+            ));
+        }
+        (1, 1)
     }
 
     /// The search keeps its tree and spends the clock from when the line was read. Told rather than
@@ -435,17 +456,20 @@ const GO_KEYWORDS: [&str; 12] = [
     "infinite",
 ];
 
-/// The moves after `searchmoves`; one not legal here is named and left out, and none legal leaves
-/// the root unfiltered.
-fn search_moves(tokens: &[&str], legal: &MoveList) -> Vec<Move> {
+/// The moves after `searchmoves`, empty where there is no list; one not legal here is named and
+/// left out, and `None` is a list naming no legal move, which leaves nothing to search.
+fn search_moves(tokens: &[&str], legal: &MoveList) -> Option<Vec<Move>> {
     let Some(at) = tokens.iter().position(|&t| t == "searchmoves") else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let mut moves = Vec::new();
-    for &token in tokens[at + 1..]
+    let named = tokens[at + 1..]
         .iter()
-        .take_while(|t| !GO_KEYWORDS.contains(t))
-    {
+        .take_while(|t| !GO_KEYWORDS.contains(t));
+    if named.clone().next().is_none() {
+        return Some(moves);
+    }
+    for &token in named {
         match parse_uci(legal, token) {
             Some(m) => moves.push(m),
             None => say(format_args!(
@@ -453,7 +477,7 @@ fn search_moves(tokens: &[&str], legal: &MoveList) -> Vec<Move> {
             )),
         }
     }
-    moves
+    (!moves.is_empty()).then_some(moves)
 }
 
 /// Spelled in the position it is played in, not at the root. `None` where an aborted first

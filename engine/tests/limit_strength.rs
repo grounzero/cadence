@@ -167,75 +167,50 @@ fn the_gate_alone_takes_the_top_of_the_ladder() {
     );
 }
 
-/// In both orders, and spoken: a silent refusal looks like a level that is on.
+/// A level engages whichever order the options arrive in, and searches on one thread with its own
+/// candidates, so it spends the nodes and plays the move it does with both options at one.
 #[test]
-fn a_level_refuses_while_more_than_one_line_is_reported() {
-    // MultiPV can change the best move at a fixed depth, so a refused level is measured against it.
-    let plain = search(FENS[0], &["setoption name MultiPV value 4"]);
+fn a_level_engages_beside_more_lines_or_threads_in_either_order() {
     let on = level_on(MIN_ELO);
-
-    let mut level_last = vec!["setoption name MultiPV value 4".to_string()];
-    level_last.extend(on.iter().cloned());
-    let out = search(FENS[0], &as_refs(&level_last));
-    assert!(
-        out.iter().any(|l| l.starts_with("info string")
-            && l.contains("UCI_Elo")
-            && l.contains("MultiPV")),
-        "no spoken refusal when the level arrived second, in {out:?}"
-    );
-    assert_eq!(
-        played(&out),
-        played(&plain),
-        "a refused level still moved the move"
-    );
-
-    let mut multipv_last: Vec<String> = on.to_vec();
-    multipv_last.push("setoption name MultiPV value 4".to_string());
-    let out = search(FENS[0], &as_refs(&multipv_last));
-    assert!(
-        out.iter()
-            .any(|l| l.starts_with("info string") && l.contains("MultiPV")),
-        "no spoken refusal when MultiPV arrived second, in {out:?}"
-    );
-    assert_eq!(
-        candidate_moves(&out).len(),
-        level::policy(MIN_ELO).candidates,
-        "MultiPV took effect against a standing level"
-    );
+    let alone = search(FENS[0], &as_refs(&on));
+    for other in [
+        "setoption name MultiPV value 4",
+        "setoption name Threads value 2",
+    ] {
+        let mut other_first = vec![other.to_string()];
+        other_first.extend(on.iter().cloned());
+        let mut level_first = on.to_vec();
+        level_first.push(other.to_string());
+        for setup in [other_first, level_first] {
+            let out = search(FENS[0], &as_refs(&setup));
+            assert_eq!(
+                candidate_moves(&out),
+                candidate_moves(&alone),
+                "{setup:?}: {out:?}"
+            );
+            assert_eq!(played(&out), played(&alone), "{setup:?}");
+            assert_eq!(nodes(&out), nodes(&alone), "{setup:?}: not one thread");
+            assert!(
+                out.iter()
+                    .filter(|l| l.starts_with("info depth"))
+                    .all(|l| !l.contains(" multipv ")),
+                "{setup:?}: more than one line printed: {out:?}"
+            );
+        }
+    }
 }
 
-/// Above one thread the search is not reproducible, so a level there loses the property the option
-/// is for. This is the configuration the bot runs, hence a refusal rather than a caveat.
+/// The options a level overrides are kept, so turning it off brings them back.
 #[test]
-fn a_level_refuses_beside_more_than_one_thread() {
-    let on = level_on(MIN_ELO);
-
-    let mut level_last = vec!["setoption name Threads value 2".to_string()];
-    level_last.extend(on.iter().cloned());
-    let out = search(FENS[0], &as_refs(&level_last));
+fn turning_a_level_off_restores_the_lines_it_overrode() {
+    let mut setup = level_on(MIN_ELO).to_vec();
+    setup.push("setoption name MultiPV value 4".to_string());
+    setup.push("setoption name UCI_LimitStrength value false".to_string());
+    let out = search(FENS[0], &as_refs(&setup));
     assert!(
         out.iter()
-            .any(|l| l.starts_with("info string") && l.contains("Threads")),
-        "no spoken refusal when the level arrived second, in {out:?}"
-    );
-    assert_eq!(
-        candidate_moves(&out).len(),
-        0,
-        "a refused level still reported a candidate set"
-    );
-
-    let mut threads_last: Vec<String> = on.to_vec();
-    threads_last.push("setoption name Threads value 2".to_string());
-    let out = search(FENS[0], &as_refs(&threads_last));
-    assert!(
-        out.iter()
-            .any(|l| l.starts_with("info string") && l.contains("Threads")),
-        "no spoken refusal when Threads arrived second, in {out:?}"
-    );
-    assert_eq!(
-        candidate_moves(&out).len(),
-        level::policy(MIN_ELO).candidates,
-        "Threads took effect against a standing level"
+            .any(|l| l.starts_with("info depth") && l.contains(" multipv 4 ")),
+        "MultiPV 4 was not kept under the level: {out:?}"
     );
 }
 

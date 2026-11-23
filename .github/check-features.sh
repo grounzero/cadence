@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Every rustc command line in a verbose cargo build log must resolve to the target's baseline with
 # the features named, and name no target-cpu. Usage: check-features.sh TARGET FEATURES LOG
 set -eu
