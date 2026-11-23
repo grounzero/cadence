@@ -51,6 +51,10 @@ result.
   names by its SHA-256, `--contradiction-skip` skips positions whose score
   and result disagree, and `--mate-score` keeps mate-scored positions at a
   ceiling.
+- Releases: Windows and Linux x86-64 each gain an AVX-512 build, for
+  processors with AVX-512F and AVX-512BW, so a release builds nine
+  binaries. The install scripts take it where the processor has both, and
+  the AVX2 build from a release without one; `--build avx512` asks for it.
 
 ### Changed
 

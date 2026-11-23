@@ -77,7 +77,8 @@ asked first; a build from source names the tag it builds.
   --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
   --generic        on x86-64, the generic build, for any processor with POPCNT
-  --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
+  --build TIER     on x86-64, the avx512, avx2 or generic build; avx512 and avx2 only where the
+                   processor runs them, and avx512 only on Linux and Windows
   --source         build from source even where a release binary fits
   --update         as a plain run, which upgrades an older install, but also replace a file at
                    the install path that this script did not install, unless declined
@@ -122,7 +123,7 @@ while ($i -lt $args.Count) {
     }
     $i++
 }
-if ($script:Build -notin @('', 'avx2', 'generic')) { Write-Host '--build takes avx2 or generic'; exit 2 }
+if ($script:Build -notin @('', 'avx512', 'avx2', 'generic')) { Write-Host '--build takes avx512, avx2 or generic'; exit 2 }
 # The build named on the command line, which an install of another build at the same version yields to.
 $script:Asked = $script:Build
 $script:AskedVersion = $script:Version
@@ -401,15 +402,28 @@ function Confirm-System {
     # processor with AVX2 also has, and the bench run catches a processor without POPCNT.
     $avx2 = Test-ProcessorFeature 40
     Write-Log "AVX2: $avx2"
-    if ($avx2) {
+    # PF_AVX512F_INSTRUCTIONS_AVAILABLE. Windows names no flag for AVX-512BW, which every processor with
+    # AVX-512F but the Xeon Phi also has, and the bench run catches one without it as an illegal
+    # instruction.
+    $avx512 = $avx2 -and (Test-ProcessorFeature 41)
+    Write-Log "AVX-512F: $avx512"
+    if ($avx512) {
+        Say 'Windows on x86-64, with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here.'
+    } elseif ($avx2) {
         Say 'Windows on x86-64, with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.'
     } else {
         Say 'Windows on x86-64, without AVX2: the generic build runs here, for any x86-64 with POPCNT.'
     }
-    if ($script:Build -eq 'avx2' -and -not $avx2) {
+    if ($script:Build -eq 'avx512' -and -not $avx512) {
+        $lacks = if ($avx2) { 'AVX-512F' } else { 'AVX-512F and AVX2' }
+        Fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $lacks"
+    } elseif ($script:Build -eq 'avx2' -and -not $avx2) {
         Fail '--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks AVX2'
     } elseif ($script:Build) {
         Say "The $script:Build build, as asked."
+    } elseif ($avx512) {
+        $script:Build = 'avx512'
+        Say '--build avx2 takes the AVX2 build instead, and --generic the generic one, for any x86-64 with POPCNT.'
     } elseif ($avx2) {
         $script:Build = 'avx2'
         Say '--generic takes the generic build instead, for any x86-64 with POPCNT.'
@@ -683,6 +697,13 @@ function Test-Binary {
     $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
     if (-not (Get-ReleaseSums)) { return }
     $want = Get-Listed $file
+    # A release from before the AVX-512 builds has none, and the AVX2 build it has also runs here.
+    if (-not $want -and $script:Build -eq 'avx512' -and -not $script:Asked) {
+        $script:Build = 'avx2'
+        Say "Release $script:Version has no AVX-512 binary, so its AVX2 build, which also runs here, is taken."
+        $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
+        $want = Get-Listed $file
+    }
     if (-not $want) {
         $script:Why = "Release $script:Version's SHA256SUMS lists no $file, so there is no binary for this system."
         return
@@ -999,6 +1020,17 @@ function Invoke-Build {
             Say "Cadence $script:Version has no generic settings for $script:Triple, so it is built for that system's baseline."
             $script:Made = 'baseline'
         }
+    } elseif ($script:Build -eq 'avx512') {
+        # A version from before the AVX-512 builds has no settings for them, and its AVX2 ones run
+        # here.
+        $avx512 = Join-Path $script:Src '.cargo\x86-64-avx512.toml'
+        if ((Test-Path $avx512) -and (Select-String -Path $avx512 -Pattern $section -Quiet)) {
+            $cargoArgs += @('--config', '.cargo/x86-64-avx512.toml')
+            $files += '.cargo\x86-64-avx512.toml'
+        } else {
+            Say "Cadence $script:Version has no AVX-512 settings for $script:Triple, so it is built as the AVX2 build."
+            $script:Made = 'avx2'
+        }
     } elseif ($script:Build -eq 'avx2') {
         if (-not (Select-String -Path (Join-Path $script:Src '.cargo\config.toml') -Pattern $section -Quiet)) {
             Say "Cadence $script:Version has no AVX2 settings for $script:Triple, so it is built for that system's baseline."
@@ -1168,7 +1200,7 @@ function Find-EarlierInstall {
     if ($name.StartsWith("cadence-$($script:Version)-")) {
         Say "An earlier installer put Cadence at $($script:Target) without recording its version; its SHA-256 is release $($script:Version)'s $name."
         $script:Installed = $script:Version
-        $script:HeldBuild = if ($name -match '-generic(\.exe)?$') { 'generic' } elseif ($name -match '-avx2(\.exe)?$') { 'avx2' } else { 'native' }
+        $script:HeldBuild = if ($name -match '-generic(\.exe)?$') { 'generic' } elseif ($name -match '-avx512(\.exe)?$') { 'avx512' } elseif ($name -match '-avx2(\.exe)?$') { 'avx2' } else { 'native' }
         $script:HeldFrom = 'release'
         Set-StateValue 'version' $script:Installed
         Set-StateValue 'sha256' $sum

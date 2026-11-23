@@ -74,7 +74,8 @@ asked first; a build from source names the tag it builds.
   --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
   --generic        on x86-64, the generic build, for any processor with POPCNT
-  --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
+  --build TIER     on x86-64, the avx512, avx2 or generic build; avx512 and avx2 only where the
+                   processor runs them, and avx512 only on Linux and Windows
   --source         build from source even where a release binary fits
   --update         as a plain run, which upgrades an older install, but also replace a file at
                    the install path that this script did not install, unless declined
@@ -117,8 +118,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$BUILD" in
-    "" | avx2 | generic) ;;
-    *) echo "--build takes avx2 or generic" >&2; exit 2 ;;
+    "" | avx512 | avx2 | generic) ;;
+    *) echo "--build takes avx512, avx2 or generic" >&2; exit 2 ;;
 esac
 # The build named on the command line, which an install of another build at the same version yields to.
 ASKED=$BUILD
@@ -498,11 +499,13 @@ describe_system() {
     printf '%s on %s' "$os" "$arch"
 }
 
-# The x86-64 build this processor runs, from the features each needs: avx2 (AVX2, BMI1, LZCNT and
-# POPCNT), generic (POPCNT) or none, with LACKS naming what is missing; unread where none can be read.
+# The x86-64 build this processor runs, from the features each needs: avx512 (AVX-512F and AVX-512BW
+# beside avx2's), avx2 (AVX2, BMI1, LZCNT and POPCNT), generic (POPCNT) or none, with LACKS naming what
+# avx2 misses and LACKS512 what avx512 adds and is missing; unread where none can be read.
 x86_level() {
     local flags="" f
     LACKS=""
+    LACKS512=""
     if [ "$OS" = macos ]; then
         flags=$({ sysctl -n machdep.cpu.features; sysctl -n machdep.cpu.leaf7_features
             sysctl -n machdep.cpu.extfeatures; } 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')
@@ -522,13 +525,19 @@ x86_level() {
     for f in avx2 bmi1 lzcnt popcnt; do
         case " $flags " in *" $f "*) ;; *) LACKS="$LACKS $f" ;; esac
     done
+    for f in avx512f avx512bw; do
+        case " $flags " in *" $f "*) ;; *) LACKS512="$LACKS512 $f" ;; esac
+    done
     LACKS=$(printf '%s' "$LACKS" | tr '[:lower:]' '[:upper:]' | sed 's/^ //; s/ /, /g')
+    LACKS512=$(printf '%s' "$LACKS512" | tr '[:lower:]' '[:upper:]' | sed 's/^ //; s/ /, /g; s/AVX512/AVX-512/g')
     case "$LACKS" in
         "") LEVEL=avx2 ;;
         *POPCNT*) LEVEL=none ;;
         *) LEVEL=generic ;;
     esac
-    log "x86-64 features missing: ${LACKS:-none}"
+    # Cadence has no AVX-512 build for macOS, so an Intel Mac with AVX-512 takes the AVX2 one.
+    if [ "$LEVEL" = avx2 ] && [ -z "$LACKS512" ] && [ "$OS" != macos ]; then LEVEL=avx512; fi
+    log "x86-64 features missing: ${LACKS:-none}; for AVX-512: ${LACKS512:-none}"
 }
 
 confirm_system() {
@@ -540,19 +549,28 @@ confirm_system() {
     fi
     x86_level
     case "$LEVEL" in
+        avx512) say "$(describe_system), with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here." ;;
         avx2) say "$(describe_system), with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here." ;;
         generic) say "$(describe_system), without $LACKS: the generic build runs here, for any x86-64 with POPCNT." ;;
         unread) say "$(describe_system), whose processor features could not be read: the generic build, which needs POPCNT, is tried." ;;
         none)
-            say "$(describe_system), without POPCNT, which both of Cadence's x86-64 builds need."
+            say "$(describe_system), without POPCNT, which every one of Cadence's x86-64 builds needs."
             fail "this processor cannot run Cadence"
             ;;
     esac
-    if [ "$BUILD" = avx2 ] && [ "$LEVEL" != avx2 ]; then
+    if [ "$BUILD" = avx512 ] && [ "$OS" = macos ]; then
+        fail "--build avx512 is a build for Linux and Windows, and Cadence has none for macOS"
+    elif [ "$BUILD" = avx512 ] && [ "$LEVEL" != avx512 ]; then
+        [ "$LEVEL" != unread ] || fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor's features could not be read"
+        fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $(printf '%s, %s' "$LACKS512" "$LACKS" | sed 's/^, //; s/, $//')"
+    elif [ "$BUILD" = avx2 ] && [ "$LEVEL" != avx2 ] && [ "$LEVEL" != avx512 ]; then
         [ -n "$LACKS" ] || fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor's features could not be read"
         fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $LACKS"
     elif [ -n "$BUILD" ]; then
         say "The $BUILD build, as asked."
+    elif [ "$LEVEL" = avx512 ]; then
+        BUILD=avx512
+        say "--build avx2 takes the AVX2 build instead, and --generic the generic one, for any x86-64 with POPCNT."
     elif [ "$LEVEL" = avx2 ]; then
         BUILD=avx2
         say "--generic takes the generic build instead, for any x86-64 with POPCNT."
@@ -566,11 +584,13 @@ confirm_system() {
 # The release's name for this system's binary, or nothing where no release builds one.
 release_name() {
     case "$OS-$ARCH-$BUILD" in
+        linux-x86_64-avx512) printf 'linux-x86-64-avx512' ;;
         linux-x86_64-avx2) printf 'linux-x86-64-avx2' ;;
         linux-x86_64-generic) printf 'linux-x86-64-generic' ;;
         linux-aarch64-native) printf 'linux-aarch64' ;;
         macos-aarch64-native) printf 'macos-arm64' ;;
         macos-x86_64-avx2) printf 'macos-x86-64' ;;
+        windows-x86_64-avx512) printf 'windows-x86-64-avx512' ;;
         windows-x86_64-avx2) printf 'windows-x86-64-avx2' ;;
         windows-x86_64-generic) printf 'windows-x86-64-generic' ;;
     esac
@@ -731,6 +751,14 @@ try_binary() {
     file="cadence-$VERSION-$name$EXE"
     release_sums || return 1
     want=$(listed "$file")
+    # A release from before the AVX-512 builds has none, and the AVX2 build it has also runs here.
+    if [ -z "$want" ] && [ "$BUILD" = avx512 ] && [ -z "$ASKED" ]; then
+        BUILD=avx2
+        say "Release $VERSION has no AVX-512 binary, so its AVX2 build, which also runs here, is taken."
+        name=$(release_name)
+        file="cadence-$VERSION-$name$EXE"
+        want=$(listed "$file")
+    fi
     if [ -z "$want" ]; then
         WHY="Release $VERSION's SHA256SUMS lists no $file, so there is no binary for this system."
         return 1
@@ -1058,6 +1086,17 @@ build() {
                 MADE=baseline
             fi
             ;;
+        avx512)
+            # A version from before the AVX-512 builds has no settings for them, and its AVX2 ones
+            # run here.
+            if grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/x86-64-avx512.toml" 2>/dev/null; then
+                args="$args --config .cargo/x86-64-avx512.toml"
+                files="$files .cargo/x86-64-avx512.toml"
+            else
+                say "Cadence $VERSION has no AVX-512 settings for $TRIPLE, so it is built as the AVX2 build."
+                MADE=avx2
+            fi
+            ;;
         avx2)
             if ! grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/config.toml"; then
                 say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
@@ -1216,6 +1255,7 @@ version_order() {
 # The build a release binary is, from its name.
 build_of() {
     case "$1" in
+        *-avx512 | *-avx512.exe) printf avx512 ;;
         *-avx2 | *-avx2.exe | *-macos-x86-64) printf avx2 ;;
         *-generic | *-generic.exe) printf generic ;;
         *) printf native ;;

@@ -41,9 +41,10 @@ Download the file for your system from the
 Each is named `cadence-<version>-` followed by the ending below.
 
 - **Windows**: the file ending `windows-x86-64-avx2.exe`, or
-  `windows-x86-64-generic.exe` if it won't start (older processors). The
-  file isn't signed, so Windows SmartScreen may stop it the first time:
-  click "More info", then "Run anyway".
+  `windows-x86-64-generic.exe` if it won't start (older processors), or
+  `windows-x86-64-avx512.exe` on a processor with AVX-512. The file isn't
+  signed, so Windows SmartScreen may stop it the first time: click "More
+  info", then "Run anyway".
 - **macOS**: the file ending `macos-arm64` (Apple silicon) or
   `macos-x86-64` (Intel). Make it executable and clear its quarantine flag
   before running it:
@@ -54,7 +55,8 @@ Each is named `cadence-<version>-` followed by the ending below.
   ```
 
 - **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
-  if it won't start (older processors), or `linux-aarch64` for 64-bit ARM.
+  if it won't start (older processors), or `linux-x86-64-avx512` on a
+  processor with AVX-512, or `linux-aarch64` for 64-bit ARM.
 
 Then add the file to your GUI as a new engine.
 
@@ -108,8 +110,10 @@ cargo build --release
 You need Git and Rust from [rustup](https://rustup.rs), which fetches the
 pinned toolchain. Add `target/release/cadence` to your GUI as a UCI engine. On
 x86-64 Linux, Windows and Intel Macs it needs AVX2; for an older processor,
-add `--config .cargo/x86-64-generic.toml` (POPCNT only). Build from the
-repository's root, where Cargo finds `.cargo/config.toml`.
+add `--config .cargo/x86-64-generic.toml` (POPCNT only). On Linux or Windows
+with AVX-512, `--config .cargo/x86-64-avx512.toml` adds AVX-512F and
+AVX-512BW. Build from the repository's root, where Cargo finds
+`.cargo/config.toml`.
 
 ### UCI options
 
