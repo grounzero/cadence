@@ -240,6 +240,8 @@ Data and training tools, from `cadence-tools` (in `tools/`) and `cadence-train` 
 | `cadence-train overfit` | Checking a training setup before a full run. |
 
 Run any of them with `--help` for its options.
+`cadence texel`, which fitted the handcrafted evaluation's weights, is still
+there but no longer part of the workflow.
 
 ### Git hooks
 
