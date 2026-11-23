@@ -542,17 +542,16 @@ pub enum AnyNetwork {
 }
 
 impl AnyNetwork {
-    /// The width the header names picks the loader; a file too short or of another magic or
-    /// format is refused as the narrow loader refuses it.
+    /// The width the header names picks the loader, once its magic and format are this build's.
     ///
     /// # Errors
     ///
-    /// As `Network::load`, and `LoadError::Width` for a width this build does not read.
+    /// As `file_len`, then as `Network::load`.
     pub fn from_bytes(bytes: &[u8]) -> Result<AnyNetwork, LoadError> {
-        match width(bytes) {
-            Some(w) if usize::from(w) == WIDE => Ok(Network::<WIDE>::load(bytes)?.into()),
-            Some(w) if usize::from(w) != HIDDEN => Err(LoadError::Width(w)),
-            _ => Ok(Network::<HIDDEN>::load(bytes)?.into()),
+        if AnyNetwork::file_len(bytes)? == HEADER_LEN + payload_len(WIDE) {
+            Ok(Network::<WIDE>::load(bytes)?.into())
+        } else {
+            Ok(Network::<HIDDEN>::load(bytes)?.into())
         }
     }
 
@@ -562,12 +561,39 @@ impl AnyNetwork {
     ///
     /// As `from_bytes`, `LoadError::Canary` and `LoadError::NotSelfPlay`.
     pub fn for_datagen(bytes: &[u8]) -> Result<AnyNetwork, LoadError> {
-        match width(bytes) {
-            Some(w) if usize::from(w) == WIDE => {
-                Ok(Network::<WIDE>::load_for_datagen(bytes)?.into())
-            }
-            Some(w) if usize::from(w) != HIDDEN => Err(LoadError::Width(w)),
-            _ => Ok(Network::<HIDDEN>::load_for_datagen(bytes)?.into()),
+        if AnyNetwork::file_len(bytes)? == HEADER_LEN + payload_len(WIDE) {
+            Ok(Network::<WIDE>::load_for_datagen(bytes)?.into())
+        } else {
+            Ok(Network::<HIDDEN>::load_for_datagen(bytes)?.into())
+        }
+    }
+
+    /// The length of the file whose first bytes are `head`, from its header alone, so a foreign
+    /// file is named as one before its length is weighed.
+    ///
+    /// # Errors
+    ///
+    /// `Magic`, `Format` or `Width` for a header this build does not read, and `Length` for one too
+    /// short to name a width.
+    pub fn file_len(head: &[u8]) -> Result<usize, LoadError> {
+        if !head.starts_with(&MAGIC) {
+            return Err(LoadError::Magic);
+        }
+        let narrow = HEADER_LEN + payload_len(HIDDEN);
+        let Some(h) = head.first_chunk::<HEADER_LEN>() else {
+            return Err(LoadError::Length {
+                want: narrow,
+                got: head.len(),
+            });
+        };
+        let word = |at: usize| u16::from_le_bytes([h[at], h[at + 1]]);
+        if word(4) != FORMAT {
+            return Err(LoadError::Format(word(4)));
+        }
+        match usize::from(word(WIDTH_AT)) {
+            WIDE => Ok(HEADER_LEN + payload_len(WIDE)),
+            HIDDEN => Ok(narrow),
+            _ => Err(LoadError::Width(word(WIDTH_AT))),
         }
     }
 
@@ -641,13 +667,6 @@ impl From<Arc<Network<WIDE>>> for AnyNetwork {
     fn from(net: Arc<Network<WIDE>>) -> AnyNetwork {
         AnyNetwork::Wide(net)
     }
-}
-
-/// The width a file's header names, where its magic and format are this build's.
-fn width(bytes: &[u8]) -> Option<u16> {
-    let h = bytes.first_chunk::<HEADER_LEN>()?;
-    let word = |at: usize| u16::from_le_bytes([h[at], h[at + 1]]);
-    (h[..4] == MAGIC && word(4) == FORMAT).then(|| word(WIDTH_AT))
 }
 
 fn zeroed_columns<const H: usize>() -> Box<[[i16; H]; NUM_INPUTS]> {

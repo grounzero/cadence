@@ -32,6 +32,33 @@ result.
   binaries. The install scripts take it where the processor has both, and
   the AVX2 build from a release without one; `--build avx512` asks for it.
 
+### Fixed
+
+- UCI: `go searchmoves` with no legal move in its list answers
+  `bestmove 0000`, where it searched every move.
+- UCI: a byte-order mark at the start of an input line is ignored.
+- UCI: `UCI_LimitStrength` engages whatever order the options arrive in. A
+  level searches on one thread and shows one line, whatever `Threads` and
+  `MultiPV` say, and both apply again once it is off.
+- UCI: a `position` line discarded for being longer than 1 MiB counts as a
+  failed position, so the next `go` answers `bestmove 0000`.
+- UCI: `EvalFile` checks a file's header and size before reading the rest,
+  and names a file that is not a net as "not a Cadence net file".
+- Installers: a binary whose checksum, attestation or bench does not match
+  the release's stops the install with a message that the file may be
+  corrupt or tampered with, and is never replaced by a build from source.
+- Installers: a download that fails for the network is tried once more, then
+  the install stops and says so.
+- Installers: Cadence is built from source only with `--source`, or where
+  the release has no binary for the system, and the installers say which.
+- Installers: a binary that cannot run here gives way to the release's build
+  one tier below it, AVX-512 to AVX2 to generic, each checked the same way,
+  before the install stops. `install.ps1` also checks for BMI1 and LZCNT
+  beside AVX2.
+- Installers: `--uninstall` keeps the install record for what the user keeps,
+  removes the empty folders and the profile's blank line it added, and names
+  any compiler or Rust toolchain it installed.
+
 ## [0.7.0-rc.5] - 2026-11-23
 
 rc.4's tag was lightweight, so it was never released; rc.5 is the same code.
