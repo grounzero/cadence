@@ -402,12 +402,27 @@ impl<const H: usize> Network<H> {
         trainer: &str,
         manifest: [u8; 32],
     ) -> Result<Network<H>, LoadError> {
+        Network::load_payload_as(payload, Inputs::Plain, provenance, trainer, manifest)
+    }
+
+    /// `load_payload` behind a header naming `inputs`, the layout the weights were trained with.
+    ///
+    /// # Errors
+    ///
+    /// As `load_payload`.
+    pub fn load_payload_as(
+        payload: &[u8],
+        inputs: Inputs,
+        provenance: Provenance,
+        trainer: &str,
+        manifest: [u8; 32],
+    ) -> Result<Network<H>, LoadError> {
         let trainer: [u8; 40] = trainer
             .as_bytes()
             .try_into()
             .map_err(|_| LoadError::Trainer)?;
         let origin = Origin {
-            inputs: Inputs::Plain,
+            inputs,
             provenance,
             trainer,
             manifest,

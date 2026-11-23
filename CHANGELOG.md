@@ -21,6 +21,10 @@ result.
 
 ### Added
 
+- Training: `cadence-train run --inputs mirrored` trains a net with mirrored
+  inputs. A run records its input layout beside its checkpoints; a continued
+  run must match it, validation scores the checkpoint under it, and the
+  export writes it into the net's header.
 - Networks: a net file's header names its input layout, plain or mirrored,
   and the engine reads either. A mirrored net reads a perspective's board
   flipped left to right while its own king is on files e to h, and rebuilds
