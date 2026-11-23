@@ -136,9 +136,11 @@ engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
 
 ### Unusual commands
 
-- `go searchmoves` searches only the listed legal moves, or every move if none is legal.
+- `go searchmoves` searches only the listed legal moves, and answers
+  `bestmove 0000` if none of them is legal.
 - `setoption name Hash` during a search stops that search first, so `bestmove` comes at once.
-- After a `position` command fails, `go` answers `bestmove 0000` until a valid `position`.
+- After a `position` command fails, or is longer than 1 MiB and discarded,
+  `go` answers `bestmove 0000` until a valid `position`.
 
 ## How it is tested
 

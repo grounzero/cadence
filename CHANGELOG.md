@@ -28,6 +28,19 @@ result.
   a castle. Every shipped net is plain, and an earlier build refuses a
   mirrored file.
 
+### Fixed
+
+- UCI: `go searchmoves` with no legal move in its list answers
+  `bestmove 0000`, where it searched every move.
+- UCI: a byte-order mark at the start of an input line is ignored.
+- UCI: `UCI_LimitStrength` engages whatever order the options arrive in. A
+  level searches on one thread and shows one line, whatever `Threads` and
+  `MultiPV` say, and both apply again once it is off.
+- UCI: a `position` line discarded for being longer than 1 MiB counts as a
+  failed position, so the next `go` answers `bestmove 0000`.
+- UCI: `EvalFile` checks a file's header and size before reading the rest,
+  and names a file that is not a net as "not a Cadence net file".
+
 ## [0.7.0-rc.5] - 2026-11-23
 
 The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build

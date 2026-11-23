@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cadence_core::MAX_MOVES;
 use cadence_dataset::sha256::sha256;
 use cadence_nnue::AnyNetwork;
+use cadence_nnue::net::{HEADER_LEN, LoadError};
 
 use super::say::say;
 use super::{MAX_MOVE_OVERHEAD_MS, MAX_THREADS, NetOptions, Session};
@@ -123,8 +124,8 @@ impl Session {
         // A GUI sends whatever it was told to.
     }
 
-    /// Clamped, not refused, for [`Session::set_hash`]'s reason. A standing level holds it at one:
-    /// a level's move is reproducible only where the search is.
+    /// Clamped, not refused, for [`Session::set_hash`]'s reason. Kept under a level, whose search
+    /// runs on one thread whatever this says.
     fn set_threads(&mut self, value: &str) {
         let Ok(asked) = value.trim().parse::<usize>() else {
             say(format_args!(
@@ -132,15 +133,7 @@ impl Session {
             ));
             return;
         };
-        let asked = asked.clamp(1, MAX_THREADS);
-        if asked > 1 && self.limit_strength {
-            say(format_args!(
-                "info string setoption Threads: a level is reproducible only on one thread, \
-                 so Threads stays at 1 while UCI_LimitStrength is on"
-            ));
-            return;
-        }
-        self.threads = asked;
+        self.threads = asked.clamp(1, MAX_THREADS);
     }
 
     /// A value that is not a number of the parameter's kind is ignored and the old value kept; it
@@ -156,7 +149,8 @@ impl Session {
         }
     }
 
-    /// Clamped, not refused, for [`Session::set_hash`]'s reason.
+    /// Clamped, not refused, for [`Session::set_hash`]'s reason. Kept under a level, which reports
+    /// its own lines whatever this says.
     fn set_multipv(&mut self, value: &str) {
         let Ok(asked) = value.trim().parse::<usize>() else {
             say(format_args!(
@@ -164,35 +158,13 @@ impl Session {
             ));
             return;
         };
-        let asked = asked.clamp(1, MAX_MOVES);
-        if asked > 1 && self.limit_strength {
-            say(format_args!(
-                "info string setoption MultiPV: a level owns the line count, so MultiPV stays \
-                 at 1 while UCI_LimitStrength is on"
-            ));
-            return;
-        }
-        self.multipv = asked;
+        self.multipv = asked.clamp(1, MAX_MOVES);
     }
 
-    /// Refuses to engage beside `MultiPV` or `Threads` above one: the level owns the line count,
-    /// and its move is reproducible only on one thread.
+    /// Engages beside any `MultiPV` and `Threads`, which a level's search overrides at `go` and
+    /// which apply again once it is off.
     fn set_limit_strength(&mut self, value: &str) {
         if value.eq_ignore_ascii_case("true") {
-            if self.multipv > 1 {
-                say(format_args!(
-                    "info string setoption UCI_LimitStrength: UCI_Elo needs MultiPV at 1, so \
-                     the level is not engaged"
-                ));
-                return;
-            }
-            if self.threads > 1 {
-                say(format_args!(
-                    "info string setoption UCI_LimitStrength: UCI_Elo needs Threads at 1, so \
-                     the level is not engaged"
-                ));
-                return;
-            }
             self.limit_strength = true;
         } else if value.eq_ignore_ascii_case("false") {
             self.limit_strength = false;
@@ -355,9 +327,20 @@ impl Session {
     }
 }
 
-/// The net in `file`, whose size is `size` bytes, and the SHA-256 of its bytes.
-fn read_net(mut file: impl Read, _size: u64) -> Result<(AnyNetwork, [u8; 32]), String> {
+/// The net in `file`, whose size is `size` bytes, and the SHA-256 of its bytes. The header is
+/// read and checked first, so a foreign file or one of the wrong size is refused unread.
+fn read_net(file: impl Read, size: u64) -> Result<(AnyNetwork, [u8; 32]), String> {
+    let mut file = file.take(HEADER_LEN as u64);
     let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    let want = AnyNetwork::file_len(&bytes).map_err(|e| e.to_string())?;
+    let got = usize::try_from(size).unwrap_or(usize::MAX);
+    if got != want {
+        return Err(LoadError::Length { want, got }.to_string());
+    }
+    let rest = want - bytes.len();
+    file.set_limit(rest as u64);
+    bytes.reserve_exact(rest);
     file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     AnyNetwork::from_bytes(&bytes)
         .map(|net| (net, sha256(&bytes)))
@@ -372,9 +355,7 @@ mod tests {
     use cadence_dataset::sha256::sha256;
     use cadence_nnue::{Network, Provenance};
 
-    use cadence_nnue::net::HEADER_LEN;
-
-    use super::{Session, read_net};
+    use super::{HEADER_LEN, Session, read_net};
 
     /// A session whose build ships a seeded net of `provenance`, and that net's digest.
     fn shipping(provenance: Provenance) -> (Session, [u8; 32]) {
