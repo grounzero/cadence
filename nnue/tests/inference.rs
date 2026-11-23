@@ -12,7 +12,7 @@ use cadence_core::rng::Rng;
 use cadence_core::{Colour, FenStyle, Move, generate_legal};
 use cadence_nnue::net::{EMBEDDED, HEADER_LEN, PAYLOAD_LEN, payload_len};
 use cadence_nnue::{
-    AccumulatorStack, AnyNetwork, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE,
+    Accumulator, AccumulatorStack, AnyNetwork, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE,
 };
 
 /// The digest of `corpus_outputs`, the same on every target, or a build computes another number.
@@ -246,6 +246,42 @@ fn a_net_that_could_overflow_is_refused() {
         widest.evaluate(stack.current(), stm),
         widest.evaluate_reference(stack.current(), stm)
     );
+}
+
+/// The output layer equals the reference on accumulators no board reaches, at both widths: every
+/// lane at each clamp edge and past it, and lanes drawn at random across and beyond the clamp.
+#[test]
+fn the_output_layer_equals_the_reference_on_any_accumulator() {
+    fn check<const H: usize>(net: &Network<H>, rng: &mut Rng) {
+        let edges = [i16::MIN, -256, -1, 0, 1, 254, 255, 256, i16::MAX];
+        let mut accs: Vec<Accumulator<H>> = edges
+            .iter()
+            .map(|&e| Accumulator { sums: [[e; H]; 2] })
+            .collect();
+        for _ in 0..200 {
+            let mut acc = Accumulator { sums: [[0; H]; 2] };
+            for lane in acc.sums.as_flattened_mut() {
+                *lane = if rng.below(8) == 0 {
+                    edges[rng.below(edges.len())]
+                } else {
+                    i16::try_from(rng.below(700)).unwrap_or(0) - 200
+                };
+            }
+            accs.push(acc);
+        }
+        for acc in &accs {
+            for stm in [Colour::White, Colour::Black] {
+                assert_eq!(
+                    net.evaluate(acc, stm),
+                    net.evaluate_reference(acc, stm),
+                    "{H} wide, {stm:?} to move"
+                );
+            }
+        }
+    }
+    let mut rng = Rng::new(0x0717_5EED);
+    check(&net(), &mut rng);
+    check(&wide(), &mut rng);
 }
 
 /// After every move and every unmake of random DFRC games, the incremental stack equals a full
