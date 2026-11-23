@@ -85,10 +85,13 @@ for a Windows GUI, use the PowerShell script.
 The install script picks the right build for your system, checks its
 checksum and bench, and can update or uninstall it later.
 
-It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows), or
-offers to build from source if no release binary fits. It asks before
-anything big: building, installing Rust, changing your PATH or downloading
-tablebases. If a run fails, attach the log it names to a GitHub issue.
+It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows). If a
+download does not match the release's checksum, attestation or bench, it
+stops and builds nothing in its place. It builds from source only with
+`--source`, or where the release has no binary for your system, such as
+Windows on ARM64. It asks before anything big: building, installing Rust,
+changing your PATH or downloading tablebases. If a run fails, attach the
+log it names to a GitHub issue.
 
 #### Windows (PowerShell)
 
@@ -115,7 +118,7 @@ Both scripts take the same flags.
 | `--generic` | On x86-64, installs the generic build, for processors without AVX2. |
 | `--source` | Builds from source even where a release binary fits. |
 | `--update` | Upgrades an existing install, replacing the file even if this script did not put it there (it asks first). |
-| `--uninstall` | Removes Cadence, and the PATH entry and tablebases if the script added them. |
+| `--uninstall` | Removes Cadence, and the PATH entry and tablebases if the script added them, and names any compiler or Rust it installed. |
 | `--tables` | Downloads the 3-4-5 piece tablebases without asking. |
 | `--yes` | Takes every default without asking. |
 
