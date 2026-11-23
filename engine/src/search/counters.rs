@@ -509,7 +509,7 @@ impl Search<'_> {
     /// The static evaluation, with the corrected one written to the node's row, read before the
     /// node folds anything in so no correction has seen the score it will be scored against.
     /// `stored` is the table's, which is the board's own reading.
-    pub(super) fn node_eval(
+    pub(super) fn corrected_eval(
         &mut self,
         board: &Position,
         ply: usize,

@@ -51,7 +51,8 @@ pub struct Hit {
     pub bound: Bound,
     /// The node that stored it had a full window, or inherited the flag.
     pub pv: bool,
-    /// The node's static evaluation before any correction, where it read one in reach of the field.
+    /// The node's static evaluation before any correction, where it read one in reach of the
+    /// field. The key does not carry the fifty-move clock, so a scaling by it goes on after this.
     pub eval: Option<i16>,
 }
 
@@ -133,7 +134,10 @@ impl Entry {
             depth: (self.0 >> DEPTH_SHIFT) as u8,
             bound,
             pv: (self.0 >> PV_SHIFT) & 1 == 1,
-            eval: None,
+            eval: match ((self.0 >> EVAL_SHIFT) & EVAL_MASK) as i32 {
+                0 => None,
+                field => Some((field - EVAL_OFFSET) as i16),
+            },
         })
     }
 }

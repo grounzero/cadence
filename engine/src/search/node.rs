@@ -122,7 +122,7 @@ impl Search<'_> {
         let pawn_key = board.pawn_key();
         // Before any move is made: the correction row and the history rows below are the mover's.
         let us = board.side_to_move();
-        let raw_eval = self.node_eval(board, ply, in_check, pawn_key, us, found.eval);
+        let raw_eval = self.corrected_eval(board, ply, in_check, pawn_key, us, found.eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {

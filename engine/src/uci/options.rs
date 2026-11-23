@@ -236,7 +236,8 @@ impl Session {
             .filter(|_| self.nnue.on && self.nnue.net.is_some())
     }
 
-    /// The table holds scores, so another evaluator starts from an empty one, as `ucinewgame` does.
+    /// The table holds scores and static evaluations, so another evaluator starts from an empty
+    /// one, as `ucinewgame` does.
     fn evaluator_changed(&mut self, before: Option<[u8; 32]>) {
         if self.evaluator() != before {
             self.stop_search();
