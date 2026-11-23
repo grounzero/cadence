@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::io::Read;
 use std::sync::Arc;
 
 use cadence_core::MAX_MOVES;
@@ -234,13 +235,10 @@ impl Session {
         if self.nnue.file.is_empty() {
             return;
         }
-        let loaded = std::fs::read(&self.nnue.file)
+        let loaded = std::fs::File::open(&self.nnue.file)
+            .and_then(|file| Ok((file.metadata()?.len(), file)))
             .map_err(|e| e.to_string())
-            .and_then(|bytes| {
-                AnyNetwork::from_bytes(&bytes)
-                    .map(|net| (net, sha256(&bytes)))
-                    .map_err(|e| e.to_string())
-            });
+            .and_then(|(size, file)| read_net(file, size));
         match loaded {
             Ok((net, key)) => {
                 say(format_args!(
@@ -357,14 +355,26 @@ impl Session {
     }
 }
 
+/// The net in `file`, whose size is `size` bytes, and the SHA-256 of its bytes.
+fn read_net(mut file: impl Read, _size: u64) -> Result<(AnyNetwork, [u8; 32]), String> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    AnyNetwork::from_bytes(&bytes)
+        .map(|net| (net, sha256(&bytes)))
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{Cursor, Read};
     use std::path::PathBuf;
 
     use cadence_dataset::sha256::sha256;
     use cadence_nnue::{Network, Provenance};
 
-    use super::Session;
+    use cadence_nnue::net::HEADER_LEN;
+
+    use super::{Session, read_net};
 
     /// A session whose build ships a seeded net of `provenance`, and that net's digest.
     fn shipping(provenance: Provenance) -> (Session, [u8; 32]) {
@@ -441,5 +451,40 @@ mod tests {
             assert!(matches!(session.nnue.shipped, Some(Err(_))));
             assert_eq!(session.evaluator(), None);
         }
+    }
+
+    /// Serves its bytes and fails the test if asked for more, so a refusal is shown to read no
+    /// further than the header.
+    struct HeaderOnly(Cursor<Vec<u8>>);
+
+    impl Read for HeaderOnly {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.read(buf)?;
+            assert!(n > 0 || buf.is_empty(), "read past the header");
+            Ok(n)
+        }
+    }
+
+    /// A file that is not a net is named as one from its first bytes, however large it is.
+    #[test]
+    fn a_foreign_file_is_named_from_its_header() {
+        let foreign = HeaderOnly(Cursor::new(vec![b'x'; HEADER_LEN]));
+        let refused = read_net(foreign, 1 << 30).err();
+        assert_eq!(refused.as_deref(), Some("not a Cadence net file"));
+    }
+
+    /// A net file of another size than its header names is refused before the rest is read.
+    #[test]
+    fn a_file_of_the_wrong_size_is_refused_before_it_is_read() {
+        let bytes = Network::seeded(7, Provenance::SelfPlay).to_bytes();
+        let header = HeaderOnly(Cursor::new(bytes[..HEADER_LEN].to_vec()));
+        let refused = read_net(header, 1 << 40).err().unwrap_or_default();
+        assert!(
+            refused.starts_with("1099511627776 bytes where a net is "),
+            "{refused}"
+        );
+        let whole = u64::try_from(bytes.len()).expect("a net's length");
+        let (_, key) = read_net(Cursor::new(bytes.clone()), whole).expect("the whole net loads");
+        assert_eq!(key, sha256(&bytes));
     }
 }
