@@ -66,6 +66,10 @@ result.
 
 ### Fixed
 
+- Time: a `ponderhit` is timed from when the engine reads it, stops the
+  search where a fresh search with the same times would have stopped at any
+  iteration pondered, and ends root tablebase probing at the deadline it
+  brings.
 - Search: a table result is not reused where its depth reaches the
   fifty-move draw, which the position key does not carry.
 - Chess960: the position key names the rook each castling right belongs to,

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A ponderhit reproduced in process, alone in a test binary of its own so no other test's search
-//! competes for the cores it is timed on. After the hit the search must stop where a fresh search
-//! with the same iteration times would, its deadlines moved by the time pondered.
+//! competes for the cores it is timed on. The search must stop where a fresh search with the same
+//! iteration times would, stepped through each iteration, its deadlines moved by the time pondered.
 
 mod support;
 
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use cadence_core::Colour;
 use cadence_core::position::Board;
 use cadence_engine::position::Position;
-use cadence_engine::search::Limits;
+use cadence_engine::search::{Limits, PonderHit};
 use cadence_engine::time::{
     Budget, another_iteration_fits, drop_scale, hit_budget, soft_for_drop, soft_for_run,
 };
@@ -21,15 +21,20 @@ use cadence_engine::tt::Table;
 /// Bench position 16, so nothing here is chosen to make a number come out.
 const MIDDLEGAME: &str = "r2q1rk1/1b1nbppp/pp1ppn2/8/2PNP3/1PN1B3/P2QBPPP/R4RK1 w - - 0 13";
 
-/// No increment: soft is a 25th of the clock and hard three times that.
-const PONDER: &str = "ponder wtime 6000 btime 6000";
+/// Sudden death, an increment, a move count and a fixed time, each pondered.
+const PONDERS: [&str; 4] = [
+    "ponder wtime 6000 btime 6000",
+    "ponder wtime 6000 btime 6000 winc 60 binc 60",
+    "ponder wtime 6000 btime 6000 movestogo 10",
+    "ponder movetime 900",
+];
 
 /// Short of the soft budget, inside one iteration, and well past the hard one.
 const PONDERED_MS: [u64; 4] = [150, 600, 1500, 3000];
 
-/// The hit is absorbed at the search's next clock check, every 1,024 nodes, so the offset it used
-/// lies in this window after the flag was raised. A debug build reads the clock every few ms.
-const ABSORBED_WITHIN_MS: u64 = 60;
+/// The hit is timed when it is read, just before the raiser reads the clock, so the offset the
+/// search used lies this far before the raise at most: two readings, each rounded to milliseconds.
+const TIMED_WITHIN_MS: u64 = 2;
 
 /// How far past a deadline the search may answer: its clock checks and a stalled runner.
 const LATE_MS: u64 = 150;
@@ -75,20 +80,20 @@ struct Hit {
     returned: u64,
 }
 
-fn reproduce(pondered: u64) -> Hit {
+fn reproduce(ponder: &str, pondered: u64) -> Hit {
     let stop = AtomicBool::new(false);
-    let flag = AtomicBool::new(false);
+    let hit = PonderHit::new();
     let tt = Table::new(16).expect("a table");
     let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
-    let mut s = support::search(limits(PONDER), &stop, &tt);
-    s.set_ponder_hit(&flag);
+    let mut s = support::search(limits(ponder), &stop, &tt);
+    s.set_ponder_hit(&hit);
     let origin = Instant::now();
     s.set_clock_origin(origin);
     let mut out = Vec::new();
     let raised = std::thread::scope(|scope| {
         let raiser = scope.spawn(|| {
             std::thread::sleep(Duration::from_millis(pondered));
-            flag.store(true, Ordering::Relaxed);
+            hit.hit();
             since(origin)
         });
         let _ = s.run(&mut board, &mut out);
@@ -123,28 +128,39 @@ fn reproduce(pondered: u64) -> Hit {
 /// How a fresh search over the same iteration times would end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum End {
+    /// At the hit, with this many completed: one of the iterations pondered would not have started
+    /// the next, and the deepest costs nothing more.
+    AtHit(usize),
     /// Between iterations, after this many.
     After(usize),
     /// Inside the next iteration, at the hard deadline, after this many.
     AtHard(usize),
 }
 
-/// The fresh search's decisions over `ladder`, its deadlines moved by `offset`: none while it
-/// ponders, the one it skipped at the hit, then one after each completed iteration.
-fn fresh(ladder: &[u64], runs: &[usize], scales: &[u64], b: Budget, offset: u64) -> End {
-    let clocked = limits("wtime 6000 btime 6000");
+/// The fresh search's decisions over `ladder`, its deadlines moved by `offset`, taken one iteration
+/// at a time in order: every one pondered, at the hit, then one after each completed iteration.
+fn fresh(
+    clocked: &Limits,
+    ladder: &[u64],
+    runs: &[usize],
+    scales: &[u64],
+    b: Budget,
+    offset: u64,
+) -> End {
     let moved = Budget {
         soft: b.soft + offset,
         hard: b.hard + offset,
     };
     let goes_on = |k: usize| {
-        let soft = soft_for_run(&clocked, b, runs[k - 1]);
-        let soft = soft_for_drop(&clocked, b, soft, scales[k - 1]) + offset;
+        let soft = soft_for_run(clocked, b, runs[k - 1]);
+        let soft = soft_for_drop(clocked, b, soft, scales[k - 1]) + offset;
         ladder[k - 1] < soft && another_iteration_fits(&ladder[..k], moved)
     };
     let pondered = ladder.iter().take_while(|&&t| t <= offset).count();
-    if pondered > 0 && !goes_on(pondered) {
-        return End::After(pondered);
+    for k in 1..=pondered {
+        if !goes_on(k) {
+            return End::AtHit(pondered);
+        }
     }
     for k in pondered + 1..=ladder.len() {
         if ladder[k - 1] >= moved.hard || !goes_on(k) {
@@ -159,7 +175,7 @@ fn fresh(ladder: &[u64], runs: &[usize], scales: &[u64], b: Budget, offset: u64)
 #[test]
 fn a_ponderhit_keeps_the_iteration_times_from_the_ponder() {
     for pondered in PONDERED_MS {
-        let hit = reproduce(pondered);
+        let hit = reproduce(PONDERS[0], pondered);
         assert_eq!(
             hit.ladder.len(),
             hit.reported.len(),
@@ -179,38 +195,49 @@ fn a_ponderhit_keeps_the_iteration_times_from_the_ponder() {
     }
 }
 
-/// At the hit the search takes the decision a fresh search would have taken at its last completed
-/// iteration, and after it every decision is that search's, deadlines moved by the time pondered.
+/// The search stops where that fresh search would and when: at once where an iteration pondered
+/// would not have started the next, else at the iteration or the moved hard deadline it ends on.
 #[test]
-fn a_ponderhit_stops_where_a_fresh_search_with_the_same_times_would() {
-    let b = hit_budget(&limits(PONDER), Colour::White).expect("a ponder with a clock");
-    for pondered in PONDERED_MS {
-        let hit = reproduce(pondered);
-        let completed = hit.runs.len();
-        assert_eq!(
-            hit.ladder.len(),
-            completed,
-            "pondered {pondered} ms: {} times recorded for {completed} completed iterations",
-            hit.ladder.len()
-        );
-        let matches = (hit.raised..=hit.raised + ABSORBED_WITHIN_MS).any(|offset| {
-            match fresh(&hit.ladder, &hit.runs, &hit.scales, b, offset) {
-                End::After(n) => n == completed,
-                End::AtHard(n) => {
-                    n == completed
-                        && hit.returned + LATE_MS >= offset + b.hard
-                        && hit.returned <= offset + b.hard + LATE_MS
-                }
-            }
-        });
-        assert!(
-            matches,
-            "pondered {pondered} ms, hit at {} ms, returned at {} ms after {completed} iterations \
-             at {:?}; a fresh search with these times and {b:?} from the hit ends {:?}",
-            hit.raised,
-            hit.returned,
-            hit.ladder,
-            fresh(&hit.ladder, &hit.runs, &hit.scales, b, hit.raised)
-        );
+fn a_ponderhit_stops_where_and_when_a_fresh_search_with_the_same_times_would() {
+    for ponder in PONDERS {
+        let b = hit_budget(&limits(ponder), Colour::White).expect("a ponder with a clock");
+        let clocked = limits(ponder.trim_start_matches("ponder "));
+        for pondered in PONDERED_MS {
+            let hit = reproduce(ponder, pondered);
+            let completed = hit.runs.len();
+            assert_eq!(
+                hit.ladder.len(),
+                completed,
+                "`{ponder}` pondered {pondered} ms: {} times recorded for {completed} completed \
+                 iterations",
+                hit.ladder.len()
+            );
+            let ends =
+                |offset: u64| fresh(&clocked, &hit.ladder, &hit.runs, &hit.scales, b, offset);
+            let matches =
+                (hit.raised.saturating_sub(TIMED_WITHIN_MS)..=hit.raised).any(|offset| match ends(
+                    offset,
+                ) {
+                    End::AtHit(n) => n == completed && hit.returned <= hit.raised + LATE_MS,
+                    End::After(n) => {
+                        n == completed && hit.returned <= hit.ladder[n - 1].max(offset) + LATE_MS
+                    }
+                    End::AtHard(n) => {
+                        n == completed
+                            && hit.returned + LATE_MS >= offset + b.hard
+                            && hit.returned <= offset + b.hard + LATE_MS
+                    }
+                });
+            assert!(
+                matches,
+                "`{ponder}` pondered {pondered} ms, hit at {} ms, returned at {} ms after \
+                 {completed} iterations at {:?}; a fresh search with these times and {b:?} from \
+                 the hit ends {:?}",
+                hit.raised,
+                hit.returned,
+                hit.ladder,
+                ends(hit.raised)
+            );
+        }
     }
 }

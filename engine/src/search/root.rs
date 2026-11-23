@@ -137,8 +137,11 @@ impl Search<'_> {
                 let elapsed = self.elapsed_ms();
                 self.run.iterations.push(elapsed);
             }
-            // Before the budget is read, so the first clocked decision uses the hit's budget.
-            self.absorb_ponder_hit();
+            // Before the budget is read, so the first clocked decision uses the hit's budget, and
+            // each iteration pondered is decided again under it.
+            if self.absorb_ponder_hit() && !self.would_have_started() {
+                break;
+            }
             // The soft budget, scaled by how long the move has stood and how far its score has
             // fallen, says this move has had its share; the prediction says the next iteration
             // would not finish.
