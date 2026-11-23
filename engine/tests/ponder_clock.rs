@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cadence_core::position::Board;
 use cadence_core::{Colour, START_FEN};
 use cadence_engine::position::Position;
-use cadence_engine::search::{Limits, PonderHit};
+use cadence_engine::search::Limits;
 use cadence_engine::time::budget;
 use cadence_engine::tt::Table;
 
@@ -28,8 +28,7 @@ fn a_ponder_that_is_hit_becomes_a_clocked_search() {
     const STALL_MS: u64 = 100;
 
     let stop = AtomicBool::new(false);
-    let hit = PonderHit::new();
-    hit.hit();
+    let hit = AtomicBool::new(true);
     let tt = Table::new(16).expect("a table");
     let mut board = Position::new(Board::from_fen(START_FEN).expect("the start position"));
     let mut s = support::search(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
