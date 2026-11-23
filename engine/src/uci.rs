@@ -12,7 +12,7 @@ use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
-use crate::search::{Learned, PonderHit};
+use crate::search::Learned;
 use crate::syzygy::{self, Tables};
 use crate::time;
 use crate::tt::{self, Table};
@@ -98,7 +98,7 @@ type Shipped = (AnyNetwork, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,
-    ponder_hit: Arc<PonderHit>,
+    ponder_hit: Arc<AtomicBool>,
     thread: JoinHandle<Vec<Learned>>,
 }
 

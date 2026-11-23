@@ -12,7 +12,7 @@ use super::say::say;
 use super::{Running, Session};
 use crate::level;
 use crate::position::Position;
-use crate::search::{Learned, Limits, PonderHit, Search};
+use crate::search::{Learned, Limits, Search};
 use crate::syzygy::{Rank, Tables};
 use crate::time;
 use crate::tt::Table;
@@ -58,7 +58,7 @@ impl Session {
             ));
         }
         let stop = Arc::new(AtomicBool::new(false));
-        let ponder_hit = Arc::new(PonderHit::new());
+        let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
         let Some(root_filter) = search_moves(&tokens, &generate_legal(&board)) else {
             say(format_args!(
@@ -92,11 +92,9 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
-                    let us = board.side_to_move();
-                    let hard = time::budget(&limits, us).map(|b| Duration::from_millis(b.hard));
-                    let on_hit = time::hit_budget(&limits, us)
-                        .map(|b| (&*ponder_hit, Duration::from_millis(b.hard)));
-                    let go_on = || probing_allowed(&stop, received, hard, on_hit);
+                    let hard = time::budget(&limits, board.side_to_move())
+                        .map(|b| Duration::from_millis(b.hard));
+                    let go_on = || probing_allowed(&stop, received, hard);
                     let (root_filter, decided, rank) =
                         tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
                     let mut pos = position_for(board, net);
@@ -164,11 +162,11 @@ impl Session {
         (1, 1)
     }
 
-    /// The search keeps its tree and spends the clock from when the line was read. Told rather than
-    /// restarted, because the search that must hear it is already running.
+    /// The search keeps its tree and spends the clock from here. A flag, because the search that
+    /// must hear it is already running.
     pub(super) fn ponderhit(&mut self) {
         if let Some(running) = &self.search {
-            running.ponder_hit.hit();
+            running.ponder_hit.store(true, Ordering::Relaxed);
         }
     }
 
@@ -219,7 +217,7 @@ struct ParallelGo<'a> {
     stop: &'a Arc<AtomicBool>,
     /// Given to every worker: a helper without it ponders all search long, and a primary without it
     /// never answers a `ponderhit`.
-    ponder_hit: &'a Arc<PonderHit>,
+    ponder_hit: &'a Arc<AtomicBool>,
     tt: &'a Arc<Table>,
     chess960: bool,
     threads: usize,
@@ -405,20 +403,8 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
 
 /// Asked before each of the root's probes, so a stop or a spent budget waits for one probe at most.
 /// A read the operating system has blocked finishes before the next question is asked.
-fn probing_allowed(
-    stop: &AtomicBool,
-    received: Instant,
-    hard: Option<Duration>,
-    on_hit: Option<(&PonderHit, Duration)>,
-) -> bool {
-    if stop.load(Ordering::Relaxed) {
-        return false;
-    }
-    // A ponder probes on until it is hit, and from the hit as a fresh search would.
-    if let Some((hit, hard)) = on_hit {
-        return hit.received().is_none_or(|at| at.elapsed() < hard);
-    }
-    hard.is_none_or(|hard| received.elapsed() < hard)
+fn probing_allowed(stop: &AtomicBool, received: Instant, hard: Option<Duration>) -> bool {
+    !stop.load(Ordering::Relaxed) && hard.is_none_or(|hard| received.elapsed() < hard)
 }
 
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says
@@ -501,48 +487,5 @@ fn position_for(board: Board, net: Option<AnyNetwork>) -> Position {
     match net {
         Some(net) => Position::with_net(board, net),
         None => Position::new(board),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{Duration, Instant};
-
-    use super::probing_allowed;
-    use crate::search::PonderHit;
-
-    /// A ponder probes the root until it is hit, and from then only until the hard deadline the hit
-    /// brings, counted from when the hit was read.
-    #[test]
-    fn root_probing_stops_at_the_deadline_a_hit_brings() {
-        let stop = AtomicBool::new(false);
-        let received = Instant::now();
-        let late = PonderHit::new();
-        let on_late = Some((&late, Duration::from_millis(50)));
-        assert!(
-            probing_allowed(&stop, received, None, on_late),
-            "a ponder not yet hit probes on"
-        );
-        let past = Instant::now()
-            .checked_sub(Duration::from_millis(100))
-            .expect("an instant 100 ms back");
-        late.hit_at(past);
-        assert!(
-            !probing_allowed(&stop, received, None, on_late),
-            "a hit 100 ms back, with 50 ms to spend, probed on"
-        );
-        let early = PonderHit::new();
-        early.hit();
-        let on_early = Some((&early, Duration::from_secs(60)));
-        assert!(
-            probing_allowed(&stop, received, None, on_early),
-            "inside the hit's deadline"
-        );
-        stop.store(true, Ordering::Relaxed);
-        assert!(
-            !probing_allowed(&stop, received, None, on_early),
-            "stop still ends it"
-        );
     }
 }

@@ -32,6 +32,12 @@ result.
   binaries. The install scripts take it where the processor has both, and
   the AVX2 build from a release without one; `--build avx512` asks for it.
 
+### Changed
+
+- Time: the `ponderhit` change of 0.7.0-rc.4 is taken out, so a search hit
+  while pondering decides when to stop as 0.7.0-rc.3 did. A bot's clock
+  study found more of its ponder hits running to the hard limit than before.
+
 ### Fixed
 
 - UCI: `go searchmoves` with no legal move in its list answers
