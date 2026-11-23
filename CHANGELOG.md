@@ -28,8 +28,10 @@ result.
   the install stops and says so.
 - Installers: Cadence is built from source only with `--source`, or where
   the release has no binary for the system, and the installers say which.
-- Installers: `install.ps1` checks for BMI1 and LZCNT beside AVX2, and tries
-  the generic binary where the one it chose cannot run its bench.
+- Installers: a binary that cannot run here gives way to the release's build
+  one tier below it, AVX-512 to AVX2 to generic, each checked the same way,
+  before the install stops. `install.ps1` also checks for BMI1 and LZCNT
+  beside AVX2.
 - Installers: `--uninstall` keeps the install record for what the user keeps,
   removes the empty folders and the profile's blank line it added, and names
   any compiler or Rust toolchain it installed.

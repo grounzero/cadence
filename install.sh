@@ -786,7 +786,7 @@ attested() {
 # Leaves the checked binary in BUILT, or the reason there is none for this system in WHY. A binary
 # that does not match the release, or cannot run here, stops the run instead.
 try_binary() {
-    local name file want got which rc
+    local name file want which next
     name=$(release_name)
     if [ -z "$name" ]; then
         which=$(describe_system)
@@ -810,7 +810,38 @@ try_binary() {
         return 1
     fi
     say "Release $VERSION has a binary for this system: $file."
+    # One that cannot run here gives way to the tier below it, AVX-512 to AVX2 to generic, unless a
+    # build was asked for by name; a timeout is no sign a lower tier would run, so it stops.
+    while ! check_release_file "$file" "$want"; do
+        say "$file cannot be used here: $WHY."
+        next=""
+        if [ -z "$ASKED" ] && [ "$LIMITED" != 1 ]; then
+            case "$BUILD" in avx512) next=avx2 ;; avx2) next=generic ;; esac
+        fi
+        while [ -n "$next" ]; do
+            BUILD=$next
+            name=$(release_name)
+            want=""
+            [ -z "$name" ] || want=$(listed "cadence-$VERSION-$name$EXE")
+            [ -z "$want" ] || break
+            case "$BUILD" in avx2) next=generic ;; *) next="" ;; esac
+        done
+        if [ -z "$next" ]; then
+            [ "$ARCH" != x86_64 ] || [ "$BUILD" = generic ] || [ -n "$ASKED" ] \
+                || say "--generic takes the generic build instead, for any x86-64 with POPCNT."
+            stop "Nothing was installed. --source builds Cadence $VERSION from source here instead."
+        fi
+        file="cadence-$VERSION-$name$EXE"
+        say "The release's $BUILD build, $file, is tried in its place."
+    done
+    BUILT="$WORK/$file"
+    FROM=release
+}
 
+# Holds a release binary to SHA256SUMS, its attestation and its bench, and returns 1 with the reason
+# in WHY where it cannot run here; a file that does not match the release stops the run.
+check_release_file() {
+    local file=$1 want=$2 got rc
     step "Checking $file"
     rc=0
     fetch "$ASSETS_URL/$VERSION/$file" "$WORK/$file" || rc=$?
@@ -823,21 +854,18 @@ try_binary() {
     attested "$file" || tampered "$WHY"
     want=$(listed bench.txt)
     [ -n "$want" ] || tampered "Release $VERSION's SHA256SUMS lists no bench.txt to check $file against"
-    rc=0
-    fetch "$ASSETS_URL/$VERSION/bench.txt" "$WORK/bench.txt" || rc=$?
-    [ "$rc" != 2 ] || offline "release $VERSION's bench.txt"
-    [ "$rc" = 0 ] || tampered "Release $VERSION lists bench.txt in its SHA256SUMS and does not serve it$TROUBLE"
-    [ "$(checksum "$WORK/bench.txt")" = "$want" ] || tampered "The release's bench.txt does not match its SHA256SUMS"
-    chmod 755 "$WORK/$file" || fail "cannot make $WORK/$file executable"
-    if ! bench_and_name "$WORK/$file" "$(tr -d '[:space:]' < "$WORK/bench.txt")" "Cadence $VERSION"; then
-        [ "$FAULT" != mismatch ] || tampered "$file: ${WHY}"
-        say "$file cannot be used here: $WHY."
-        [ "$ARCH" != x86_64 ] || [ "$BUILD" = generic ] \
-            || say "--generic takes the generic build instead, for any x86-64 with POPCNT."
-        stop "Nothing was installed. --source builds Cadence $VERSION from source here instead."
+    # A lower tier tried after the first is held to the bench.txt already fetched.
+    if [ ! -f "$WORK/bench.txt" ] || [ "$(checksum "$WORK/bench.txt")" != "$want" ]; then
+        rc=0
+        fetch "$ASSETS_URL/$VERSION/bench.txt" "$WORK/bench.txt" || rc=$?
+        [ "$rc" != 2 ] || offline "release $VERSION's bench.txt"
+        [ "$rc" = 0 ] || tampered "Release $VERSION lists bench.txt in its SHA256SUMS and does not serve it$TROUBLE"
+        [ "$(checksum "$WORK/bench.txt")" = "$want" ] || tampered "The release's bench.txt does not match its SHA256SUMS"
     fi
-    BUILT="$WORK/$file"
-    FROM=release
+    chmod 755 "$WORK/$file" || fail "cannot make $WORK/$file executable"
+    bench_and_name "$WORK/$file" "$(tr -d '[:space:]' < "$WORK/bench.txt")" "Cadence $VERSION" && return 0
+    [ "$FAULT" != mismatch ] || tampered "$file: $WHY"
+    return 1
 }
 
 # --- The build ---------------------------------------------------------------------------------

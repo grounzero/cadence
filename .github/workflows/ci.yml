@@ -1285,6 +1285,18 @@ jobs:
           (cd "$r/badbench/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
           cp "$r/good/$v/bench.txt" "$r/nobinary/$v/"
           (cd "$r/nobinary/$v" && $hash bench.txt > SHA256SUMS)
+          # On Linux x86-64, this system's build stopping as an illegal instruction does, with the
+          # installed binary served beside it under the generic build's name; Windows makes its own.
+          case "$RELEASE_FILE" in
+            *-linux-x86-64-avx2 | *-linux-x86-64-avx512)
+              mkdir -p "$r/illegal/$v"
+              printf '#!/bin/sh\nkill -ILL $$\n' > "$r/illegal/$v/$RELEASE_FILE"
+              chmod 755 "$r/illegal/$v/$RELEASE_FILE"
+              cp "$r/good/$v/$RELEASE_FILE" "$r/illegal/$v/cadence-$v-linux-x86-64-generic"
+              cp "$r/good/$v/bench.txt" "$r/illegal/$v/"
+              (cd "$r/illegal/$v" && $hash "$RELEASE_FILE" "cadence-$v-linux-x86-64-generic" bench.txt > SHA256SUMS)
+              ;;
+          esac
           renamed="cadence-0.0.1-${RELEASE_FILE#cadence-$v-}"
           mkdir -p "$r/renamed/0.0.1"
           cp "$r/good/$v/bench.txt" "$r/renamed/0.0.1/"
@@ -1750,6 +1762,25 @@ jobs:
           said find-limited.txt "GitHub refused to name Cadence's releases (the server answered 403): it limits how often one address asks." \
             "install.sh did not name GitHub's rate limit where GitHub said so"
 
+          # A build that cannot run here gives way to the tier below it, held to the same checks.
+          if [ -d "$tmp/releases/illegal/$v" ]; then
+            generic=$(tr -d '\r' < "$tmp/releases/illegal/$v/SHA256SUMS" | sed -n 's/^[0-9a-f]*  *\(cadence-.*-generic\(\.exe\)\{0,1\}\)$/\1/p')
+            rc=0
+            env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" CADENCE_RELEASES_URL="$url/illegal" bash install.sh --yes \
+              --test-urls --version "$v" --dir "$tmp/illegal" > illegal.txt 2>&1 || rc=$?
+            [ "$rc" -eq 0 ] || { cat illegal.txt; bad "install.sh exited $rc where the generic build runs"; }
+            said illegal.txt "$RELEASE_FILE cannot be used here: it stopped in its bench with exit" \
+              "install.sh did not say the build stopped in its bench"
+            said illegal.txt "The release's generic build, $generic, is tried in its place." "install.sh did not try the tier below"
+            said illegal.txt "== Checking $generic" "install.sh did not check the generic build"
+            if grep -qF 'Building from source' illegal.txt; then cat illegal.txt; bad "install.sh built from source where the generic build runs"; fi
+            exe=""
+            [ "$RUNNER_OS" != Windows ] || exe=.exe
+            cmp "$tmp/illegal/cadence$exe" "$tmp/releases/illegal/$v/$generic" || bad "the generic build was not the one installed"
+          else
+            echo "::notice::no lower tier to give way to here"
+          fi
+
           # A download that fails for the network is tried once more: each file's first answer of 503
           # is followed by the file, and a server that never answers stops the run after two tries.
           rc=0
@@ -1895,7 +1926,7 @@ jobs:
               }
               if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) where the generic build runs" }
               Said $run "$env:RELEASE_FILE cannot be used here: it stopped in its bench with exit -1073741795 (an illegal instruction, one this processor lacks)." 'install.ps1 did not say the build stopped as an illegal instruction'
-              Said $run "The release's generic build, for any x86-64 with POPCNT, is tried in its place." 'install.ps1 did not try the generic build'
+              Said $run "The release's generic build, $generic, is tried in its place." 'install.ps1 did not try the generic build'
               Said $run "== Checking $generic" 'install.ps1 did not check the generic build'
               if ($run.Out -notmatch 'BMI1 and LZCNT were read through \.NET:|BMI1 and LZCNT could not be read here, so a processor with AVX2 is taken to have them') { Write-Host $run.Out; throw 'install.ps1 did not say how it read BMI1 and LZCNT' }
               if ($run.Out.Contains('Building from source')) { Write-Host $run.Out; throw 'install.ps1 built from source where the generic build runs' }

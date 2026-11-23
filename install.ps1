@@ -780,24 +780,28 @@ function Test-Binary {
         return
     }
     Say "Release $script:Version has a binary for this system: $file."
-    $cannot = Test-ReleaseFile $file $want
-    if (-not $cannot) { return }
-    # Windows PowerShell cannot read BMI1 or LZCNT, so a build chosen without them, and not asked for
-    # by name, gives way to the release's generic one where it cannot run.
-    if ($script:Build -ne 'generic' -and -not $script:Asked) {
-        $generic = "cadence-$($script:Version)-windows-x86-64-generic.exe"
-        $sum = Get-Listed $generic
-        if ($sum) {
-            Say "$file cannot be used here: $cannot."
-            Say "The release's generic build, for any x86-64 with POPCNT, is tried in its place."
-            $script:Build = 'generic'
-            $file = $generic
-            $cannot = Test-ReleaseFile $file $sum
-            if (-not $cannot) { return }
+    # One that cannot run here gives way to the tier below it, AVX-512 to AVX2 to generic, unless a
+    # build was asked for by name; a timeout is no sign a lower tier would run, so it stops.
+    while ($true) {
+        $cannot = Test-ReleaseFile $file $want
+        if (-not $cannot) { return }
+        Say "$file cannot be used here: $cannot."
+        $next = ''
+        if (-not $script:Asked -and -not $script:Limited) {
+            $next = switch ($script:Build) { 'avx512' { 'avx2' } 'avx2' { 'generic' } default { '' } }
         }
+        $want = ''
+        while ($next) {
+            $script:Build = $next
+            $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
+            $want = Get-Listed $file
+            if ($want) { break }
+            $next = if ($script:Build -eq 'avx2') { 'generic' } else { '' }
+        }
+        if (-not $want) { break }
+        Say "The release's $($script:Build) build, $file, is tried in its place."
     }
-    Say "$file cannot be used here: $cannot."
-    if ($script:Build -ne 'generic') { Say '--generic takes the generic build instead, for any x86-64 with POPCNT.' }
+    if ($script:Build -ne 'generic' -and -not $script:Asked) { Say '--generic takes the generic build instead, for any x86-64 with POPCNT.' }
     Stop-Install "Nothing was installed. --source builds Cadence $($script:Version) from source here instead."
 }
 
