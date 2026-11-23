@@ -16,8 +16,8 @@ use cadence_engine::search::{Limits, reverse_futile, reverse_futility_margin};
 use cadence_engine::tune::Tunables;
 use support::{PAWN_ENDGAMES, table};
 
-/// The compiled-in values every gate here pins.
-const DEFAULT: &Tunables = &Tunables::DEFAULT;
+/// The handcrafted set, every gate here pins: the search below scores with that evaluation.
+const HCE: &Tunables = &Tunables::HCE;
 
 /// The start position first fires at depth eight; nine is one past it, so a tree change cannot
 /// empty the gate in silence.
@@ -47,11 +47,11 @@ fn one_node(fen: &str, depth: u32, alpha: Score, beta: Score) -> (Score, u64, u6
 
 /// At depth one every child is quiescence, so the node count speaks for this node alone, and it
 /// carries the gate: one node on the admitted side. Beta sits at `eval -
-/// reverse_futility_margin(DEFAULT, 1)` and then a centipawn higher.
+/// reverse_futility_margin(HCE, 1)` and then a centipawn higher.
 #[test]
 fn the_margin_is_what_returns_the_node() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
-    let beta = eval - reverse_futility_margin(DEFAULT, 1);
+    let beta = eval - reverse_futility_margin(HCE, 1);
 
     let (score, nodes, cutoffs, _) = one_node(MIDDLEGAME, 1, beta - 1, beta);
     assert_eq!(cutoffs, 1, "the margin did not return the node at beta");
@@ -61,7 +61,7 @@ fn the_margin_is_what_returns_the_node() {
     );
     assert_eq!(
         score,
-        eval - reverse_futility_margin(DEFAULT, 1),
+        eval - reverse_futility_margin(HCE, 1),
         "the node came back at something other than the bound the condition established"
     );
 
@@ -81,7 +81,7 @@ fn the_margin_is_what_returns_the_node() {
 #[test]
 fn a_full_window_node_that_clears_the_margin_is_searched() {
     let eval = eval::evaluate(&board(MIDDLEGAME));
-    let beta = eval - reverse_futility_margin(DEFAULT, 1);
+    let beta = eval - reverse_futility_margin(HCE, 1);
     let (_, nodes, cutoffs, refused) = one_node(MIDDLEGAME, 1, beta - 100, beta);
     assert_eq!(cutoffs, 0, "a full-window node was returned on the margin");
     assert_eq!(
@@ -98,7 +98,7 @@ fn a_node_in_check_is_never_returned() {
     for depth in 0..8 {
         for beta in [-30_000, -100, 0, 100, 30_000] {
             assert!(
-                reverse_futile(DEFAULT, None, depth, beta).is_none(),
+                reverse_futile(HCE, None, depth, beta).is_none(),
                 "depth {depth} beta {beta}"
             );
         }
@@ -112,11 +112,11 @@ fn a_mate_beta_refuses_the_margin() {
     for depth in 1..8 {
         for ply in 0..8 {
             assert!(
-                reverse_futile(DEFAULT, Some(30_000), depth, mate_in(ply)).is_none(),
+                reverse_futile(HCE, Some(30_000), depth, mate_in(ply)).is_none(),
                 "depth {depth}: mate in {ply}"
             );
             assert!(
-                reverse_futile(DEFAULT, Some(30_000), depth, mated_in(ply)).is_none(),
+                reverse_futile(HCE, Some(30_000), depth, mated_in(ply)).is_none(),
                 "depth {depth}: mated in {ply}"
             );
         }
@@ -126,13 +126,13 @@ fn a_mate_beta_refuses_the_margin() {
 /// A pawn and a half per ply, growing with the search under the node.
 #[test]
 fn the_margin_is_the_documented_margin() {
-    assert_eq!(reverse_futility_margin(DEFAULT, 1), 150);
-    assert_eq!(reverse_futility_margin(DEFAULT, 2), 300);
-    assert_eq!(reverse_futility_margin(DEFAULT, 3), 450);
-    assert_eq!(reverse_futility_margin(DEFAULT, 6), 900);
+    assert_eq!(reverse_futility_margin(HCE, 1), 150);
+    assert_eq!(reverse_futility_margin(HCE, 2), 300);
+    assert_eq!(reverse_futility_margin(HCE, 3), 450);
+    assert_eq!(reverse_futility_margin(HCE, 6), 900);
     for depth in 1..16 {
         assert!(
-            reverse_futility_margin(DEFAULT, depth + 1) > reverse_futility_margin(DEFAULT, depth),
+            reverse_futility_margin(HCE, depth + 1) > reverse_futility_margin(HCE, depth),
             "depth {depth}: the margin did not grow"
         );
     }
@@ -146,8 +146,8 @@ fn a_cut_returns_beta_where_the_margin_clears_it() {
     for depth in 1..8 {
         for eval in [-2_000, -150, 0, 150, 450, 1_000, 5_000] {
             for beta in [-1_000, -150, 0, 150, 900] {
-                let clears = eval - reverse_futility_margin(DEFAULT, depth) >= beta;
-                let cut = reverse_futile(DEFAULT, Some(eval), depth, beta);
+                let clears = eval - reverse_futility_margin(HCE, depth) >= beta;
+                let cut = reverse_futile(HCE, Some(eval), depth, beta);
                 assert_eq!(
                     cut,
                     clears.then_some(beta),
@@ -172,22 +172,22 @@ fn the_margin_is_the_depth_limit() {
     // fifth is one the evidence does not cover.
     for depth in 1..=4 {
         assert!(
-            reverse_futile(DEFAULT, Some(600), depth, 0).is_some(),
+            reverse_futile(HCE, Some(600), depth, 0).is_some(),
             "depth {depth}: 600 centipawns did not cover {} of margin",
-            reverse_futility_margin(DEFAULT, depth)
+            reverse_futility_margin(HCE, depth)
         );
     }
     for depth in 5..64 {
         assert!(
-            reverse_futile(DEFAULT, Some(600), depth, 0).is_none(),
+            reverse_futile(HCE, Some(600), depth, 0).is_none(),
             "depth {depth}: the margin did not outrun a gap of 600"
         );
     }
     // The band is a function of the evidence and not of a constant.
-    assert!(reverse_futile(DEFAULT, Some(150), 1, 0).is_some());
-    assert!(reverse_futile(DEFAULT, Some(150), 2, 0).is_none());
-    assert!(reverse_futile(DEFAULT, Some(6_000), 40, 0).is_some());
-    assert!(reverse_futile(DEFAULT, Some(6_000), 41, 0).is_none());
+    assert!(reverse_futile(HCE, Some(150), 1, 0).is_some());
+    assert!(reverse_futile(HCE, Some(150), 2, 0).is_none());
+    assert!(reverse_futile(HCE, Some(6_000), 40, 0).is_some());
+    assert!(reverse_futile(HCE, Some(6_000), 41, 0).is_none());
 }
 
 /// A rule wired in but never admitted fails it; the sharper claims are the gates at the head of

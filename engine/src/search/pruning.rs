@@ -40,7 +40,7 @@ const LMP_DEPTH: u32 = 8;
 
 /// Thousandths of a move per ply squared. The weak end is the large one: at zero every quiet move
 /// behind the third is given up, at two the rule reaches almost nothing.
-pub(crate) const LMP_MULTIPLIER: i32 = MILLI / 2;
+pub(crate) const LMP_MULTIPLIER: i32 = 878;
 
 /// Total: the products saturate, and a multiplier of zero gives [`REDUCTION_INDEX`] rather than a
 /// division by zero.
@@ -80,7 +80,7 @@ const FUTILITY_DEPTH: u32 = 3;
 
 /// Centipawns per ply. Linear because the material a search can win grows with its moves, not their
 /// square.
-pub(crate) const FUTILITY_MARGIN: Score = 150;
+pub(crate) const FUTILITY_MARGIN: Score = 144;
 
 #[must_use]
 pub fn futility_margin(tunables: &Tunables, depth: u32) -> Score {
@@ -109,7 +109,7 @@ pub fn futility_skips(futile: bool, m: Move, index: usize) -> bool {
 
 /// Centipawns per ply. The rule has no depth limit, so this is its only bound and is chosen to
 /// bound as well as to size.
-pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 150;
+pub(crate) const REVERSE_FUTILITY_MARGIN: Score = 81;
 
 #[must_use]
 pub fn reverse_futility_margin(tunables: &Tunables, depth: u32) -> Score {
@@ -140,7 +140,7 @@ pub const PROBCUT_REDUCTION: u32 = 4;
 
 /// Read against the tree the other margins leave, so a change to reverse futility, futility or late
 /// move pruning reopens it.
-pub(crate) const PROBCUT_MARGIN: Score = 100;
+pub(crate) const PROBCUT_MARGIN: Score = 62;
 
 /// In check `eval` is `None`, so the rule never runs there.
 #[must_use]

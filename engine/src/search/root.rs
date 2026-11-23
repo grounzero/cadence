@@ -15,7 +15,7 @@ use crate::time;
 use crate::tune::Tunable;
 
 /// Centipawns either side of the last completed iteration's score; doubled on each failure.
-pub(crate) const ASPIRATION_DELTA: Score = 24;
+pub(crate) const ASPIRATION_DELTA: Score = 30;
 
 /// Below it the iterations are too cheap and their scores too unsettled for a window to pay.
 const ASPIRATION_DEPTH: u32 = 4;

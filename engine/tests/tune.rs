@@ -257,16 +257,15 @@ fn the_spsa_block_is_the_five_declared_parameters() {
     }
 }
 
-/// A margin's declaration as a GUI reads it, its default the constant the search held before it was
-/// offered to a tune.
+/// A margin's declaration as a GUI reads it, its default the network's compiled-in value.
 #[test]
-fn the_three_margins_are_declared_as_integers_at_their_old_values() {
+fn the_three_margins_are_declared_as_integers_at_their_defaults() {
     let out = talk("uci\nquit\n");
     let uciok = out.lines().position(|l| l == "uciok").expect("uciok");
     for line in [
-        "option name futility_margin type spin default 150 min 50 max 400",
-        "option name probcut_margin type spin default 100 min 25 max 250",
-        "option name aspiration_delta type spin default 24 min 8 max 64",
+        "option name futility_margin type spin default 144 min 50 max 400",
+        "option name probcut_margin type spin default 62 min 25 max 250",
+        "option name aspiration_delta type spin default 30 min 8 max 64",
     ] {
         let at = out
             .lines()
@@ -509,12 +508,13 @@ fn every_option_at_its_default_is_the_untouched_search() {
     assert_eq!(strip(&untouched), strip(&asked));
 }
 
-/// `3 + d * d * 500 / 1000` is `3 + d * d / 2` at every depth, so the tree cannot have moved.
+/// `3 + d * d * 500 / 1000` is `3 + d * d / 2` at every depth, so the handcrafted tree cannot have
+/// moved.
 #[test]
-fn the_default_multiplier_is_the_divisor_it_replaced() {
+fn the_handcrafted_multiplier_is_the_divisor_it_replaced() {
     for depth in 0..=u32::from(u8::MAX) {
         assert_eq!(
-            lmp_count(&Tunables::DEFAULT, depth),
+            lmp_count(&Tunables::HCE, depth),
             REDUCTION_INDEX + (depth * depth / 2) as usize,
             "depth {depth}"
         );

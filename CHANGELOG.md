@@ -57,6 +57,13 @@ result.
 - Tools: datagen keeps one set of search histories through each game, emptied
   at the start of every game, so the same seed now gives different games.
 
+### Changed
+
+- Search: the five tuned constants take a tune's values with the network:
+  reverse futility 81 centipawns a ply (was 150), late move pruning 0.878
+  (0.5), futility 144 (150), ProbCut 62 (100) and the aspiration window 30
+  (24). The handcrafted evaluation keeps its own.
+
 ### Fixed
 
 - Search: a table result is not reused where its depth reaches the
