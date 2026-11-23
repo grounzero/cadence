@@ -5,13 +5,15 @@
 //! one digest every target's build must print, at each of the two widths a header may name.
 
 use cadence_core::chess960::dfrc_fen;
-use cadence_core::features::NUM_INPUTS;
+use cadence_core::features::{NUM_INPUTS, mirrored_feature_index, mirrors};
 use cadence_core::mv::parse_uci;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
-use cadence_core::{FenStyle, Move, generate_legal};
+use cadence_core::{Colour, FenStyle, Move, generate_legal};
 use cadence_nnue::net::{EMBEDDED, HEADER_LEN, PAYLOAD_LEN, payload_len};
-use cadence_nnue::{AccumulatorStack, AnyNetwork, HIDDEN, LoadError, Network, Provenance, WIDE};
+use cadence_nnue::{
+    AccumulatorStack, AnyNetwork, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE,
+};
 
 /// The digest of `corpus_outputs`, the same on every target, or a build computes another number.
 const DIGEST: u64 = 0xc222_483e_5258_62ef;
@@ -261,7 +263,7 @@ fn incremental_updates_equal_a_refresh() {
             castles += usize::from(m.is_castle());
             promotions += usize::from(m.is_promotion());
             let dirty = board.make_move(m);
-            stack.push(&net, &dirty);
+            stack.push(&net, &dirty, &board);
             assert_eq!(*stack.current(), net.refresh(&board), "after {m:?}");
             boards.push(board.duplicate());
         }
@@ -311,7 +313,7 @@ fn a_swapping_castle_en_passant_and_a_promotion_update_as_a_refresh() {
         assert!(kind(m), "{uci} in {fen} is not the case it stands for");
         let parent = net.refresh(&board);
         let dirty = board.make_move(m);
-        let updated = net.update(&parent, &dirty);
+        let updated = net.update(&parent, &dirty, &board);
         let fresh = net.refresh(&board);
         for (persp, side) in [(0, "White"), (1, "Black")] {
             assert_eq!(
@@ -503,7 +505,7 @@ fn a_wide_net_updates_and_scores_as_its_oracles() {
         let mut stack = AccumulatorStack::new(&net, &board);
         for &m in &moves {
             let dirty = board.make_move(m);
-            stack.push(&net, &dirty);
+            stack.push(&net, &dirty, &board);
             let fresh = net.refresh(&board);
             assert_eq!(*stack.current(), fresh, "after {m:?}");
             let stm = board.side_to_move();
@@ -562,4 +564,259 @@ fn wide_corpus_digest() -> u64 {
 fn every_target_scores_the_corpus_alike_at_the_wide_width() {
     let digest = wide_corpus_digest();
     assert_eq!(digest, WIDE_DIGEST, "digest {digest:#018x}");
+}
+
+/// The header byte naming the input layout.
+const INPUTS_AT: usize = 18;
+
+/// The seeded net of either width behind a header that names mirrored inputs.
+fn mirrored<const H: usize>() -> Network<H> {
+    let mut bytes = Network::<H>::generate(0xc0de, Provenance::SelfPlay).to_bytes();
+    bytes[INPUTS_AT] = 1;
+    Network::<H>::load(&bytes).expect("a header naming mirrored inputs loads")
+}
+
+/// The file's weights as words, the oracle's only view of a net.
+fn words<const H: usize>(net: &Network<H>) -> Vec<i16> {
+    net.to_bytes()[HEADER_LEN..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&w| i16::from_le_bytes(w))
+        .collect()
+}
+
+/// Both perspectives' sums written out from the file's words by the mirrored index, sharing
+/// nothing with the accumulator but that index, which the trainer's own holds.
+fn mirrored_sums<const H: usize>(words: &[i16], board: &Board) -> [[i16; H]; 2] {
+    let mut sums = [[0_i16; H]; 2];
+    for persp in [Colour::White, Colour::Black] {
+        let king = board.king_square(persp);
+        for (lane, sum) in sums[persp.index()].iter_mut().enumerate() {
+            *sum = words[NUM_INPUTS * H + lane];
+            for sq in board.occupied() {
+                let piece = board.piece_at(sq).expect("an occupied square");
+                *sum += words[mirrored_feature_index(persp, king, piece, sq) * H + lane];
+            }
+        }
+    }
+    sums
+}
+
+/// The header's layout byte is read as plain or mirrored, kept by a round trip, and refused at
+/// any other value.
+#[test]
+fn the_header_names_plain_or_mirrored_inputs_and_nothing_else() {
+    assert_eq!(net().inputs(), Inputs::Plain);
+    assert_eq!(net().to_bytes()[INPUTS_AT], 0);
+    let net = mirrored::<HIDDEN>();
+    assert_eq!(net.inputs(), Inputs::Mirrored);
+    assert_eq!(net.to_bytes()[INPUTS_AT], 1);
+    assert_eq!(mirrored::<WIDE>().inputs(), Inputs::Mirrored);
+    let mut other = net.to_bytes();
+    other[INPUTS_AT] = 2;
+    assert_eq!(
+        Network::from_bytes(&other).err(),
+        Some(LoadError::Inputs(2))
+    );
+}
+
+/// Castling positions, Chess960's among them, each with the file White's king and then Black's
+/// lands on: a king crosses the middle either way, stays on its half, stays on its square, and
+/// trades squares with its rook.
+const CASTLES: [(&str, [u8; 2]); 9] = [
+    (
+        "r3k2r/pppppppp/2n5/8/8/5N2/PPPPPPPP/R3K2R w KQkq - 0 1",
+        *b"gc",
+    ),
+    (
+        "r3k2r/pppppppp/2n5/8/8/5N2/PPPPPPPP/R3K2R w KQkq - 0 1",
+        *b"cg",
+    ),
+    ("1k5r/pppppppp/8/8/8/8/PPPPPPPP/1K5R w Hh - 0 1", *b"gg"),
+    ("r4k2/pppppppp/8/8/8/8/PPPPPPPP/R4K2 w Aa - 0 1", *b"cc"),
+    ("6kr/pppppppp/8/8/8/8/PPPPPPPP/6KR w Hh - 0 1", *b"gg"),
+    ("r1k5/pppppppp/8/8/8/8/PPPPPPPP/R1K5 w Aa - 0 1", *b"cc"),
+    ("3k3r/pppppppp/8/8/8/8/PPPPPPPP/3K3R w Hh - 0 1", *b"gg"),
+    ("r2k4/pppppppp/8/8/8/8/PPPPPPPP/R2K4 w Aa - 0 1", *b"cc"),
+    ("2rk4/pppppppp/8/8/8/8/PPPPPPPP/2RK4 w Cc - 0 1", *b"cc"),
+];
+
+/// The side to move's castle that lands its king on `file`.
+fn castle_to(board: &mut Board, file: u8) -> Move {
+    let us = board.side_to_move();
+    let mut found = Vec::new();
+    for &m in generate_legal(board).as_slice() {
+        if m.is_castle() {
+            board.make_move(m);
+            let lands = board.king_square(us).file().index();
+            board.unmake_move(m);
+            if lands == usize::from(file - b'a') {
+                found.push(m);
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "one castle to the {} file",
+        char::from(file)
+    );
+    found[0]
+}
+
+/// Through each side's castle in every castling position, a mirrored net's stack is the refresh
+/// and the refresh is the oracle's sums, at both widths; the kings cross the middle eight times.
+fn castles_update_as_the_oracle<const H: usize>() -> usize {
+    let net = mirrored::<H>();
+    let words = words(&net);
+    let mut crossings = 0;
+    for (fen, files) in CASTLES {
+        let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
+        let mut stack = AccumulatorStack::new(&net, &board);
+        assert_eq!(
+            stack.current().sums,
+            mirrored_sums::<H>(&words, &board),
+            "{fen}"
+        );
+        let mut made = Vec::new();
+        for file in files {
+            let us = board.side_to_move();
+            let before = mirrors(board.king_square(us));
+            let m = castle_to(&mut board, file);
+            let dirty = board.make_move(m);
+            made.push(m);
+            crossings += usize::from(before != mirrors(board.king_square(us)));
+            stack.push(&net, &dirty, &board);
+            let fresh = net.refresh(&board);
+            assert_eq!(*stack.current(), fresh, "{fen}, after {m:?}");
+            assert_eq!(
+                fresh.sums,
+                mirrored_sums::<H>(&words, &board),
+                "{fen}, after {m:?}"
+            );
+        }
+        for &m in made.iter().rev() {
+            board.unmake_move(m);
+            stack.pop();
+            assert_eq!(
+                *stack.current(),
+                net.refresh(&board),
+                "{fen}, unmaking {m:?}"
+            );
+        }
+    }
+    crossings
+}
+
+#[test]
+fn a_mirrored_net_follows_each_castle_chess960s_among_them() {
+    assert_eq!(castles_update_as_the_oracle::<HIDDEN>(), 8);
+    assert_eq!(castles_update_as_the_oracle::<WIDE>(), 8);
+}
+
+/// After every move and unmake of random DFRC games a mirrored net's stack equals a refresh, the
+/// refresh equals the oracle's sums, and the fast output equals the reference. Kings cross the
+/// middle by a step and move within a half; a castle's crossing is the castling test's.
+#[test]
+fn a_mirrored_net_updates_as_a_refresh_through_every_crossing() {
+    let net = mirrored::<HIDDEN>();
+    let words = words(&net);
+    let (mut steps, mut castles, mut stays) = (0, 0, 0);
+    for (start, moves) in games(11, 60, 160) {
+        let mut board = start.duplicate();
+        let mut stack = AccumulatorStack::new(&net, &board);
+        let mut boards = vec![board.duplicate()];
+        for (ply, &m) in moves.iter().enumerate() {
+            let us = board.side_to_move();
+            let before = board.king_square(us);
+            let dirty = board.make_move(m);
+            let after = board.king_square(us);
+            let crossed = mirrors(before) != mirrors(after);
+            steps += usize::from(crossed && !m.is_castle());
+            castles += usize::from(crossed && m.is_castle());
+            stays += usize::from(!crossed && before != after);
+            stack.push(&net, &dirty, &board);
+            let fresh = net.refresh(&board);
+            assert_eq!(*stack.current(), fresh, "after {m:?}");
+            if ply % 8 == 0 || crossed {
+                assert_eq!(
+                    fresh.sums,
+                    mirrored_sums::<HIDDEN>(&words, &board),
+                    "after {m:?}"
+                );
+            }
+            let stm = board.side_to_move();
+            assert_eq!(
+                net.evaluate(&fresh, stm),
+                net.evaluate_reference(&fresh, stm)
+            );
+            boards.push(board.duplicate());
+        }
+        for &m in moves.iter().rev() {
+            board.unmake_move(m);
+            stack.pop();
+            boards.pop();
+            let parent = boards.last().expect("the root stays");
+            assert_eq!(
+                *stack.current(),
+                net.refresh(parent),
+                "after unmaking {m:?}"
+            );
+        }
+    }
+    assert!(
+        steps > 0 && stays > 0,
+        "{steps} crossings by a step, {castles} by a castle, {stays} king moves within a half"
+    );
+}
+
+/// A board flipped left to right, with no castling rights or en passant square on either.
+fn flipped_pair(board: &Board) -> (Board, Board) {
+    let fen = board.to_fen(FenStyle::Shredder);
+    let mut fields = fen.split(' ');
+    let (placement, mover) = (
+        fields.next().expect("placement"),
+        fields.next().expect("mover"),
+    );
+    let across: Vec<String> = placement
+        .split('/')
+        .map(|rank| rank.chars().rev().collect())
+        .collect();
+    let read = |placement: &str| {
+        let fen = format!("{placement} {mover} - - 0 1");
+        Board::from_fen(&fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"))
+    };
+    (read(placement), read(&across.join("/")))
+}
+
+/// A mirrored net scores a position and its left-to-right flip alike, since each perspective's
+/// king changes half with the board; a plain net with the same weights does not.
+#[test]
+fn a_mirrored_net_scores_a_position_and_its_flip_alike() {
+    let (net, plain) = (mirrored::<HIDDEN>(), net());
+    let (mut compared, mut differing) = (0, 0);
+    for (start, moves) in games(13, 20, 80) {
+        let mut board = start.duplicate();
+        for &m in &moves {
+            board.make_move(m);
+            let (here, across) = flipped_pair(&board);
+            let stm = here.side_to_move();
+            assert_eq!(
+                net.evaluate(&net.refresh(&here), stm),
+                net.evaluate(&net.refresh(&across), stm),
+                "{}",
+                here.to_fen(FenStyle::Shredder)
+            );
+            differing += usize::from(
+                plain.evaluate(&plain.refresh(&here), stm)
+                    != plain.evaluate(&plain.refresh(&across), stm),
+            );
+            compared += 1;
+        }
+    }
+    assert!(
+        compared > 1_000 && differing > compared / 2,
+        "{differing} of {compared}"
+    );
 }

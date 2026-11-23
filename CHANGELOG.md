@@ -21,6 +21,12 @@ result.
 
 ### Added
 
+- Networks: a net file's header names its input layout, plain or mirrored,
+  and the engine reads either. A mirrored net reads a perspective's board
+  flipped left to right while its own king is on files e to h, and rebuilds
+  that perspective's sums when the king crosses the middle, by a step or by
+  a castle. Every shipped net is plain, and an earlier build refuses a
+  mirrored file.
 - Releases: Windows and Linux x86-64 each gain an AVX-512 build, for
   processors with AVX-512F and AVX-512BW, so a release builds nine
   binaries. The install scripts take it where the processor has both, and

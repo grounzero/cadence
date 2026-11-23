@@ -8,12 +8,12 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use cadence_core::chess960::dfrc_fen;
-use cadence_core::features::{NUM_INPUTS, feature_index};
+use cadence_core::features::{NUM_INPUTS, feature_index, mirrored_feature_index};
 use cadence_core::generate_legal;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
 use cadence_nnue::net::{HEADER_LEN, QA, QB, SCALE, payload_len};
-use cadence_nnue::{AnyNetwork, Network};
+use cadence_nnue::{AnyNetwork, Inputs, Network};
 
 /// The fewest positions a reading may rest on.
 pub const MIN_POSITIONS: usize = 1_000;
@@ -34,6 +34,8 @@ struct Reference<const H: usize> {
     bias: [f32; H],
     output: [[f32; H]; 2],
     output_bias: f32,
+    /// The layout the net file's header names, which the reference indexes by as the engine does.
+    inputs: Inputs,
 }
 
 impl<const H: usize> Reference<H> {
@@ -51,7 +53,14 @@ impl<const H: usize> Reference<H> {
             bias,
             output,
             output_bias: take(output_bias),
+            inputs: Inputs::Plain,
         }
+    }
+
+    /// The same weights read under the layout a net's header names.
+    fn laid_out(mut self, inputs: Inputs) -> Reference<H> {
+        self.inputs = inputs;
+        self
     }
 
     /// The quantised file read as numbers: features at `QA`, outputs at `QB`, the output bias at both.
@@ -87,9 +96,14 @@ impl<const H: usize> Reference<H> {
         let mut out = self.output_bias;
         for (persp, weights) in [mover, mover.flip()].into_iter().zip(&self.output) {
             let mut sums = self.bias;
+            let king = board.king_square(persp);
             for sq in board.occupied() {
                 if let Some(piece) = board.piece_at(sq) {
-                    let column = &self.columns[feature_index(persp, piece, sq)];
+                    let index = match self.inputs {
+                        Inputs::Plain => feature_index(persp, piece, sq),
+                        Inputs::Mirrored => mirrored_feature_index(persp, king, piece, sq),
+                    };
+                    let column = &self.columns[index];
                     for (s, w) in sums.iter_mut().zip(column) {
                         *s += w;
                     }
@@ -313,7 +327,11 @@ impl Reading<'_> {
     /// Prints each comparison and answers whether the net file's agreement passed.
     fn report<const H: usize>(&self, net: &Network<H>) -> Result<bool, String> {
         let raw = match self.raw {
-            Some((bytes, p)) => Some(Reference::<H>::raw(bytes).map_err(|e| format!("{p}: {e}"))?),
+            Some((bytes, p)) => Some(
+                Reference::<H>::raw(bytes)
+                    .map_err(|e| format!("{p}: {e}"))?
+                    .laid_out(net.inputs()),
+            ),
             None => None,
         };
         if self.factor.is_some() && (raw.is_none() || self.against.is_some()) {
@@ -332,7 +350,7 @@ impl Reading<'_> {
             );
         }
         let within = |largest: f64, mean: f64| largest <= MAX_DELTA && mean <= MEAN_DELTA;
-        let quantised = Reference::<H>::quantised(self.file);
+        let quantised = Reference::<H>::quantised(self.file).laid_out(net.inputs());
         let (largest, mean) = deltas(net, |b| quantised.evaluate(b), self.boards);
         let passed = within(largest, mean);
         println!(
