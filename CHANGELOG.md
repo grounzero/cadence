@@ -27,6 +27,19 @@ result.
   that perspective's sums when the king crosses the middle, by a step or by
   a castle. Every shipped net is plain, and an earlier build refuses a
   mirrored file.
+
+## [0.7.0-rc.5] - 2026-11-23
+
+The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build
+a release. The changes are listed under 0.7.0-rc.4.
+
+## [0.7.0-rc.4] - 2026-11-23
+
+A release candidate for 0.7.0, with the search's margins tuned to the
+network.
+
+### Added
+
 - Training: `cadence-train run --result-share-end F` moves the weight on the
   game result on a line across the run, and `--from CHECKPOINT` with
   `--lr-start F` continues a saved net at a lower first rate, which with a
@@ -60,11 +73,17 @@ result.
 
 ### Changed
 
+- Search: the quiet, continuation and correction histories are kept from one
+  search to the next within a game, and cleared with the table by
+  `ucinewgame`, `Clear Hash`, a change of evaluator or a new `Hash` size.
+- Search: every window is bounded by the mate scores reachable from its ply,
+  so once a mate is found the other moves are not searched to full depth
+  against a window no score can enter.
+- Time: the engine thinks longer when the root score falls between
+  iterations, up to 1.6 times the soft budget, measured against the average
+  of the four iterations before the last.
 - Tools: datagen keeps one set of search histories through each game, emptied
   at the start of every game, so the same seed now gives different games.
-
-### Changed
-
 - Search: the five tuned constants take a tune's values with the network:
   reverse futility 81 centipawns a ply (was 150), late move pruning 0.878
   (0.5), futility 144 (150), ProbCut 62 (100) and the aspiration window 30
@@ -72,6 +91,8 @@ result.
 
 ### Fixed
 
+- Search: futility pruning is no longer applied at an open window, which
+  every other margin rule already refused.
 - Time: a `ponderhit` is timed from when the engine reads it, stops the
   search where a fresh search with the same times would have stopped at any
   iteration pondered, and ends root tablebase probing at the deadline it
@@ -84,6 +105,27 @@ result.
 - Time: a move's budget counts only the part of the increment past
   `Move Overhead`, since every move pays it, and the default `Move Overhead`
   is 5 ms in place of 20.
+
+Test 116, for the tuned margins: +23.12 (between +14.21 and +32.05), from
+a sequential test stopped at its first crossing, so it leans high. At 40
+seconds plus 0.4, test 118: +12.03 (between +7.28 and +16.79). In Chess960
+and double Chess960, test 117: +27.91 (between +18.55 and +37.31), a
+non-regression test. The kept histories, test 111: +5.25 (between +1.48
+and +9.03). These passed non-regression tests, which ask only whether a
+change costs strength: futility at an open window, test 102, +0.73
+(between -1.21 and +2.67); the table's cutoff near the fifty-move draw,
+test 104, +0.36 (between -1.16 and +1.88); `Move Overhead` charged on
+every move, test 97, +1.27 (between -0.94 and +3.48). The mate-score bound
+and the futility fix were also tested in Chess960, tests 112 and 113, and
+stopped as not costing strength: +0.21 (between -1.65 and +2.07) and +0.29
+(between -1.98 and +2.55). The mate-score bound's standard test, test 108,
+ended unresolved at -0.42 (between -1.66 and +0.81), and the castling
+rooks in the key in Chess960, test 94, ended unresolved at -0.95 (between
+-2.57 and +0.67); the bound was kept on its Chess960 result and the key as
+a correction. Thinking longer when the score falls did not show a gain,
+test 114, +0.44 (between -1.26 and +2.14), and was kept as a correction to
+how the engine spends its time. The `ponderhit` change was not put to a
+test of games, since the test games do not ponder. These are not a rating.
 
 ## [0.7.0-rc.3] - 2026-11-21
 
@@ -761,7 +803,9 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.3...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.5...main
+[0.7.0-rc.5]: https://github.com/grounzero/cadence/compare/0.7.0-rc.4...0.7.0-rc.5
+[0.7.0-rc.4]: https://github.com/grounzero/cadence/compare/0.7.0-rc.3...0.7.0-rc.4
 [0.7.0-rc.3]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...0.7.0-rc.3
 [0.7.0-rc.2]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...0.7.0-rc.2
 [0.7.0-rc.1]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0-rc.1
