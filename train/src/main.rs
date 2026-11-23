@@ -98,6 +98,13 @@ macro_rules! recipe {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        match args.first().and_then(|name| cadence_train::help::text(name)) {
+            Some(text) => println!("{text}"),
+            None => println!("{USAGE}"),
+        }
+        return ExitCode::SUCCESS;
+    }
     let done = match args.split_first() {
         Some((command, rest)) if command == "run" => flags(rest).and_then(|f| run(&f)),
         Some((command, rest)) if command == "export" => flags(rest).and_then(|f| export(&f)),

@@ -9,6 +9,7 @@ pub mod book;
 pub mod checkpoint;
 pub mod data;
 pub mod export;
+pub mod help;
 pub mod overfit;
 pub mod schedule;
 pub mod validate;
