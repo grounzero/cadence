@@ -56,17 +56,33 @@ fn round_div(n: i64, d: i64) -> i64 {
     }
 }
 
+/// Lanes summed side by side, each in its own `i32`, so the compiler keeps them in vector
+/// registers; a whole number of chunks at either width, and any remainder is summed after.
+const LANES: usize = 32;
+
 /// The load check bounds each perspective's sum inside `i32` at either width, which at the wide one
-/// holds only for output weights of magnitude 64 or less.
+/// holds only for output weights of magnitude 64 or less. Integer addition is exact in any order, so
+/// the lanes give the sum a single running total would.
 fn layer<const H: usize>(sums: &[i16; H], weights: &[i16; H]) -> i32 {
     let ceiling = i16::try_from(QA).unwrap_or(i16::MAX);
-    sums.iter()
-        .zip(weights)
-        .map(|(&s, &w)| {
-            let c = s.clamp(0, ceiling);
-            i32::from(c * w) * i32::from(c)
-        })
-        .sum()
+    let term = |s: i16, w: i16| {
+        let c = s.clamp(0, ceiling);
+        i32::from(c * w) * i32::from(c)
+    };
+    let (sum_chunks, sum_rest) = sums.as_chunks::<LANES>();
+    let (weight_chunks, weight_rest) = weights.as_chunks::<LANES>();
+    let mut lanes = [0_i32; LANES];
+    for (s, w) in sum_chunks.iter().zip(weight_chunks) {
+        for ((lane, &s), &w) in lanes.iter_mut().zip(s).zip(w) {
+            *lane += term(s, w);
+        }
+    }
+    let rest: i32 = sum_rest
+        .iter()
+        .zip(weight_rest)
+        .map(|(&s, &w)| term(s, w))
+        .sum();
+    lanes.iter().sum::<i32>() + rest
 }
 
 #[cfg(test)]

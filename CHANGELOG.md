@@ -19,6 +19,12 @@ result.
 
 ## [Unreleased]
 
+### Changed
+
+- Evaluation: the network's output layer sums its terms in lanes side by
+  side, which the compiler keeps in vector registers. Every evaluation is the
+  same, so play is unchanged.
+
 ### Added
 
 - Networks: a net file's header names its input layout, plain or mirrored,
