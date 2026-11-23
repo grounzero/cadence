@@ -6,7 +6,7 @@
 
 use std::process::ExitCode;
 
-use cadence_engine::{bench, datagen, perft, texel, tune, uci};
+use cadence_engine::{bench, datagen, help, perft, texel, tune, uci};
 
 /// `cadence` with no subcommand speaks UCI on stdin.
 const SUBCOMMANDS: &[(&str, &str)] = &[
@@ -34,6 +34,14 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        match help::text(&args[1..]) {
+            Some(text) => println!("{text}"),
+            None => usage(),
+        }
+        return ExitCode::SUCCESS;
+    }
 
     match args.get(1).map(String::as_str) {
         None => uci::run(),

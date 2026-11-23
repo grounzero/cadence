@@ -7,6 +7,7 @@
 
 mod convert;
 mod forward;
+mod help;
 mod magics;
 
 use std::process::ExitCode;
@@ -28,6 +29,13 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        match args.get(1).map(String::as_str).and_then(help::text) {
+            Some(text) => println!("{text}"),
+            None => usage(),
+        }
+        return ExitCode::SUCCESS;
+    }
     let result = match args.get(1).map(String::as_str) {
         Some("magics") => magics::run(&args[2..]),
         Some("convert") => convert::run(&args[2..]),
