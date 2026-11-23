@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Checks a commit message, which check-boundary does not read. A closing line
 # that is neither a trailer nor a link is left to the writer.

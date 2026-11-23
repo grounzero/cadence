@@ -12,7 +12,7 @@ pub const DEFAULT_HASH_MB: usize = 16;
 /// 16,384 buckets: small enough to be useless, large enough to work.
 pub const MIN_HASH_MB: usize = 1;
 
-/// Past any machine in the fleet; the allocation is fallible either way.
+/// Past any machine the engine is tested on; the allocation is fallible either way.
 pub const MAX_HASH_MB: usize = 4096;
 
 /// Four sixteen-byte slots fill one cache line, so a whole-bucket probe costs one miss.

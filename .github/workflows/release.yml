@@ -1,4 +1,4 @@
-# Release binaries from a version tag: seven builds, their checksums and a provenance attestation for
+# Release binaries from a version tag: nine builds, their checksums and a provenance attestation for
 # each, with bench.txt and the two install scripts summed beside them, drafted for publishing by hand,
 # a release candidate as a pre-release. A manual run or a change to this file only builds and checks,
 # unless a manual run at an existing tag (`--ref <tag>`) asks for the draft, which re-runs a failed
@@ -140,6 +140,14 @@ jobs:
             config: .cargo/x86-64-generic.toml
             features: +popcnt,+crt-static
             exe: .exe
+          # The AVX-512 builds are run here only where the runner's processor has AVX-512, which a step
+          # below reads.
+          - name: windows-x86-64-avx512
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            config: .cargo/x86-64-avx512.toml
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+crt-static,+avx512f,+avx512bw
+            exe: .exe
           # 22.04 rather than the latest, so the binaries ask for an older glibc.
           - name: linux-x86-64-avx2
             os: ubuntu-22.04
@@ -150,6 +158,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-generic.toml
             features: +popcnt
+          - name: linux-x86-64-avx512
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-avx512.toml
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+avx512f,+avx512bw
           - name: linux-aarch64
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
@@ -165,6 +178,10 @@ jobs:
             features: +avx2,+bmi1,+popcnt,+lzcnt
     env:
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
+      # Without `--target` the target's flags reach build scripts too, which then run on the runner,
+      # so an AVX-512 build names its target and its build scripts run on any processor.
+      TARGET_ARG: ${{ contains(matrix.features, '+avx512f') && format('--target {0}', matrix.target) || '' }}
+      BIN: ${{ contains(matrix.features, '+avx512f') && format('target/{0}/release', matrix.target) || 'target/release' }}
       EXPECTED: ${{ needs.version.outputs.expected }}
       COMMIT: ${{ needs.version.outputs.commit }}
     defaults:
@@ -205,22 +222,64 @@ jobs:
           fi
 
       - name: build --release
-        run: cargo build --locked --release -p cadence-engine --bin cadence $CONFIG_ARG
+        run: cargo build --locked --release -p cadence-engine --bin cadence $CONFIG_ARG $TARGET_ARG
 
       # As in CI: every crate's rustc command line carries flags that resolve to the triple's baseline
       # with the build's features, so a binary never ships under a name its code does not hold.
       - name: Assert the features every crate was built with
         run: |
-          cargo clean --release -p cadence-core
-          cargo build --locked --release -p cadence-engine --bin cadence -v --color never $CONFIG_ARG \
+          cargo clean --release -p cadence-core $TARGET_ARG
+          cargo build --locked --release -p cadence-engine --bin cadence -v --color never $CONFIG_ARG $TARGET_ARG \
             > release.log 2>&1 || { cat release.log; exit 1; }
           bash .github/check-features.sh ${{ matrix.target }} ${{ matrix.features }} release.log
+
+      # A runner's processor need not have AVX-512, and an AVX-512 binary stops on its first such
+      # instruction there, so the two steps that run it are skipped with a notice where it is absent.
+      - name: Whether the runner's processor runs the AVX-512 build
+        id: cpu
+        if: contains(matrix.features, '+avx512f')
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "processor: $PROCESSOR_IDENTIFIER"
+            # Feature 41 is PF_AVX512F_INSTRUCTIONS_AVAILABLE, and Windows names no flag for AVX-512BW,
+            # so AVX-512F stands for it as in install.ps1, and a processor with F alone fails the bench.
+            tmp=$(cygpath -u "$RUNNER_TEMP")
+            printf '%s\n' \
+              "Add-Type -Namespace Release -Name Cpu -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool IsProcessorFeaturePresent(uint feature);'" \
+              '[Release.Cpu]::IsProcessorFeaturePresent(41)' > "$tmp/avx512.ps1"
+            answer=$(powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$tmp/avx512.ps1")" | tr -d '\r')
+            echo "IsProcessorFeaturePresent(41): $answer"
+            case "$answer" in
+              True) lacks="" ;;
+              False) lacks="AVX-512F" ;;
+              *) echo "::error::Windows gave no answer for AVX-512F"; exit 1 ;;
+            esac
+          else
+            sed -n 's/^model name[[:space:]]*: /processor: /p' /proc/cpuinfo | head -n 1
+            flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+            [ -n "$flags" ] || { echo "::error::/proc/cpuinfo names no flags"; exit 1; }
+            lacks=""
+            for f in avx512f avx512bw; do
+              case " $flags " in *" $f "*) ;; *) lacks="${lacks:+$lacks, }$f" ;; esac
+            done
+            lacks=$(printf '%s' "$lacks" | tr '[:lower:]' '[:upper:]' | sed 's/AVX512/AVX-512/g; s/, / and /')
+          fi
+          if [ -z "$lacks" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "this runner's processor has AVX-512F and AVX-512BW, so the binary is run as every build is"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            why="this runner's processor lacks $lacks, so the binary was built and its features checked, and its UCI id and its bench against bench.txt were not run"
+            echo "::notice title=${{ matrix.name }} not run::$why"
+            printf '### %s\nNot run: %s.\n' "${{ matrix.name }}" "$why" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # A build that would call itself anything but the expected version fails here rather than
       # ships.
       - name: The UCI id names the version
+        if: steps.cpu.outputs.run != 'false'
         run: |
-          out=$(printf 'uci\nisready\nquit\n' | ./target/release/cadence)
+          out=$(printf 'uci\nisready\nquit\n' | "./$BIN/cadence")
           echo "$out"
           echo "$out" | grep -Fqx "id name Cadence $EXPECTED" \
             || { echo "::error::the binary does not call itself Cadence $EXPECTED"; exit 1; }
@@ -228,8 +287,9 @@ jobs:
           echo "$out" | grep -qx 'readyok' || { echo "::error::no readyok"; exit 1; }
 
       - name: bench against bench.txt
+        if: steps.cpu.outputs.run != 'false'
         run: |
-          last=$(./target/release/cadence bench | tail -n 1)
+          last=$("./$BIN/cadence" bench | tail -n 1)
           echo "$last"
           got=$(echo "$last" | awk '{print $1}')
           expected=$(tr -d '[:space:]' < bench.txt)
@@ -245,7 +305,7 @@ jobs:
         run: |
           mkdir -p dist/digests
           file="cadence-$EXPECTED-${{ matrix.name }}${{ matrix.exe }}"
-          cp "target/release/cadence${{ matrix.exe }}" "dist/$file"
+          cp "$BIN/cadence${{ matrix.exe }}" "dist/$file"
           if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
           (cd dist && $hash "$file" > "digests/$file.sha256")
           ls -l dist dist/digests
@@ -256,10 +316,10 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The seven together, summed with bench.txt and the install scripts on every run, so a dry run
+  # The nine together, summed with bench.txt and the install scripts on every run, so a dry run
   # checks what a release would assemble.
   assemble:
-    name: the seven together
+    name: the nine together
     needs: [version, build]
     runs-on: ubuntu-latest
     steps:
@@ -280,15 +340,15 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Seven binaries and their checksums
+      - name: Nine binaries and their checksums
         shell: bash
         run: |
           cd dist
           ls -l
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
+          [ "$n" -eq 9 ] || { echo "::error::$n binaries and not nine"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
+          [ "$n" -eq 9 ] || { echo "::error::$n digests and not nine"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           cp ../install.sh ../install.ps1 ../bench.txt .
           sha256sum cadence-* install.sh install.ps1 bench.txt | tee SHA256SUMS
@@ -365,9 +425,9 @@ jobs:
         run: |
           cd dist
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 7 ] || { echo "::error::$n binaries and not seven"; exit 1; }
+          [ "$n" -eq 9 ] || { echo "::error::$n binaries and not nine"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 7 ] || { echo "::error::$n digests and not seven"; exit 1; }
+          [ "$n" -eq 9 ] || { echo "::error::$n digests and not nine"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           cp ../install.sh ../install.ps1 ../bench.txt .
           sha256sum cadence-* install.sh install.ps1 bench.txt > SHA256SUMS
@@ -403,7 +463,7 @@ jobs:
               echo "A release candidate, published as a pre-release."
             fi
             echo
-            echo "Seven binaries: Windows and Linux x86-64, each in an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of bench.txt, which holds the bench count every binary was checked against, and of the install scripts. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo "Nine binaries: Windows and Linux x86-64, each in an AVX-512 build for processors with AVX-512F and AVX-512BW, an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of the install scripts and of bench.txt, which holds the bench count each binary was checked against where its build machine could run it; the install scripts check the bench again on the machine they install on. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
             echo "The macOS binaries are not notarized. Before running one, make it executable and clear its quarantine flag: \`chmod +x <file>\`, then \`xattr -d com.apple.quarantine <file>\`. Or build from source."
             echo
@@ -413,7 +473,7 @@ jobs:
             grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS
             echo '```'
             echo
-            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`. On an x86-64 processor without AVX2, build with \`cargo build --release --config .cargo/x86-64-generic.toml\`."
+            echo "From source: \`git clone https://github.com/$GITHUB_REPOSITORY.git\`, \`git checkout $VERSION\`, \`cargo build --release\`; the binary is \`target/release/cadence\`. On an x86-64 processor without AVX2, build with \`cargo build --release --config .cargo/x86-64-generic.toml\`, and on Linux or Windows with AVX-512F and AVX-512BW, \`cargo build --release --config .cargo/x86-64-avx512.toml\` builds the AVX-512 one."
             echo
             awk -v h="## [$VERSION]" '$0 == h || index($0, h " - ") == 1 {on = 1; next} on && /^## \[/ {exit} on' \
               CHANGELOG.md

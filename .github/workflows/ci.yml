@@ -888,7 +888,8 @@ jobs:
           if ($code -ne 0) { throw "install.ps1 exited $code" }
 
       # Git Bash's /proc/cpuinfo prints abm, LZCNT's flag, only on AMD processors. Every processor with
-      # AVX2 has LZCNT, so the build install.sh chose is checked against AVX2.
+      # AVX2 has LZCNT, so the build install.sh chose is checked against AVX2, and against AVX-512F and
+      # AVX-512BW beside it.
       - name: The build install.sh chose under Git Bash
         if: env.SCRIPT == 'install.sh' && runner.os == 'Windows'
         run: |
@@ -898,8 +899,10 @@ jobs:
           grep -F 'build runs here' install.txt
           case " $flags " in
             *" avx2 "*)
-              grep -qF 'the AVX2 build runs here' install.txt \
-                || { echo "::error::install.sh did not take the AVX2 build on a processor with AVX2"; exit 1; }
+              want=AVX2
+              case " $flags " in *" avx512f "*) case " $flags " in *" avx512bw "*) want=AVX-512 ;; esac ;; esac
+              grep -qF "the $want build runs here" install.txt \
+                || { echo "::error::install.sh did not take the $want build on a processor with $want"; exit 1; }
               ;;
           esac
 
@@ -969,10 +972,17 @@ jobs:
           tmp=$RUNNER_TEMP
           exe=""
           if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$RUNNER_TEMP"); exe=.exe; fi
-          # The file is named for the build the installer chose, which it then looks for.
+          # The file is named for the build the installer chose, which it then looks for; a release
+          # with no AVX-512 binary gave it the AVX2 one.
           asset=$ASSET
           case "$asset" in
-            *-avx2) if grep -qF 'the generic build runs here' install.txt; then asset=${asset%-avx2}-generic; fi ;;
+            *-avx2)
+              if grep -qF 'the generic build runs here' install.txt; then
+                asset=${asset%-avx2}-generic
+              elif grep -qF 'the AVX-512 build runs here' install.txt && ! grep -qF 'has no AVX-512 binary' install.txt; then
+                asset=${asset%-avx2}-avx512
+              fi
+              ;;
           esac
           file="cadence-$RELEASE_VERSION-$asset$exe"
           good="$tmp/releases/good/$RELEASE_VERSION"
@@ -981,7 +991,22 @@ jobs:
           cp "$INSTALLED" "$good/$file"
           git show "$RELEASE_VERSION:bench.txt" > "$good/bench.txt"
           if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
-          (cd "$good" && $hash "$file" bench.txt > SHA256SUMS)
+          # An installer from before the AVX-512 builds, as the shared state step runs, takes the AVX2
+          # binary, so the release's own is served beside the AVX-512 one, held to its SHA256SUMS.
+          also=""
+          case "$asset" in
+            *-avx512)
+              also="cadence-$RELEASE_VERSION-$ASSET$exe"
+              base=https://github.com/grounzero/cadence/releases/download/$RELEASE_VERSION
+              curl -fsSL -o "$tmp/release-sums" "$base/SHA256SUMS"
+              curl -fsSL -o "$good/$also" "$base/$also"
+              want=$(awk -v f="$also" '$2 == f {print $1}' "$tmp/release-sums")
+              got=$($hash "$good/$also" | awk '{print $1}')
+              [ -n "$want" ] && [ "$got" = "$want" ] \
+                || { echo "::error::the release's $also is $got and its SHA256SUMS says ${want:-nothing}"; exit 1; }
+              ;;
+          esac
+          (cd "$good" && $hash "$file" $also bench.txt > SHA256SUMS)
           cat "$good/SHA256SUMS"
           cp "$good/$file" "$good/bench.txt" "$good/SHA256SUMS" "$corrupt/"
           printf 'x' >> "$corrupt/$file"
@@ -1121,8 +1146,9 @@ jobs:
             # The PATH and the tablebases are the only questions a checked binary's install asks.
             $asked = ([regex]::Matches($out, '\(--yes\)\r?\n')).Count
             if ($asked -ne 2) { throw "install.ps1 asked $asked questions, not 2" }
-            # install.ps1 names the AVX2 build's features as install.sh does.
+            # install.ps1 names the AVX2 and AVX-512 builds' features as install.sh does.
             if ($out.Contains('the AVX2 build runs here') -and -not $out.Contains('with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.')) { throw 'install.ps1 named the AVX2 build features differently from install.sh' }
+            if ($out.Contains('the AVX-512 build runs here') -and -not $out.Contains('with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here.')) { throw 'install.ps1 named the AVX-512 build features differently from install.sh' }
 
             # RUSTFLAGS in each of its forms, and a user's own Cargo config adding a flag, which would each
             # break the build if they reached it.
@@ -2000,7 +2026,8 @@ jobs:
 
           # A build from source asked for at the same version replaces the release binary installed, and
           # the moved tag then stops it before anything is built. Where the release has a generic
-          # binary beside the AVX2 one, asking for it replaces the AVX2 one.
+          # binary beside the AVX2 or AVX-512 one, asking for it replaces that one, and --build avx512 is
+          # refused on a processor without AVX-512.
           rc=0
           CADENCE_API_URL="$url/moved/releases" bash install.sh --yes --test-urls --source --version "$v" > source.txt 2>&1 || rc=$?
           [ "$rc" -ne 0 ] || { cat source.txt; bad "install.sh built a tag that is not the commit its release names"; }
@@ -2008,15 +2035,23 @@ jobs:
           said source.txt "and the release names 0000000000000000000000000000000000000000, so it is not built" "the moved tag did not stop the build"
           case "$ASSET" in
             *-avx2)
-              if grep -qF 'the AVX2 build runs here' up.txt; then
+              if grep -qE 'the (AVX2|AVX-512) build runs here' up.txt; then
+                was=$(sed -n 's/^build=//p' "$state")
                 rc=0
                 bash install.sh --yes --generic --version "$v" > generic.txt 2>&1 || rc=$?
-                [ "$rc" -eq 0 ] || { cat generic.txt; bad "install.sh exited $rc installing the generic build over the AVX2 one"; }
-                said generic.txt " in the avx2 build, and the generic build is asked for, so it is replaced." \
-                  "install.sh did not replace the AVX2 build with the generic one"
+                [ "$rc" -eq 0 ] || { cat generic.txt; bad "install.sh exited $rc installing the generic build over the $was one"; }
+                said generic.txt " in the $was build, and the generic build is asked for, so it is replaced." \
+                  "install.sh did not replace the $was build with the generic one"
                 grep -qx 'build=generic' "$state" || { cat "$state"; bad "the state does not record the generic build"; }
                 bash install.sh --yes --version "$v" > plain-after.txt 2>&1 || { cat plain-after.txt; bad "a plain run over the generic build failed"; }
                 said plain-after.txt ", so it is up to date." "a plain run did not take the generic build as up to date"
+              fi
+              if ! grep -qF 'the AVX-512 build runs here' up.txt; then
+                rc=0
+                bash install.sh --yes --build avx512 --version "$v" > avx512.txt 2>&1 || rc=$?
+                [ "$rc" -ne 0 ] || { cat avx512.txt; bad "install.sh took --build avx512 on a processor without AVX-512"; }
+                said avx512.txt "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks" \
+                  "install.sh did not say why it refused --build avx512"
               fi
               ;;
           esac
@@ -2142,7 +2177,9 @@ jobs:
           # A build recorded as baseline was made where the target has no AVX2 or generic settings, so
           # any build asked for there is that one, and nothing is rebuilt.
           sed -i.bak 's/^build=.*/build=baseline/' "$st"
-          for build in --generic "--build avx2"; do
+          builds=(--generic "--build avx2")
+          ! grep -qF 'the AVX-512 build runs here' up.txt || builds+=("--build avx512")
+          for build in "${builds[@]}"; do
             spelled --dir "$home/real" $build > baseline.txt 2>&1 || { cat baseline.txt; bad "the run with $build over a baseline build failed"; }
             said baseline.txt ", so it is up to date." "$build was not taken for the baseline build installed"
           done
@@ -2384,20 +2421,27 @@ jobs:
 
             # A build from source asked for at the same version replaces the release binary installed, and
             # the moved tag then stops it before anything is built. Asking for the generic binary
-            # replaces the AVX2 one.
+            # replaces the AVX2 or AVX-512 one, and --build avx512 is refused on a processor without
+            # AVX-512.
             $env:CADENCE_API_URL = "$url/moved/releases"
             $run = Install @('--yes', '--test-urls', '--source', '--version', $v)
             Remove-Item Env:CADENCE_API_URL
             if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 built a tag that is not the commit its release names' }
             Said $run 'and --source asks for it built from source, so it is replaced.' 'install.ps1 took --source at the same version as up to date'
             Said $run 'and the release names 0000000000000000000000000000000000000000, so it is not built' 'the moved tag did not stop the build'
-            if ($upgrade.Out.Contains('the AVX2 build runs here')) {
+            if ($upgrade.Out.Contains('the AVX2 build runs here') -or $upgrade.Out.Contains('the AVX-512 build runs here')) {
+              $was = "$(@(Get-Content $state) -match '^build=')" -replace '^build=', ''
               $run = Install @('--yes', '--generic', '--version', $v)
-              if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) installing the generic build over the AVX2 one" }
-              Said $run ' in the avx2 build, and the generic build is asked for, so it is replaced.' 'install.ps1 did not replace the AVX2 build with the generic one'
+              if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) installing the generic build over the $was one" }
+              Said $run " in the $was build, and the generic build is asked for, so it is replaced." "install.ps1 did not replace the $was build with the generic one"
               if (@(Get-Content $state) -notcontains 'build=generic') { throw 'the state does not record the generic build' }
               $run = Install @('--yes', '--version', $v)
               Said $run ', so it is up to date.' 'a plain run did not take the generic build as up to date'
+            }
+            if (-not $upgrade.Out.Contains('the AVX-512 build runs here')) {
+              $run = Install @('--yes', '--build', 'avx512', '--version', $v)
+              if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 took --build avx512 on a processor without AVX-512' }
+              Said $run '--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks' 'install.ps1 did not say why it refused --build avx512'
             }
 
             # A file the script has no record of, which leaves a mark if it is run.
@@ -2490,7 +2534,9 @@ jobs:
             # any build asked for there is that one, and nothing is rebuilt.
             $stateFile = Join-Path $env:LOCALAPPDATA 'Cadence\install-state'
             Set-Content -Encoding ascii -Path $stateFile -Value (@(Get-Content $stateFile) -replace '^build=.*$', 'build=baseline')
-            foreach ($build in @(@('--generic'), @('--build', 'avx2'))) {
+            $builds = @(@('--generic'), @('--build', 'avx2'))
+            if ($upgrade.Out.Contains('the AVX-512 build runs here')) { $builds += , @('--build', 'avx512') }
+            foreach ($build in $builds) {
               $run = Install (@('--yes', '--test-urls', '--version', $v, '--dir', $realDir) + $build)
               if ($run.Code -ne 0) { Write-Host $run.Out; throw "the run with $build over a baseline build failed" }
               Said $run ', so it is up to date.' "$build was not taken for the baseline build installed"

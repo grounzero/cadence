@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! If Cadence disagrees with these six positions, Cadence is wrong; in the DFRC sections the corpus
-//! is a live suspect. The deep tier takes 23.56 s for all six, release, M5 Max, measured
+//! is a live suspect. The deep tier takes 23.56 s for all six, release, Apple silicon, measured
 //! 2026-08-25.
 //!
 //! ```text
