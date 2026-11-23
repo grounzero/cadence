@@ -19,6 +19,15 @@ result.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
+Everything since 0.6.0, tagged first as release candidates whose releases
+were drafted and not published: 0.7.0-rc.1 (2026-11-18), 0.7.0-rc.2
+(2026-11-19), 0.7.0-rc.3 (2026-11-21) and 0.7.0-rc.5 (2026-11-23);
+0.7.0-rc.4's tag was lightweight and built no release. It plays with a
+neural network evaluation, trained on Cadence's own games, with the
+search's margins tuned to it.
+
 ### Added
 
 - Networks: a net file's header names its input layout, plain or mirrored,
@@ -27,19 +36,6 @@ result.
   that perspective's sums when the king crosses the middle, by a step or by
   a castle. Every shipped net is plain, and an earlier build refuses a
   mirrored file.
-
-## [0.7.0-rc.5] - 2026-11-23
-
-The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build
-a release. The changes are listed under 0.7.0-rc.4.
-
-## [0.7.0-rc.4] - 2026-11-23
-
-A release candidate for 0.7.0, with the search's margins tuned to the
-network.
-
-### Added
-
 - Training: `cadence-train run --result-share-end F` moves the weight on the
   game result on a line across the run, and `--from CHECKPOINT` with
   `--lr-start F` continues a saved net at a lower first rate, which with a
@@ -70,6 +66,24 @@ network.
   names by its SHA-256, `--contradiction-skip` skips positions whose score
   and result disagree, and `--mate-score` keeps mate-scored positions at a
   ceiling.
+- Training: `cadence-train run --lr-schedule step` lowers the learning rate
+  in five equal drops, in place of the cosine decay, to the same final rate.
+- Evaluation: a neural network (NNUE), trained on positions from Cadence's
+  own games, scores positions, and the engine is built with it inside.
+  `Use NNUE`, on by default, plays with the handcrafted evaluation when
+  switched off, and `EvalFile` loads another network file in place of the
+  built-in one.
+- Tools: `datagen run`, `datagen repair` and `datagen verify`, built only
+  with the `packed-datagen` feature, write games as packed chunks, close a
+  chunk a killed run left, and check chunks against their sidecars and the
+  build's settings, regenerating every Nth game.
+- Tools: `cadence-tools convert` turns datasets of packed chunks into the
+  trainer's records, and `cadence-tools forward` compares a network file's
+  quantised evaluation with an `f32` one.
+- Training: `cadence-train`, a third binary from `train/`, outside the
+  workspace, trains the network with bullet, exports a checkpoint as the
+  file `EvalFile` loads and reads a checkpoint's validation loss.
+- Tests: CI stresses the UCI loop at one thread and at four.
 
 ### Changed
 
@@ -88,6 +102,33 @@ network.
   reverse futility 81 centipawns a ply (was 150), late move pruning 0.878
   (0.5), futility 144 (150), ProbCut 62 (100) and the aspiration window 30
   (24). The handcrafted evaluation keeps its own.
+- Evaluation: the built-in network is retrained on positions from games the
+  second network played, together with the positions the second was trained
+  on, and is twice as wide, 512 units a perspective in place of 256.
+- Tools: `datagen run` and `datagen verify` play and regenerate their games
+  with a built-in network of either width.
+- Tools: `cadence-tools convert` deals the records it keeps to bucket files
+  on disk and shuffles each bucket in turn, rather than holding every record
+  in memory, and reads its chunks once to choose the games and again to
+  convert them. The same shuffle seed now gives a different order than
+  before. Its report counts the training positions by how many copies of
+  their network input the set holds.
+- Search: the tunable search options act only on the search that plays with
+  the network; with `Use NNUE` off, the search keeps 0.6.0's values.
+- Tools: `datagen run` plays its games, the opening screen included, with
+  the network built into the engine, and every chunk's header names that
+  network's SHA-256. `datagen verify` regenerates such a chunk with it and
+  refuses a chunk naming another network.
+- Search: the transposition table is cleared when the evaluation in use
+  changes.
+- Version: a build from a modified tree adds `-dirty` to its version.
+- Tools: `datagen play` needs its seed, `datagen extract` checks its input
+  for repeated seeds and games and an edited header, a move with no
+  finished search is recorded with no score, and a run ends on a panic.
+  Each file datagen publishes is followed by a sync of its directory, and
+  a sync that fails is reported.
+- The README gives the macOS steps for a downloaded binary and lists
+  0.6.0's strength.
 
 ### Fixed
 
@@ -105,6 +146,15 @@ network.
 - Time: a move's budget counts only the part of the increment past
   `Move Overhead`, since every move pays it, and the default `Move Overhead`
   is 5 ms in place of 20.
+- Search: a position's key counts its en passant square only where an en
+  passant capture is legal, so a position whose only such capture is pinned
+  is recognised as a repetition of the same position without the square.
+- Engine: after a `ponderhit` the search keeps the iteration times it
+  measured while pondering, and decides when to stop as a search started
+  without pondering would, with both time limits moved by the time pondered.
+  It no longer starts an iteration it cannot predict, which could run to the
+  hard limit, or spends its whole soft budget on an iteration begun while
+  pondering and then abandoned.
 
 Test 116, for the tuned margins: +23.12 (between +14.21 and +32.05), from
 a sequential test stopped at its first crossing, so it leans high. At 40
@@ -127,41 +177,6 @@ test 114, +0.44 (between -1.26 and +2.14), and was kept as a correction to
 how the engine spends its time. The `ponderhit` change was not put to a
 test of games, since the test games do not ponder. These are not a rating.
 
-## [0.7.0-rc.3] - 2026-11-21
-
-A release candidate for 0.7.0, with a retrained network twice as wide.
-
-### Added
-
-- Training: `cadence-train run --lr-schedule step` lowers the learning rate
-  in five equal drops, in place of the cosine decay, to the same final rate.
-
-### Changed
-
-- Evaluation: the built-in network is retrained on positions from games the
-  second network played, together with the positions the second was trained
-  on, and is twice as wide, 512 units a perspective in place of 256.
-- Tools: `datagen run` and `datagen verify` play and regenerate their games
-  with a built-in network of either width.
-- Tools: `cadence-tools convert` deals the records it keeps to bucket files
-  on disk and shuffles each bucket in turn, rather than holding every record
-  in memory, and reads its chunks once to choose the games and again to
-  convert them. The same shuffle seed now gives a different order than
-  before. Its report counts the training positions by how many copies of
-  their network input the set holds.
-
-### Fixed
-
-- Search: a position's key counts its en passant square only where an en
-  passant capture is legal, so a position whose only such capture is pinned
-  is recognised as a repetition of the same position without the square.
-- Engine: after a `ponderhit` the search keeps the iteration times it
-  measured while pondering, and decides when to stop as a search started
-  without pondering would, with both time limits moved by the time pondered.
-  It no longer starts an iteration it cannot predict, which could run to the
-  hard limit, or spends its whole soft budget on an iteration begun while
-  pondering and then abandoned.
-
 Test 92, for the network: +95.86 (between +77.98 and +114.24), a
 self-play estimate against the build before it at the short control, from
 a sequential test stopped at its first crossing, so it leans high. At 40
@@ -175,21 +190,6 @@ test of games, since the test games do not ponder; its own tests reproduce a
 `ponderhit` and check that the decision to stop matches a search started
 fresh. These are not a rating.
 
-## [0.7.0-rc.2] - 2026-11-19
-
-A release candidate for 0.7.0, with a retrained network.
-
-### Changed
-
-- Evaluation: the built-in network is retrained on positions from games the
-  first network played, together with the positions the first was trained on.
-- Search: the tunable search options act only on the search that plays with
-  the network; with `Use NNUE` off, the search keeps 0.6.0's values.
-- Tools: `datagen run` plays its games, the opening screen included, with
-  the network built into the engine, and every chunk's header names that
-  network's SHA-256. `datagen verify` regenerates such a chunk with it and
-  refuses a chunk naming another network.
-
 Test 86, for the network: +105.30 (between +85.76 and +125.50), a
 self-play estimate against the build before it at the short control, from
 a sequential test stopped at its first crossing, so it leans high. At 40
@@ -198,43 +198,6 @@ Chess960 and double Chess960 at the short control, test 88: +132.75
 (between +111.51 and +154.99). This was a non-regression test, which asks
 only whether the network costs strength there, and it passed at 620 games.
 They are not a rating.
-
-## [0.7.0-rc.1] - 2026-11-18
-
-A release candidate for 0.7.0, and the first version to play with a neural
-network evaluation.
-
-### Added
-
-- Evaluation: a neural network (NNUE), trained on positions from Cadence's
-  own games, scores positions, and the engine is built with it inside.
-  `Use NNUE`, on by default, plays with the handcrafted evaluation when
-  switched off, and `EvalFile` loads another network file in place of the
-  built-in one.
-- Tools: `datagen run`, `datagen repair` and `datagen verify`, built only
-  with the `packed-datagen` feature, write games as packed chunks, close a
-  chunk a killed run left, and check chunks against their sidecars and the
-  build's settings, regenerating every Nth game.
-- Tools: `cadence-tools convert` turns datasets of packed chunks into the
-  trainer's records, and `cadence-tools forward` compares a network file's
-  quantised evaluation with an `f32` one.
-- Training: `cadence-train`, a third binary from `train/`, outside the
-  workspace, trains the network with bullet, exports a checkpoint as the
-  file `EvalFile` loads and reads a checkpoint's validation loss.
-- Tests: CI stresses the UCI loop at one thread and at four.
-
-### Changed
-
-- Search: the transposition table is cleared when the evaluation in use
-  changes.
-- Version: a build from a modified tree adds `-dirty` to its version.
-- Tools: `datagen play` needs its seed, `datagen extract` checks its input
-  for repeated seeds and games and an edited header, a move with no
-  finished search is recorded with no score, and a run ends on a panic.
-  Each file datagen publishes is followed by a sync of its directory, and
-  a sync that fails is reported.
-- The README gives the macOS steps for a downloaded binary and lists
-  0.6.0's strength.
 
 Test 83, for the network: +445.58 (between +395.93 and +511.52), a
 self-play estimate against the build before it at the short control, from
@@ -803,12 +766,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.5...main
-[0.7.0-rc.5]: https://github.com/grounzero/cadence/compare/0.7.0-rc.4...0.7.0-rc.5
-[0.7.0-rc.4]: https://github.com/grounzero/cadence/compare/0.7.0-rc.3...0.7.0-rc.4
-[0.7.0-rc.3]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...0.7.0-rc.3
-[0.7.0-rc.2]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...0.7.0-rc.2
-[0.7.0-rc.1]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0-rc.1
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0...main
+[0.7.0]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
