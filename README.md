@@ -10,6 +10,10 @@ and double Chess960 (DFRC), using an alpha-beta search and a neural network
 (NNUE) trained only on its own games. The handcrafted evaluation it started
 with is still available as an option.
 
+The network has been trained three times, each on games the one before it
+played: net 1 learned from games played by the handcrafted evaluation, net 2
+from net 1's games, and net 3, the one built in, from net 2's and net 1's.
+
 Play it on Lichess as [Mithandros](https://lichess.org/@/Mithandros). The bot
 also chats: a small language model answers messages and remarks on its
 thinking, with no say in its moves.
@@ -54,13 +58,29 @@ Each is named `cadence-<version>-` followed by the ending below.
   xattr -d com.apple.quarantine cadence-<version>-macos-arm64
   ```
 
+  For the Intel file:
+
+  ```sh
+  chmod +x cadence-<version>-macos-x86-64
+  xattr -d com.apple.quarantine cadence-<version>-macos-x86-64
+  ```
+
+  The Intel build needs a processor with AVX2.
 - **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
   if it won't start (older processors), or `linux-x86-64-avx512` on a
   processor with AVX-512, or `linux-aarch64` for 64-bit ARM.
+  The Linux builds need glibc 2.34 or later. Make the file executable:
+
+  ```sh
+  chmod +x cadence-<version>-linux-x86-64-avx2
+  ```
 
 Then add the file to your GUI as a new engine.
 
 ### Install with a script
+
+Under WSL the script installs a Linux binary, which a Windows GUI can't load;
+for a Windows GUI, use the PowerShell script.
 
 The install script picks the right build for your system, checks its
 checksum and bench, and can update or uninstall it later.
@@ -73,7 +93,7 @@ tablebases. If a run fails, attach the log it names to a GitHub issue.
 #### Windows (PowerShell)
 
 ```powershell
-Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1 -UseBasicParsing
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -104,11 +124,13 @@ Both scripts take the same flags.
 ```sh
 git clone https://github.com/grounzero/cadence.git
 cd cadence
+git checkout <version>   # optional: a release instead of main
 cargo build --release
 ```
 
-You need Git and Rust from [rustup](https://rustup.rs), which fetches the
-pinned toolchain. Add `target/release/cadence` to your GUI as a UCI engine. On
+You need Git, a C linker (on macOS the Xcode Command Line Tools, on Linux
+`gcc` or `clang`, on Windows the Visual Studio C++ build tools) and Rust from
+[rustup](https://rustup.rs), which fetches the pinned toolchain. Add `target/release/cadence` to your GUI as a UCI engine. On
 x86-64 Linux, Windows and Intel Macs it needs AVX2; for an older processor,
 add `--config .cargo/x86-64-generic.toml` (POPCNT only). On Linux or Windows
 with AVX-512, `--config .cargo/x86-64-avx512.toml` adds AVX-512F and
@@ -126,7 +148,7 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 | `Move Overhead` | 5 | Milliseconds kept back from every move for the GUI and the connection (0 to 5000). |
 | `Clear Hash` | button | Empties the search table. |
 | `UCI_LimitStrength` | off | Play weaker, at the level set by `UCI_Elo`. |
-| `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). |
+| `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). The levels are approximate, not yet measured against rated play. |
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
@@ -137,6 +159,8 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 
 On macOS, raise the open-file limit with `ulimit -n` before starting the
 engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
+A 6-piece set on Linux may need a higher limit too. Keep the tables on a local
+disk: a stalled network drive can delay `stop`.
 
 ### Unusual commands
 
@@ -148,8 +172,9 @@ engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
 
 Every strength change is played against the current
 version on [OpenBench](https://github.com/AndyGrant/OpenBench), usually for
-thousands of games, until it is clear whether it helps. It is kept only if it
-wins. Every SPRT, passed or failed, is in
+thousands of games, until it is clear whether it helps. A change is kept if it
+wins its test; a correctness fix can be kept on evidence that it costs no
+strength. Every SPRT, passed or failed, is in
 [docs/testing/sprt-log.csv](docs/testing/sprt-log.csv). Each result is
 measured against the previous version, so the gains do not add up to a
 rating; the [strength page](docs/calibration/strength.md) has the ratings.
