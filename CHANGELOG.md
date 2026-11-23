@@ -21,6 +21,11 @@ result.
 
 ### Added
 
+- Tools: `cadence-tools forward` prints the offset common to every position
+  between a net and its unquantised weights, which rounding the output
+  weights leaves, and holds a scaled net's mean error about that offset.
+  `--correct-bias OUT` writes the net with its output bias moved against the
+  offset, and `--fens FILE` reads the positions from a file.
 - Networks: a net file's header names its input layout, plain or mirrored,
   and the engine reads either. A mirrored net reads a perspective's board
   flipped left to right while its own king is on files e to h, and rebuilds

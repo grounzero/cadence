@@ -279,3 +279,120 @@ fn a_scaled_net_is_held_to_its_raw_weights_times_the_factor() {
         "{lone_why}"
     );
 }
+
+/// The net file with its output bias, the last word, moved by `units`.
+fn biased(file: &[u8], units: i16) -> Vec<u8> {
+    let mut out = file.to_vec();
+    let at = out.len() - 2;
+    let bias = i16::from_le_bytes([out[at], out[at + 1]]);
+    out[at..].copy_from_slice(&(bias + units).to_le_bytes());
+    out
+}
+
+/// The number after `label` in the tool's output, a signed figure in centipawns.
+fn figure(text: &str, label: &str) -> f64 {
+    let rest = text
+        .split(label)
+        .nth(1)
+        .unwrap_or_else(|| panic!("no `{label}` in:\n{text}"));
+    let number: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || "+-.".contains(*c))
+        .collect();
+    number
+        .parse()
+        .unwrap_or_else(|_| panic!("`{number}` after `{label}`"))
+}
+
+/// A net whose every evaluation sits 120 bias units, 2.94 cp, above its raw weights passes the
+/// scaled check, which reads the average about that common offset and prints it; the plain mean
+/// alone, 2.9 cp against the 1.2 allowed, would have failed it.
+#[test]
+fn a_scaled_nets_average_is_read_about_its_common_offset() {
+    let dir = scratch("offset");
+    let file = Network::seeded(11, Provenance::SelfPlay).to_bytes();
+    let exact = raw(&file, HIDDEN, |_, x| x);
+    let net = write(&dir, "net.cdnn", &file);
+    let raw_path = write(&dir, "raw.bin", &exact);
+    let scaled = write(&dir, "scaled.cdnn", &biased(&file, 120));
+    let flags = ["--net", &scaled, "--raw", &raw_path, "--unscaled", &net];
+    let (held, text) = forward(&[&flags[..], &["--scale-factor", "1"]].concat());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(held && text.contains(", PASS (the unscaled"), "{text}");
+    let offset = figure(&text, "a common offset of");
+    assert!((offset - 2.94).abs() < 0.2, "offset {offset}: {text}");
+    assert!(figure(&text, "the plain mean is") > 2.5, "{text}");
+    assert!(figure(&text, "and about it mean") < 1.0, "{text}");
+}
+
+/// `--correct-bias` writes the net with its output bias moved against the measured offset: the
+/// written file differs from the net in its last word alone, by the 120 units put in, and its own
+/// offset reads as nothing.
+#[test]
+fn a_nets_output_bias_is_corrected_for_its_common_offset() {
+    let dir = scratch("correct");
+    let file = Network::seeded(11, Provenance::SelfPlay).to_bytes();
+    let exact = raw(&file, HIDDEN, |_, x| x);
+    let raw_path = write(&dir, "raw.bin", &exact);
+    let shifted = biased(&file, 120);
+    let net = write(&dir, "net.cdnn", &shifted);
+    let out = dir.join("corrected.cdnn").to_string_lossy().into_owned();
+    let (passed, text) = forward(&["--net", &net, "--raw", &raw_path, "--correct-bias", &out]);
+    let written = std::fs::read(&out).expect("the corrected net is written");
+    let (bare, why) = forward(&["--net", &net, "--correct-bias", &out]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(passed, "{text}");
+    assert!(
+        (figure(&text, "against a common offset of") - 2.94).abs() < 0.2,
+        "{text}"
+    );
+    assert!(figure(&text, "has an offset of").abs() < 0.05, "{text}");
+    let body = written.len() - 2;
+    assert_eq!(written[..body], shifted[..body]);
+    let word = |b: &[u8]| i16::from_le_bytes([b[body], b[body + 1]]);
+    assert!((word(&written) - word(&file)).abs() <= 2, "{text}");
+    Network::from_bytes(&written).expect("the corrected net loads");
+    assert!(!bare && why.contains("--correct-bias reads --raw"), "{why}");
+}
+
+/// `--fens` reads the positions from a file, whole FENs or an opening book's four fields, names
+/// the file in its reading, and refuses a file of too few.
+#[test]
+fn positions_are_read_from_a_file_when_one_is_named() {
+    let dir = scratch("fens");
+    let file = Network::seeded(11, Provenance::SelfPlay).to_bytes();
+    let net = write(&dir, "net.cdnn", &file);
+    let mut rng = cadence_core::rng::Rng::new(7);
+    let mut lines = Vec::new();
+    while lines.len() < 1_000 {
+        let fen = cadence_core::chess960::dfrc_fen(rng.below(960) as u32, rng.below(960) as u32);
+        let mut board = cadence_core::position::Board::from_fen(&fen).expect("a start");
+        for _ in 0..rng.below(40) {
+            let legal = cadence_core::generate_legal(&board);
+            let Some(&m) = legal.as_slice().get(rng.below(legal.len().max(1))) else {
+                break;
+            };
+            board.play(m);
+        }
+        let fen = board.to_fen(cadence_core::FenStyle::Shredder);
+        lines.push(if lines.len() % 2 == 0 {
+            fen
+        } else {
+            fen.split(' ').take(4).collect::<Vec<_>>().join(" ")
+        });
+    }
+    let all = write(&dir, "all.epd", lines.join("\n").as_bytes());
+    let few = write(&dir, "few.epd", lines[..10].join("\n").as_bytes());
+    let (passed, text) = forward(&["--net", &net, "--fens", &all]);
+    let (short, why) = forward(&["--net", &net, "--fens", &few]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        passed && text.contains(&format!("1000 positions from {all}")),
+        "{text}"
+    );
+    assert!(
+        !short && why.contains("10 positions, where a reading needs 1000"),
+        "{why}"
+    );
+}
