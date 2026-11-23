@@ -46,22 +46,47 @@ impl<const H: usize> Network<H> {
         for persp in COLOURS {
             if self.crossed(dirty, persp) {
                 acc.sums[persp.index()] = self.rebuilt(board, persp);
-                continue;
-            }
-            let king = board.king_square(persp);
-            let sums = &mut acc.sums[persp.index()];
-            for d in dirty.as_slice() {
-                if let Some(from) = d.from.get() {
-                    self.sub(sums, self.index(persp, king, d.piece, from));
-                }
-            }
-            for d in dirty.as_slice() {
-                if let Some(to) = d.to.get() {
-                    self.add(sums, self.index(persp, king, d.piece, to));
-                }
+            } else {
+                self.apply(&mut acc.sums[persp.index()], persp, dirty, board);
             }
         }
         acc
+    }
+
+    /// `update` written into `child`, whatever it held: each perspective's lanes are copied from
+    /// the parent once and changed where they land. A search's stack takes this path, which saves
+    /// the copy a returned accumulator costs on every move.
+    pub fn update_into(
+        &self,
+        parent: &Accumulator<H>,
+        dirty: &DirtyPieces,
+        board: &Board,
+        child: &mut Accumulator<H>,
+    ) {
+        for persp in COLOURS {
+            let sums = &mut child.sums[persp.index()];
+            if self.crossed(dirty, persp) {
+                *sums = self.rebuilt(board, persp);
+            } else {
+                *sums = parent.sums[persp.index()];
+                self.apply(sums, persp, dirty, board);
+            }
+        }
+    }
+
+    /// One perspective's sums moved from the parent's to the child's by the pieces a move changed.
+    fn apply(&self, sums: &mut [i16; H], persp: Colour, dirty: &DirtyPieces, board: &Board) {
+        let king = board.king_square(persp);
+        for d in dirty.as_slice() {
+            if let Some(from) = d.from.get() {
+                self.sub(sums, self.index(persp, king, d.piece, from));
+            }
+        }
+        for d in dirty.as_slice() {
+            if let Some(to) = d.to.get() {
+                self.add(sums, self.index(persp, king, d.piece, to));
+            }
+        }
     }
 
     /// One perspective's sums from every piece on the board.
@@ -137,9 +162,9 @@ impl<const H: usize> AccumulatorStack<H> {
     ///
     /// Past `MAX_PLY` plies, which the search's own bound keeps it from reaching.
     pub fn push(&mut self, net: &Network<H>, dirty: &DirtyPieces, board: &Board) {
-        let child = net.update(&self.stack[self.top], dirty, board);
+        let (parents, children) = self.stack.split_at_mut(self.top + 1);
+        net.update_into(&parents[self.top], dirty, board, &mut children[0]);
         self.top += 1;
-        self.stack[self.top] = child;
     }
 
     /// A null move changes no piece, so the child is the parent.

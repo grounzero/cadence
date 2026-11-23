@@ -28,6 +28,12 @@ result.
   a castle. Every shipped net is plain, and an earlier build refuses a
   mirrored file.
 
+### Changed
+
+- Speed: a move's accumulator update is written into its slot of the search's
+  stack, where it was returned and then stored, which saves a copy of both
+  perspectives' sums a move. The search is unchanged, node for node.
+
 ## [0.7.0-rc.5] - 2026-11-23
 
 The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build
