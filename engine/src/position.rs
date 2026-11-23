@@ -115,7 +115,7 @@ impl Position {
     pub fn make_move(&mut self, m: Move) -> DirtyPieces {
         let dirty = self.board.make_move(m);
         if let Some(i) = &mut self.inference {
-            each!(i, |net, stack| stack.push(net, &dirty));
+            each!(i, |net, stack| stack.push(net, &dirty, &self.board));
         }
         dirty
     }

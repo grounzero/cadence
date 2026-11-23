@@ -29,8 +29,15 @@ pub const fn mirrored_feature_index(
     piece: Piece,
     sq: Square,
 ) -> usize {
-    let mirror = if king.file().index() > 3 { 7 } else { 0 };
+    let mirror = if mirrors(king) { 7 } else { 0 };
     feature_index(persp, piece, sq) ^ mirror
+}
+
+/// Whether a king on this square has its perspective's board flipped: the half of files e to h.
+#[inline]
+#[must_use]
+pub const fn mirrors(king: Square) -> bool {
+    king.file().index() > 3
 }
 
 // --- the pins ----------------------------------------------------------------

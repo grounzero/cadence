@@ -21,6 +21,12 @@ result.
 
 ### Added
 
+- Networks: a net file's header names its input layout, plain or mirrored,
+  and the engine reads either. A mirrored net reads a perspective's board
+  flipped left to right while its own king is on files e to h, and rebuilds
+  that perspective's sums when the king crosses the middle, by a step or by
+  a castle. Every shipped net is plain, and an earlier build refuses a
+  mirrored file.
 - Training: `cadence-train run --result-share-end F` moves the weight on the
   game result on a line across the run, and `--from CHECKPOINT` with
   `--lr-start F` continues a saved net at a lower first rate, which with a
