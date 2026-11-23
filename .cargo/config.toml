@@ -7,7 +7,7 @@
 # rather than adding to it. If a build behaves as though these flags are
 # absent, check the environment first.
 
-# --- aarch64-apple-darwin (M5 Max dev box, macos-latest CI) ----------------
+# --- aarch64-apple-darwin (Apple silicon, macos-latest CI) ------------------
 #
 # `+neon` is a VERIFIED NO-OP. NEON is mandatory in ARMv8-A and
 # `rustc --print cfg --target aarch64-apple-darwin` already lists
@@ -15,13 +15,13 @@
 # twenty more). It is written out anyway so the two targets read
 # symmetrically and so nobody "adds NEON support" later believing it is
 # missing. Nothing else is set: `target-cpu=apple-mN` would make the binary
-# non-portable across the fleet's Apple silicon for no measured gain, and
+# non-portable across Apple silicon generations for no measured gain, and
 # `target-cpu=native` would make builds differ by machine, which is
 # incompatible with the bench determinism contract.
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "target-feature=+neon"]
 
-# --- x86_64-unknown-linux-gnu (N305 OpenBench worker, ubuntu-latest CI) ---
+# --- x86_64-unknown-linux-gnu (x86-64 Linux, ubuntu-latest CI) -------------
 #
 # The x86-64 baseline is sse2 ONLY (verified: `rustc --print cfg` for this
 # target lists exactly fxsr, sse, sse2). In particular:
@@ -50,7 +50,7 @@ rustflags = ["-C", "target-feature=+neon"]
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+avx2,+bmi1,+popcnt,+lzcnt"]
 
-# --- aarch64-unknown-linux-gnu (the Jetson's native champion build, CI) ----
+# --- aarch64-unknown-linux-gnu (aarch64 Linux, CI) --------------------------
 #
 # `+neon` is a VERIFIED NO-OP: `rustc --print cfg` for this target already
 # lists target_feature="neon" and nothing else, and is identical with the flag.
