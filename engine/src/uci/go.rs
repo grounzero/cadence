@@ -457,16 +457,19 @@ const GO_KEYWORDS: [&str; 12] = [
 ];
 
 /// The moves after `searchmoves`, empty where there is no list; one not legal here is named and
-/// left out, and `None` is a list with no legal move, which leaves nothing to search.
+/// left out, and `None` is a list naming no legal move, which leaves nothing to search.
 fn search_moves(tokens: &[&str], legal: &MoveList) -> Option<Vec<Move>> {
     let Some(at) = tokens.iter().position(|&t| t == "searchmoves") else {
         return Some(Vec::new());
     };
     let mut moves = Vec::new();
-    for &token in tokens[at + 1..]
+    let named = tokens[at + 1..]
         .iter()
-        .take_while(|t| !GO_KEYWORDS.contains(t))
-    {
+        .take_while(|t| !GO_KEYWORDS.contains(t));
+    if named.clone().next().is_none() {
+        return Some(moves);
+    }
+    for &token in named {
         match parse_uci(legal, token) {
             Some(m) => moves.push(m),
             None => say(format_args!(

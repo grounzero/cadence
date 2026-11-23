@@ -713,12 +713,23 @@ fn castling_bestmove_is_spelled_per_the_option() {
 /// null move rather than a search of every move.
 #[test]
 fn searchmoves_with_no_legal_move_answers_the_null_move() {
-    let lines = Engine::go(&["position startpos"], "go depth 3 searchmoves e7e5 a1a8");
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some("bestmove 0000"),
-        "{lines:?}"
-    );
+    for go in [
+        "go depth 3 searchmoves e7e5 a1a8",
+        "go searchmoves e2e5 depth 3",
+    ] {
+        let lines = Engine::go(&["position startpos"], go);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("bestmove 0000"),
+            "{go}: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("info string") && l.contains("searchmoves")),
+            "{go}: {lines:?}"
+        );
+    }
 }
 
 /// Ruled: a `position` command that fails is remembered, and every `go` until a valid one answers
@@ -1307,27 +1318,15 @@ fn go_searchmoves_names_an_illegal_move_and_leaves_it_out() {
     assert_eq!(bestmove(&out), "h2h3", "{out:?}");
 }
 
-/// Ruled to stand: a list naming no legal move is warned of and every legal move is searched, so
-/// the answer is a plain `go`'s, and a bare `searchmoves` warns of nothing.
+/// A bare `searchmoves`, with no list after it, filters nothing, so the answer is a plain `go`'s and
+/// nothing is warned of.
 #[test]
-fn go_searchmoves_with_no_legal_move_searches_them_all() {
+fn a_bare_searchmoves_searches_every_move() {
     let answer = |go: &str| {
         let out = Engine::go(&["position startpos"], go).join("\n");
         (bestmove(&out), out)
     };
     let (plain, _) = answer("go depth 4");
-    for go in [
-        "go depth 4 searchmoves e2e5",
-        "go searchmoves e2e5 a1a8 depth 4",
-    ] {
-        let (best, out) = answer(go);
-        assert_eq!(best, plain, "{go}: {out:?}");
-        assert!(
-            out.lines()
-                .any(|l| l.starts_with("info string") && l.contains("e2e5")),
-            "{go}: {out:?}"
-        );
-    }
     let (best, out) = answer("go searchmoves depth 4");
     assert_eq!(best, plain, "{out:?}");
     assert!(
