@@ -1553,9 +1553,9 @@ function Get-Tables {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Set-StateValue 'tables' $dir
     $sums = Join-Path $Work 'sha256'
-    $fetched = Invoke-Fetch "$TablesUrl/sha256" $sums
-    if ($fetched.Rc -eq 2) { Stop-Offline "the tables' published checksums" $fetched.Trouble }
-    if ($fetched.Rc -ne 0) { Fail "could not download the tables' published checksums$($fetched.Trouble)" }
+    $listing = Invoke-Fetch "$TablesUrl/sha256" $sums
+    if ($listing.Rc -eq 2) { Stop-Offline "the tables' published checksums" $listing.Trouble }
+    if ($listing.Rc -ne 0) { Fail "could not download the tables' published checksums$($listing.Trouble)" }
     # Every name becomes a path below, so each must be a table's name and each sum a SHA-256.
     $wanted = @(Get-Content -Path $sums | ForEach-Object {
         $parts = @("$_".Trim() -split '\s+')
@@ -1581,9 +1581,9 @@ function Get-Tables {
         if (-not $have) {
             $fetched++
             $part = "$path.part"
-            $fetched = Invoke-Fetch "$TablesUrl/$group/$($table.File)" $part
-            if ($fetched.Rc -eq 2) { Stop-Offline $table.File $fetched.Trouble }
-            if ($fetched.Rc -ne 0) { Fail "could not download $($table.File)$($fetched.Trouble)" }
+            $download = Invoke-Fetch "$TablesUrl/$group/$($table.File)" $part
+            if ($download.Rc -eq 2) { Stop-Offline $table.File $download.Trouble }
+            if ($download.Rc -ne 0) { Fail "could not download $($table.File)$($download.Trouble)" }
             if ((Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower() -ne $table.Sum) {
                 Remove-Item -Force $part
                 Fail "$($table.File) does not match its published checksum"
