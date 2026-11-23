@@ -72,18 +72,7 @@ impl Session {
         let (tables, net) = (self.tables.clone(), self.active_net());
         let chess960 = self.chess960;
         let level = self.level();
-        // A level owns the line count, and its move is reproducible only on one thread.
-        let (threads, multipv) = if level.is_some() {
-            (1, 1)
-        } else {
-            (self.threads, self.multipv)
-        };
-        if level.is_some() && (self.threads > 1 || self.multipv > 1) {
-            say(format_args!(
-                "info string go: UCI_LimitStrength is on, so this search runs on one thread \
-                 and shows one line"
-            ));
-        }
+        let (threads, multipv) = self.threads_and_lines(level.is_some());
         let ponder = self.ponder;
         let tunables = self.tunables;
         // Lent to the thread and returned by it, padded or cut to one set per thread the option
@@ -158,6 +147,21 @@ impl Session {
             }
             Err(e) => not_started(&e, &fallback),
         }
+    }
+
+    /// The threads and lines a `go` searches with: a level owns the line count, and its move is
+    /// reproducible only on one thread, so it takes one of each and says so.
+    fn threads_and_lines(&self, level: bool) -> (usize, usize) {
+        if !level {
+            return (self.threads, self.multipv);
+        }
+        if self.threads > 1 || self.multipv > 1 {
+            say(format_args!(
+                "info string go: UCI_LimitStrength is on, so this search runs on one thread \
+                 and shows one line"
+            ));
+        }
+        (1, 1)
     }
 
     /// The search keeps its tree and spends the clock from when the line was read. Told rather than
