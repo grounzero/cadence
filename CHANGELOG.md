@@ -19,6 +19,11 @@ result.
 
 ## [Unreleased]
 
+## [0.7.0-rc.5] - 2026-11-23
+
+The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build
+a release. The changes are listed under 0.7.0-rc.4.
+
 ## [0.7.0-rc.4] - 2026-11-23
 
 A release candidate for 0.7.0, with the search's margins tuned to the
@@ -789,7 +794,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.4...main
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.5...main
+[0.7.0-rc.5]: https://github.com/grounzero/cadence/compare/0.7.0-rc.4...0.7.0-rc.5
 [0.7.0-rc.4]: https://github.com/grounzero/cadence/compare/0.7.0-rc.3...0.7.0-rc.4
 [0.7.0-rc.3]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...0.7.0-rc.3
 [0.7.0-rc.2]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...0.7.0-rc.2
