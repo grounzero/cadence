@@ -112,16 +112,23 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, tb) = match self.lookup(board, key, depth, ply, &mut alpha, &mut beta) {
-            Lookup::Search { tt_move, bounds } => (tt_move, bounds),
-            Lookup::Cutoff(score) => return score,
-        };
+        let (tt_move, tb, stored_eval) =
+            match self.lookup(board, key, depth, ply, &mut alpha, &mut beta) {
+                Lookup::Search {
+                    tt_move,
+                    bounds,
+                    eval,
+                } => (tt_move, bounds, eval),
+                Lookup::Cutoff(score) => return score,
+            };
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
         let us_eval = board.side_to_move();
-        self.heuristics.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
+        let evals = self.corrected_eval(board, in_check, pawn_key, us_eval, stored_eval);
+        self.heuristics.evals[ply] = evals.map(|(_, corrected)| corrected);
+        let raw_eval = evals.map(|(raw, _)| raw);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -231,7 +238,8 @@ impl Search<'_> {
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
-        self.store(key, ply, stored_depth(board, depth), best, best_move, bound);
+        let depth_stored = stored_depth(board, depth);
+        self.store(key, ply, depth_stored, best, best_move, bound, raw_eval);
         self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
         best
     }
