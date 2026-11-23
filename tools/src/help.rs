@@ -105,7 +105,10 @@ mod tests {
     fn every_subcommand_has_help_that_names_it() {
         for name in ["magics", "convert", "forward"] {
             let help = text(name).unwrap_or_else(|| panic!("no help for {name}"));
-            assert!(help.starts_with(&format!("usage: cadence-tools {name}")), "{name}");
+            assert!(
+                help.starts_with(&format!("usage: cadence-tools {name}")),
+                "{name}"
+            );
         }
         assert_eq!(text("unknown"), None);
     }

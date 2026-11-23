@@ -30,7 +30,7 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args[1..].iter().any(|a| a == "--help" || a == "-h") {
-        match args.get(1).and_then(|name| help::text(name)) {
+        match args.get(1).map(String::as_str).and_then(help::text) {
             Some(text) => println!("{text}"),
             None => usage(),
         }

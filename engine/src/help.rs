@@ -5,7 +5,10 @@
 /// The help for `args`, the words after `cadence`, or `None` when they name no subcommand.
 #[must_use]
 pub fn text(args: &[String]) -> Option<&'static str> {
-    match (args.first().map(String::as_str), args.get(1).map(String::as_str)) {
+    match (
+        args.first().map(String::as_str),
+        args.get(1).map(String::as_str),
+    ) {
         (Some("bench"), _) => Some(BENCH),
         (Some("perft"), _) => Some(PERFT),
         (Some("spsa"), _) => Some(SPSA),
@@ -142,7 +145,10 @@ mod tests {
             "datagen verify",
         ] {
             let help = text(&words(line)).unwrap_or_else(|| panic!("no help for {line}"));
-            assert!(help.starts_with(&format!("usage: cadence {line}")), "{line}");
+            assert!(
+                help.starts_with(&format!("usage: cadence {line}")),
+                "{line}"
+            );
         }
         assert_eq!(text(&words("unknown")), None);
         assert_eq!(text(&[]), None);
