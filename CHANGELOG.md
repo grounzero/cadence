@@ -25,6 +25,11 @@ result.
   game result on a line across the run, and `--from CHECKPOINT` with
   `--lr-start F` continues a saved net at a lower first rate, which with a
   result share of 1 is a final stage on the game result alone.
+- Training: `cadence-train export --scale-factor F` multiplies a net's
+  evaluations by F by scaling its output weights and bias from the
+  unquantised weights and quantising them once, and `cadence-tools forward
+  --scale-factor F --unscaled FILE` holds the scaled net to those weights
+  times F within the unscaled net's own error and a little more.
 - Tools: `cadence-tools convert --max-copies N` keeps at most N training
   copies of a position's network input, a position and its colour-flipped
   mirror counting as one, meets the games in an order the shuffle seed fixes
@@ -51,6 +56,13 @@ result.
 
 - Tools: datagen keeps one set of search histories through each game, emptied
   at the start of every game, so the same seed now gives different games.
+
+### Changed
+
+- Search: the five tuned constants take a tune's values with the network:
+  reverse futility 81 centipawns a ply (was 150), late move pruning 0.878
+  (0.5), futility 144 (150), ProbCut 62 (100) and the aspiration window 30
+  (24). The handcrafted evaluation keeps its own.
 
 ### Fixed
 
