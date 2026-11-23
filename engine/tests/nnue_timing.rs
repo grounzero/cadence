@@ -110,16 +110,17 @@ fn searched(net: Option<&AnyNetwork>) -> (u64, u64, u64, f64) {
 /// nanoseconds a node of its search.
 fn report<const H: usize>(net: &Network<H>, any: &AnyNetwork, set: &[Board]) -> f64 {
     let parents: Vec<Accumulator<H>> = set.iter().map(|b| net.refresh(b)).collect();
-    let mut moves: Vec<(usize, DirtyPieces)> = Vec::new();
+    let mut moves: Vec<(usize, DirtyPieces, Board)> = Vec::new();
     for (i, board) in set.iter().enumerate() {
         for &m in generate_legal(board).as_slice() {
             let mut child = board.duplicate();
-            moves.push((i, child.make_move(m)));
+            let dirty = child.make_move(m);
+            moves.push((i, dirty, child));
         }
     }
     let update = per_call(moves.len(), || {
-        for (i, dirty) in &moves {
-            black_box(net.update(&parents[*i], dirty));
+        for (i, dirty, child) in &moves {
+            black_box(net.update(&parents[*i], dirty, child));
         }
     });
     let evaluation = per_call(set.len(), || {

@@ -10,4 +10,4 @@ pub mod eval;
 pub mod net;
 
 pub use accumulator::{Accumulator, AccumulatorStack};
-pub use net::{AnyNetwork, HIDDEN, LoadError, Network, Provenance, WIDE};
+pub use net::{AnyNetwork, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE};

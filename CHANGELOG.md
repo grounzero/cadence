@@ -19,6 +19,15 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Networks: a net file's header names its input layout, plain or mirrored,
+  and the engine reads either. A mirrored net reads a perspective's board
+  flipped left to right while its own king is on files e to h, and rebuilds
+  that perspective's sums when the king crosses the middle, by a step or by
+  a castle. Every shipped net is plain, and an earlier build refuses a
+  mirrored file.
+
 ## [0.7.0-rc.5] - 2026-11-23
 
 The same engine as 0.7.0-rc.4, cut again because rc.4's tag could not build

@@ -51,7 +51,10 @@ const fn architecture(hidden: usize) -> [(&'static str, usize, u16); 5] {
 const WIDTH_AT: usize = 8;
 const ACTIVATION_AT: usize = 10;
 const PROVENANCE_LEN_AT: usize = 11;
-const RESERVED: core::ops::Range<usize> = 18..24;
+/// The byte naming how pieces index the first layer; a build from before it was read refuses
+/// anything but zero here, so a mirrored net never loads as a plain one.
+const INPUTS_AT: usize = 18;
+const RESERVED: core::ops::Range<usize> = 19..24;
 /// The trainer crate's commit, 40 lowercase hexadecimal digits.
 const TRAINER: core::ops::Range<usize> = 24..64;
 /// The SHA-256 of the manifest the training data was built from.
@@ -63,6 +66,14 @@ const CANARY: &str = "canary";
 
 /// At most 32 pieces stand on a board, so no lane ever sums more feature weights than this.
 const MAX_ACTIVE: usize = 32;
+
+/// How a perspective's pieces index the first layer: as they stand, or with the board flipped left
+/// to right while that perspective's own king is on files e to h.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inputs {
+    Plain,
+    Mirrored,
+}
 
 /// Where the net's training data came from: only a self-play net may generate more data.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +112,8 @@ pub enum LoadError {
         file: u16,
         build: u16,
     },
+    /// An input layout byte that names neither layout this build reads.
+    Inputs(u8),
     Reserved,
     Trainer,
     Provenance,
@@ -152,6 +165,12 @@ impl fmt::Display for LoadError {
                     "trained on {name}, not self-play, so it may not generate data"
                 )
             }
+            LoadError::Inputs(v) => {
+                write!(
+                    f,
+                    "input layout {v}, where this build reads 0, plain, or 1, mirrored"
+                )
+            }
             LoadError::Lane { lane, bound } => {
                 write!(
                     f,
@@ -170,6 +189,7 @@ impl fmt::Display for LoadError {
 
 /// What the header names beside the architecture.
 struct Origin {
+    inputs: Inputs,
     provenance: Provenance,
     trainer: [u8; 40],
     manifest: [u8; 32],
@@ -184,6 +204,10 @@ fn write_header(origin: &Origin, hidden: usize) -> [u8; HEADER_LEN] {
         out[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }
     out[ACTIVATION_AT] = SCRELU;
+    out[INPUTS_AT] = match origin.inputs {
+        Inputs::Plain => 0,
+        Inputs::Mirrored => 1,
+    };
     let name = origin.provenance.to_string();
     out[PROVENANCE_LEN_AT] = u8::try_from(name.len()).unwrap_or(0);
     out[TRAINER].copy_from_slice(&origin.trainer);
@@ -220,6 +244,11 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
             build,
         });
     }
+    let inputs = match h[INPUTS_AT] {
+        0 => Inputs::Plain,
+        1 => Inputs::Mirrored,
+        other => return Err(LoadError::Inputs(other)),
+    };
     if h[RESERVED].iter().any(|&b| b != 0) {
         return Err(LoadError::Reserved);
     }
@@ -251,6 +280,7 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
         Provenance::External(name)
     };
     Ok(Origin {
+        inputs,
         provenance,
         trainer,
         manifest,
@@ -377,6 +407,7 @@ impl<const H: usize> Network<H> {
             .try_into()
             .map_err(|_| LoadError::Trainer)?;
         let origin = Origin {
+            inputs: Inputs::Plain,
             provenance,
             trainer,
             manifest,
@@ -404,6 +435,12 @@ impl<const H: usize> Network<H> {
     #[must_use]
     pub fn provenance(&self) -> &Provenance {
         &self.origin.provenance
+    }
+
+    /// The input layout the header names, which every index into the first layer follows.
+    #[must_use]
+    pub fn inputs(&self) -> Inputs {
+        self.origin.inputs
     }
 
     /// The trainer crate's commit, as 40 hexadecimal digits.
@@ -488,6 +525,7 @@ impl<const H: usize> Network<H> {
             output,
             output_bias: draw(500),
             origin: Origin {
+                inputs: Inputs::Plain,
                 provenance,
                 trainer: [b'0'; 40],
                 manifest: [0; 32],
