@@ -10,6 +10,10 @@ and double Chess960 (DFRC), using an alpha-beta search and a neural network
 (NNUE) trained only on its own games. The handcrafted evaluation it started
 with is still available as an option.
 
+The network has been trained three times, each on games the one before it
+played: net 1 learned from games played by the handcrafted evaluation, net 2
+from net 1's games, and net 3, the one built in, from net 2's and net 1's.
+
 Play it on Lichess as [Mithandros](https://lichess.org/@/Mithandros). The bot
 also chats: a small language model answers messages and remarks on its
 thinking, with no say in its moves.
@@ -41,9 +45,10 @@ Download the file for your system from the
 Each is named `cadence-<version>-` followed by the ending below.
 
 - **Windows**: the file ending `windows-x86-64-avx2.exe`, or
-  `windows-x86-64-generic.exe` if it won't start (older processors). The
-  file isn't signed, so Windows SmartScreen may stop it the first time:
-  click "More info", then "Run anyway".
+  `windows-x86-64-generic.exe` if it won't start (older processors), or
+  `windows-x86-64-avx512.exe` on a processor with AVX-512. The file isn't
+  signed, so Windows SmartScreen may stop it the first time: click "More
+  info", then "Run anyway".
 - **macOS**: the file ending `macos-arm64` (Apple silicon) or
   `macos-x86-64` (Intel). Make it executable and clear its quarantine flag
   before running it:
@@ -53,25 +58,45 @@ Each is named `cadence-<version>-` followed by the ending below.
   xattr -d com.apple.quarantine cadence-<version>-macos-arm64
   ```
 
+  For the Intel file:
+
+  ```sh
+  chmod +x cadence-<version>-macos-x86-64
+  xattr -d com.apple.quarantine cadence-<version>-macos-x86-64
+  ```
+
+  The Intel build needs a processor with AVX2.
 - **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
-  if it won't start (older processors), or `linux-aarch64` for 64-bit ARM.
+  if it won't start (older processors), or `linux-x86-64-avx512` on a
+  processor with AVX-512, or `linux-aarch64` for 64-bit ARM.
+  The Linux builds need glibc 2.34 or later. Make the file executable:
+
+  ```sh
+  chmod +x cadence-<version>-linux-x86-64-avx2
+  ```
 
 Then add the file to your GUI as a new engine.
 
 ### Install with a script
 
+Under WSL the script installs a Linux binary, which a Windows GUI can't load;
+for a Windows GUI, use the PowerShell script.
+
 The install script picks the right build for your system, checks its
 checksum and bench, and can update or uninstall it later.
 
-It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows), or
-offers to build from source if no release binary fits. It asks before
-anything big: building, installing Rust, changing your PATH or downloading
-tablebases. If a run fails, attach the log it names to a GitHub issue.
+It installs to `~/.local/bin` (`%LOCALAPPDATA%\Cadence` on Windows). If a
+download does not match the release's checksum, attestation or bench, it
+stops and builds nothing in its place. It builds from source only with
+`--source`, or where the release has no binary for your system, such as
+Windows on ARM64. It asks before anything big: building, installing Rust,
+changing your PATH or downloading tablebases. If a run fails, attach the
+log it names to a GitHub issue.
 
 #### Windows (PowerShell)
 
 ```powershell
-Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/grounzero/cadence/releases/latest/download/install.ps1 -OutFile install.ps1 -UseBasicParsing
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -93,7 +118,7 @@ Both scripts take the same flags.
 | `--generic` | On x86-64, installs the generic build, for processors without AVX2. |
 | `--source` | Builds from source even where a release binary fits. |
 | `--update` | Upgrades an existing install, replacing the file even if this script did not put it there (it asks first). |
-| `--uninstall` | Removes Cadence, and the PATH entry and tablebases if the script added them. |
+| `--uninstall` | Removes Cadence, and the PATH entry and tablebases if the script added them, and names any compiler or Rust it installed. |
 | `--tables` | Downloads the 3-4-5 piece tablebases without asking. |
 | `--yes` | Takes every default without asking. |
 
@@ -102,14 +127,18 @@ Both scripts take the same flags.
 ```sh
 git clone https://github.com/grounzero/cadence.git
 cd cadence
+git checkout <version>   # optional: a release instead of main
 cargo build --release
 ```
 
-You need Git and Rust from [rustup](https://rustup.rs), which fetches the
-pinned toolchain. Add `target/release/cadence` to your GUI as a UCI engine. On
+You need Git, a C linker (on macOS the Xcode Command Line Tools, on Linux
+`gcc` or `clang`, on Windows the Visual Studio C++ build tools) and Rust from
+[rustup](https://rustup.rs), which fetches the pinned toolchain. Add `target/release/cadence` to your GUI as a UCI engine. On
 x86-64 Linux, Windows and Intel Macs it needs AVX2; for an older processor,
-add `--config .cargo/x86-64-generic.toml` (POPCNT only). Build from the
-repository's root, where Cargo finds `.cargo/config.toml`.
+add `--config .cargo/x86-64-generic.toml` (POPCNT only). On Linux or Windows
+with AVX-512, `--config .cargo/x86-64-avx512.toml` adds AVX-512F and
+AVX-512BW. Build from the repository's root, where Cargo finds
+`.cargo/config.toml`.
 
 ### UCI options
 
@@ -122,7 +151,7 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 | `Move Overhead` | 5 | Milliseconds kept back from every move for the GUI and the connection (0 to 5000). |
 | `Clear Hash` | button | Empties the search table. |
 | `UCI_LimitStrength` | off | Play weaker, at the level set by `UCI_Elo`. |
-| `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). |
+| `UCI_Elo` | 1800 | The level to play at when `UCI_LimitStrength` is on (1000 to 1800). The levels are approximate, not yet measured against rated play. |
 | `UCI_Chess960` | off | Chess960 castling. GUIs set this for you. |
 | `SyzygyPath` | empty | Folders of Syzygy tablebase files, separated by `:` (`;` on Windows). Empty means no tablebases. |
 | `SyzygyProbeLimit` | 7 | The most pieces a position can have for the search to look it up (0 to 7). |
@@ -133,19 +162,24 @@ repository's root, where Cargo finds `.cargo/config.toml`.
 
 On macOS, raise the open-file limit with `ulimit -n` before starting the
 engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
+A 6-piece set on Linux may need a higher limit too. Keep the tables on a local
+disk: a stalled network drive can delay `stop`.
 
 ### Unusual commands
 
-- `go searchmoves` searches only the listed legal moves, or every move if none is legal.
+- `go searchmoves` searches only the listed legal moves, and answers
+  `bestmove 0000` if none of them is legal.
 - `setoption name Hash` during a search stops that search first, so `bestmove` comes at once.
-- After a `position` command fails, `go` answers `bestmove 0000` until a valid `position`.
+- After a `position` command fails, or is longer than 1 MiB and discarded,
+  `go` answers `bestmove 0000` until a valid `position`.
 
 ## How it is tested
 
 Every strength change is played against the current
 version on [OpenBench](https://github.com/AndyGrant/OpenBench), usually for
-thousands of games, until it is clear whether it helps. It is kept only if it
-wins. Every SPRT, passed or failed, is in
+thousands of games, until it is clear whether it helps. A change is kept if it
+wins its test; a correctness fix can be kept on evidence that it costs no
+strength. Every SPRT, passed or failed, is in
 [docs/testing/sprt-log.csv](docs/testing/sprt-log.csv). Each result is
 measured against the previous version, so the gains do not add up to a
 rating; the [strength page](docs/calibration/strength.md) has the ratings.
@@ -168,24 +202,10 @@ The worker setup is in `openbench/`; run
 ```sh
 cargo test --workspace
 cargo test --workspace --release -- --ignored
-cargo fmt --all -- --check
-cargo fmt --manifest-path xtask/Cargo.toml -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace -- -D warnings
-cargo clippy --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path xtask/Cargo.toml
-cargo xtask check-headers
-cargo xtask check-boundary
-cargo xtask check-changelog
-cargo fmt --manifest-path train/Cargo.toml -- --check
-cargo clippy --manifest-path train/Cargo.toml --all-targets -- -D warnings
-cargo build -p cadence-tools
-CADENCE_TOOLS=target/debug/cadence-tools cargo test --manifest-path train/Cargo.toml
 ```
 
-The second line runs the slow tests, the deep perft runs among them. The rest
-are CI's checks; `xtask` and `train` are separate crates, so they have lines of
-their own, and `train`'s tests run the `cadence-tools` built before them.
+The second line runs the slow tests, the deep perft runs among them.
+[.github/workflows/ci.yml](.github/workflows/ci.yml) has CI's full set of checks.
 
 ### Benchmark and perft
 
@@ -201,25 +221,32 @@ ends with a `Bench: <n>` line. The tests check perft against the
 
 ### Tools
 
-| Command | What it does |
+Engine commands, from `cadence`:
+
+| Command | What it is for |
 |---|---|
-| `cadence bench` | The fixed benchmark. |
-| `cadence perft [--divide] [--threads N] <fen \| startpos> <depth>` | Counts the legal moves to a depth. |
-| `cadence spsa` | Prints an SPSA tuner's input, one line per tuning option above. |
-| `cadence datagen play --games N --seed S [--threads N] [--out PATH]` | Plays games against itself; the same seed and game count give the same file at any thread count. |
-| `cadence datagen extract <games> --train PATH --holdout PATH [--every N]` | Cuts games into positions, every Nth game to the holdout set. |
-| `cadence datagen run --out DIR --run-seed HEX\|fresh [--threads N] [--chunk-games N] [--standard-share P] [--host NAME]` | Writes packed chunks of games until a `STOP` file appears in `DIR`; a `PAUSE` file pauses it. The games are played with the network built into the engine, whose SHA-256 every chunk's header names. Built only with the `packed-datagen` feature. |
-| `cadence datagen repair CHUNK.tmp` | Closes a chunk a killed run left, keeping its whole records. Built only with the `packed-datagen` feature. |
-| `cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest]` | Checks chunks against their sidecars, this build's settings and network and the rules, regenerating every Nth game; `--manifest` writes a directory's `MANIFEST.tsv` once every chunk in it passes. Built only with the `packed-datagen` feature. |
-| `cadence texel <data> [--holdout N \| --holdout-file PATH] [--iterations N] [--rate R] ...` | Fits the evaluation's weights to positions, each a FEN, a `\|` and the result. |
-| `cadence-tools magics [seed]` | A second binary, from `tools/`: finds the sliding-attack magics and prints them as Rust. |
-| `cadence-tools convert --manifest FILE... --out DIR --shuffle-seed HEX\|fresh [--every 10] [--standard-share P] [--score-cap N] [--swing-cap N] [--dedup] [--max-copies N] [--report-sample N] [--adjudicate WIN,PLIES,DRAW,PLIES [--adjudicate-share P]] [--piece-keep FILE] [--contradiction-skip K] [--mate-score N]` | Turns datasets of packed chunks into the trainer's position records, split by game and shuffled, published under `DIR` as one directory named by its contents. `--max-copies N` keeps at most N training copies of a position's network input, a position and its colour-flipped mirror counting as one, meeting the games in an order the shuffle seed fixes, and counts the rest. `--report-sample N` reads the report's repeats, overlaps and copies from one key in N and scales them, for a conversion too large to hold every key; the records are the same. Its report counts the kept positions by the output bucket their piece count picks and by the result for the side to move, with what the in-check, capture and mate filters dropped beside them, and again by exact piece count. Four filters are off unless asked for, each named in the unit's manifest and each drawing its random choices from the shuffle seed: `--adjudicate` cuts a game after the ply at which one side's score has stood at WIN centipawns or more for PLIES plies running, or every score has stood under DRAW for its own run, in P percent of games (all of them without `--adjudicate-share`), keeps the positions up to there with the game's own result, and counts how often the rule would have named another; `--piece-keep` keeps the percent of positions a table of `PIECES PERCENT` lines gives each piece count, the table named in the manifest by its SHA-256; `--contradiction-skip K` skips a position with a chance equal to the gap between its result and the win chance its score gives at a slope of K centipawns; `--mate-score N` keeps a mate-scored position with its score held at N. |
-| `cadence-tools forward --net FILE [--raw FILE [--against FILE] [--scale-factor F [--unscaled FILE]]] [--positions N] [--seed HEX]` | Scores at least 1,000 random legal positions with a net file's quantised evaluation and with an `f32` one written from the same file, and passes when no position differs by more than 5 centipawns and the mean by no more than 1. `--raw` also compares the trainer's unquantised weights, a reading for training time that decides nothing, and `--against` compares them with the trainer's own scores as `cadence-train eval` prints them, another such reading. |
-| `cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME [--superbatches N] [--batches N] [--result-share F] [--validation-positions N] [--hidden 256\|512] [--lr-schedule cosine\|step] [--result-share-end F] [--from CHECKPOINT] [--lr-start F]` | A third binary, from `train/`, outside the workspace: trains the network on those records with [bullet](https://github.com/jw1912/bullet). Each data file must hash to the training file a manifest names, `cadence-tools convert`'s or `cadence-train book`'s, or the run stops before it starts; two files with the same records are refused, the holdout must be the holdout split of a manifest a data file matched, and a run never shares its directory with another's. The manifests it verified are listed by SHA-256 in `verified-manifests` beside the checkpoints. After training, each saved checkpoint is scored over the holdout's first 20,000 records by the trainer's own forward pass, and its validation loss printed beside the training loss it logged. The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target half result and half score, 256 units a perspective. `--hidden 512` trains the wider network, its output weights clipped to 1.0 so that the engine can load it. `--result-share-end F` moves the weight on the game result on a line from `--result-share` in the first superbatch to F in the last, and the run is recorded and scored at F. `--from CHECKPOINT` starts from a saved checkpoint's weights and optimiser state, of the same width, and `--lr-start F` starts the cosine at F in place of the recipe's first rate: together with a result share of 1 and a few superbatches they are a final stage on the game result alone. It needs a GPU and the `cuda` feature. |
-| `cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE [--scale-factor F]` | Writes one checkpoint as the file `EvalFile` loads, naming the data's manifest and the commit that trained it; the manifest must be one its run verified. `--scale-factor F` multiplies the net's evaluations by F: the output weights and bias are taken from the checkpoint's unquantised weights, multiplied and quantised once, the first layer left as saved, and the export is refused if those weights are not the checkpoint's or the result does not load. The file does not record the factor; `cadence-tools forward --raw FILE --scale-factor F --unscaled FILE`, given the unscaled export, holds the scaled net to its unquantised weights times F within the unscaled net's own error and 5 cp at most and 1 cp on average more. |
-| `cadence-train book --in FILE --out FILE --seed HEX [--every N]` | Turns a tuning set's text, one position a line as a FEN and White's result in brackets, into the trainer's records, scored zero, every Nth line (by default the tenth) held out to `FILE.holdout`, each part shuffled from the seed, with a manifest beside them naming both that an export hashes into the net's header. |
-| `cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE... [--validation-positions N] [--result-share F]` | The validation loss `run` prints, for checkpoints already saved. It needs a GPU and the `cuda` feature. |
-| `cadence-train eval --checkpoint DIR --fens FILE` | Prints the trainer's own score for each FEN in the file, in centipawns, from one saved checkpoint, the same network `run` builds. It needs a GPU and the `cuda` feature. |
+| `cadence bench` | The fixed benchmark whose node count must match `bench.txt`. |
+| `cadence perft` | Counting the legal move tree, to check move generation. |
+| `cadence spsa` | Printing the input an SPSA tuner needs. |
+| `cadence datagen` | Playing self-play games and cutting them into training positions. |
+
+Data and training tools, from `cadence-tools` (in `tools/`) and `cadence-train` (in `train/`, outside the workspace):
+
+| Command | What it is for |
+|---|---|
+| `cadence-tools magics` | Finding the sliding-attack magic numbers. |
+| `cadence-tools convert` | Turning game datasets into the trainer's records. |
+| `cadence-tools forward` | Checking a network file's quantised evaluation. |
+| `cadence-train run` | Training a network (needs a GPU). |
+| `cadence-train validate` | Scoring saved checkpoints on the holdout (needs a GPU). |
+| `cadence-train export` | Writing a checkpoint as a network file. |
+| `cadence-train book` | Turning a tuning set into the trainer's records. |
+| `cadence-train eval` | Printing a checkpoint's scores for positions (needs a GPU). |
+| `cadence-train overfit` | Checking a training setup before a full run. |
+
+Run any of them with `--help` for its options.
+`cadence texel`, which fitted the handcrafted evaluation's weights, is still
+there but no longer part of the workflow.
 
 ### Git hooks
 

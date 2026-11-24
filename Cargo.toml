@@ -50,7 +50,7 @@ incremental   = false
 # assertions and overflow checks stay on; what changes is that `cargo test`
 # runs the engine at a usable speed -- the full bench at its real depth takes
 # about a second in this profile and fifteen unoptimised, and the bench gate
-# runs it several times. Measured on the M5 Max: the whole fast tier takes
+# runs it several times. Measured on Apple silicon: the whole fast tier takes
 # 23 s with the bench gate in it at opt-level 1, against 17 s before the gate
 # existed at opt-level 0. The test binaries and the `cadence` binary the
 # integration tests spawn are both built with this profile.

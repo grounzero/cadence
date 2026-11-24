@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Installs the release binary for this system once its checksum and bench match the release's, or
-# builds Cadence from source at the release's tag where no binary fits or the check fails, on Linux,
-# macOS, and Windows under Git Bash or WSL. It asks before building, installing a compiler or Rust,
-# replacing an install, changing the PATH or downloading tablebases, unless --yes is given.
+# builds Cadence from source at the release's tag with --source or where the release has no binary for
+# this system, on Linux, macOS, and Windows under Git Bash or WSL. It asks before building, installing
+# a compiler or Rust, replacing an install, changing the PATH or downloading tablebases, unless --yes
+# is given.
 
 set -u
 
@@ -57,6 +58,9 @@ NAMED=""
 UNREAD=""
 UNREAD_LIMIT=0
 ID=""
+FAULT=""
+TROUBLE=""
+CLEAN_DIRS=0
 WHERE=default
 DEST=""
 TARGET=""
@@ -74,7 +78,8 @@ asked first; a build from source names the tag it builds.
   --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
   --generic        on x86-64, the generic build, for any processor with POPCNT
-  --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
+  --build TIER     on x86-64, the avx512, avx2 or generic build; avx512 and avx2 only where the
+                   processor runs them, and avx512 only on Linux and Windows
   --source         build from source even where a release binary fits
   --update         as a plain run, which upgrades an older install, but also replace a file at
                    the install path that this script did not install, unless declined
@@ -117,8 +122,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$BUILD" in
-    "" | avx2 | generic) ;;
-    *) echo "--build takes avx2 or generic" >&2; exit 2 ;;
+    "" | avx512 | avx2 | generic) ;;
+    *) echo "--build takes avx512, avx2 or generic" >&2; exit 2 ;;
 esac
 # The build named on the command line, which an install of another build at the same version yields to.
 ASKED=$BUILD
@@ -258,6 +263,13 @@ finish() {
     rm -rf "$WORK"
     if [ "$rc" -eq 0 ] || [ "$STOPPED" = 1 ]; then
         if [ "$KEEP_LOG" = 1 ]; then echo "The log is at $LOG."; else rm -f "$LOG"; fi
+        # The uninstall's own log was the last thing in them, so they go once it does.
+        if [ "$CLEAN_DIRS" = 1 ] && [ "$KEEP_LOG" != 1 ]; then
+            local dir
+            for dir in "$LOG_DIR" "$DATA_DIR/syzygy" "$DATA_DIR"; do
+                [ ! -d "$dir" ] || ! rmdir "$dir" 2> /dev/null || echo "Removed the empty folder $(shown "$dir")."
+            done
+        fi
     else
         echo
         echo "The log is at $LOG."
@@ -385,9 +397,9 @@ download() {
     case "$1" in https://api.github.com/*) [ -z "${GITHUB_TOKEN:-}" ] || header="Authorization: Bearer $GITHUB_TOKEN" ;; esac
     if command -v curl > /dev/null 2>&1; then
         if [ -n "$header" ]; then
-            curl -fsSL --retry 3 -D "$OUT.headers" -H "$header" -o "$2" "$1"
+            curl -fsSL -D "$OUT.headers" -H "$header" -o "$2" "$1"
         else
-            curl -fsSL --retry 3 -D "$OUT.headers" -o "$2" "$1"
+            curl -fsSL -D "$OUT.headers" -o "$2" "$1"
         fi
     elif command -v wget > /dev/null 2>&1; then
         if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
@@ -424,6 +436,40 @@ said() {
             esac
             ;;
     esac
+}
+
+# A download tried a second time where the first failed for the network rather than for the server's
+# answer, the reason left in TROUBLE: 1 is the server's refusal, and 2 the network's failure, twice.
+fetch() {
+    local attempt
+    TROUBLE=""
+    for attempt in 1 2; do
+        log "\$ download $1"
+        if download "$1" "$2" 2> "$OUT"; then
+            redact < "$OUT" >> "$LOG"
+            TROUBLE=""
+            return 0
+        fi
+        TROUBLE=$(said)
+        redact < "$OUT" >> "$LOG"
+        case "$TROUBLE" in " (not found)" | " (the server answered 4"*) return 1 ;; esac
+        [ "$attempt" = 2 ] || { log "trying again in 3 seconds"; sleep 3; }
+    done
+    return 2
+}
+
+# A download the install needs, failed twice for the network, stops the run.
+offline() {
+    fail "could not download $1$TROUBLE, after trying twice. Check the network connection, or a proxy or firewall in the way, then run this again"
+}
+
+# A release file that does not match what the release published stops the run, and nothing is built
+# in its place, since a download that was changed on its way may be changed again.
+tampered() {
+    say "$1."
+    say "The file may be corrupt, or tampered with on its way here, so it is not installed, and Cadence is not built from source in its place."
+    say "Run this again to download it afresh. If the same happens, report it: $ISSUES_URL"
+    fail "the download does not match the release, so nothing was installed"
 }
 
 system_report() {
@@ -498,11 +544,13 @@ describe_system() {
     printf '%s on %s' "$os" "$arch"
 }
 
-# The x86-64 build this processor runs, from the features each needs: avx2 (AVX2, BMI1, LZCNT and
-# POPCNT), generic (POPCNT) or none, with LACKS naming what is missing; unread where none can be read.
+# The x86-64 build this processor runs, from the features each needs: avx512 (AVX-512F and AVX-512BW
+# beside avx2's), avx2 (AVX2, BMI1, LZCNT and POPCNT), generic (POPCNT) or none, with LACKS naming what
+# avx2 misses and LACKS512 what avx512 adds and is missing; unread where none can be read.
 x86_level() {
     local flags="" f
     LACKS=""
+    LACKS512=""
     if [ "$OS" = macos ]; then
         flags=$({ sysctl -n machdep.cpu.features; sysctl -n machdep.cpu.leaf7_features
             sysctl -n machdep.cpu.extfeatures; } 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')
@@ -514,7 +562,7 @@ x86_level() {
         return
     fi
     # /proc/cpuinfo names LZCNT abm, and on Windows prints abm only on AMD. Every processor with AVX2
-    # has LZCNT, so on Windows AVX2 stands for it, as it does in install.ps1.
+    # has LZCNT, so on Windows AVX2 stands for it, as install.ps1 does where .NET cannot read it.
     case " $flags " in *" abm "*) flags="$flags lzcnt" ;; esac
     if [ "$OS" = windows ]; then
         case " $flags " in *" avx2 "*) flags="$flags lzcnt" ;; esac
@@ -522,37 +570,56 @@ x86_level() {
     for f in avx2 bmi1 lzcnt popcnt; do
         case " $flags " in *" $f "*) ;; *) LACKS="$LACKS $f" ;; esac
     done
+    for f in avx512f avx512bw; do
+        case " $flags " in *" $f "*) ;; *) LACKS512="$LACKS512 $f" ;; esac
+    done
     LACKS=$(printf '%s' "$LACKS" | tr '[:lower:]' '[:upper:]' | sed 's/^ //; s/ /, /g')
+    LACKS512=$(printf '%s' "$LACKS512" | tr '[:lower:]' '[:upper:]' | sed 's/^ //; s/ /, /g; s/AVX512/AVX-512/g')
     case "$LACKS" in
         "") LEVEL=avx2 ;;
         *POPCNT*) LEVEL=none ;;
         *) LEVEL=generic ;;
     esac
-    log "x86-64 features missing: ${LACKS:-none}"
+    # Cadence has no AVX-512 build for macOS, so an Intel Mac with AVX-512 takes the AVX2 one.
+    if [ "$LEVEL" = avx2 ] && [ -z "$LACKS512" ] && [ "$OS" != macos ]; then LEVEL=avx512; fi
+    log "x86-64 features missing: ${LACKS:-none}; for AVX-512: ${LACKS512:-none}"
 }
 
 confirm_system() {
     step "This system"
     if [ "$ARCH" != x86_64 ]; then
         BUILD=native
-        say "$(describe_system), which Cadence has one build for."
+        if [ -n "$(release_name)" ]; then
+            say "$(describe_system): the release's $(release_name) binary is the one for it."
+        else
+            say "$(describe_system): Cadence's releases have no binary for it, so it is built from source here."
+        fi
         return
     fi
     x86_level
     case "$LEVEL" in
+        avx512) say "$(describe_system), with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here." ;;
         avx2) say "$(describe_system), with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here." ;;
         generic) say "$(describe_system), without $LACKS: the generic build runs here, for any x86-64 with POPCNT." ;;
         unread) say "$(describe_system), whose processor features could not be read: the generic build, which needs POPCNT, is tried." ;;
         none)
-            say "$(describe_system), without POPCNT, which both of Cadence's x86-64 builds need."
+            say "$(describe_system), without POPCNT, which every one of Cadence's x86-64 builds needs."
             fail "this processor cannot run Cadence"
             ;;
     esac
-    if [ "$BUILD" = avx2 ] && [ "$LEVEL" != avx2 ]; then
+    if [ "$BUILD" = avx512 ] && [ "$OS" = macos ]; then
+        fail "--build avx512 is a build for Linux and Windows, and Cadence has none for macOS"
+    elif [ "$BUILD" = avx512 ] && [ "$LEVEL" != avx512 ]; then
+        [ "$LEVEL" != unread ] || fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor's features could not be read"
+        fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $(printf '%s, %s' "$LACKS512" "$LACKS" | sed 's/^, //; s/, $//')"
+    elif [ "$BUILD" = avx2 ] && [ "$LEVEL" != avx2 ] && [ "$LEVEL" != avx512 ]; then
         [ -n "$LACKS" ] || fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor's features could not be read"
         fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $LACKS"
     elif [ -n "$BUILD" ]; then
         say "The $BUILD build, as asked."
+    elif [ "$LEVEL" = avx512 ]; then
+        BUILD=avx512
+        say "--build avx2 takes the AVX2 build instead, and --generic the generic one, for any x86-64 with POPCNT."
     elif [ "$LEVEL" = avx2 ]; then
         BUILD=avx2
         say "--generic takes the generic build instead, for any x86-64 with POPCNT."
@@ -566,11 +633,13 @@ confirm_system() {
 # The release's name for this system's binary, or nothing where no release builds one.
 release_name() {
     case "$OS-$ARCH-$BUILD" in
+        linux-x86_64-avx512) printf 'linux-x86-64-avx512' ;;
         linux-x86_64-avx2) printf 'linux-x86-64-avx2' ;;
         linux-x86_64-generic) printf 'linux-x86-64-generic' ;;
         linux-aarch64-native) printf 'linux-aarch64' ;;
         macos-aarch64-native) printf 'macos-arm64' ;;
         macos-x86_64-avx2) printf 'macos-x86-64' ;;
+        windows-x86_64-avx512) printf 'windows-x86-64-avx512' ;;
         windows-x86_64-avx2) printf 'windows-x86-64-avx2' ;;
         windows-x86_64-generic) printf 'windows-x86-64-generic' ;;
     esac
@@ -605,25 +674,21 @@ find_release() {
         say "Release $VERSION, as asked."
         return 0
     fi
-    local tag="" trouble=""
-    log "\$ download $API_URL/latest"
-    if download "$API_URL/latest" "$WORK/latest.json" 2> "$OUT"; then
-        tag=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
-    else
-        trouble=$(said)
-    fi
-    redact < "$OUT" >> "$LOG"
-    rate_limited "$trouble"
+    local tag="" rc=0
+    fetch "$API_URL/latest" "$WORK/latest.json" || rc=$?
+    [ "$rc" != 2 ] || offline "the name of Cadence's latest release from GitHub"
+    [ "$rc" != 0 ] || tag=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
+    rate_limited "$TROUBLE"
     if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
         VERSION=$tag
         say "The latest stable release is $VERSION."
     else
-        log "\$ download $API_URL?per_page=100"
-        if ! download "$API_URL?per_page=100" "$WORK/releases.json" 2> "$OUT"; then
-            trouble=$(said)
-            redact < "$OUT" >> "$LOG"
-            rate_limited "$trouble"
-            fail "could not read Cadence's releases from GitHub$trouble"
+        rc=0
+        fetch "$API_URL?per_page=100" "$WORK/releases.json" || rc=$?
+        [ "$rc" != 2 ] || offline "the list of Cadence's releases from GitHub"
+        if [ "$rc" != 0 ]; then
+            rate_limited "$TROUBLE"
+            fail "could not read Cadence's releases from GitHub$TROUBLE"
         fi
         VERSION=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/releases.json" | sed 's/.*"\([^"]*\)"$/\1/' \
             | newest_candidate)
@@ -641,25 +706,25 @@ find_release() {
     fi
     # The installer's own version is offered only where a release of it is published.
     if [ "$VERSION" != "$INSTALLER_VERSION" ]; then
-        log "\$ download $API_URL/tags/$INSTALLER_VERSION"
-        if download "$API_URL/tags/$INSTALLER_VERSION" "$WORK/installer-release.json" 2> "$OUT"; then
+        if fetch "$API_URL/tags/$INSTALLER_VERSION" "$WORK/installer-release.json"; then
             say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
         else
-            log "release $INSTALLER_VERSION is not offered$(said)"
-            redact < "$OUT" >> "$LOG"
+            log "release $INSTALLER_VERSION is not offered$TROUBLE"
         fi
     fi
 }
 
-# The release's SHA256SUMS in the work folder, downloaded once, or the reason it is not in WHY.
+# The release's SHA256SUMS in the work folder, downloaded once; a release without one has no binary
+# that can be checked, which stops the run, unless asked with "tolerant" only to name a file.
 release_sums() {
     [ ! -s "$WORK/SHA256SUMS" ] || return 0
-    log "\$ download $ASSETS_URL/$VERSION/SHA256SUMS"
-    if ! download "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" 2> "$OUT"; then
-        redact < "$OUT" >> "$LOG"
+    local rc=0
+    fetch "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" || rc=$?
+    [ "$rc" != 2 ] || [ "${1:-}" = tolerant ] || offline "release $VERSION's SHA256SUMS"
+    if [ "$rc" != 0 ]; then
         rm -f "$WORK/SHA256SUMS"
-        WHY="Release $VERSION publishes no checksum file$(said), so none of its binaries is used."
-        return 1
+        [ "${1:-}" != tolerant ] || return 1
+        fail "release $VERSION publishes no checksum file$TROUBLE, so none of its binaries can be checked; if the release exists, --source builds it from source at its tag"
     fi
 }
 
@@ -711,16 +776,17 @@ attested() {
         return 0
     fi
     if grep -qE 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed' "$OUT"; then
-        WHY="$file's build attestation does not verify ($last), so it is not used."
+        WHY="$file's build attestation does not verify ($last)"
         return 1
     fi
     say "Its build attestation was not verified: gh could not check it ($last)."
     return 0
 }
 
-# Leaves the checked binary in BUILT, or the reason none is used in WHY.
+# Leaves the checked binary in BUILT, or the reason there is none for this system in WHY. A binary
+# that does not match the release, or cannot run here, stops the run instead.
 try_binary() {
-    local name file want got which
+    local name file want which next
     name=$(release_name)
     if [ -z "$name" ]; then
         which=$(describe_system)
@@ -729,51 +795,77 @@ try_binary() {
         return 1
     fi
     file="cadence-$VERSION-$name$EXE"
-    release_sums || return 1
+    release_sums
     want=$(listed "$file")
+    # A release from before the AVX-512 builds has none, and the AVX2 build it has also runs here.
+    if [ -z "$want" ] && [ "$BUILD" = avx512 ] && [ -z "$ASKED" ]; then
+        BUILD=avx2
+        say "Release $VERSION has no AVX-512 binary, so its AVX2 build, which also runs here, is taken."
+        name=$(release_name)
+        file="cadence-$VERSION-$name$EXE"
+        want=$(listed "$file")
+    fi
     if [ -z "$want" ]; then
-        WHY="Release $VERSION's SHA256SUMS lists no $file, so there is no binary for this system."
+        WHY="Release $VERSION's SHA256SUMS lists no $file, so it has no binary for this system."
         return 1
     fi
     say "Release $VERSION has a binary for this system: $file."
-
-    step "Checking $file"
-    log "\$ download $ASSETS_URL/$VERSION/$file"
-    if ! download "$ASSETS_URL/$VERSION/$file" "$WORK/$file" 2> "$OUT"; then
-        redact < "$OUT" >> "$LOG"
-        WHY="Could not download $file$(said), so it is not used."
-        return 1
-    fi
-    got=$(checksum "$WORK/$file")
-    log "$file: SHA-256 $got; SHA256SUMS: $want"
-    if [ "$got" != "$want" ]; then
-        WHY="$file's SHA-256 is $got and SHA256SUMS says $want, so it is not used."
-        return 1
-    fi
-    say "Its SHA-256 matches the release's SHA256SUMS."
-    attested "$file" || return 1
-    want=$(listed bench.txt)
-    if [ -z "$want" ]; then
-        WHY="Release $VERSION's SHA256SUMS lists no bench.txt to check $file against, so it is not used."
-        return 1
-    fi
-    log "\$ download $ASSETS_URL/$VERSION/bench.txt"
-    if ! download "$ASSETS_URL/$VERSION/bench.txt" "$WORK/bench.txt" 2> "$OUT"; then
-        redact < "$OUT" >> "$LOG"
-        WHY="Could not download the release's bench.txt$(said), so $file is not used."
-        return 1
-    fi
-    if [ "$(checksum "$WORK/bench.txt")" != "$want" ]; then
-        WHY="The release's bench.txt does not match SHA256SUMS, so $file is not used."
-        return 1
-    fi
-    chmod 755 "$WORK/$file" || fail "cannot make $WORK/$file executable"
-    if ! bench_and_name "$WORK/$file" "$(tr -d '[:space:]' < "$WORK/bench.txt")" "Cadence $VERSION"; then
-        WHY="I${WHY#i}, so it is not used."
-        return 1
-    fi
+    # One that cannot run here gives way to the tier below it, AVX-512 to AVX2 to generic, unless a
+    # build was asked for by name; a timeout is no sign a lower tier would run, so it stops.
+    while ! check_release_file "$file" "$want"; do
+        say "$file cannot be used here: $WHY."
+        next=""
+        if [ -z "$ASKED" ] && [ "$LIMITED" != 1 ]; then
+            case "$BUILD" in avx512) next=avx2 ;; avx2) next=generic ;; esac
+        fi
+        while [ -n "$next" ]; do
+            BUILD=$next
+            name=$(release_name)
+            want=""
+            [ -z "$name" ] || want=$(listed "cadence-$VERSION-$name$EXE")
+            [ -z "$want" ] || break
+            case "$BUILD" in avx2) next=generic ;; *) next="" ;; esac
+        done
+        if [ -z "$next" ]; then
+            [ "$ARCH" != x86_64 ] || [ "$BUILD" = generic ] || [ -n "$ASKED" ] \
+                || say "--generic takes the generic build instead, for any x86-64 with POPCNT."
+            stop "Nothing was installed. --source builds Cadence $VERSION from source here instead."
+        fi
+        file="cadence-$VERSION-$name$EXE"
+        say "The release's $BUILD build, $file, is tried in its place."
+    done
     BUILT="$WORK/$file"
     FROM=release
+}
+
+# Holds a release binary to SHA256SUMS, its attestation and its bench, and returns 1 with the reason
+# in WHY where it cannot run here; a file that does not match the release stops the run.
+check_release_file() {
+    local file=$1 want=$2 got rc
+    step "Checking $file"
+    rc=0
+    fetch "$ASSETS_URL/$VERSION/$file" "$WORK/$file" || rc=$?
+    [ "$rc" != 2 ] || offline "$file"
+    [ "$rc" = 0 ] || tampered "Release $VERSION lists $file in its SHA256SUMS and does not serve it$TROUBLE"
+    got=$(checksum "$WORK/$file")
+    log "$file: SHA-256 $got; SHA256SUMS: $want"
+    [ "$got" = "$want" ] || tampered "$file's SHA-256 is $got and the release's SHA256SUMS says $want"
+    say "Its SHA-256 matches the release's SHA256SUMS."
+    attested "$file" || tampered "$WHY"
+    want=$(listed bench.txt)
+    [ -n "$want" ] || tampered "Release $VERSION's SHA256SUMS lists no bench.txt to check $file against"
+    # A lower tier tried after the first is held to the bench.txt already fetched.
+    if [ ! -f "$WORK/bench.txt" ] || [ "$(checksum "$WORK/bench.txt")" != "$want" ]; then
+        rc=0
+        fetch "$ASSETS_URL/$VERSION/bench.txt" "$WORK/bench.txt" || rc=$?
+        [ "$rc" != 2 ] || offline "release $VERSION's bench.txt"
+        [ "$rc" = 0 ] || tampered "Release $VERSION lists bench.txt in its SHA256SUMS and does not serve it$TROUBLE"
+        [ "$(checksum "$WORK/bench.txt")" = "$want" ] || tampered "The release's bench.txt does not match its SHA256SUMS"
+    fi
+    chmod 755 "$WORK/$file" || fail "cannot make $WORK/$file executable"
+    bench_and_name "$WORK/$file" "$(tr -d '[:space:]' < "$WORK/bench.txt")" "Cadence $VERSION" && return 0
+    [ "$FAULT" != mismatch ] || tampered "$file: $WHY"
+    return 1
 }
 
 # --- The build ---------------------------------------------------------------------------------
@@ -783,6 +875,7 @@ offer_source() {
         step "Building from source, as --source asks"
     else
         say "$WHY"
+        say "Only a system the releases have no binary for is built from source without --source."
         step "Building from source instead"
     fi
     say "Building takes several minutes and about 2 GB of disk space, for the source, the Rust"
@@ -831,17 +924,22 @@ check_linker() {
             say "Rust needs a C compiler to link with, and none is installed."
             local sudo=sudo install=""
             [ "$(id -u)" != 0 ] || sudo=""
+            local removal=""
             if command -v apt-get > /dev/null 2>&1; then
                 install="$sudo apt-get install -y build-essential"
+                removal="build-essential, which '${sudo:+sudo }apt-get remove build-essential' removes"
             elif command -v dnf > /dev/null 2>&1; then
                 install="$sudo dnf install -y gcc"
+                removal="gcc, which '${sudo:+sudo }dnf remove gcc' removes"
             elif command -v pacman > /dev/null 2>&1; then
                 install="$sudo pacman -S --needed --noconfirm gcc"
+                removal="gcc, which '${sudo:+sudo }pacman -R gcc' removes"
             fi
             [ -n "$install" ] || fail "no C compiler: install gcc or clang with your package manager, then run this again"
             ask "Install one now with: $install ?" y || stop "Install gcc or clang, then run this again."
             if command -v apt-get > /dev/null 2>&1; then run $sudo apt-get update || fail "apt-get update failed"; fi
             run $install || fail "the compiler's install failed"
+            state_set installed_compiler "$removal"
             command -v cc > /dev/null 2>&1 || fail "there is still no C compiler after the install"
             log "linker: $(cc --version 2>&1 | head -n 1)"
             ;;
@@ -853,6 +951,7 @@ check_linker() {
             say "Rust needs Apple's command line tools to link with, and they are not installed."
             ask "Open Apple's installer for them now?" y || stop "Install them with: xcode-select --install, then run this again."
             run xcode-select --install
+            state_set installed_compiler "Apple's command line tools, which 'sudo rm -rf /Library/Developer/CommandLineTools' removes"
             stop "Finish the installer Apple opened, then run this script again."
             ;;
         windows)
@@ -872,6 +971,7 @@ check_linker() {
                 --accept-source-agreements \
                 --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" \
                 || fail "the build tools' install failed: $tools"
+            state_set installed_compiler "the Visual Studio 2022 Build Tools, which 'winget uninstall --id Microsoft.VisualStudio.2022.BuildTools' removes"
             found=$(msvc_version)
             [ -n "$found" ] || fail "the C++ build tools are still not found after the install"
             log "linker: Visual Studio C++ build tools $found"
@@ -883,10 +983,10 @@ install_rustup() {
     if [ "$OS" = windows ]; then
         local arch=x86_64
         [ "$ARCH" = x86_64 ] || arch=aarch64
-        if ! download "https://win.rustup.rs/$arch" "$WORK/rustup-init.exe" 2> "$OUT"; then
-            redact < "$OUT" >> "$LOG"
-            fail "could not download rustup-init.exe$(said)"
-        fi
+        local rc=0
+        fetch "https://win.rustup.rs/$arch" "$WORK/rustup-init.exe" || rc=$?
+        [ "$rc" != 2 ] || offline "rustup-init.exe"
+        [ "$rc" = 0 ] || fail "could not download rustup-init.exe$TROUBLE"
         run "$WORK/rustup-init.exe" -y --default-toolchain none || fail "rustup's install failed"
     else
         command -v curl > /dev/null 2>&1 || fail "curl is needed to install rustup; install curl, or Rust from https://rustup.rs"
@@ -895,6 +995,7 @@ install_rustup() {
     fi
     PATH="$CARGO_BIN:$PATH"
     command -v rustup > /dev/null 2>&1 || fail "rustup is still not found after its install"
+    state_set installed_rust "rustup and every Rust toolchain it holds, which 'rustup self uninstall' removes"
 }
 
 check_rust() {
@@ -962,16 +1063,15 @@ fetch_source() {
 # one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
 # UNREAD says why, and the build goes on without the check.
 release_commit() {
-    local trouble
+    local rc=0
     NAMED=""
     UNREAD=""
     UNREAD_LIMIT=0
     case "$VERSION" in *+*) return 0 ;; esac
-    log "\$ download $API_URL/tags/$VERSION"
-    if ! download "$API_URL/tags/$VERSION" "$WORK/release.json" 2> "$OUT"; then
-        trouble=$(said)
-        redact < "$OUT" >> "$LOG"
-        [ "$trouble" = " (not found)" ] || UNREAD=${trouble:- (no answer)}
+    fetch "$API_URL/tags/$VERSION" "$WORK/release.json" || rc=$?
+    [ "$rc" != 2 ] || offline "release $VERSION's notes from GitHub"
+    if [ "$rc" != 0 ]; then
+        [ "$TROUBLE" = " (not found)" ] || UNREAD=${TROUBLE:- (no answer)}
         ! github_limit || UNREAD_LIMIT=1
         return 0
     fi
@@ -1004,6 +1104,12 @@ check_commit() {
 
 prepare_toolchain() {
     step "The Rust toolchain"
+    local pinned
+    pinned=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' "$SRC/rust-toolchain.toml" 2> /dev/null)
+    # A toolchain this run adds is recorded, so the uninstall can name it.
+    if [ -n "$pinned" ] && ! rustup toolchain list 2> /dev/null | grep -q "^$pinned-"; then
+        state_set installed_toolchain "Rust $pinned, which 'rustup toolchain uninstall $pinned' removes"
+    fi
     (cd "$SRC" && run rustup toolchain install) \
         || say "This rustup installs the Rust version Cadence pins as the build starts instead."
     log "rustc: $(cd "$SRC" && rustc --version 2>&1)"
@@ -1058,6 +1164,17 @@ build() {
                 MADE=baseline
             fi
             ;;
+        avx512)
+            # A version from before the AVX-512 builds has no settings for them, and its AVX2 ones
+            # run here.
+            if grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/x86-64-avx512.toml" 2>/dev/null; then
+                args="$args --config .cargo/x86-64-avx512.toml"
+                files="$files .cargo/x86-64-avx512.toml"
+            else
+                say "Cadence $VERSION has no AVX-512 settings for $TRIPLE, so it is built as the AVX2 build."
+                MADE=avx2
+            fi
+            ;;
         avx2)
             if ! grep -q "^\[target\.$TRIPLE\]" "$SRC/.cargo/config.toml"; then
                 say "Cadence $VERSION has no AVX2 settings for $TRIPLE, so it is built for that system's baseline."
@@ -1108,6 +1225,7 @@ refused() {
 # Runs a binary's bench and asks its name, leaving the reason in WHY if either is not the one wanted.
 bench_and_name() {
     local bin=$1 want=$2 name=$3 rc got first answer
+    FAULT=run
     say "Running its bench."
     log "\$ cadence bench"
     limited "$BENCH_SECONDS" /dev/null "$WORK/bench.out" "$bin" bench
@@ -1151,7 +1269,8 @@ bench_and_name() {
         return 1
     fi
     if [ -z "$got" ] || [ "$got" != "$want" ]; then
-        WHY="its bench counts ${got:-nothing} and bench.txt says $want"
+        FAULT=mismatch
+        WHY="its bench counts ${got:-no} nodes and bench.txt says $want"
         return 1
     fi
     id_name "$bin"
@@ -1161,6 +1280,7 @@ bench_and_name() {
         return 1
     fi
     if [ "$ID" != "$name" ]; then
+        FAULT=mismatch
         WHY="it calls itself '${ID:-nothing}' and not '$name'"
         return 1
     fi
@@ -1216,6 +1336,7 @@ version_order() {
 # The build a release binary is, from its name.
 build_of() {
     case "$1" in
+        *-avx512 | *-avx512.exe) printf avx512 ;;
         *-avx2 | *-avx2.exe | *-macos-x86-64) printf avx2 ;;
         *-generic | *-generic.exe) printf generic ;;
         *) printf native ;;
@@ -1246,10 +1367,8 @@ installed_version() {
 released_as() {
     RELEASED=""
     UNLISTED=""
-    log "\$ download $API_URL?per_page=100"
-    if ! download "$API_URL?per_page=100" "$WORK/every-release.json" 2> "$OUT"; then
-        UNLISTED=$(said)
-        redact < "$OUT" >> "$LOG"
+    if ! fetch "$API_URL?per_page=100" "$WORK/every-release.json"; then
+        UNLISTED=$TROUBLE
         return 1
     fi
     RELEASED=$(tr ',{}[]' '\n\n\n\n\n' < "$WORK/every-release.json" | awk -v d="\"sha256:$1\"" '
@@ -1263,7 +1382,7 @@ earlier_install() {
     local sum name="" default=n
     step "The installed Cadence"
     sum=$(checksum "$TARGET")
-    case "$VERSION" in *+*) name="" ;; *) release_sums && name=$(listed_as "$sum") ;; esac
+    case "$VERSION" in *+*) name="" ;; *) release_sums tolerant && name=$(listed_as "$sum") ;; esac
     case "$name" in
         "cadence-$VERSION-"*)
             say "An earlier installer put Cadence at $(shown "$TARGET") without recording its version; its SHA-256 is release $VERSION's $name."
@@ -1457,18 +1576,28 @@ offer_path() {
 remove_path_line() {
     local rc=$1 line=$2 how=$3
     [ -n "$rc" ] && [ -f "$rc" ] || return 0
+    # The blank line this script wrote before its marker goes with the marker and the line.
     CADENCE_LINE=$line CADENCE_MARK=$MARK awk '
-        held != "" && $0 == ENVIRON["CADENCE_LINE"] {held = ""; next}
-        held != "" {print held; held = ""}
-        $0 == ENVIRON["CADENCE_MARK"] {held = $0; next}
+        held {
+            held = 0
+            if ($0 == ENVIRON["CADENCE_LINE"]) {blank = 0; next}
+            if (blank) {print ""; blank = 0}
+            print ENVIRON["CADENCE_MARK"]
+        }
+        $0 == ENVIRON["CADENCE_MARK"] {held = 1; next}
+        blank {print ""; blank = 0}
+        $0 == "" {blank = 1; next}
         {print}
-        END {if (held != "") print held}' \
+        END {if (blank) print ""; if (held) print ENVIRON["CADENCE_MARK"]}' \
         "$rc" > "$rc.cadence" || fail "could not read $rc"
     if cmp -s "$rc" "$rc.cadence"; then
         say "$rc holds no PATH line under this script's marker, so there is none to remove."
     elif [ "$how" = now ] || ask "Remove the PATH line this script added to $rc?" y; then
         cat "$rc.cadence" > "$rc" || fail "could not rewrite $rc"
         say "Removed the PATH line from $rc."
+    else
+        rm -f "$rc.cadence"
+        return 1
     fi
     rm -f "$rc.cadence"
 }
@@ -1483,6 +1612,8 @@ remove_path_windows() {
         CADENCE_ADD="" CADENCE_REMOVE=$win run powershell.exe -NoProfile -Command "$USER_PATH_EDIT" \
             || fail "could not remove $win from your PATH"
         say "Removed $win from your PATH."
+    else
+        return 1
     fi
 }
 
@@ -1572,10 +1703,10 @@ offer_tables() {
     # Recorded before anything is fetched, so a download that stops is offered again.
     mkdir -p "$dir" || fail "cannot create $dir"
     state_set tables "$(shown "$dir")"
-    if ! download "$TABLES_URL/sha256" "$WORK/sha256" 2> "$OUT"; then
-        redact < "$OUT" >> "$LOG"
-        fail "could not download the tables' published checksums$(said)"
-    fi
+    local rc=0
+    fetch "$TABLES_URL/sha256" "$WORK/sha256" || rc=$?
+    [ "$rc" != 2 ] || offline "the tables' published checksums"
+    [ "$rc" = 0 ] || fail "could not download the tables' published checksums$TROUBLE"
     # Every name becomes a path below, so each must be a table's name and each sum a SHA-256.
     awk '{n = $2; sub(/\.rtb[wz]$/, "", n); gsub(/v/, "", n); if (length(n) <= 5) print}' \
         "$WORK/sha256" > "$WORK/3-4-5.sha256"
@@ -1591,8 +1722,10 @@ offer_tables() {
         esac
         # A table already here and matching its checksum is kept as it is.
         if [ ! -f "$dir/$file" ] || [ "$(checksum "$dir/$file")" != "$sum" ]; then
-            download "$TABLES_URL/$group/$file" "$dir/$file.part" 2> "$OUT" \
-                || { redact < "$OUT" >> "$LOG"; fail "could not download $file$(said)"; }
+            rc=0
+            fetch "$TABLES_URL/$group/$file" "$dir/$file.part" || rc=$?
+            [ "$rc" != 2 ] || offline "$file"
+            [ "$rc" = 0 ] || fail "could not download $file$TROUBLE"
             [ "$(checksum "$dir/$file.part")" = "$sum" ] \
                 || { rm -f "$dir/$file.part"; fail "$file does not match its published checksum"; }
             mv -f "$dir/$file.part" "$dir/$file" || fail "could not write $dir/$file"
@@ -1636,26 +1769,55 @@ afterwards() {
 
 uninstall() {
     step "Uninstalling Cadence"
-    local bin win tables
+    local bin win tables kept="" what key
     bin=$(state_path binary)
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
     if [ -e "$bin" ]; then
         if ask "Remove $(shown "$bin")?" y; then
             rm -f "$bin" || fail "could not remove $bin; if Cadence is running, close it and run this again"
             say "Removed it."
+        else
+            kept="$kept, Cadence at $(shown "$bin")"
         fi
     else
         say "There is no Cadence at $(shown "$bin")."
     fi
-    remove_path_line "$(state_get path_rc)" "$(state_get path_line)" ask
-    win=$(state_get path_windows)
-    [ -z "$win" ] || remove_path_windows "$win" ask
-    tables=$(state_path tables)
-    if [ -n "$tables" ] && [ -d "$tables" ] && ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
-        rm -rf "$tables" || fail "could not remove $tables; if a chess program has them open, close it and run this again"
-        say "Removed them."
+    if [ -z "$kept" ]; then
+        for key in binary version sha256 build from; do state_unset "$key"; done
     fi
-    rm -f "$STATE"
+    if remove_path_line "$(state_get path_rc)" "$(state_get path_line)" ask; then
+        state_unset path_rc
+        state_unset path_line
+    else
+        kept="$kept, the PATH line in $(state_get path_rc)"
+    fi
+    win=$(state_get path_windows)
+    if [ -n "$win" ]; then
+        if remove_path_windows "$win" ask; then state_unset path_windows; else kept="$kept, $win on your PATH"; fi
+    fi
+    tables=$(state_path tables)
+    if [ -n "$tables" ] && [ -d "$tables" ]; then
+        if ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
+            rm -rf "$tables" || fail "could not remove $tables; if a chess program has them open, close it and run this again"
+            say "Removed them."
+            state_unset tables
+        else
+            kept="$kept, the tablebases at $(shown "$tables")"
+        fi
+    else
+        state_unset tables
+    fi
+    # What this script installed to build Cadence is the user's to keep or remove, so it is named.
+    for key in installed_compiler installed_rust installed_toolchain; do
+        what=$(state_get "$key")
+        [ -z "$what" ] || say "To build Cadence, this installer also installed $what."
+    done
+    if [ -n "$kept" ]; then
+        [ ! -f "$STATE" ] || say "The install record at $(shown "$STATE") is kept for what stays:${kept#,}."
+    else
+        rm -f "$STATE"
+        CLEAN_DIRS=1
+    fi
     say "Done."
 }
 
@@ -1669,8 +1831,9 @@ if [ "$MODE" = uninstall ]; then
 fi
 step "Cadence's installer"
 say "This installs Cadence's release binary for this system once its checksum and bench match the"
-say "release's, or builds it from source where no binary fits. It asks before building, installing a"
-say "compiler or Rust, replacing an install, changing your PATH or downloading tablebases."
+say "release's, and stops if they do not. It builds from source with --source, or where the release"
+say "has no binary for this system. It asks before building, installing a compiler or Rust, replacing"
+say "an install, changing your PATH or downloading tablebases."
 say "Release files come from $ASSETS_URL."
 check_version
 mkdir -p "$WORK" || fail "cannot create $WORK"
