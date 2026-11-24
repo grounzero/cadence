@@ -2,44 +2,13 @@
 
 use std::iter::Peekable;
 use std::num::IntErrorKind;
-use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cadence_core::Colour;
 
-use super::counters::run_of;
 use super::{CLOCK_INTERVAL, Search};
 use crate::time;
-
-/// A `ponderhit` to a search already running: that it came, and when it was read.
-#[derive(Debug, Default)]
-pub struct PonderHit {
-    at: OnceLock<Instant>,
-}
-
-impl PonderHit {
-    #[must_use]
-    pub fn new() -> PonderHit {
-        PonderHit::default()
-    }
-
-    /// Read now; a second hit changes nothing.
-    pub fn hit(&self) {
-        self.hit_at(Instant::now());
-    }
-
-    /// Read at `at`, for a caller that took the time when the line arrived.
-    pub fn hit_at(&self, at: Instant) {
-        let _ = self.at.set(at);
-    }
-
-    /// `None` until a hit.
-    #[must_use]
-    pub fn received(&self) -> Option<Instant> {
-        self.at.get().copied()
-    }
-}
 
 /// A `None` field did not appear, and the search never writes one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -216,37 +185,25 @@ impl Search<'_> {
     /// The clock and the record are kept and the deadlines move by the time pondered, so every
     /// decision after the hit is a fresh search's over the same times. True when it absorbs one.
     pub(super) fn absorb_ponder_hit(&mut self) -> bool {
-        if !self.clock.pondering {
+        if !self.clock.pondering || !self.ponder_hit.is_some_and(|f| f.load(Ordering::Relaxed)) {
             return false;
         }
-        let Some(at) = self.ponder_hit.and_then(PonderHit::received) else {
-            return false;
-        };
         self.clock.pondering = false;
-        let pondered = at.saturating_duration_since(self.clock.start).as_millis();
-        self.clock.hit_at = u64::try_from(pondered).unwrap_or(u64::MAX);
+        self.clock.hit_at = self.elapsed_ms();
         self.clock.budget = self.clock.budget_on_hit;
         true
     }
 
-    /// The decisions skipped while pondering, taken in order at each completed iteration as a
-    /// fresh search with the same times takes them, so the first refusal stops it. With none, the
+    /// The decision skipped while pondering, taken at the last completed iteration. With none, the
     /// iteration running is the first and goes on.
-    pub(super) fn would_have_started(&self) -> bool {
-        let Some(b) = self.clock.budget else {
-            return true;
-        };
-        let (times, roots) = (&self.run.iterations, &self.run.roots);
-        // Matched from the last: each time has its iteration's root, which may follow older ones.
-        let older = roots.len().saturating_sub(times.len());
-        (1..=times.len()).all(|k| {
-            let roots = &roots[..older + k];
+    fn would_have_started(&self) -> bool {
+        self.clock.budget.is_none_or(|b| {
             time::starts_another(
                 &self.limits,
                 b,
-                &times[..k],
-                run_of(roots),
-                self.drop_scale_of(roots),
+                &self.run.iterations,
+                self.stable_iterations(),
+                self.drop_scale(),
                 self.clock.hit_at,
             )
         })
@@ -265,12 +222,11 @@ impl Search<'_> {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::time::Duration;
 
     use cadence_core::position::Board;
     use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 
-    use super::{CLOCK_INTERVAL, Limits, PonderHit, Search};
+    use super::{CLOCK_INTERVAL, Limits, Search};
     use crate::position::Position;
     use crate::score::Score;
     use crate::time::{self, Budget};
@@ -469,19 +425,18 @@ mod tests {
     #[test]
     fn a_hit_decides_on_the_scores_pondered() {
         let stop = AtomicBool::new(false);
-        let hit = PonderHit::new();
-        hit.hit();
+        let flag = AtomicBool::new(true);
         let tt = Table::new(1).expect("a one mebibyte table");
         let ponder = Limits::parse("ponder wtime 6000 btime 6000".split_whitespace());
         let b = time::hit_budget(&ponder, Colour::White).expect("a ponder with a clock");
         let mut search = Search::new(&stop, &tt);
         search.set_limits(ponder);
-        search.set_ponder_hit(&hit);
+        search.set_ponder_hit(&flag);
         search.clock.pondering = true;
         search.clock.budget_on_hit = Some(b);
         search.run.roots = FALLING.iter().map(|&s| (Move::NULL, s)).collect();
 
-        assert!(search.absorb_ponder_hit(), "a hit read is absorbed");
+        assert!(search.absorb_ponder_hit(), "the raised flag is a hit");
         assert_eq!(search.clock.budget, Some(b), "the hit brought its budget");
         assert_eq!(
             search.iteration_roots().len(),
@@ -564,151 +519,5 @@ mod tests {
             "one searchmoves move stretched by a fall"
         );
         assert!(!one.would_have_started(), "one searchmoves move went on");
-    }
-    /// A hit is timed from when its line was read, however late the search reads it.
-    #[test]
-    fn a_hit_is_timed_from_when_it_was_received() {
-        let stop = AtomicBool::new(false);
-        let tt = Table::new(1).expect("a one mebibyte table");
-        let ponder = Limits::parse("ponder wtime 6000 btime 6000".split_whitespace());
-        let hit = PonderHit::new();
-        let mut search = Search::new(&stop, &tt);
-        search.set_limits(ponder);
-        search.clock.begin(&ponder, Colour::White);
-        search.set_ponder_hit(&hit);
-        hit.hit_at(search.clock.start + Duration::from_millis(40));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(search.absorb_ponder_hit(), "a hit read is absorbed");
-        assert_eq!(
-            search.clock.hit_at, 40,
-            "the hit was timed when the search read it"
-        );
-    }
-
-    /// The third iteration's prediction is past the moved hard deadline, so a fresh search stops
-    /// there, though the last completed iteration alone would go on.
-    #[test]
-    fn a_hit_replays_every_completed_iteration() {
-        let stop = AtomicBool::new(false);
-        let tt = Table::new(1).expect("a one mebibyte table");
-        let b = Budget {
-            soft: 2_000,
-            hard: 6_000,
-        };
-        let mut search = Search::new(&stop, &tt);
-        search.set_limits(clock());
-        search.clock.hit_at = 1_500;
-        let refused = [10, 20, 1_000, 1_010];
-        record(&mut search, &[0; 4], &refused, b);
-        assert!(
-            time::starts_another(&clock(), b, &refused, 4, 1000, 1_500),
-            "the last iteration alone goes on"
-        );
-        assert!(
-            !search.would_have_started(),
-            "the third iteration of {refused:?} would not have started the fourth"
-        );
-        let steady = [10, 20, 60, 180];
-        record(&mut search, &[0; 4], &steady, b);
-        assert!(search.would_have_started(), "every iteration of {steady:?}");
-    }
-
-    /// The fresh search a hit stands for, stepped iteration by iteration over the same times, its
-    /// deadlines moved by the time pondered: whether it starts the iteration after the last.
-    fn fresh_goes_on(
-        limits: &Limits,
-        b: Budget,
-        ladder: &[u64],
-        roots: &[(Move, Score)],
-        offset: u64,
-    ) -> bool {
-        let moved = b.moved(offset);
-        (1..=ladder.len()).all(|k| {
-            let last = roots[k - 1].0;
-            let run = roots[..k].iter().rev().take_while(|r| r.0 == last).count();
-            let scores: Vec<Score> = roots[..k].iter().map(|r| r.1).collect();
-            let soft = time::soft_for_run(limits, b, run);
-            let soft = time::soft_for_drop(limits, b, soft, time::drop_scale(&scores)) + offset;
-            ladder[k - 1] < soft && time::another_iteration_fits(&ladder[..k], moved)
-        })
-    }
-
-    /// Every hit is checked against that fresh search: at a boundary, inside an iteration, past the
-    /// soft budget and near the hard one, under each kind of clock.
-    #[test]
-    fn a_hit_decides_as_a_fresh_search_stepping_through_the_same_iterations() {
-        let stop = AtomicBool::new(false);
-        let tt = Table::new(1).expect("a one mebibyte table");
-        let board = Board::from_fen(START_FEN).expect("the start position");
-        let legal = generate_legal(&board);
-        let (a, z) = (legal.as_slice()[0], legal.as_slice()[1]);
-        let roots = [
-            (a, 30),
-            (a, 30),
-            (z, 30),
-            (z, -70),
-            (z, -70),
-            (a, 0),
-            (a, 40),
-            (a, -200),
-        ];
-        let ladders: [&[u64]; 3] = [
-            &[4, 11, 30, 85, 240, 700, 2_000, 5_600],
-            &[10, 20, 1_000, 1_010, 1_030, 4_000],
-            &[2, 3, 200, 210, 220, 3_000],
-        ];
-        let clocks = [
-            "wtime 6000 btime 6000",
-            "wtime 6000 btime 6000 winc 100 binc 100",
-            "wtime 6000 btime 6000 movestogo 5",
-            "movetime 500",
-        ];
-        let mut checked = 0;
-        for spec in clocks {
-            let clocked = Limits::parse(spec.split_whitespace());
-            let ponder = Limits {
-                ponder: true,
-                ..clocked
-            };
-            let b = time::hit_budget(&ponder, Colour::White).expect("a ponder with a clock");
-            for ladder in ladders {
-                let mut offsets: Vec<u64> = ladder.to_vec();
-                offsets.extend(ladder.windows(2).map(|w| u64::midpoint(w[0], w[1])));
-                offsets.extend([b.soft + 50, b.hard.saturating_sub(5), b.hard + 400]);
-                for offset in offsets {
-                    let done = ladder.iter().take_while(|&&t| t <= offset).count();
-                    if done == 0 {
-                        continue;
-                    }
-                    let hit = PonderHit::new();
-                    let mut search = Search::new(&stop, &tt);
-                    search.set_limits(ponder);
-                    search.set_ponder_hit(&hit);
-                    search.clock.pondering = true;
-                    search.clock.budget_on_hit = Some(b);
-                    search.run.iterations = ladder[..done].to_vec();
-                    search.run.roots = roots[..done].to_vec();
-                    hit.hit_at(search.clock.start + Duration::from_millis(offset));
-                    assert!(search.absorb_ponder_hit(), "a hit read is absorbed");
-                    let at = format!("`{spec}`, {ladder:?} hit at {offset} ms");
-                    assert_eq!(search.clock.hit_at, offset, "{at}: timed");
-                    assert_eq!(
-                        search
-                            .clock
-                            .budget
-                            .map(|b| b.moved(search.clock.hit_at).hard),
-                        Some(offset + b.hard),
-                        "{at}: the hard deadline"
-                    );
-                    assert_eq!(
-                        search.would_have_started(),
-                        fresh_goes_on(&clocked, b, &ladder[..done], &roots[..done], offset),
-                        "{at}"
-                    );
-                    checked += 1;
-                }
-            }
-        }
-        assert!(checked > 100, "{checked} hits checked");
     }
 }

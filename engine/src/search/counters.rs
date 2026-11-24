@@ -410,7 +410,15 @@ impl Search<'_> {
     /// [`Search::iteration_roots`], so the two cannot disagree.
     #[must_use]
     pub fn stable_iterations(&self) -> usize {
-        run_of(&self.run.roots)
+        let Some(&(last, _)) = self.run.roots.last() else {
+            return 0;
+        };
+        self.run
+            .roots
+            .iter()
+            .rev()
+            .take_while(|&&(m, _)| m == last)
+            .count()
     }
 
     /// Thousandths of the soft budget the iteration scores earn, read in place from the tail of
@@ -418,15 +426,10 @@ impl Search<'_> {
     /// move to find, so it is not stretched.
     #[must_use]
     pub fn drop_scale(&self) -> u64 {
-        self.drop_scale_of(&self.run.roots)
-    }
-
-    /// The same for the first iterations only, as the rule read them when the last of these
-    /// completed.
-    pub(super) fn drop_scale_of(&self, roots: &[(Move, Score)]) -> u64 {
         if self.run.root_count == 1 {
             return 1000;
         }
+        let roots = &self.run.roots;
         let tail = &roots[roots.len().saturating_sub(crate::time::DROP_WINDOW + 1)..];
         let mut scores: [Score; crate::time::DROP_WINDOW + 1] = [0; crate::time::DROP_WINDOW + 1];
         for (slot, &(_, s)) in scores.iter_mut().zip(tail) {
@@ -632,14 +635,6 @@ impl Search<'_> {
             nodes[worker_index].store(self.run.nodes, Ordering::Relaxed);
         }
     }
-}
-
-/// Completed iterations in a row ending on the last one's move, counting it.
-pub(super) fn run_of(roots: &[(Move, Score)]) -> usize {
-    let Some(&(last, _)) = roots.last() else {
-        return 0;
-    };
-    roots.iter().rev().take_while(|&&(m, _)| m == last).count()
 }
 
 #[cfg(test)]

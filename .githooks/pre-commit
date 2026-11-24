@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Runs `cargo xtask check-boundary --staged` over the content this commit is
 # about to record.

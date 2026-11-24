@@ -6,7 +6,7 @@
 use cadence_core::position::Board;
 use cadence_dataset::trainer::RECORD_LEN;
 use cadence_nnue::net::payload_len;
-use cadence_nnue::{AccumulatorStack, HIDDEN, LoadError, Network, Provenance, WIDE};
+use cadence_nnue::{AccumulatorStack, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE};
 
 /// A trainer commit for a load that names none, since a checkpoint is not yet given one.
 const UNNAMED: &str = "0000000000000000000000000000000000000000";
@@ -149,6 +149,7 @@ pub const QUANTISED_FLOOR: f64 = 1e-6;
 /// Weights the engine's loader refuses, a position that does not parse, or a loss outside the bar.
 pub fn quantised_check(
     quantised: &[u8],
+    inputs: Inputs,
     examples: &[Example],
     result_share: f32,
     scale: f32,
@@ -158,15 +159,15 @@ pub fn quantised_check(
     let refused = |e: LoadError| format!("the engine's loader refuses it: {e}");
     let sum = if quantised.len() >= payload_len(WIDE) {
         let payload = &quantised[..payload_len(WIDE)];
-        let net =
-            Network::<WIDE>::load_payload(payload, unnamed, UNNAMED, [0; 32]).map_err(refused)?;
+        let net = Network::<WIDE>::load_payload_as(payload, inputs, unnamed, UNNAMED, [0; 32])
+            .map_err(refused)?;
         quantised_sum(&net, examples, result_share, scale)?
     } else {
         let payload = quantised
             .get(..payload_len(HIDDEN))
             .ok_or("shorter than a net's weights")?;
-        let net =
-            Network::<HIDDEN>::load_payload(payload, unnamed, UNNAMED, [0; 32]).map_err(refused)?;
+        let net = Network::<HIDDEN>::load_payload_as(payload, inputs, unnamed, UNNAMED, [0; 32])
+            .map_err(refused)?;
         quantised_sum(&net, examples, result_share, scale)?
     };
     let n = u32::try_from(examples.len())

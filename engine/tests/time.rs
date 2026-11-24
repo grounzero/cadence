@@ -12,7 +12,7 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
 use cadence_engine::score::{MATE, Score};
-use cadence_engine::search::{Limits, PonderHit, Search};
+use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
     Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, STABILITY_CALLS,
     STABILITY_SCALE, another_iteration_fits, budget, drop_scale, soft_for_drop, soft_for_run,
@@ -1269,7 +1269,7 @@ fn a_movetime_is_not_scaled() {
 #[test]
 fn the_run_survives_a_ponderhit() {
     let stop = AtomicBool::new(false);
-    let hit = PonderHit::new();
+    let hit = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
     let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
     let mut s = support::search(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
@@ -1277,7 +1277,7 @@ fn the_run_survives_a_ponderhit() {
     std::thread::scope(|scope| {
         scope.spawn(|| {
             std::thread::sleep(Duration::from_millis(200));
-            hit.hit();
+            hit.store(true, Ordering::Relaxed);
         });
         s.run(&mut board, &mut std::io::sink());
     });
