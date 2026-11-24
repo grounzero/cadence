@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use cadence_core::features::NUM_INPUTS;
 use cadence_nnue::net::{HEADER_LEN, payload_len};
-use cadence_nnue::{HIDDEN, Provenance, WIDE};
+use cadence_nnue::{HIDDEN, Inputs, Provenance, WIDE};
 
 use crate::export::{PADDING, export};
 
@@ -76,7 +76,7 @@ pub fn check_saved(
         }
         let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
         let unnamed = Provenance::External("checkpoint".to_string());
-        let net = export(&bytes, unnamed, UNNAMED, b"")
+        let net = export(&bytes, Inputs::Plain, unnamed, UNNAMED, b"")
             .map_err(|e| format!("{}: {e}, so the run is stopped", dir.display()))?;
         let name = dir
             .file_name()

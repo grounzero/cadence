@@ -19,6 +19,10 @@ result.
 
 ## [Unreleased]
 
+### Added
+
+- Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.
+
 ## [0.7.0] - 2026-11-24
 
 ### Added

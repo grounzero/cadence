@@ -8,7 +8,7 @@ use core::fmt;
 use cadence_core::features::NUM_INPUTS;
 use cadence_dataset::sha256::sha256;
 use cadence_nnue::net::{PAYLOAD_LEN, QA, QB, payload_len};
-use cadence_nnue::{AnyNetwork, HIDDEN, LoadError, Network, Provenance, WIDE};
+use cadence_nnue::{AnyNetwork, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE};
 
 /// The trainer pads every quantised file to a multiple of this many bytes.
 pub const PADDING: usize = 64;
@@ -153,6 +153,7 @@ pub fn fold(quantised: &[u8], raw: &[u8], factor: f32) -> Result<Vec<u8>, Export
 /// self-play or canary claim for data the converter did not write, or anything the loader refuses.
 pub fn export(
     quantised: &[u8],
+    inputs: Inputs,
     provenance: Provenance,
     trainer: &str,
     manifest: &[u8],
@@ -173,9 +174,10 @@ pub fn export(
     }
     let manifest = sha256(manifest);
     let net = if hidden == WIDE {
-        Network::<WIDE>::load_payload(payload, provenance, trainer, manifest).map(AnyNetwork::from)
+        Network::<WIDE>::load_payload_as(payload, inputs, provenance, trainer, manifest)
+            .map(AnyNetwork::from)
     } else {
-        Network::<HIDDEN>::load_payload(payload, provenance, trainer, manifest)
+        Network::<HIDDEN>::load_payload_as(payload, inputs, provenance, trainer, manifest)
             .map(AnyNetwork::from)
     };
     net.map_err(ExportError::Load)

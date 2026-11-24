@@ -21,6 +21,7 @@ usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out 
            --id NAME [--superbatches N] [--batches N] [--result-share F]
            [--validation-positions N] [--hidden 256|512] [--lr-schedule cosine|step]
            [--result-share-end F] [--from CHECKPOINT] [--lr-start F]
+           [--inputs plain|mirrored]
 
 Trains the network on the trainer's position records with bullet. It needs a
 GPU and the cuda feature.
@@ -54,7 +55,10 @@ target half result and half score, 256 units a perspective. The shipped net is
   --lr-start F               start the learning rate at F in place of the
                              recipe's first rate; with --from and a result share
                              of 1 for a few superbatches, a final stage on the
-                             game result alone";
+                             game result alone
+  --inputs plain|mirrored    the input layout, plain unless named; the run
+                             records it, a continued run must match it and
+                             the export writes it into the net's header";
 
 const VALIDATE: &str = "\
 usage: cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
@@ -74,7 +78,8 @@ usage: cadence-train export --checkpoint DIR --manifest FILE --provenance NAME -
            [--scale-factor F]
 
 Writes one checkpoint as the file EvalFile loads, naming the data's manifest and
-the commit that trained it. The manifest must be one its run verified.
+the commit that trained it. The manifest must be one its run verified. The
+header names the input layout the run recorded, plain or mirrored.
 
   --scale-factor F   multiply the net's evaluations by F. The output weights and
                      bias are taken from the checkpoint's unquantised weights,
