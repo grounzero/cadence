@@ -207,9 +207,21 @@ impl Session {
         if self.nnue.file.is_empty() {
             return;
         }
-        let loaded = std::fs::File::open(&self.nnue.file)
-            .and_then(|file| Ok((file.metadata()?.len(), file)))
+        // Only a regular file is opened: a named pipe holds the open until something writes to it.
+        let loaded = std::fs::metadata(&self.nnue.file)
             .map_err(|e| e.to_string())
+            .and_then(|meta| {
+                if meta.is_file() {
+                    Ok(())
+                } else {
+                    Err("not a regular file".to_string())
+                }
+            })
+            .and_then(|()| {
+                std::fs::File::open(&self.nnue.file)
+                    .and_then(|file| Ok((file.metadata()?.len(), file)))
+                    .map_err(|e| e.to_string())
+            })
             .and_then(|(size, file)| read_net(file, size));
         match loaded {
             Ok((net, key)) => {

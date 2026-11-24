@@ -2,8 +2,8 @@
 
 How strong Cadence is, measured by playing it against engines that have
 ratings, with every game here so that anyone can check the figures. None of
-them is an official rating: each is our own estimate, worked out against
-other engines' published ratings.
+them is an official rating: each is the project's own estimate, worked out
+against other engines' published ratings.
 
 | Version | Estimate | Games | Measured | Evidence |
 | --- | --- | ---: | --- | --- |
@@ -19,8 +19,8 @@ CCRL Blitz lists Cadence 0.6.0 at 2801 ± 23 from 543 games, as of
 2026-11-21 ([CCRL's page](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit)).
 
 That is CCRL's own rating, from games its testers played, and not one of
-the estimates above. Those are ours: 0.6.0-rc.3's 2796 ± 9 was measured
-before 0.6.0 was released.
+the estimates above. Those are the project's own estimates: 0.6.0-rc.3's
+2796 ± 9 was measured before 0.6.0 was released.
 
 ## The engines in each gauntlet
 
@@ -253,8 +253,8 @@ number does not belong to any one version.
 
 ## What these figures are not
 
-- **Not official ratings.** Each estimate is ours, worked out against other
-  engines' published ratings.
+- **Not official ratings.** Each estimate is the project's own, worked out
+  against other engines' published ratings.
 - **Not measured on the list's machine.** The games ran on a Mac, not on the
   computer the list uses, so a minute of thinking is not the same amount of
   work. From 0.6.0-rc.3 the time control is scaled to the Mac by a

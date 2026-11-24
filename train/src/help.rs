@@ -35,8 +35,9 @@ checkpoint is scored over the holdout's first 20,000 records by the trainer's
 own forward pass, and its validation loss is printed beside the training loss
 it logged.
 
-The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target
-half result and half score, 256 units a perspective.
+The defaults are the first nets' recipe: 40 superbatches of 6,104 batches, the
+target half result and half score, 256 units a perspective. The shipped net is
+512 wide (`--hidden 512`).
 
   --superbatches N           superbatches to train
   --batches N                batches in each superbatch
@@ -80,8 +81,8 @@ the commit that trained it. The manifest must be one its run verified.
                      multiplied and quantised once, and the first layer is left
                      as saved. The export is refused if those weights are not the
                      checkpoint's or the result does not load. The file does not
-                     record the factor; `cadence-tools forward --raw FILE
-                     --scale-factor F --unscaled FILE` checks it.";
+                     record the factor; `cadence-tools forward --net FILE --raw
+                     FILE --scale-factor F --unscaled FILE` checks it.";
 
 const BOOK: &str = "\
 usage: cadence-train book --in FILE --out FILE --seed HEX [--every N]
@@ -119,5 +120,19 @@ mod tests {
             );
         }
         assert_eq!(text("unknown"), None);
+    }
+
+    /// The export's check of a scaling factor is a `cadence-tools forward` command, which needs the
+    /// net file it checks as well as the raw weights.
+    #[test]
+    fn the_export_names_every_file_its_forward_check_needs() {
+        let help = text("export")
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let check =
+            "`cadence-tools forward --net FILE --raw FILE --scale-factor F --unscaled FILE`";
+        assert!(help.contains(check), "{help}");
     }
 }
