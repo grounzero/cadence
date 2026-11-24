@@ -78,7 +78,8 @@ draws its random choices from the shuffle seed:
 
 const FORWARD: &str = "\
 usage: cadence-tools forward --net FILE [--raw FILE [--against FILE]
-           [--scale-factor F [--unscaled FILE]]] [--positions N] [--seed HEX]
+           [--scale-factor F [--unscaled FILE]] [--correct-bias OUT]]
+           [--positions N] [--seed HEX] [--fens FILE]
 
 Scores random legal positions, at least 1,000, with a net file's quantised
 evaluation and with an f32 one written from the same file. It passes when no
@@ -94,8 +95,13 @@ position differs by more than 5 centipawns and the mean by no more than 1.
   --unscaled FILE      the unscaled export of the same checkpoint; the scaled
                        net may differ from the weights by the unscaled net's own
                        error plus at most 5 centipawns, and 1 on average
+  --correct-bias OUT   write the net to OUT with its output bias moved against
+                       the offset common to every position, which rounding
+                       the output weights leaves; needs --raw
   --positions N        how many positions to score
-  --seed HEX           the seed for the positions";
+  --seed HEX           the seed for the positions
+  --fens FILE          read the positions from FILE, one FEN a line, in place
+                       of random ones";
 
 #[cfg(test)]
 mod tests {
