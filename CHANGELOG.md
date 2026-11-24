@@ -665,7 +665,7 @@ Test 46: +17.55 (between +8.78 and +26.34).
 - King safety: the evaluation now scores attacks near each king and the
   pawns sheltering it. The king's square table was retuned alongside it.
 
-Test 45: +28.46 (between +16.86 and +40.06).
+Test 45: +28.46 (between +16.92 and +40.06).
 
 ### Changed
 
@@ -679,7 +679,7 @@ Test 45: +28.46 (between +16.86 and +40.06).
 - Mobility: the evaluation now rewards pieces that have more squares to
   move to. The four piece tables were retuned alongside it.
 
-Test 44: +50.67 (between +35.01 and +66.33).
+Test 44: +50.67 (between +35.22 and +66.33).
 
 ## [0.5.3] - 2026-10-02
 
@@ -688,7 +688,7 @@ Test 44: +50.67 (between +35.01 and +66.33).
 - The piece values and the queen's square table were retuned on
   Cadence's own games.
 
-Test 43: +19.68 (between +10.29 and +29.10).
+Test 43: +19.68 (between +10.28 and +29.10).
 
 ## [0.5.2] - 2026-10-02
 
@@ -697,8 +697,8 @@ Test 43: +19.68 (between +10.29 and +29.10).
 - Pawn structure: the evaluation now scores pawn weaknesses and strengths.
   The pawn square table was retuned alongside it.
 
-Test 41: +34.53 (between +21.14 and +47.92). At 40 seconds plus 0.4,
-test 42: +52.04 (between +39.53 and +64.55).
+Test 41: +34.53 (between +21.25 and +47.92). At 40 seconds plus 0.4,
+test 42: +52.04 (between +39.66 and +64.56).
 
 ## [0.5.1] - 2026-09-30
 
