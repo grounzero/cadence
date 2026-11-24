@@ -80,13 +80,16 @@ impl Search<'_> {
 pub(super) enum Lookup {
     /// The node's value, which the search returns at once.
     Cutoff(Score),
-    /// The table's move to try first, the floor and ceiling the node keeps, and the static
-    /// evaluation the table holds for it.
-    Search {
-        tt_move: Move,
-        bounds: (Score, Score),
-        eval: Option<Score>,
-    },
+    /// What the node's search starts from.
+    Search(Found),
+}
+
+/// The table's move to try first, the floor and ceiling the node keeps, and the static evaluation
+/// the table holds for it.
+pub(super) struct Found {
+    pub(super) tt_move: Move,
+    pub(super) bounds: (Score, Score),
+    pub(super) eval: Option<Score>,
 }
 
 impl Search<'_> {
@@ -116,11 +119,11 @@ impl Search<'_> {
         // After the table, so a hit saves the probe, and before the static readings, which an
         // ending the tables decide makes moot.
         match self.tablebase(board, key, depth, ply, alpha, beta, tt_move) {
-            Ok(bounds) => Lookup::Search {
+            Ok(bounds) => Lookup::Search(Found {
                 tt_move,
                 bounds,
                 eval,
-            },
+            }),
             Err(score) => Lookup::Cutoff(score),
         }
     }

@@ -506,18 +506,20 @@ impl Search<'_> {
         }
     }
 
-    /// The static evaluation and the corrected one, read before the node folds anything in, so no
-    /// correction has seen the score it will be scored against. `stored` is the table's, which is
-    /// the board's own reading.
-    pub(super) fn corrected_eval(
+    /// The static evaluation, with the corrected one written to the node's row, read before the
+    /// node folds anything in so no correction has seen the score it will be scored against.
+    /// `stored` is the table's, which is the board's own reading.
+    pub(super) fn node_eval(
         &mut self,
         board: &Position,
+        ply: usize,
         in_check: bool,
         pawn_key: u64,
         side: Colour,
         stored: Option<Score>,
-    ) -> Option<(Score, Score)> {
+    ) -> Option<Score> {
         if in_check {
+            self.heuristics.evals[ply] = None;
             return None;
         }
         let raw = match stored {
@@ -526,7 +528,8 @@ impl Search<'_> {
         };
         let correction = self.heuristics.corrhist.correction(pawn_key, side);
         self.stats.corrhist_applied.add_if(correction != 0);
-        Some((raw, raw + correction))
+        self.heuristics.evals[ply] = Some(raw + correction);
+        Some(raw)
     }
 
     /// A debug build reads the board again, so a stored evaluation that is not the board's fails.
