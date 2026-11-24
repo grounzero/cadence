@@ -80,8 +80,8 @@ the commit that trained it. The manifest must be one its run verified.
                      multiplied and quantised once, and the first layer is left
                      as saved. The export is refused if those weights are not the
                      checkpoint's or the result does not load. The file does not
-                     record the factor; `cadence-tools forward --raw FILE
-                     --scale-factor F --unscaled FILE` checks it.";
+                     record the factor; `cadence-tools forward --net FILE --raw
+                     FILE --scale-factor F --unscaled FILE` checks it.";
 
 const BOOK: &str = "\
 usage: cadence-train book --in FILE --out FILE --seed HEX [--every N]

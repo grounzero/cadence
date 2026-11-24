@@ -1165,9 +1165,9 @@ jobs:
             if ($out.Contains('the AVX-512 build runs here') -and -not $out.Contains('with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here.')) { throw 'install.ps1 named the AVX-512 build features differently from install.sh' }
             # Windows has no flag for BMI1 or LZCNT, so install.ps1 says whether .NET could read them.
             if (-not ($out.Contains('BMI1 and LZCNT were read through .NET:') -or $out.Contains('BMI1 and LZCNT could not be read here, so a processor with AVX2 is taken to have them, and the bench decides.'))) { throw 'install.ps1 did not say how it read BMI1 and LZCNT' }
-            # Windows has no flag for AVX-512BW and Windows PowerShell's .NET cannot read one, so the
-            # AVX-512 build is never taken here.
-            if ($out.Contains('the AVX-512 build runs here')) { throw 'install.ps1 took the AVX-512 build without reading AVX-512BW' }
+            # Windows has no flag for AVX-512BW and Windows PowerShell's .NET cannot read one, so where the
+            # AVX-512 build is taken here, install.ps1 says it took AVX-512F to imply it.
+            if ($out.Contains('the AVX-512 build runs here') -and -not $out.Contains('AVX-512BW could not be read here, so a processor with AVX-512F is taken to have it, and the bench decides.')) { throw 'install.ps1 took the AVX-512 build without saying how it read AVX-512BW' }
             # pwsh reads AVX-512BW through .NET, and takes the AVX-512 build only where .NET finds it.
             $bw = (& pwsh -NoProfile -Command '[System.Runtime.Intrinsics.X86.Avx512BW]::IsSupported' 2>&1 | Out-String).Trim()
             $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'state-pwsh'
@@ -1757,10 +1757,10 @@ jobs:
               "install.sh did not refuse an attestation made at another tag"
           fi
 
-          # gh failing to check, which the install goes on past: at its setup, with a trust root that
-          # never loaded, whose failed verification is not a verdict, and without the network. What gh
-          # was asked is read from its arguments: the release workflow at this version's tag, exactly.
-          for mode in setup trust-root offline; do
+          # gh failing to check, which the install goes on past: at its setup, and with a trust root that
+          # never loaded, whose failed verification is not a verdict. What gh was asked is read from its
+          # arguments: the release workflow at this version's tag, exactly.
+          for mode in setup trust-root; do
             rc=0
             PATH="$tmp/fake-gh:$PATH" FAKE_GH=$mode FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
               bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unchecked-$mode" > "unchecked-$mode.txt" 2>&1 || rc=$?
@@ -1772,19 +1772,23 @@ jobs:
             "install.sh did not say gh could not check at its setup"
           said unchecked-trust-root.txt "Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed))." \
             "install.sh took a trust root that never loaded for a failed attestation"
-          said unchecked-offline.txt "Its build attestation was not verified: gh could not check it (Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host)." \
-            "install.sh did not say gh could not reach GitHub"
-          # A failure gh words in a way this script has never seen is a verdict, so it stops the run.
-          rc=0
-          PATH="$tmp/fake-gh:$PATH" FAKE_GH=verdict FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
-            bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unknown-verdict" > unknown-verdict.txt 2>&1 || rc=$?
-          [ "$rc" -ne 0 ] || { cat unknown-verdict.txt; bad "install.sh installed a binary whose attestation gh did not verify"; }
-          said unknown-verdict.txt "$RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" \
-            "install.sh did not refuse an attestation gh failed in words it does not know"
-          said unknown-verdict.txt "The file may be corrupt, or tampered with on its way here" "install.sh did not say the file may be tampered with"
-          if grep -qF 'Building from source' unknown-verdict.txt; then bad "install.sh built from source in place of an unverified binary"; fi
-          [ ! -e "$tmp/unknown-verdict/cadence" ] && [ ! -e "$tmp/unknown-verdict/cadence.exe" ] \
-            || bad "a binary was installed whose attestation gh did not verify"
+          # Any other failure is a verdict, so it stops the run: one in words this script has never seen,
+          # and one where gh did not reach GitHub.
+          for mode in verdict offline; do
+            rc=0
+            PATH="$tmp/fake-gh:$PATH" FAKE_GH=$mode FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
+              bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unverified-$mode" > "unverified-$mode.txt" 2>&1 || rc=$?
+            [ "$rc" -ne 0 ] || { cat "unverified-$mode.txt"; bad "install.sh installed a binary whose attestation gh did not verify ($mode)"; }
+            said "unverified-$mode.txt" "$RELEASE_FILE's build attestation does not verify (" \
+              "install.sh did not refuse an attestation gh did not verify ($mode)"
+            said "unverified-$mode.txt" "The file may be corrupt, or tampered with on its way here" \
+              "install.sh did not say the file may be tampered with ($mode)"
+            if grep -qF 'Building from source' "unverified-$mode.txt"; then bad "install.sh built from source in place of an unverified binary"; fi
+            [ ! -e "$tmp/unverified-$mode/cadence" ] && [ ! -e "$tmp/unverified-$mode/cadence.exe" ] \
+              || bad "a binary was installed whose attestation gh did not verify ($mode)"
+          done
+          said unverified-verdict.txt "$RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" \
+            "install.sh did not name gh's own words"
           said "$tmp/gh-args" "--repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v" \
             "gh was not asked for the release workflow at this version's tag"
 
@@ -2154,19 +2158,23 @@ jobs:
               $env:Path = $path
               Remove-Item Env:FAKE_GH, Env:FAKE_GH_ARGS -ErrorAction SilentlyContinue
             }
-            foreach ($unchecked in @($run, $root, $offline)) {
+            foreach ($unchecked in @($run, $root)) {
               if ($unchecked.Code -ne 0) { Write-Host $unchecked.Out; throw "install.ps1 exited $($unchecked.Code) when gh could not check" }
               Said $unchecked 'Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed.' 'install.ps1 did not repeat at the end that the attestation was not verified'
             }
             Said $run 'Its build attestation was not verified: gh could not check it (error creating Sigstore verifier: no valid Sigstore verifiers could be initialized).' 'install.ps1 did not say gh could not check at its setup'
             Said $root 'Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed)).' 'install.ps1 took a trust root that never loaded for a failed attestation'
-            Said $offline 'Its build attestation was not verified: gh could not check it (Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host).' 'install.ps1 did not say gh could not reach GitHub'
-            # A failure gh words in a way this script has never seen is a verdict, so it stops the run.
-            if ($verdict.Code -eq 0) { Write-Host $verdict.Out; throw 'install.ps1 installed a binary whose attestation gh did not verify' }
-            Said $verdict "$env:RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" 'install.ps1 did not refuse an attestation gh failed in words it does not know'
-            Said $verdict 'The file may be corrupt, or tampered with on its way here' 'install.ps1 did not say the file may be tampered with'
-            if ($verdict.Out.Contains('Building from source')) { throw 'install.ps1 built from source in place of an unverified binary' }
-            if (Test-Path (Join-Path $tmp 'unknown-verdict\cadence.exe')) { throw 'install.ps1 installed a binary whose attestation gh did not verify' }
+            # Any other failure is a verdict, so it stops the run: one in words this script has never seen,
+            # and one where gh did not reach GitHub.
+            foreach ($unverified in @(@{ Run = $verdict; Dir = 'unknown-verdict' }, @{ Run = $offline; Dir = 'unchecked-offline' })) {
+              $u = $unverified.Run
+              if ($u.Code -eq 0) { Write-Host $u.Out; throw "install.ps1 installed a binary whose attestation gh did not verify ($($unverified.Dir))" }
+              Said $u "$env:RELEASE_FILE's build attestation does not verify (" "install.ps1 did not refuse an attestation gh did not verify ($($unverified.Dir))"
+              Said $u 'The file may be corrupt, or tampered with on its way here' 'install.ps1 did not say the file may be tampered with'
+              if ($u.Out.Contains('Building from source')) { throw 'install.ps1 built from source in place of an unverified binary' }
+              if (Test-Path (Join-Path $tmp "$($unverified.Dir)\cadence.exe")) { throw "install.ps1 installed a binary whose attestation gh did not verify ($($unverified.Dir))" }
+            }
+            Said $verdict "$env:RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" "install.ps1 did not name gh's own words"
             if (-not (Get-Content -Raw (Join-Path $tmp 'gh-args.txt')).Contains("--repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v")) { throw "gh was not asked for the release workflow at this version's tag" }
 
             # gh signed out, by a configuration folder of its own and no token.

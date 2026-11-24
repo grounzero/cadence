@@ -395,11 +395,14 @@ download() {
     rm -f "$OUT.headers"
     # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
     case "$1" in https://api.github.com/*) [ -z "${GITHUB_TOKEN:-}" ] || header="Authorization: Bearer $GITHUB_TOKEN" ;; esac
+    # An https address is never followed to a plain one, nor read over TLS older than 1.2.
+    local secure=""
+    case "$1" in https://*) secure="--proto =https --tlsv1.2" ;; esac
     if command -v curl > /dev/null 2>&1; then
         if [ -n "$header" ]; then
-            curl -fsSL -D "$OUT.headers" -H "$header" -o "$2" "$1"
+            curl -fsSL $secure -D "$OUT.headers" -H "$header" -o "$2" "$1"
         else
-            curl -fsSL -D "$OUT.headers" -o "$2" "$1"
+            curl -fsSL $secure -D "$OUT.headers" -o "$2" "$1"
         fi
     elif command -v wget > /dev/null 2>&1; then
         if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
@@ -460,8 +463,10 @@ fetch() {
 
 # A download the install needs, failed twice for the network, stops the run.
 offline() {
-    fail "could not download $1$TROUBLE, after trying twice. Check the network connection, or a proxy or firewall in the way, then run this again"
+    fail "could not download $1$TROUBLE, after trying twice. $NETWORK_HINT"
 }
+
+NETWORK_HINT="Check the network connection, or a proxy or firewall in the way, then run this again"
 
 # A release file that does not match what the release published stops the run, and nothing is built
 # in its place, since a download that was changed on its way may be changed again.
@@ -740,7 +745,7 @@ listed_as() {
 
 # The release workflow attests every binary it builds, run at the version's tag, and gh checks that
 # attestation where it is installed and signed in. Where gh cannot check, that is said and the install
-# goes on; an attestation that fails leaves WHY.
+# goes on; any other failure, in whatever words, leaves WHY.
 attested() {
     local file=$1 rc last identity="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VERSION"
     ATTESTED=no
@@ -768,19 +773,14 @@ attested() {
         say "Its build attestation was not verified: this gh is too old to check one."
         return 0
     fi
-    # A verifier that never loaded its trust root reports a failed verification too, so it is read
-    # first, as gh failing to check. Otherwise a verdict is no attestation for this file, a signature
-    # that is not the release workflow's at the tag, or a certificate naming something else.
-    if grep -qE 'failed to choose verifier|initialization may have failed' "$OUT"; then
+    # A verifier or trust root that never loaded is gh failing to check. Every other failure is a
+    # verdict, so a wording gh has not used before stops the run.
+    if grep -qE 'error creating Sigstore verifier|failed to choose verifier|initialization may have failed' "$OUT"; then
         say "Its build attestation was not verified: gh could not check it ($last)."
         return 0
     fi
-    if grep -qE 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed' "$OUT"; then
-        WHY="$file's build attestation does not verify ($last)"
-        return 1
-    fi
-    say "Its build attestation was not verified: gh could not check it ($last)."
-    return 0
+    WHY="$file's build attestation does not verify ($last)"
+    return 1
 }
 
 # Leaves the checked binary in BUILT, or the reason there is none for this system in WHY. A binary
@@ -990,8 +990,11 @@ install_rustup() {
         run "$WORK/rustup-init.exe" -y --default-toolchain none || fail "rustup's install failed"
     else
         command -v curl > /dev/null 2>&1 || fail "curl is needed to install rustup; install curl, or Rust from https://rustup.rs"
-        run sh -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none" \
-            || fail "rustup's install failed"
+        local rc=0
+        fetch "https://sh.rustup.rs" "$WORK/rustup-init.sh" || rc=$?
+        [ "$rc" != 2 ] || offline "rustup's installer"
+        [ "$rc" = 0 ] || fail "could not download rustup's installer$TROUBLE"
+        run sh "$WORK/rustup-init.sh" -y --default-toolchain none || fail "rustup's install failed"
     fi
     PATH="$CARGO_BIN:$PATH"
     command -v rustup > /dev/null 2>&1 || fail "rustup is still not found after its install"
@@ -1031,12 +1034,15 @@ check_rust() {
 
 # The tag the source is fetched at, the version asked for or found, checked against the repository's.
 resolve_tag() {
-    local tags
-    log "\$ git ls-remote --tags --refs $REPO_URL"
-    tags=$(git ls-remote --tags --refs "$REPO_URL" 2> "$OUT") || {
+    local tags attempt
+    for attempt in 1 2; do
+        log "\$ git ls-remote --tags --refs $REPO_URL"
+        tags=$(git ls-remote --tags --refs "$REPO_URL" 2> "$OUT") && break
         redact < "$OUT" >> "$LOG"
-        fail "could not list the releases at $REPO_URL"
-    }
+        [ "$attempt" = 1 ] || fail "could not list the releases at $REPO_URL, after trying twice. $NETWORK_HINT"
+        say "Listing the releases at $REPO_URL failed, so it is tried once more in 3 seconds."
+        sleep 3
+    done
     tags=$(printf '%s\n' "$tags" | sed -n 's#.*refs/tags/##p')
     if ! printf '%s\n' "$tags" | grep -Fqx -- "$VERSION"; then
         case "$VERSION" in
@@ -1052,9 +1058,15 @@ fetch_source() {
     rm -rf "$SRC"
     run git -c init.defaultBranch=main init --quiet "$SRC" || fail "could not create $SRC"
     run git -C "$SRC" remote add origin "$REPO_URL" || fail "could not name the repository in $SRC"
-    # A release names itself from its annotated tag, so the tag is fetched as itself.
-    run git -C "$SRC" fetch --quiet --depth 1 origin "+refs/tags/$VERSION:refs/tags/$VERSION" \
-        || fail "could not fetch Cadence $VERSION"
+    # A release names itself from its annotated tag, so the tag is fetched as itself, tried twice as a
+    # download is.
+    local attempt
+    for attempt in 1 2; do
+        run git -C "$SRC" fetch --quiet --depth 1 origin "+refs/tags/$VERSION:refs/tags/$VERSION" && break
+        [ "$attempt" = 1 ] || fail "could not fetch Cadence $VERSION, after trying twice. $NETWORK_HINT"
+        say "Fetching Cadence $VERSION failed, so it is tried once more in 3 seconds."
+        sleep 3
+    done
     run git -C "$SRC" -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$VERSION" \
         || fail "could not check out Cadence $VERSION"
 }
@@ -1199,11 +1211,12 @@ build() {
     FROM=source
 }
 
-# Leaves in ID the name a binary gives in answer to uci, or nothing; LIMITED is 1 where no answer came
-# in time.
+# Leaves in ID the name a binary gives in answer to uci, or nothing, and its exit status in UCI_RC;
+# LIMITED is 1 where no answer came in time.
 id_name() {
     printf 'uci\nquit\n' > "$WORK/uci.in"
     limited "$UCI_SECONDS" "$WORK/uci.in" "$WORK/uci.out" "$1"
+    UCI_RC=$?
     redact < "$OUT" >> "$LOG"
     ID=$(tr -d '\r' < "$WORK/uci.out" | sed -n 's/^id name //p' | head -n 1)
 }
@@ -1274,9 +1287,17 @@ bench_and_name() {
         return 1
     fi
     id_name "$bin"
-    log "id name: ${ID:-nothing}"
+    log "id name: ${ID:-nothing}, exit $UCI_RC"
     if [ "$LIMITED" = 1 ]; then
         WHY="it did not answer uci within $UCI_SECONDS seconds, so it was stopped"
+        return 1
+    fi
+    # One that stops while answering cannot run here, as one stopping in its bench cannot; only one
+    # that runs and names itself otherwise is a mismatch.
+    if [ "$UCI_RC" -ne 0 ]; then
+        first=$(head -n 1 "$OUT" | tr -d '\r')
+        [ "$UCI_RC" -ne 132 ] || first="an illegal instruction, one this processor lacks"
+        WHY="it stopped while answering uci with exit $UCI_RC${first:+ ($first)}"
         return 1
     fi
     if [ "$ID" != "$name" ]; then

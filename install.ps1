@@ -324,11 +324,13 @@ function Invoke-Limited([string]$Binary, [string]$Arguments, [string]$Feed, [int
     return @{ Code = $code; Out = $text; Failed = '' }
 }
 
+# The name a binary gives in answer to uci, or nothing, with how its run ended in UciRun.
 function Get-IdName([string]$Binary) {
     # The engine answered only its banner when Windows PowerShell piped this in, as if the first
     # command carried a byte order mark, so an empty line goes first to take one.
     try { Write-Log ('console input encoding: ' + [Console]::InputEncoding.WebName) } catch { }
     $run = Invoke-Limited $Binary '' "`nuci`nquit`n" $UciSeconds
+    $script:UciRun = $run
     $lines = @($run.Out -split "`r?`n" | Where-Object { $_ })
     Write-Log ('uci answered: ' + ($lines -join ' | '))
     foreach ($line in $lines) {
@@ -418,11 +420,11 @@ function Confirm-System {
     # Windows names no flag for BMI1 or LZCNT either, so they are read from .NET where it can say.
     $bmi1 = Test-NetFeature 'Bmi1'
     $lzcnt = Test-NetFeature 'Lzcnt'
-    # PF_AVX512F_INSTRUCTIONS_AVAILABLE. Windows names no flag for AVX-512BW, which every processor with
-    # AVX-512F but the Xeon Phi also has, and the bench run catches one without it as an illegal
-    # instruction.
+    # PF_AVX512F_INSTRUCTIONS_AVAILABLE. Windows names no flag for AVX-512BW, so it is read from .NET
+    # where it can say; elsewhere a processor with AVX-512F is taken to have it, and the bench decides.
     $avx512f = Test-ProcessorFeature 41
-    Write-Log "AVX2: $avx2; BMI1: $bmi1; LZCNT: $lzcnt; AVX-512F: $avx512f"
+    $avx512bw = Test-NetFeature 'Avx512BW'
+    Write-Log "AVX2: $avx2; BMI1: $bmi1; LZCNT: $lzcnt; AVX-512F: $avx512f; AVX-512BW: $avx512bw"
     # What the AVX2 build needs and this processor is known to lack; the AVX-512 build needs it all too.
     $lacks = @()
     if (-not $avx2) { $lacks += 'AVX2' }
@@ -435,7 +437,12 @@ function Confirm-System {
     } else {
         Say "BMI1 and LZCNT were read through .NET: this processor lacks $(@($lacks | Where-Object { $_ -ne 'AVX2' }) -join ' and ')."
     }
-    $avx512 = $lacks.Count -eq 0 -and $avx512f
+    $avx512 = $lacks.Count -eq 0 -and $avx512f -and $avx512bw -ne $false
+    if ($avx512f -and $null -eq $avx512bw) {
+        Say 'AVX-512BW could not be read here, so a processor with AVX-512F is taken to have it, and the bench decides.'
+    } elseif ($avx512f) {
+        Say "AVX-512BW was read through .NET: this processor $(if ($avx512bw) { 'has' } else { 'lacks' }) it."
+    }
     if ($avx512) {
         Say 'Windows on x86-64, with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here.'
     } elseif ($lacks.Count -eq 0) {
@@ -446,6 +453,7 @@ function Confirm-System {
     if ($script:Build -eq 'avx512' -and -not $avx512) {
         $missing = @()
         if (-not $avx512f) { $missing += 'AVX-512F' }
+        if ($avx512bw -eq $false) { $missing += 'AVX-512BW' }
         $missing += $lacks
         Fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $($missing -join ', ')"
     } elseif ($script:Build -eq 'avx2' -and $lacks.Count -gt 0) {
@@ -617,8 +625,10 @@ function Invoke-Fetch([string]$Uri, [string]$OutFile, [hashtable]$Headers = @{})
 
 # A download the install needs, failed twice for the network, stops the run.
 function Stop-Offline([string]$What, [string]$Trouble) {
-    Fail "could not download $What$Trouble, after trying twice. Check the network connection, or a proxy or firewall in the way, then run this again"
+    Fail "could not download $What$Trouble, after trying twice. $NetworkHint"
 }
+
+$NetworkHint = 'Check the network connection, or a proxy or firewall in the way, then run this again'
 
 # A release file that does not match what the release published stops the run, and nothing is built
 # in its place, since a download that was changed on its way may be changed again.
@@ -714,7 +724,7 @@ function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Pat
 
 # The release workflow attests every binary it builds, run at the version's tag, and gh checks that
 # attestation where it is installed and signed in. Where gh cannot check, that is said and the install
-# goes on; an attestation that fails leaves Why.
+# goes on; any other failure, in whatever words, leaves Why.
 function Test-Attestation([string]$File) {
     $script:Attested = 'no'
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -743,19 +753,14 @@ function Test-Attestation([string]$File) {
         Say 'Its build attestation was not verified: this gh is too old to check one.'
         return $true
     }
-    # A verifier that never loaded its trust root reports a failed verification too, so it is read
-    # first, as gh failing to check. Otherwise a verdict is no attestation for this file, a signature
-    # that is not the release workflow's at the tag, or a certificate naming something else.
-    if (($said -join "`n") -cmatch 'failed to choose verifier|initialization may have failed') {
+    # A verifier or trust root that never loaded is gh failing to check. Every other failure is a
+    # verdict, so a wording gh has not used before stops the run.
+    if (($said -join "`n") -cmatch 'error creating Sigstore verifier|failed to choose verifier|initialization may have failed') {
         Say "Its build attestation was not verified: gh could not check it ($last)."
         return $true
     }
-    if (($said -join "`n") -cmatch 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed') {
-        $script:Why = "$File's build attestation does not verify ($last)"
-        return $false
-    }
-    Say "Its build attestation was not verified: gh could not check it ($last)."
-    return $true
+    $script:Why = "$File's build attestation does not verify ($last)"
+    return $false
 }
 
 # Leaves the checked binary in Built, or the reason there is none for this system in Why. A binary
@@ -944,11 +949,14 @@ function Test-Rust {
 
 # The tag the source is fetched at, the version asked for or found, checked against the repository's.
 function Resolve-Tag {
-    Write-Log "`$ git ls-remote --tags --refs $RepoUrl"
-    $listing = git ls-remote --tags --refs $RepoUrl 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    foreach ($attempt in 1, 2) {
+        Write-Log "`$ git ls-remote --tags --refs $RepoUrl"
+        $listing = git ls-remote --tags --refs $RepoUrl 2>&1
+        if ($LASTEXITCODE -eq 0) { break }
         foreach ($line in $listing) { Write-Log "$line" }
-        Fail "could not list the releases at $RepoUrl"
+        if ($attempt -eq 2) { Fail "could not list the releases at $RepoUrl, after trying twice. $NetworkHint" }
+        Say "Listing the releases at $RepoUrl failed, so it is tried once more in 3 seconds."
+        Start-Sleep -Seconds 3
     }
     $tags = @($listing | ForEach-Object { "$_" -replace '^.*refs/tags/', '' })
     if ($tags -notcontains $script:Version) {
@@ -965,10 +973,16 @@ function Get-Source {
     if ($code -ne 0) { Fail "could not create $($script:Src)" }
     $code = Invoke-Logged 'git' @('-C', $script:Src, 'remote', 'add', 'origin', $RepoUrl)
     if ($code -ne 0) { Fail "could not name the repository in $($script:Src)" }
-    # A release names itself from its annotated tag, so the tag is fetched as itself.
-    $code = Invoke-Logged 'git' @('-C', $script:Src, 'fetch', '--quiet', '--depth', '1', 'origin',
-        "+refs/tags/$($script:Version):refs/tags/$($script:Version)")
-    if ($code -ne 0) { Fail "could not fetch Cadence $script:Version" }
+    # A release names itself from its annotated tag, so the tag is fetched as itself, tried twice as a
+    # download is.
+    foreach ($attempt in 1, 2) {
+        $code = Invoke-Logged 'git' @('-C', $script:Src, 'fetch', '--quiet', '--depth', '1', 'origin',
+            "+refs/tags/$($script:Version):refs/tags/$($script:Version)")
+        if ($code -eq 0) { break }
+        if ($attempt -eq 2) { Fail "could not fetch Cadence $script:Version, after trying twice. $NetworkHint" }
+        Say "Fetching Cadence $script:Version failed, so it is tried once more in 3 seconds."
+        Start-Sleep -Seconds 3
+    }
     $code = Invoke-Logged 'git' @('-C', $script:Src, '-c', 'advice.detachedHead=false', 'checkout', '--quiet',
         '--detach', "refs/tags/$($script:Version)")
     if ($code -ne 0) { Fail "could not check out Cadence $script:Version" }
@@ -1199,9 +1213,20 @@ function Test-BenchAndName([string]$Binary, [string]$Want, [string]$Name) {
         return $false
     }
     $script:Id = Get-IdName $Binary
-    Write-Log "id name: $script:Id"
+    Write-Log "id name: $script:Id, exit $($script:UciRun.Code)"
     if ($script:Limited) {
         $script:Why = "it did not answer uci within $UciSeconds seconds, so it was stopped"
+        return $false
+    }
+    # One that stops while answering cannot run here, as one stopping in its bench cannot; only one
+    # that runs and names itself otherwise is a mismatch.
+    if ($script:UciRun.Failed) {
+        $script:Why = "it cannot start on this system, $($script:UciRun.Failed)"
+        return $false
+    }
+    if ($script:UciRun.Code -ne 0) {
+        $what = if ($script:UciRun.Code -eq -1073741795) { ' (an illegal instruction, one this processor lacks)' } else { '' }
+        $script:Why = "it stopped while answering uci with exit $($script:UciRun.Code)$what"
         return $false
     }
     if ($script:Id -ne $Name) {

@@ -168,7 +168,7 @@ disk: a stalled network drive can delay `stop`.
 ### Unusual commands
 
 - `go searchmoves` searches only the listed legal moves, and answers
-  `bestmove 0000` if none of them is legal.
+  `bestmove 0000` if none of them is legal or the list is empty.
 - `setoption name Hash` during a search stops that search first, so `bestmove` comes at once.
 - After a `position` command fails, or is longer than 1 MiB and discarded,
   `go` answers `bestmove 0000` until a valid `position`.

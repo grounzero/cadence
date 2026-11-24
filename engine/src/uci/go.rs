@@ -62,7 +62,7 @@ impl Session {
         let mut board = self.board.duplicate();
         let Some(root_filter) = search_moves(&tokens, &generate_legal(&board)) else {
             say(format_args!(
-                "info string go: no move in searchmoves is legal here; searching nothing"
+                "info string go: searchmoves names no legal move here; searching nothing"
             ));
             say(format_args!("bestmove 0000"));
             return;
@@ -442,8 +442,8 @@ const GO_KEYWORDS: [&str; 12] = [
     "infinite",
 ];
 
-/// The moves after `searchmoves`, empty where there is no list; one not legal here is named and
-/// left out, and `None` is a list naming no legal move, which leaves nothing to search.
+/// The moves after `searchmoves`, empty where the word is absent; one not legal here is named and
+/// left out. `None` is a list naming no legal move, an empty one included, so nothing is searched.
 fn search_moves(tokens: &[&str], legal: &MoveList) -> Option<Vec<Move>> {
     let Some(at) = tokens.iter().position(|&t| t == "searchmoves") else {
         return Some(Vec::new());
@@ -452,9 +452,6 @@ fn search_moves(tokens: &[&str], legal: &MoveList) -> Option<Vec<Move>> {
     let named = tokens[at + 1..]
         .iter()
         .take_while(|t| !GO_KEYWORDS.contains(t));
-    if named.clone().next().is_none() {
-        return Some(moves);
-    }
     for &token in named {
         match parse_uci(legal, token) {
             Some(m) => moves.push(m),
