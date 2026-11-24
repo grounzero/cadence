@@ -10,10 +10,6 @@ and double Chess960 (DFRC), using an alpha-beta search and a neural network
 (NNUE) trained only on its own games. The handcrafted evaluation it started
 with is still available as an option.
 
-The network has been trained three times, each on games the one before it
-played: net 1 learned from games played by the handcrafted evaluation, net 2
-from net 1's games, and net 3, the one built in, from net 2's and net 1's.
-
 Play it on Lichess as [Mithandros](https://lichess.org/@/Mithandros). The bot
 also chats: a small language model answers messages and remarks on its
 thinking, with no say in its moves.
