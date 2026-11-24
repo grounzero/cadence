@@ -1318,21 +1318,24 @@ fn go_searchmoves_names_an_illegal_move_and_leaves_it_out() {
     assert_eq!(bestmove(&out), "h2h3", "{out:?}");
 }
 
-/// A bare `searchmoves`, with no list after it, filters nothing, so the answer is a plain `go`'s and
-/// nothing is warned of.
+/// A bare `searchmoves`, with no list after it, names no move to search, so the answer is the null
+/// move, as for a list naming no legal move.
 #[test]
-fn a_bare_searchmoves_searches_every_move() {
-    let answer = |go: &str| {
-        let out = Engine::go(&["position startpos"], go).join("\n");
-        (bestmove(&out), out)
-    };
-    let (plain, _) = answer("go depth 4");
-    let (best, out) = answer("go searchmoves depth 4");
-    assert_eq!(best, plain, "{out:?}");
-    assert!(
-        !out.lines().any(|l| l.starts_with("info string")),
-        "{out:?}"
-    );
+fn a_bare_searchmoves_answers_the_null_move() {
+    for go in ["go searchmoves depth 4", "go depth 4 searchmoves"] {
+        let lines = Engine::go(&["position startpos"], go);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("bestmove 0000"),
+            "{go}: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("info string") && l.contains("searchmoves")),
+            "{go}: {lines:?}"
+        );
+    }
 }
 
 /// With no other limit the search would run to its depth cap, so returning at all is the stop.

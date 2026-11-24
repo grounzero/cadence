@@ -1165,6 +1165,24 @@ jobs:
             if ($out.Contains('the AVX-512 build runs here') -and -not $out.Contains('with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here.')) { throw 'install.ps1 named the AVX-512 build features differently from install.sh' }
             # Windows has no flag for BMI1 or LZCNT, so install.ps1 says whether .NET could read them.
             if (-not ($out.Contains('BMI1 and LZCNT were read through .NET:') -or $out.Contains('BMI1 and LZCNT could not be read here, so a processor with AVX2 is taken to have them, and the bench decides.'))) { throw 'install.ps1 did not say how it read BMI1 and LZCNT' }
+            # Windows has no flag for AVX-512BW and Windows PowerShell's .NET cannot read one, so the
+            # AVX-512 build is never taken here.
+            if ($out.Contains('the AVX-512 build runs here')) { throw 'install.ps1 took the AVX-512 build without reading AVX-512BW' }
+            # pwsh reads AVX-512BW through .NET, and takes the AVX-512 build only where .NET finds it.
+            $bw = (& pwsh -NoProfile -Command '[System.Runtime.Intrinsics.X86.Avx512BW]::IsSupported' 2>&1 | Out-String).Trim()
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'state-pwsh'
+            New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+            try {
+              $seven = & pwsh -NoProfile -ExecutionPolicy Bypass -File install.ps1 --yes --test-urls --version $env:RELEASE_VERSION `
+                --dir (Join-Path $env:RUNNER_TEMP 'from-pwsh') 2>&1 | Out-String
+              $code = $LASTEXITCODE
+            } finally {
+              $env:LOCALAPPDATA = $lad
+            }
+            if ($code -ne 0) { Write-Host $seven; throw "install.ps1 exited $code under pwsh on a release whose binary checks" }
+            $took = $seven.Contains('the AVX-512 build runs here')
+            Write-Host "AVX-512BW through .NET under pwsh: $bw; the AVX-512 build taken: $took"
+            if ($took -and $bw -ne 'True') { Write-Host $seven; throw 'install.ps1 under pwsh took the AVX-512 build where .NET finds no AVX-512BW' }
 
             # A corrupt binary stops the run, which builds nothing in its place.
             $env:CADENCE_RELEASES_URL = "$url/corrupt"
@@ -1295,6 +1313,14 @@ jobs:
               cp "$r/good/$v/$RELEASE_FILE" "$r/illegal/$v/cadence-$v-linux-x86-64-generic"
               cp "$r/good/$v/bench.txt" "$r/illegal/$v/"
               (cd "$r/illegal/$v" && $hash "$RELEASE_FILE" "cadence-$v-linux-x86-64-generic" bench.txt > SHA256SUMS)
+              # And one whose bench is the release's, but which crashes when asked uci.
+              mkdir -p "$r/ucicrash/$v"
+              printf '#!/bin/sh\n[ "$1" != bench ] || exec "%s" bench\nkill -SEGV $$\n' "$r/good/$v/$RELEASE_FILE" \
+                > "$r/ucicrash/$v/$RELEASE_FILE"
+              chmod 755 "$r/ucicrash/$v/$RELEASE_FILE"
+              cp "$r/good/$v/$RELEASE_FILE" "$r/ucicrash/$v/cadence-$v-linux-x86-64-generic"
+              cp "$r/good/$v/bench.txt" "$r/ucicrash/$v/"
+              (cd "$r/ucicrash/$v" && $hash "$RELEASE_FILE" "cadence-$v-linux-x86-64-generic" bench.txt > SHA256SUMS)
               ;;
           esac
           renamed="cadence-0.0.1-${RELEASE_FILE#cadence-$v-}"
@@ -1314,6 +1340,10 @@ jobs:
               echo "X Sigstore verification failed" >&2
               echo "Error: failed to choose verifier: public good verifier is not available (initialization may have failed)" >&2
               exit 1 ;;
+            offline)
+              echo "Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host" >&2
+              exit 1 ;;
+            verdict) echo "X The attestation is signed by a workflow this check does not accept" >&2; exit 1 ;;
             *) echo "error creating Sigstore verifier: no valid Sigstore verifiers could be initialized" >&2; exit 1 ;;
           esac
           EOF
@@ -1472,6 +1502,18 @@ jobs:
             }
             Set-Content -Path (Join-Path $illegal 'SHA256SUMS') -Value $lines -Encoding ascii
             Get-Content (Join-Path $illegal 'SHA256SUMS')
+            # And one whose bench is the release's, but which crashes when asked uci.
+            $ucicrash = Join-Path $r "ucicrash\$v"
+            New-Item -ItemType Directory -Force -Path $ucicrash | Out-Null
+            $good = Join-Path $r "good\$v\$env:RELEASE_FILE"
+            $crashes = "public static class Crash { public static int Main(string[] a) { if (a.Length > 0 && a[0] == `"bench`") { var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(@`"$good`", `"bench`") { UseShellExecute = false }); p.WaitForExit(); return p.ExitCode; } return unchecked((int)0xC0000005); } }"
+            Add-Type -TypeDefinition $crashes -OutputAssembly (Join-Path $ucicrash $env:RELEASE_FILE) -OutputType ConsoleApplication -IgnoreWarnings
+            Copy-Item $good (Join-Path $ucicrash $generic)
+            Copy-Item (Join-Path $r "good\$v\bench.txt") $ucicrash
+            $lines = foreach ($name in @($env:RELEASE_FILE, $generic, 'bench.txt')) {
+              '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 (Join-Path $ucicrash $name)).Hash.ToLower(), $name
+            }
+            Set-Content -Path (Join-Path $ucicrash 'SHA256SUMS') -Value $lines -Encoding ascii
           }
           $mark = (Join-Path $env:RUNNER_TEMP 'ran.txt').Replace('\', '\\')
           $marker = "public static class Mark { public static int Main() { System.IO.File.WriteAllText(`"$mark`", `"ran`"); return 0; } }"
@@ -1485,6 +1527,14 @@ jobs:
             'if "%FAKE_GH%"=="trust-root" (',
             '  echo X Sigstore verification failed 1>&2',
             '  echo Error: failed to choose verifier: public good verifier is not available ^(initialization may have failed^) 1>&2',
+            '  exit /b 1',
+            ')',
+            'if "%FAKE_GH%"=="offline" (',
+            '  echo Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host 1>&2',
+            '  exit /b 1',
+            ')',
+            'if "%FAKE_GH%"=="verdict" (',
+            '  echo X The attestation is signed by a workflow this check does not accept 1>&2',
             '  exit /b 1',
             ')',
             'echo error creating Sigstore verifier: no valid Sigstore verifiers could be initialized 1>&2',
@@ -1671,10 +1721,10 @@ jobs:
               "install.sh did not refuse an attestation made at another tag"
           fi
 
-          # gh failing to check, which the install goes on past: at its setup, and with a trust root that
-          # never loaded, whose failed verification is not a verdict. What gh was asked is read from its
-          # arguments: the release workflow at this version's tag, exactly.
-          for mode in setup trust-root; do
+          # gh failing to check, which the install goes on past: at its setup, with a trust root that
+          # never loaded, whose failed verification is not a verdict, and without the network. What gh
+          # was asked is read from its arguments: the release workflow at this version's tag, exactly.
+          for mode in setup trust-root offline; do
             rc=0
             PATH="$tmp/fake-gh:$PATH" FAKE_GH=$mode FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
               bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unchecked-$mode" > "unchecked-$mode.txt" 2>&1 || rc=$?
@@ -1686,6 +1736,19 @@ jobs:
             "install.sh did not say gh could not check at its setup"
           said unchecked-trust-root.txt "Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed))." \
             "install.sh took a trust root that never loaded for a failed attestation"
+          said unchecked-offline.txt "Its build attestation was not verified: gh could not check it (Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host)." \
+            "install.sh did not say gh could not reach GitHub"
+          # A failure gh words in a way this script has never seen is a verdict, so it stops the run.
+          rc=0
+          PATH="$tmp/fake-gh:$PATH" FAKE_GH=verdict FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
+            bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unknown-verdict" > unknown-verdict.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat unknown-verdict.txt; bad "install.sh installed a binary whose attestation gh did not verify"; }
+          said unknown-verdict.txt "$RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" \
+            "install.sh did not refuse an attestation gh failed in words it does not know"
+          said unknown-verdict.txt "The file may be corrupt, or tampered with on its way here" "install.sh did not say the file may be tampered with"
+          if grep -qF 'Building from source' unknown-verdict.txt; then bad "install.sh built from source in place of an unverified binary"; fi
+          [ ! -e "$tmp/unknown-verdict/cadence" ] && [ ! -e "$tmp/unknown-verdict/cadence.exe" ] \
+            || bad "a binary was installed whose attestation gh did not verify"
           said "$tmp/gh-args" "--repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v" \
             "gh was not asked for the release workflow at this version's tag"
 
@@ -1779,6 +1842,20 @@ jobs:
             cmp "$tmp/illegal/cadence$exe" "$tmp/releases/illegal/$v/$generic" || bad "the generic build was not the one installed"
           else
             echo "::notice::no lower tier to give way to here"
+          fi
+          # A build whose bench is the release's but which crashes when asked uci cannot run here either,
+          # so it gives way to the tier below it, and is not called corrupt.
+          if [ -d "$tmp/releases/ucicrash/$v" ]; then
+            generic=$(tr -d '\r' < "$tmp/releases/ucicrash/$v/SHA256SUMS" | sed -n 's/^[0-9a-f]*  *\(cadence-.*-generic\)$/\1/p')
+            rc=0
+            env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" CADENCE_RELEASES_URL="$url/ucicrash" bash install.sh --yes \
+              --test-urls --version "$v" --dir "$tmp/ucicrash" > ucicrash.txt 2>&1 || rc=$?
+            [ "$rc" -eq 0 ] || { cat ucicrash.txt; bad "install.sh exited $rc where the generic build runs after a crash at uci"; }
+            said ucicrash.txt "$RELEASE_FILE cannot be used here: it stopped while answering uci with exit 139" \
+              "install.sh did not say the build stopped while answering uci"
+            said ucicrash.txt "The release's generic build, $generic, is tried in its place." "install.sh did not try the tier below"
+            if grep -qF 'tampered with' ucicrash.txt; then cat ucicrash.txt; bad "install.sh called a crash at uci a corrupt file"; fi
+            cmp "$tmp/ucicrash/cadence" "$tmp/releases/ucicrash/$v/$generic" || bad "the generic build was not the one installed"
           fi
 
           # A download that fails for the network is tried once more: each file's first answer of 503
@@ -1933,6 +2010,27 @@ jobs:
               $installed = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'illegal\cadence.exe')).Hash
               if ($installed -ne (Get-FileHash -Algorithm SHA256 (Join-Path $releases "illegal\$v\$generic")).Hash) { throw 'the generic build was not the one installed' }
               if (@(Get-Content (Join-Path $tmp 'illegal-home\Cadence\install-state')) -notcontains 'build=generic') { throw 'the state does not record the generic build' }
+
+              # A build whose bench is the release's but which crashes when asked uci gives way to the
+              # tier below it as well, and is not called corrupt.
+              Remove-Item Env:GITHUB_TOKEN, Env:GH_TOKEN -ErrorAction SilentlyContinue
+              $env:GH_CONFIG_DIR = Join-Path $tmp 'no-gh'
+              $env:CADENCE_RELEASES_URL = "$url/ucicrash"
+              $env:LOCALAPPDATA = Join-Path $tmp 'ucicrash-home'
+              New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+              try {
+                $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'ucicrash'))
+              } finally {
+                $env:GITHUB_TOKEN = $token
+                $env:LOCALAPPDATA = $lad
+                Remove-Item Env:GH_CONFIG_DIR, Env:CADENCE_RELEASES_URL -ErrorAction SilentlyContinue
+              }
+              if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) where the generic build runs after a crash at uci" }
+              Said $run "$env:RELEASE_FILE cannot be used here: it stopped while answering uci with exit -1073741819" 'install.ps1 did not say the build stopped while answering uci'
+              Said $run "The release's generic build, $generic, is tried in its place." 'install.ps1 did not try the generic build after a crash at uci'
+              if ($run.Out.Contains('tampered with')) { Write-Host $run.Out; throw 'install.ps1 called a crash at uci a corrupt file' }
+              $installed = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'ucicrash\cadence.exe')).Hash
+              if ($installed -ne (Get-FileHash -Algorithm SHA256 (Join-Path $releases "ucicrash\$v\$generic")).Hash) { throw 'the generic build was not the one installed after a crash at uci' }
             } else {
               Write-Host '::notice::the generic build was chosen here, so there is no other build to give way to it'
             }
@@ -1998,16 +2096,27 @@ jobs:
               $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unchecked-setup'))
               $env:FAKE_GH = 'trust-root'
               $root = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unchecked-trust-root'))
+              $env:FAKE_GH = 'offline'
+              $offline = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unchecked-offline'))
+              $env:FAKE_GH = 'verdict'
+              $verdict = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unknown-verdict'))
             } finally {
               $env:Path = $path
               Remove-Item Env:FAKE_GH, Env:FAKE_GH_ARGS -ErrorAction SilentlyContinue
             }
-            foreach ($unchecked in @($run, $root)) {
+            foreach ($unchecked in @($run, $root, $offline)) {
               if ($unchecked.Code -ne 0) { Write-Host $unchecked.Out; throw "install.ps1 exited $($unchecked.Code) when gh could not check" }
               Said $unchecked 'Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed.' 'install.ps1 did not repeat at the end that the attestation was not verified'
             }
             Said $run 'Its build attestation was not verified: gh could not check it (error creating Sigstore verifier: no valid Sigstore verifiers could be initialized).' 'install.ps1 did not say gh could not check at its setup'
             Said $root 'Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed)).' 'install.ps1 took a trust root that never loaded for a failed attestation'
+            Said $offline 'Its build attestation was not verified: gh could not check it (Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host).' 'install.ps1 did not say gh could not reach GitHub'
+            # A failure gh words in a way this script has never seen is a verdict, so it stops the run.
+            if ($verdict.Code -eq 0) { Write-Host $verdict.Out; throw 'install.ps1 installed a binary whose attestation gh did not verify' }
+            Said $verdict "$env:RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" 'install.ps1 did not refuse an attestation gh failed in words it does not know'
+            Said $verdict 'The file may be corrupt, or tampered with on its way here' 'install.ps1 did not say the file may be tampered with'
+            if ($verdict.Out.Contains('Building from source')) { throw 'install.ps1 built from source in place of an unverified binary' }
+            if (Test-Path (Join-Path $tmp 'unknown-verdict\cadence.exe')) { throw 'install.ps1 installed a binary whose attestation gh did not verify' }
             if (-not (Get-Content -Raw (Join-Path $tmp 'gh-args.txt')).Contains("--repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v")) { throw "gh was not asked for the release workflow at this version's tag" }
 
             # gh signed out, by a configuration folder of its own and no token.

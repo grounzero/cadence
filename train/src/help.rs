@@ -120,4 +120,18 @@ mod tests {
         }
         assert_eq!(text("unknown"), None);
     }
+
+    /// The export's check of a scaling factor is a `cadence-tools forward` command, which needs the
+    /// net file it checks as well as the raw weights.
+    #[test]
+    fn the_export_names_every_file_its_forward_check_needs() {
+        let help = text("export")
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let check =
+            "`cadence-tools forward --net FILE --raw FILE --scale-factor F --unscaled FILE`";
+        assert!(help.contains(check), "{help}");
+    }
 }
