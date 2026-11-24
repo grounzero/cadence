@@ -35,8 +35,9 @@ checkpoint is scored over the holdout's first 20,000 records by the trainer's
 own forward pass, and its validation loss is printed beside the training loss
 it logged.
 
-The defaults are the net's recipe: 40 superbatches of 6,104 batches, the target
-half result and half score, 256 units a perspective.
+The defaults are the first nets' recipe: 40 superbatches of 6,104 batches, the
+target half result and half score, 256 units a perspective. The shipped net is
+512 wide (`--hidden 512`).
 
   --superbatches N           superbatches to train
   --batches N                batches in each superbatch
