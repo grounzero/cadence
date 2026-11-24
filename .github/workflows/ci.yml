@@ -1309,10 +1309,17 @@ jobs:
           mkdir -p "$r/nolist"
           printf '{"tag_name": "9.9.9"}\n' > "$r/nolist/latest"
           printf '{"tag_name": "%s"}\n' "$iv" > "$r/api-known/releases/tags/$iv"
-          # Bytes no system starts as a program, with a NUL so no shell runs them as a script.
+          # Bytes no system starts as a program, with a NUL so no shell runs them as a script. They stand
+          # for this system's build and each tier below it, since a release lists every one it has.
           cp "$r/good/$v/bench.txt" "$r/noexec/$v/"
-          printf 'MZ\000\001 not a program\n' > "$r/noexec/$v/$RELEASE_FILE"
-          (cd "$r/noexec/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
+          lower=""
+          case "$RELEASE_FILE" in
+            *-macos-*) ;;
+            *-x86-64-avx512*) lower="${RELEASE_FILE/-avx512/-avx2} ${RELEASE_FILE/-avx512/-generic}" ;;
+            *-x86-64-avx2*) lower="${RELEASE_FILE/-avx2/-generic}" ;;
+          esac
+          for f in "$RELEASE_FILE" $lower; do printf 'MZ\000\001 not a program\n' > "$r/noexec/$v/$f"; done
+          (cd "$r/noexec/$v" && $hash "$RELEASE_FILE" $lower bench.txt > SHA256SUMS)
           # The release served with a first answer of 503 to each file, a bench.txt one node off, and a
           # SHA256SUMS listing no binary for this system, one whose entry for it is no SHA-256, and one
           # that is a web page.
