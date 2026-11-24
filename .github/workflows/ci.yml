@@ -1966,7 +1966,7 @@ jobs:
           # A build whose bench is the release's but which crashes when asked uci cannot run here either,
           # so it gives way to the tier below it, and is not called corrupt.
           if [ -d "$tmp/releases/ucicrash/$v" ]; then
-            generic=$(tr -d '\r' < "$tmp/releases/ucicrash/$v/SHA256SUMS" | sed -n 's/^[0-9a-f]*  *\(cadence-.*-generic\)$/\1/p')
+            generic=$(tr -d '\r' < "$tmp/releases/ucicrash/$v/SHA256SUMS" | sed -n 's/^[0-9a-f]*  *\(cadence-.*-generic\(\.exe\)\{0,1\}\)$/\1/p')
             rc=0
             env -u GITHUB_TOKEN -u GH_TOKEN GH_CONFIG_DIR="$nogh" CADENCE_RELEASES_URL="$url/ucicrash" bash install.sh --yes \
               --test-urls --version "$v" --dir "$tmp/ucicrash" > ucicrash.txt 2>&1 || rc=$?
@@ -1975,7 +1975,9 @@ jobs:
               "install.sh did not say the build stopped while answering uci"
             said ucicrash.txt "The release's generic build, $generic, is tried in its place." "install.sh did not try the tier below"
             if grep -qF 'tampered with' ucicrash.txt; then cat ucicrash.txt; bad "install.sh called a crash at uci a corrupt file"; fi
-            cmp "$tmp/ucicrash/cadence" "$tmp/releases/ucicrash/$v/$generic" || bad "the generic build was not the one installed"
+            exe=""
+            [ "$RUNNER_OS" != Windows ] || exe=.exe
+            cmp "$tmp/ucicrash/cadence$exe" "$tmp/releases/ucicrash/$v/$generic" || bad "the generic build was not the one installed"
           fi
           # Where no tier runs, the run stops with its log kept, as for a binary the system refused, and
           # shows no line of the shell's own.
@@ -1999,7 +2001,7 @@ jobs:
             for dir in /usr/local/bin /usr/bin /bin; do
               for f in "$dir"/*; do
                 name=${f##*/}
-                if [ "$name" != curl ] && [ ! -e "$nocurl/$name" ]; then ln -s "$f" "$nocurl/$name"; fi
+                if [ "$name" != curl ] && [ ! -e "$nocurl/$name" ] && [ ! -L "$nocurl/$name" ]; then ln -s "$f" "$nocurl/$name"; fi
               done
             done
             rc=0
@@ -2538,6 +2540,7 @@ jobs:
                 $run = Install $asked
                 if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) installing into a fresh folder ($dir)" }
                 Set-Content -Path (Join-Path $env:LOCALAPPDATA 'Cadence\install-20000101-000000.log') -Value 'an earlier run'
+                Remove-Item Env:CADENCE_RELEASES_URL
                 $run = Install @('--yes', '--uninstall')
                 if ($run.Code -ne 0) { Write-Host $run.Out; throw "the uninstall exited $($run.Code) ($dir)" }
                 if (Test-Path (Join-Path $env:LOCALAPPDATA 'Cadence')) { Write-Host $run.Out; Get-ChildItem -Recurse -Force (Join-Path $env:LOCALAPPDATA 'Cadence') | Out-Host; throw "the uninstall left the Cadence folder behind ($dir)" }
