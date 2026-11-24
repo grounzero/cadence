@@ -7,6 +7,26 @@ mod support;
 
 use std::path::Path;
 
+/// `--help` is asked for, so its text is the output and goes to stdout, where a pager or a grep reads
+/// it; only a usage error goes to stderr.
+#[test]
+fn help_is_printed_to_stdout() {
+    for flag in ["--help", "-h"] {
+        let out = std::process::Command::new(support::binary())
+            .arg(flag)
+            .output()
+            .expect("run cadence");
+        assert!(out.status.success(), "{flag}: {out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("usage: cadence"), "{flag}: {stdout:?}");
+        assert!(
+            out.stderr.is_empty(),
+            "{flag}: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 /// A mistyped path in CI must fail the tests rather than pass them on some other binary.
 #[test]
 #[should_panic(expected = "CADENCE_BIN names no file")]

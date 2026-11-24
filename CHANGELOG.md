@@ -40,31 +40,56 @@ result.
 
 ### Fixed
 
-- UCI: `go searchmoves` with no legal move in its list answers
-  `bestmove 0000`, where it searched every move.
+- UCI: `go searchmoves` with no legal move in its list, or with nothing
+  after it, answers `bestmove 0000`, where it searched every move.
 - UCI: a byte-order mark at the start of an input line is ignored.
 - UCI: `UCI_LimitStrength` engages whatever order the options arrive in. A
   level searches on one thread and shows one line, whatever `Threads` and
   `MultiPV` say, and both apply again once it is off.
 - UCI: a `position` line discarded for being longer than 1 MiB counts as a
-  failed position, so the next `go` answers `bestmove 0000`.
+  failed position, however many blanks come before it, so the next `go`
+  answers `bestmove 0000`.
 - UCI: `EvalFile` checks a file's header and size before reading the rest,
-  and names a file that is not a net as "not a Cadence net file".
+  and names a file that is not a net as "not a Cadence net file". A path
+  that is not a regular file, such as a named pipe, is refused rather than
+  waited on.
+- `cadence --help` and `cadence-tools --help` print to stdout.
+- Tests: the README's command for the slow tests builds in release again;
+  the tests that read a debug build's record of the search are left out of
+  it.
 - Installers: a binary whose checksum, attestation or bench does not match
   the release's stops the install with a message that the file may be
   corrupt or tampered with, and is never replaced by a build from source.
+  An attestation gh fails counts as not matching, unless gh is signed out,
+  too old to check, or has no trust root. So does a SHA256SUMS that gives
+  no SHA-256 for a binary every release has, such as one cut short or
+  replaced by a web page.
 - Installers: a download that fails for the network is tried once more, then
-  the install stops and says so.
+  the install stops and says so. Through wget, a file the server does not
+  have reads as not published, as it does through curl.
 - Installers: Cadence is built from source only with `--source`, or where
   the release has no binary for the system, and the installers say which.
 - Installers: a binary that cannot run here gives way to the release's build
   one tier below it, AVX-512 to AVX2 to generic, each checked the same way,
   before the install stops. Under PowerShell 7, `install.ps1` also reads
   BMI1 and LZCNT beside AVX2; under Windows PowerShell 5.1 it reads only
-  AVX2.
+  AVX2. A binary that stops while answering `uci` is one that cannot run.
+  Under PowerShell 7, `install.ps1` also reads AVX-512BW beside AVX-512F;
+  under 5.1 a processor with AVX-512F is taken to have it. Where no build
+  runs, the log is kept.
 - Installers: `--uninstall` keeps the install record for what the user keeps,
   removes the empty folders and the profile's blank line it added, and names
-  any compiler or Rust toolchain it installed.
+  any compiler or Rust toolchain it installed, recorded only once its install
+  succeeded. It also removes a profile file and folders the installer made
+  and left empty, and the logs of earlier runs. With no install record, it
+  removes the file at the default path only when the user answers yes, and
+  never under `--yes` alone.
+- Installers: on macOS, `install.sh` writes bash's PATH line into the
+  profile bash already reads, and never makes a `~/.bash_profile` that
+  would hide `~/.profile`.
+- Training: `cadence-train export --help` gives the whole
+  `cadence-tools forward` command that checks a scaling factor, with
+  `--net FILE`.
 
 ## [0.7.0-rc.5] - 2026-11-23
 
