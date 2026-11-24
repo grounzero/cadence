@@ -19,294 +19,31 @@ result.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
 ### Added
 
-- Networks: a net file's header names its input layout, plain or mirrored,
-  and the engine reads either. A mirrored net reads a perspective's board
-  flipped left to right while its own king is on files e to h, and rebuilds
-  that perspective's sums when the king crosses the middle, by a step or by
-  a castle. Every shipped net is plain, and an earlier build refuses a
-  mirrored file.
-- Releases: Windows and Linux x86-64 each gain an AVX-512 build, for
-  processors with AVX-512F and AVX-512BW, so a release builds nine
-  binaries. The install scripts take it where the processor has both, and
-  the AVX2 build from a release without one; `--build avx512` asks for it.
+- A neural network evaluation (NNUE), trained only on Cadence's own games and built into the engine.
+- `Use NNUE` switches back to the handcrafted evaluation; `EvalFile` loads another network.
+- AVX-512 builds for Windows and Linux x86-64, so a release has nine binaries.
+- Networks with mirrored inputs load as well as plain ones; the built-in network is plain.
+- Tools to generate games, convert them and train a network: `datagen`, `cadence-tools`, `cadence-train`.
 
 ### Changed
 
-- Time: the `ponderhit` change of 0.7.0-rc.4 is taken out, so a search hit
-  while pondering decides when to stop as 0.7.0-rc.3 did. A bot's clock
-  study found more of its ponder hits running to the hard limit than before.
+- Five search margins are tuned for the network; the handcrafted evaluation keeps its own.
+- The search keeps its histories through a game and thinks longer when its score falls.
+- A move's budget counts only the increment past `Move Overhead`, which now defaults to 5 ms.
+- Install scripts stop on any checksum, attestation or bench mismatch and build from source only when asked or when no binary fits.
 
 ### Fixed
 
-- UCI: `go searchmoves` with no legal move in its list, or with nothing
-  after it, answers `bestmove 0000`, where it searched every move.
-- UCI: a byte-order mark at the start of an input line is ignored.
-- UCI: `UCI_LimitStrength` engages whatever order the options arrive in. A
-  level searches on one thread and shows one line, whatever `Threads` and
-  `MultiPV` say, and both apply again once it is off.
-- UCI: a `position` line discarded for being longer than 1 MiB counts as a
-  failed position, however many blanks come before it, so the next `go`
-  answers `bestmove 0000`.
-- UCI: `EvalFile` checks a file's header and size before reading the rest,
-  and names a file that is not a net as "not a Cadence net file". A path
-  that is not a regular file, such as a named pipe, is refused rather than
-  waited on.
-- `cadence --help` and `cadence-tools --help` print to stdout.
-- Tests: the README's command for the slow tests builds in release again;
-  the tests that read a debug build's record of the search are left out of
-  it.
-- Installers: a binary whose checksum, attestation or bench does not match
-  the release's stops the install with a message that the file may be
-  corrupt or tampered with, and is never replaced by a build from source.
-  An attestation gh fails counts as not matching, unless gh is signed out,
-  too old to check, or has no trust root. So does a SHA256SUMS that gives
-  no SHA-256 for a binary every release has, such as one cut short or
-  replaced by a web page.
-- Installers: a download that fails for the network is tried once more, then
-  the install stops and says so. Through wget, a file the server does not
-  have reads as not published, as it does through curl.
-- Installers: Cadence is built from source only with `--source`, or where
-  the release has no binary for the system, and the installers say which.
-- Installers: a binary that cannot run here gives way to the release's build
-  one tier below it, AVX-512 to AVX2 to generic, each checked the same way,
-  before the install stops. Under PowerShell 7, `install.ps1` also reads
-  BMI1 and LZCNT beside AVX2; under Windows PowerShell 5.1 it reads only
-  AVX2. A binary that stops while answering `uci` is one that cannot run.
-  Under PowerShell 7, `install.ps1` also reads AVX-512BW beside AVX-512F;
-  under 5.1 a processor with AVX-512F is taken to have it. Where no build
-  runs, the log is kept.
-- Installers: `--uninstall` keeps the install record for what the user keeps,
-  removes the empty folders and the profile's blank line it added, and names
-  any compiler or Rust toolchain it installed, recorded only once its install
-  succeeded. It also removes a profile file and folders the installer made
-  and left empty, and the logs of earlier runs. With no install record, it
-  removes the file at the default path only when the user answers yes, and
-  never under `--yes` alone.
-- Installers: on macOS, `install.sh` writes bash's PATH line into the
-  profile bash already reads, and never makes a `~/.bash_profile` that
-  would hide `~/.profile`.
-- Training: `cadence-train export --help` gives the whole
-  `cadence-tools forward` command that checks a scaling factor, with
-  `--net FILE`.
-
-## [0.7.0-rc.5] - 2026-11-23
-
-rc.4's tag was lightweight, so it was never released; rc.5 is the same code.
-
-## [0.7.0-rc.4] - 2026-11-23
-
-A release candidate for 0.7.0, with the search's margins tuned to the
-network.
-
-### Added
-
-- Training: `cadence-train run --result-share-end F` moves the weight on the
-  game result on a line across the run, and `--from CHECKPOINT` with
-  `--lr-start F` continues a saved net at a lower first rate, which with a
-  result share of 1 is a final stage on the game result alone.
-- Training: `cadence-train export --scale-factor F` multiplies a net's
-  evaluations by F by scaling its output weights and bias from the
-  unquantised weights and quantising them once, and `cadence-tools forward
-  --scale-factor F --unscaled FILE` holds the scaled net to those weights
-  times F within the unscaled net's own error and a little more.
-- Tools: `cadence-tools convert --max-copies N` keeps at most N training
-  copies of a position's network input, a position and its colour-flipped
-  mirror counting as one, meets the games in an order the shuffle seed fixes
-  so no dataset is favoured for being listed first, and counts the copies it
-  drops; validation keeps every copy.
-- Tools: `cadence-tools convert --report-sample N` reads its report's
-  repeats, overlaps and copies from one position key or network input in N
-  and scales them, so its memory for them falls about N times; the records
-  it writes are the same.
-- Tools: `cadence-tools convert`'s report counts the kept positions by the
-  output bucket their piece count picks and by the result for the side to
-  move, with what the in-check, capture and mate filters dropped beside
-  them, and again by exact piece count.
-- Tools: `cadence-tools convert` takes four filters, each off unless asked
-  for and each drawing its random choices from the shuffle seed:
-  `--adjudicate` with `--adjudicate-share` cuts a share of games where
-  their scores decide them and keeps each game's own result,
-  `--piece-keep` thins positions by piece count to a table the manifest
-  names by its SHA-256, `--contradiction-skip` skips positions whose score
-  and result disagree, and `--mate-score` keeps mate-scored positions at a
-  ceiling.
-
-### Changed
-
-- Search: the quiet, continuation and correction histories are kept from one
-  search to the next within a game, and cleared with the table by
-  `ucinewgame`, `Clear Hash`, a change of evaluator or a new `Hash` size.
-- Search: every window is bounded by the mate scores reachable from its ply,
-  so once a mate is found the other moves are not searched to full depth
-  against a window no score can enter.
-- Time: the engine thinks longer when the root score falls between
-  iterations, up to 1.6 times the soft budget, measured against the average
-  of the four iterations before the last.
-- Tools: datagen keeps one set of search histories through each game, emptied
-  at the start of every game, so the same seed now gives different games.
-- Search: the five tuned constants take a tune's values with the network:
-  reverse futility 81 centipawns a ply (was 150), late move pruning 0.878
-  (0.5), futility 144 (150), ProbCut 62 (100) and the aspiration window 30
-  (24). The handcrafted evaluation keeps its own.
-
-### Fixed
-
-- Search: futility pruning is no longer applied at an open window, which
-  every other margin rule already refused.
-- Time: a `ponderhit` is timed from when the engine reads it, stops the
-  search where a fresh search with the same times would have stopped at any
-  iteration pondered, and ends root tablebase probing at the deadline it
-  brings.
-- Search: a table result is not reused where its depth reaches the
-  fifty-move draw, which the position key does not carry.
-- Chess960: the position key names the rook each castling right belongs to,
-  so two positions that differ only in which rook may castle no longer share
-  a table entry.
-- Time: a move's budget counts only the part of the increment past
-  `Move Overhead`, since every move pays it, and the default `Move Overhead`
-  is 5 ms in place of 20.
-
-Test 116, for the tuned margins: +23.12 (between +14.21 and +32.05), from
-a sequential test stopped at its first crossing, so it leans high. At 40
-seconds plus 0.4, test 118: +12.03 (between +7.28 and +16.79). In Chess960
-and double Chess960, test 117: +27.91 (between +18.55 and +37.31), a
-non-regression test. The kept histories, test 111: +5.25 (between +1.48
-and +9.03). These passed non-regression tests, which ask only whether a
-change costs strength: futility at an open window, test 102, +0.73
-(between -1.21 and +2.67); the table's cutoff near the fifty-move draw,
-test 104, +0.36 (between -1.16 and +1.88); `Move Overhead` charged on
-every move, test 97, +1.27 (between -0.94 and +3.48). The mate-score bound
-and the futility fix were also tested in Chess960, tests 112 and 113,
-which were stopped unresolved with -3 excluded at 95%: +0.21 (between
--1.65 and +2.07) and +0.29 (between -1.98 and +2.55). The mate-score
-bound's standard test, test 108, ended unresolved at -0.42 (between -1.66
-and +0.81), and the castling rooks in the key in Chess960, test 94, ended
-unresolved at -0.95 (between -2.57 and +0.67); the bound was kept on its
-Chess960 result and the key as a correction. Thinking longer when the
-score falls did not show a gain, test 114, +0.44 (between -1.26 and
-+2.14), and was kept as a correction to how the engine spends its time.
-The `ponderhit` change was not put to a test of games, since the test
-games do not ponder. These are not a rating.
-
-## [0.7.0-rc.3] - 2026-11-21
-
-A release candidate for 0.7.0, with a retrained network twice as wide.
-
-### Added
-
-- Training: `cadence-train run --lr-schedule step` lowers the learning rate
-  in five equal drops, in place of the cosine decay, to the same final rate.
-
-### Changed
-
-- Evaluation: the built-in network is retrained on positions from games the
-  second network played, together with the positions the second was trained
-  on, and is twice as wide, 512 units a perspective in place of 256.
-- Tools: `datagen run` and `datagen verify` play and regenerate their games
-  with a built-in network of either width.
-- Tools: `cadence-tools convert` deals the records it keeps to bucket files
-  on disk and shuffles each bucket in turn, rather than holding every record
-  in memory, and reads its chunks once to choose the games and again to
-  convert them. The same shuffle seed now gives a different order than
-  before. Its report counts the training positions by how many copies of
-  their network input the set holds.
-
-### Fixed
-
-- Search: a position's key counts its en passant square only where an en
-  passant capture is legal, so a position whose only such capture is pinned
-  is recognised as a repetition of the same position without the square.
-- Engine: after a `ponderhit` the search keeps the iteration times it
-  measured while pondering, and decides when to stop as a search started
-  without pondering would, with both time limits moved by the time pondered.
-  It no longer starts an iteration it cannot predict, which could run to the
-  hard limit, or spends its whole soft budget on an iteration begun while
-  pondering and then abandoned.
-
-Test 92, for the network: +95.86 (between +77.98 and +114.24), a
-self-play estimate against the build before it at the short control, from
-a sequential test stopped at its first crossing, so it leans high. At 40
-seconds plus 0.4, test 93: +110.32 (between +96.22 and +124.77). In
-Chess960 and double Chess960 at the short control, test 95: +147.19
-(between +126.11 and +169.35), a non-regression test, which asks only
-whether the network costs strength there, and it passed at 580 games. The
-en passant key passed its non-regression test, test 89, at 9,956 games:
-+3.91 (between +0.54 and +7.27). The `ponderhit` change was not put to a
-test of games, since the test games do not ponder; its own tests reproduce a
-`ponderhit` and check that the decision to stop matches a search started
-fresh. These are not a rating.
-
-## [0.7.0-rc.2] - 2026-11-19
-
-A release candidate for 0.7.0, with a retrained network.
-
-### Changed
-
-- Evaluation: the built-in network is retrained on positions from games the
-  first network played, together with the positions the first was trained on.
-- Search: the tunable search options act only on the search that plays with
-  the network; with `Use NNUE` off, the search keeps 0.6.0's values.
-- Tools: `datagen run` plays its games, the opening screen included, with
-  the network built into the engine, and every chunk's header names that
-  network's SHA-256. `datagen verify` regenerates such a chunk with it and
-  refuses a chunk naming another network.
-
-Test 86, for the network: +105.30 (between +85.76 and +125.50), a
-self-play estimate against the build before it at the short control, from
-a sequential test stopped at its first crossing, so it leans high. At 40
-seconds plus 0.4, test 87: +109.38 (between +94.13 and +125.06). In
-Chess960 and double Chess960 at the short control, test 88: +132.75
-(between +111.51 and +154.99). This was a non-regression test, which asks
-only whether the network costs strength there, and it passed at 620 games.
-They are not a rating.
-
-## [0.7.0-rc.1] - 2026-11-18
-
-A release candidate for 0.7.0, and the first version to play with a neural
-network evaluation.
-
-### Added
-
-- Evaluation: a neural network (NNUE), trained on positions from Cadence's
-  own games, scores positions, and the engine is built with it inside.
-  `Use NNUE`, on by default, plays with the handcrafted evaluation when
-  switched off, and `EvalFile` loads another network file in place of the
-  built-in one.
-- Tools: `datagen run`, `datagen repair` and `datagen verify`, built only
-  with the `packed-datagen` feature, write games as packed chunks, close a
-  chunk a killed run left, and check chunks against their sidecars and the
-  build's settings, regenerating every Nth game.
-- Tools: `cadence-tools convert` turns datasets of packed chunks into the
-  trainer's records, and `cadence-tools forward` compares a network file's
-  quantised evaluation with an `f32` one.
-- Training: `cadence-train`, a third binary from `train/`, outside the
-  workspace, trains the network with bullet, exports a checkpoint as the
-  file `EvalFile` loads and reads a checkpoint's validation loss.
-- Tests: CI stresses the UCI loop at one thread and at four.
-
-### Changed
-
-- Search: the transposition table is cleared when the evaluation in use
-  changes.
-- Version: a build from a modified tree adds `-dirty` to its version.
-- Tools: `datagen play` needs its seed, `datagen extract` checks its input
-  for repeated seeds and games and an edited header, a move with no
-  finished search is recorded with no score, and a run ends on a panic.
-  Each file datagen publishes is followed by a sync of its directory, and
-  a sync that fails is reported.
-- The README gives the macOS steps for a downloaded binary and lists
-  0.6.0's strength.
-
-Test 83, for the network: +445.58 (between +395.93 and +511.52), a
-self-play estimate against the build before it at the short control, from
-a sequential test stopped at its first crossing, so it leans high. At 40
-seconds plus 0.4, test 84: +458.10 (between +419.67 and +505.70). In
-Chess960 and double Chess960 at the short control, test 85: +448.95
-(between +398.90 and +515.67). This was a non-regression test, which asks
-only whether the network costs strength there, and it passed at 392 games.
-They are not a rating.
+- After `ponderhit`, the search keeps its iteration timing and decides whether to continue on the new clock.
+- Chess960 position keys name each castling right's rook, and en passant counts only when legal.
+- The transposition table no longer cuts off near the fifty-move draw.
+- Futility pruning no longer applies at an open window, and every window is bounded by the reachable mate scores.
+- UCI input: a leading BOM, `searchmoves` with no legal move, `UCI_LimitStrength` in any order and an oversized `position` line are handled.
+- `EvalFile` checks a file's header and size before reading the rest.
 
 ## [0.6.0] - 2026-11-14
 
@@ -866,12 +603,8 @@ These changes were tested and thrown away.
   +2.81 (give or take 3.64). The result never became clear, so it was not
   kept.
 
-[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0-rc.5...main
-[0.7.0-rc.5]: https://github.com/grounzero/cadence/compare/0.7.0-rc.4...0.7.0-rc.5
-[0.7.0-rc.4]: https://github.com/grounzero/cadence/compare/0.7.0-rc.3...0.7.0-rc.4
-[0.7.0-rc.3]: https://github.com/grounzero/cadence/compare/0.7.0-rc.2...0.7.0-rc.3
-[0.7.0-rc.2]: https://github.com/grounzero/cadence/compare/0.7.0-rc.1...0.7.0-rc.2
-[0.7.0-rc.1]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0-rc.1
+[Unreleased]: https://github.com/grounzero/cadence/compare/0.7.0...main
+[0.7.0]: https://github.com/grounzero/cadence/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/grounzero/cadence/compare/0.5.23...0.6.0
 [0.5.23]: https://github.com/grounzero/cadence/compare/0.5.22...0.5.23
 [0.5.22]: https://github.com/grounzero/cadence/compare/0.5.21...0.5.22
