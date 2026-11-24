@@ -252,7 +252,7 @@ jobs:
       # triple. If a runner image changes architecture -- macos-latest was
       # x86_64 until it wasn't -- those flags silently stop applying and
       # nothing else here would notice.
-      - name: Assert the runner is the architecture we think it is
+      - name: Assert the runner is the architecture the build expects
         shell: bash
         run: |
           host=$(rustc -vV | sed -n 's/^host: //p')

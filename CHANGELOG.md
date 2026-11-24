@@ -59,8 +59,9 @@ result.
   the release has no binary for the system, and the installers say which.
 - Installers: a binary that cannot run here gives way to the release's build
   one tier below it, AVX-512 to AVX2 to generic, each checked the same way,
-  before the install stops. `install.ps1` also checks for BMI1 and LZCNT
-  beside AVX2.
+  before the install stops. Under PowerShell 7, `install.ps1` also reads
+  BMI1 and LZCNT beside AVX2; under Windows PowerShell 5.1 it reads only
+  AVX2.
 - Installers: `--uninstall` keeps the install record for what the user keeps,
   removes the empty folders and the profile's blank line it added, and names
   any compiler or Rust toolchain it installed.
@@ -321,9 +322,9 @@ the tablebases and ponders.
   and git ignores `worker.json` and `credentials.cadence`. The Makefile
   clears an inherited `RUSTFLAGS`, and with it `CARGO_ENCODED_RUSTFLAGS`
   and every `CARGO_TARGET_<triple>_RUSTFLAGS`.
-- The README gives a table of strength estimates from our own gauntlets
-  against rated engines, and `docs/calibration/strength.md` publishes each
-  gauntlet's games and fit, and how to check them.
+- The README gives a table of strength estimates from the project's own
+  gauntlets against rated engines, and `docs/calibration/strength.md`
+  publishes each gauntlet's games and fit, and how to check them.
 - Tools: the pre-commit hook rebuilds its boundary checker when any file
   the checker is built from is newer than it, not only its main source.
 - The README is shorter. Getting started offers a release's binaries first,
@@ -665,7 +666,7 @@ Test 46: +17.55 (between +8.78 and +26.34).
 - King safety: the evaluation now scores attacks near each king and the
   pawns sheltering it. The king's square table was retuned alongside it.
 
-Test 45: +28.46 (between +16.86 and +40.06).
+Test 45: +28.46 (between +16.92 and +40.06).
 
 ### Changed
 
@@ -679,7 +680,7 @@ Test 45: +28.46 (between +16.86 and +40.06).
 - Mobility: the evaluation now rewards pieces that have more squares to
   move to. The four piece tables were retuned alongside it.
 
-Test 44: +50.67 (between +35.01 and +66.33).
+Test 44: +50.67 (between +35.22 and +66.33).
 
 ## [0.5.3] - 2026-10-02
 
@@ -688,7 +689,7 @@ Test 44: +50.67 (between +35.01 and +66.33).
 - The piece values and the queen's square table were retuned on
   Cadence's own games.
 
-Test 43: +19.68 (between +10.29 and +29.10).
+Test 43: +19.68 (between +10.28 and +29.10).
 
 ## [0.5.2] - 2026-10-02
 
@@ -697,8 +698,8 @@ Test 43: +19.68 (between +10.29 and +29.10).
 - Pawn structure: the evaluation now scores pawn weaknesses and strengths.
   The pawn square table was retuned alongside it.
 
-Test 41: +34.53 (between +21.14 and +47.92). At 40 seconds plus 0.4,
-test 42: +52.04 (between +39.53 and +64.55).
+Test 41: +34.53 (between +21.25 and +47.92). At 40 seconds plus 0.4,
+test 42: +52.04 (between +39.66 and +64.56).
 
 ## [0.5.1] - 2026-09-30
 
