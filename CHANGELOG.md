@@ -59,8 +59,9 @@ result.
   the release has no binary for the system, and the installers say which.
 - Installers: a binary that cannot run here gives way to the release's build
   one tier below it, AVX-512 to AVX2 to generic, each checked the same way,
-  before the install stops. `install.ps1` also checks for BMI1 and LZCNT
-  beside AVX2.
+  before the install stops. Under PowerShell 7, `install.ps1` also reads
+  BMI1 and LZCNT beside AVX2; under Windows PowerShell 5.1 it reads only
+  AVX2.
 - Installers: `--uninstall` keeps the install record for what the user keeps,
   removes the empty folders and the profile's blank line it added, and names
   any compiler or Rust toolchain it installed.
@@ -321,9 +322,9 @@ the tablebases and ponders.
   and git ignores `worker.json` and `credentials.cadence`. The Makefile
   clears an inherited `RUSTFLAGS`, and with it `CARGO_ENCODED_RUSTFLAGS`
   and every `CARGO_TARGET_<triple>_RUSTFLAGS`.
-- The README gives a table of strength estimates from our own gauntlets
-  against rated engines, and `docs/calibration/strength.md` publishes each
-  gauntlet's games and fit, and how to check them.
+- The README gives a table of strength estimates from the project's own
+  gauntlets against rated engines, and `docs/calibration/strength.md`
+  publishes each gauntlet's games and fit, and how to check them.
 - Tools: the pre-commit hook rebuilds its boundary checker when any file
   the checker is built from is newer than it, not only its main source.
 - The README is shorter. Getting started offers a release's binaries first,

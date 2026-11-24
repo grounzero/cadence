@@ -212,7 +212,7 @@ jobs:
           rustup show active-toolchain
           rustc --version --verbose
 
-      - name: Assert the runner is the architecture we think it is
+      - name: Assert the runner is the architecture the build expects
         run: |
           host=$(rustc -vV | sed -n 's/^host: //p')
           echo "host triple: $host"
