@@ -193,6 +193,50 @@ fn a_discarded_line_is_never_held() {
     assert_eq!(next(&mut line), Line::End);
 }
 
+/// A `position` line too long to read is a position that failed, so the next `go` searches nothing
+/// rather than the board an earlier line left, until a valid one arrives. Blanks before the word,
+/// more than the bytes kept of a discarded line, do not hide it.
+#[test]
+fn a_position_line_too_long_to_read_fails_the_position() {
+    const CAP: usize = 1 << 20;
+    for lead in ["", &" ".repeat(64), &format!("\u{feff}{}", "\t".repeat(64))] {
+        let mut long = format!("{lead}position startpos moves");
+        while long.len() <= CAP {
+            long.push_str(" g1f3 g8f6 f3g1 f6g8");
+        }
+        let mut e = Engine::spawn();
+        e.send("position startpos moves e2e4");
+        e.send(&long);
+        e.send("go depth 1");
+        let lines = e.read_until("bestmove ");
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("bestmove 0000"),
+            "{} leading bytes: {lines:?}",
+            lead.len()
+        );
+        e.send("position startpos");
+        e.send("go depth 1");
+        let out = e.read_until("bestmove ").join("\n");
+        assert_bestmove_legal(&out, START_FEN, false);
+        e.quit();
+    }
+}
+
+/// A byte-order mark, which some editors and pipes put first, is not part of the command after it.
+#[test]
+fn a_byte_order_mark_before_a_command_is_ignored() {
+    let out = talk("\u{feff}uci\n\u{feff}isready\nquit\n");
+    assert!(out.lines().any(|l| l == "uciok"), "{out:?}");
+    assert!(out.lines().any(|l| l == "readyok"), "{out:?}");
+    let out = talk("\u{feff}position startpos moves e2e4\n\u{feff}go depth 1\n");
+    assert_bestmove_legal(
+        &out,
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        false,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // go / stop / bestmove
 // ---------------------------------------------------------------------------
@@ -667,6 +711,29 @@ fn castling_bestmove_is_spelled_per_the_option() {
         castles >= 4,
         "only {castles} castling bestmoves, so the spelling branch went under-tested"
     );
+}
+
+/// A `searchmoves` list none of whose moves is legal names nothing to search, so the answer is the
+/// null move rather than a search of every move.
+#[test]
+fn searchmoves_with_no_legal_move_answers_the_null_move() {
+    for go in [
+        "go depth 3 searchmoves e7e5 a1a8",
+        "go searchmoves e2e5 depth 3",
+    ] {
+        let lines = Engine::go(&["position startpos"], go);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("bestmove 0000"),
+            "{go}: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("info string") && l.contains("searchmoves")),
+            "{go}: {lines:?}"
+        );
+    }
 }
 
 /// Ruled: a `position` command that fails is remembered, and every `go` until a valid one answers
@@ -1255,33 +1322,24 @@ fn go_searchmoves_names_an_illegal_move_and_leaves_it_out() {
     assert_eq!(bestmove(&out), "h2h3", "{out:?}");
 }
 
-/// Ruled to stand: a list naming no legal move is warned of and every legal move is searched, so
-/// the answer is a plain `go`'s, and a bare `searchmoves` warns of nothing.
+/// A bare `searchmoves`, with no list after it, names no move to search, so the answer is the null
+/// move, as for a list naming no legal move.
 #[test]
-fn go_searchmoves_with_no_legal_move_searches_them_all() {
-    let answer = |go: &str| {
-        let out = Engine::go(&["position startpos"], go).join("\n");
-        (bestmove(&out), out)
-    };
-    let (plain, _) = answer("go depth 4");
-    for go in [
-        "go depth 4 searchmoves e2e5",
-        "go searchmoves e2e5 a1a8 depth 4",
-    ] {
-        let (best, out) = answer(go);
-        assert_eq!(best, plain, "{go}: {out:?}");
+fn a_bare_searchmoves_answers_the_null_move() {
+    for go in ["go searchmoves depth 4", "go depth 4 searchmoves"] {
+        let lines = Engine::go(&["position startpos"], go);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("bestmove 0000"),
+            "{go}: {lines:?}"
+        );
         assert!(
-            out.lines()
-                .any(|l| l.starts_with("info string") && l.contains("e2e5")),
-            "{go}: {out:?}"
+            lines
+                .iter()
+                .any(|l| l.starts_with("info string") && l.contains("searchmoves")),
+            "{go}: {lines:?}"
         );
     }
-    let (best, out) = answer("go searchmoves depth 4");
-    assert_eq!(best, plain, "{out:?}");
-    assert!(
-        !out.lines().any(|l| l.starts_with("info string")),
-        "{out:?}"
-    );
 }
 
 /// With no other limit the search would run to its depth cap, so returning at all is the stop.

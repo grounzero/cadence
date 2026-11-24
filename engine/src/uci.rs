@@ -12,7 +12,7 @@ use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
-use crate::search::{Learned, PonderHit};
+use crate::search::Learned;
 use crate::syzygy::{self, Tables};
 use crate::time;
 use crate::tt::{self, Table};
@@ -98,7 +98,7 @@ type Shipped = (AnyNetwork, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,
-    ponder_hit: Arc<PonderHit>,
+    ponder_hit: Arc<AtomicBool>,
     thread: JoinHandle<Vec<Learned>>,
 }
 
@@ -179,6 +179,8 @@ impl Session {
 
     /// `false` on `quit`.
     pub fn handle_line(&mut self, line: &str) -> bool {
+        // A byte-order mark some editors and pipes put first is not part of the command.
+        let line = line.strip_prefix('\u{feff}').unwrap_or(line);
         // A GUI may send arbitrary spacing, so split on whitespace rather than trusting the line's
         // shape.
         let mut tokens = line.split_whitespace();
@@ -285,6 +287,16 @@ impl Session {
         true
     }
 
+    /// A line past [`MAX_LINE_BYTES`], of which `head` is the start: a `position` line fails as a
+    /// position does, so no `go` searches the board an earlier line left.
+    pub fn handle_discarded(&mut self, head: &str) {
+        let head = head.strip_prefix('\u{feff}').unwrap_or(head);
+        if head.split_whitespace().next() == Some("position") {
+            self.stop_search();
+            self.refuse(format!("the line was longer than {MAX_LINE_BYTES} bytes"));
+        }
+    }
+
     /// Called on `quit` and at end of input.
     pub fn shutdown(&mut self) {
         self.stop_search();
@@ -358,12 +370,16 @@ fn start_position() -> Board {
 /// The newline is not counted.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 
+/// What a discarded line keeps of its start, enough for a byte-order mark and the command's name.
+pub const DISCARDED_HEAD_BYTES: usize = 32;
+
 /// What [`read_line`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Line {
     /// In the buffer, with its newline where it had one.
     Read,
-    /// Past the cap, and read to its newline or the end of input without being kept.
+    /// Past the cap, and read to its newline or the end of input with only its first
+    /// `DISCARDED_HEAD_BYTES` after any leading blanks, or the cap where that is fewer, kept.
     TooLong,
     End,
 }
@@ -396,18 +412,42 @@ pub fn read_line(
         read = true;
         let newline = chunk.iter().position(|&b| b == b'\n');
         let used = newline.map_or(chunk.len(), |i| i + 1);
+        let head = DISCARDED_HEAD_BYTES.min(cap);
         if !over && line.len() + newline.unwrap_or(chunk.len()) > cap {
             over = true;
-            line.clear();
+            let blanks = blank_prefix(line);
+            line.drain(..blanks);
+            line.truncate(head);
+            line.shrink_to(head);
         }
         if !over {
             line.extend_from_slice(&chunk[..used]);
+        } else if line.len() < head {
+            let mut part = &chunk[..used];
+            if line.is_empty() {
+                part = &part[blank_prefix(part)..];
+            }
+            line.extend_from_slice(&part[..(head - line.len()).min(part.len())]);
         }
         input.consume(used);
         if newline.is_some() {
             return Ok(if over { Line::TooLong } else { Line::Read });
         }
     }
+}
+
+/// The byte-order mark and blanks a line starts with, which a discarded line's head skips, so
+/// however many there are the head still holds the command's name.
+fn blank_prefix(bytes: &[u8]) -> usize {
+    let mark = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    mark + bytes[mark..]
+        .iter()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count()
 }
 
 #[must_use]
@@ -430,6 +470,7 @@ pub fn run() -> ExitCode {
                 say(format_args!(
                     "info string line discarded: longer than {MAX_LINE_BYTES} bytes"
                 ));
+                session.handle_discarded(&String::from_utf8_lossy(&raw));
                 continue;
             }
             Ok(Line::End) | Err(_) => break,

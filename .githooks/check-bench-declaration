@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Checks a message's bench declaration against bench.txt, staged or at COMMIT. It reads the message
 # as OpenBench does, so a stray phrase the server would take for a count fails here too.
