@@ -194,29 +194,33 @@ fn a_discarded_line_is_never_held() {
 }
 
 /// A `position` line too long to read is a position that failed, so the next `go` searches nothing
-/// rather than the board an earlier line left, until a valid one arrives.
+/// rather than the board an earlier line left, until a valid one arrives. Blanks before the word,
+/// more than the bytes kept of a discarded line, do not hide it.
 #[test]
 fn a_position_line_too_long_to_read_fails_the_position() {
     const CAP: usize = 1 << 20;
-    let mut long = String::from("position startpos moves");
-    while long.len() <= CAP {
-        long.push_str(" g1f3 g8f6 f3g1 f6g8");
+    for lead in ["", &" ".repeat(64), &format!("\u{feff}{}", "\t".repeat(64))] {
+        let mut long = format!("{lead}position startpos moves");
+        while long.len() <= CAP {
+            long.push_str(" g1f3 g8f6 f3g1 f6g8");
+        }
+        let mut e = Engine::spawn();
+        e.send("position startpos moves e2e4");
+        e.send(&long);
+        e.send("go depth 1");
+        let lines = e.read_until("bestmove ");
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("bestmove 0000"),
+            "{} leading bytes: {lines:?}",
+            lead.len()
+        );
+        e.send("position startpos");
+        e.send("go depth 1");
+        let out = e.read_until("bestmove ").join("\n");
+        assert_bestmove_legal(&out, START_FEN, false);
+        e.quit();
     }
-    let mut e = Engine::spawn();
-    e.send("position startpos moves e2e4");
-    e.send(&long);
-    e.send("go depth 1");
-    let lines = e.read_until("bestmove ");
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some("bestmove 0000"),
-        "{lines:?}"
-    );
-    e.send("position startpos");
-    e.send("go depth 1");
-    let out = e.read_until("bestmove ").join("\n");
-    assert_bestmove_legal(&out, START_FEN, false);
-    e.quit();
 }
 
 /// A byte-order mark, which some editors and pipes put first, is not part of the command after it.
