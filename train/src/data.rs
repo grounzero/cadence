@@ -9,6 +9,7 @@ use std::io::Read;
 use std::path::Path;
 
 use cadence_dataset::sha256::{Sha256, hex, sha256};
+use cadence_nnue::Inputs;
 
 use crate::export::CONVERTED;
 
@@ -215,13 +216,67 @@ pub fn run_result_share(run: &Path, given: Option<f32>) -> Result<f32, String> {
     }
 }
 
+/// The file a run leaves in its directory naming the input layout it trains with, which an export
+/// writes into the net's header and a validation must build its trainer by.
+pub const INPUTS_FILE: &str = "inputs";
+const PLAIN: &str = "plain";
+const MIRRORED: &str = "mirrored";
+
+/// The layout a name on the command line or in a run's record stands for.
+///
+/// # Errors
+///
+/// A name that is neither layout's.
+pub fn inputs_named(name: &str) -> Result<Inputs, String> {
+    match name {
+        PLAIN => Ok(Inputs::Plain),
+        MIRRORED => Ok(Inputs::Mirrored),
+        other => Err(format!(
+            "{other} is not an input layout: {PLAIN} or {MIRRORED}"
+        )),
+    }
+}
+
+/// Writes `INPUTS_FILE` in `out` for the layout the run trains with.
+///
+/// # Errors
+///
+/// A file that cannot be written.
+pub fn record_inputs(out: &Path, inputs: Inputs) -> Result<(), String> {
+    let path = out.join(INPUTS_FILE);
+    let name = match inputs {
+        Inputs::Plain => PLAIN,
+        Inputs::Mirrored => MIRRORED,
+    };
+    std::fs::write(&path, format!("{name}\n")).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The layout the run in `run` recorded; a run from before the record was kept is plain.
+///
+/// # Errors
+///
+/// A record that cannot be read or names no layout.
+pub fn run_inputs(run: &Path) -> Result<Inputs, String> {
+    let path = run.join(INPUTS_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => inputs_named(text.trim()).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Inputs::Plain),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 /// A run's directory holds no other run's record, since a second run would overwrite the first's.
 ///
 /// # Errors
 ///
-/// A directory holding `COMMIT_FILE`, `VERIFIED_MANIFESTS` or `RESULT_SHARE_FILE`.
+/// A directory holding `COMMIT_FILE`, `VERIFIED_MANIFESTS`, `RESULT_SHARE_FILE` or `INPUTS_FILE`.
 pub fn fresh_run(out: &Path) -> Result<(), String> {
-    for name in [COMMIT_FILE, VERIFIED_MANIFESTS, RESULT_SHARE_FILE] {
+    for name in [
+        COMMIT_FILE,
+        VERIFIED_MANIFESTS,
+        RESULT_SHARE_FILE,
+        INPUTS_FILE,
+    ] {
         if out.join(name).exists() {
             return Err(format!(
                 "{} holds another run's {name}, and a run never shares its directory",

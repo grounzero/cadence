@@ -12,7 +12,7 @@ use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
-use crate::search::{Learned, PonderHit};
+use crate::search::Learned;
 use crate::syzygy::{self, Tables};
 use crate::time;
 use crate::tt::{self, Table};
@@ -98,7 +98,7 @@ type Shipped = (AnyNetwork, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,
-    ponder_hit: Arc<PonderHit>,
+    ponder_hit: Arc<AtomicBool>,
     thread: JoinHandle<Vec<Learned>>,
 }
 
@@ -379,7 +379,7 @@ pub enum Line {
     /// In the buffer, with its newline where it had one.
     Read,
     /// Past the cap, and read to its newline or the end of input with only its first
-    /// `DISCARDED_HEAD_BYTES`, or the cap where that is fewer, kept.
+    /// `DISCARDED_HEAD_BYTES` after any leading blanks, or the cap where that is fewer, kept.
     TooLong,
     End,
 }
@@ -412,22 +412,42 @@ pub fn read_line(
         read = true;
         let newline = chunk.iter().position(|&b| b == b'\n');
         let used = newline.map_or(chunk.len(), |i| i + 1);
+        let head = DISCARDED_HEAD_BYTES.min(cap);
         if !over && line.len() + newline.unwrap_or(chunk.len()) > cap {
             over = true;
-            let head = DISCARDED_HEAD_BYTES.min(cap);
-            let room = head.saturating_sub(line.len()).min(used);
-            line.extend_from_slice(&chunk[..room]);
+            let blanks = blank_prefix(line);
+            line.drain(..blanks);
             line.truncate(head);
             line.shrink_to(head);
         }
         if !over {
             line.extend_from_slice(&chunk[..used]);
+        } else if line.len() < head {
+            let mut part = &chunk[..used];
+            if line.is_empty() {
+                part = &part[blank_prefix(part)..];
+            }
+            line.extend_from_slice(&part[..(head - line.len()).min(part.len())]);
         }
         input.consume(used);
         if newline.is_some() {
             return Ok(if over { Line::TooLong } else { Line::Read });
         }
     }
+}
+
+/// The byte-order mark and blanks a line starts with, which a discarded line's head skips, so
+/// however many there are the head still holds the command's name.
+fn blank_prefix(bytes: &[u8]) -> usize {
+    let mark = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    mark + bytes[mark..]
+        .iter()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count()
 }
 
 #[must_use]

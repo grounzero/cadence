@@ -8,8 +8,8 @@ use std::process::Command;
 
 use cadence_dataset::sha256::sha256;
 use cadence_nnue::net::{HEADER_LEN, PAYLOAD_LEN, QA, QB};
-use cadence_nnue::{AnyNetwork, LoadError, Network, Provenance, WIDE};
-use cadence_train::data::{COMMIT_FILE, record_manifests};
+use cadence_nnue::{AnyNetwork, Inputs, LoadError, Network, Provenance, WIDE};
+use cadence_train::data::{COMMIT_FILE, INPUTS_FILE, record_inputs, record_manifests, run_inputs};
 use cadence_train::export::{CONVERTED, ExportError, FILL, PADDING, export, fold};
 
 const TRAINER: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -32,7 +32,14 @@ fn manifest() -> Vec<u8> {
 #[test]
 fn a_checkpoint_exports_to_a_file_the_engine_loads_unchanged() {
     let saved = checkpoint();
-    let net = export(&saved, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
+    let net = export(
+        &saved,
+        Inputs::Plain,
+        Provenance::SelfPlay,
+        TRAINER,
+        &manifest(),
+    )
+    .expect("exports");
     let file = net.to_bytes();
     let back = Network::for_datagen(&file).expect("the engine loads it, for datagen too");
     assert_eq!(&file[HEADER_LEN..], &saved[..PAYLOAD_LEN]);
@@ -46,7 +53,7 @@ fn each_fault_is_refused_by_name() {
     let saved = checkpoint();
     let external = || Provenance::External("lichess-big3-resolved".to_string());
     let attempt = |bytes: &[u8], provenance, trainer, manifest: &[u8]| {
-        export(bytes, provenance, trainer, manifest).err()
+        export(bytes, Inputs::Plain, provenance, trainer, manifest).err()
     };
     assert!(matches!(
         attempt(
@@ -145,9 +152,22 @@ fn an_export_refuses_a_manifest_its_run_did_not_verify() {
 #[test]
 fn a_canary_exports_only_from_converted_data() {
     let saved = checkpoint();
-    let refused = export(&saved, Provenance::Canary, TRAINER, b"not converted\n");
+    let refused = export(
+        &saved,
+        Inputs::Plain,
+        Provenance::Canary,
+        TRAINER,
+        b"not converted\n",
+    );
     assert_eq!(refused.err(), Some(ExportError::NotConverted));
-    let net = export(&saved, Provenance::Canary, TRAINER, &manifest()).expect("exports");
+    let net = export(
+        &saved,
+        Inputs::Plain,
+        Provenance::Canary,
+        TRAINER,
+        &manifest(),
+    )
+    .expect("exports");
     let back = Network::from_bytes(&net.to_bytes()).expect("loads");
     assert_eq!(*back.provenance(), Provenance::Canary);
 }
@@ -162,7 +182,14 @@ fn a_wide_checkpoint_exports_at_its_width() {
     for i in 0..payload.next_multiple_of(PADDING) - payload {
         saved.push(FILL[i % FILL.len()]);
     }
-    let net = export(&saved, Provenance::SelfPlay, TRAINER, &manifest()).expect("exports");
+    let net = export(
+        &saved,
+        Inputs::Plain,
+        Provenance::SelfPlay,
+        TRAINER,
+        &manifest(),
+    )
+    .expect("exports");
     assert_eq!(net.hidden(), WIDE);
     let file = net.to_bytes();
     let back = AnyNetwork::for_datagen(&file).expect("the engine loads it at its width");
@@ -213,7 +240,14 @@ fn a_scale_factor_folds_into_the_output_layer_alone() {
         moved += u32::from(word(&half, at) != word(&saved, at));
     }
     assert!(moved > 0, "the seeded output layer is all zeros");
-    export(&half, Provenance::SelfPlay, TRAINER, &manifest()).expect("the engine loads it");
+    export(
+        &half,
+        Inputs::Plain,
+        Provenance::SelfPlay,
+        TRAINER,
+        &manifest(),
+    )
+    .expect("the engine loads it");
     let mut other = raw.clone();
     let first_output = 4 * (outputs / 2);
     let bumped = f32::from_le_bytes([
@@ -234,10 +268,72 @@ fn a_scale_factor_folds_into_the_output_layer_alone() {
             got: PAYLOAD_LEN * 2 - 4
         })
     );
-    let far = fold(&saved, &raw, 400.0)
-        .and_then(|f| export(&f, Provenance::SelfPlay, TRAINER, &manifest()).map(|_| ()));
+    let far = fold(&saved, &raw, 400.0).and_then(|f| {
+        export(
+            &f,
+            Inputs::Plain,
+            Provenance::SelfPlay,
+            TRAINER,
+            &manifest(),
+        )
+        .map(|_| ())
+    });
     assert!(
         matches!(far, Err(ExportError::Scaled { .. } | ExportError::Load(_))),
         "a factor of 400 folded and loaded: {far:?}"
+    );
+}
+
+/// The export writes the layout its run recorded into the header's layout byte: plain for a run
+/// that recorded none, mirrored for one that recorded it, and nothing for a record naming neither.
+#[test]
+fn an_export_writes_the_layout_its_run_recorded() {
+    let dir = std::env::temp_dir().join(format!("cadence-export-inputs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("checkpoints");
+    let saved = run.join("net-10");
+    std::fs::create_dir_all(&saved).expect("a checkpoint directory");
+    std::fs::write(saved.join("quantised.bin"), checkpoint()).expect("writes");
+    std::fs::write(run.join(COMMIT_FILE), format!("{TRAINER}\n")).expect("writes");
+    let manifest_path = dir.join("a.tsv");
+    std::fs::write(&manifest_path, manifest()).expect("writes");
+    record_manifests(&run, &[&manifest_path]).expect("records");
+    let export = |out: &Path| {
+        let done = Command::new(env!("CARGO_BIN_EXE_cadence-train"))
+            .arg("export")
+            .arg("--checkpoint")
+            .arg(&saved)
+            .arg("--manifest")
+            .arg(&manifest_path)
+            .args(["--provenance", "self-play", "--out"])
+            .arg(out)
+            .output()
+            .expect("cadence-train runs");
+        (
+            done.status.success(),
+            String::from_utf8_lossy(&done.stderr).into_owned(),
+        )
+    };
+    assert_eq!(run_inputs(&run), Ok(Inputs::Plain));
+    let (ok, text) = export(&dir.join("plain.cdnn"));
+    assert!(ok, "{text}");
+    record_inputs(&run, Inputs::Mirrored).expect("records");
+    assert_eq!(run_inputs(&run), Ok(Inputs::Mirrored));
+    let (ok, text) = export(&dir.join("mirrored.cdnn"));
+    assert!(ok, "{text}");
+    std::fs::write(run.join(INPUTS_FILE), "sideways\n").expect("writes");
+    let (refused, why) = export(&dir.join("sideways.cdnn"));
+    let plain = std::fs::read(dir.join("plain.cdnn")).expect("written");
+    let mirrored = std::fs::read(dir.join("mirrored.cdnn")).expect("written");
+    let unwritten = !dir.join("sideways.cdnn").exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!((plain[18], mirrored[18]), (0, 1));
+    assert_eq!(plain[..18], mirrored[..18]);
+    assert_eq!(plain[19..], mirrored[19..]);
+    let net = AnyNetwork::from_bytes(&mirrored).expect("loads");
+    assert!(matches!(net, AnyNetwork::Narrow(n) if n.inputs() == Inputs::Mirrored));
+    assert!(
+        !refused && unwritten && why.contains("sideways is not an input layout"),
+        "{why}"
     );
 }

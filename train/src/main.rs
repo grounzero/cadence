@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use bullet_lib::game::inputs::Chess768;
+use bullet_lib::game::inputs::{Chess768, ChessBucketsMirrored};
 use bullet_lib::nn::optimiser::{AdamW, AdamWParams};
 use bullet_lib::trainer::save::SavedFormat;
 use bullet_lib::trainer::schedule::{TrainingSchedule, TrainingSteps, lr, wdl};
@@ -22,7 +22,7 @@ use bullet_lib::value::loader::DirectSequentialDataLoader;
 use cadence_core::features::NUM_INPUTS;
 use cadence_dataset::sha256::{hex, sha256};
 use cadence_nnue::net::{QA, QB, SCALE};
-use cadence_nnue::{HIDDEN, Provenance, WIDE};
+use cadence_nnue::{HIDDEN, Inputs, Provenance, WIDE};
 use cadence_train::data::{BOOK_HEADER, COMMIT_FILE};
 use cadence_train::schedule;
 
@@ -59,7 +59,7 @@ const USAGE: &str =
     "usage: cadence-train run --data FILE... --manifest FILE... --holdout FILE --out DIR --id NAME
            [--superbatches N] [--batches N] [--result-share F] [--validation-positions N]
            [--hidden 256|512] [--lr-schedule cosine|step] [--result-share-end F]
-           [--from CHECKPOINT] [--lr-start F]
+           [--from CHECKPOINT] [--lr-start F] [--inputs plain|mirrored]
        cadence-train validate --checkpoint DIR... --holdout FILE --manifest FILE...
            [--validation-positions N] [--result-share F] [--score-share F]
        cadence-train export --checkpoint DIR --manifest FILE --provenance NAME --out FILE
@@ -68,15 +68,15 @@ const USAGE: &str =
        cadence-train overfit --out DIR [--data FILE... --manifest FILE...]
        cadence-train eval --checkpoint DIR --fens FILE";
 
-/// The network at `$hidden` units a perspective and its saved format, built the same way wherever
-/// a trainer is needed, so a checkpoint is read back by the definition that wrote it.
+/// The network at `$hidden` units a perspective over `$inputs` and its saved format, built the same
+/// way wherever a trainer is needed, so a checkpoint is read back by the definition that wrote it.
 macro_rules! recipe {
-    ($hidden:expr) => {{
+    ($hidden:expr, $inputs:expr) => {{
         let hidden: usize = $hidden;
         ValueTrainerBuilder::default()
             .dual_perspective()
             .optimiser(AdamW)
-            .inputs(Chess768)
+            .inputs($inputs)
             .save_format(&[
                 SavedFormat::id("l0w").round().quantise::<i16>(QA as i16),
                 SavedFormat::id("l0b").round().quantise::<i16>(QA as i16),
@@ -96,8 +96,36 @@ macro_rules! recipe {
     }};
 }
 
+/// `$body` with `$trainer` bound to the recipe's trainer under the layout `$inputs` names. The two
+/// layouts are two input types, so the body is written once and compiled for each.
+macro_rules! with_recipe {
+    ($inputs:expr, $hidden:expr, |$trainer:ident| $body:expr) => {
+        match $inputs {
+            Inputs::Plain => {
+                let mut $trainer = recipe!($hidden, Chess768);
+                $body
+            }
+            Inputs::Mirrored => {
+                let mut $trainer = recipe!($hidden, ChessBucketsMirrored::default());
+                $body
+            }
+        }
+    };
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        match args
+            .first()
+            .map(String::as_str)
+            .and_then(cadence_train::help::text)
+        {
+            Some(text) => println!("{text}"),
+            None => println!("{USAGE}"),
+        }
+        return ExitCode::SUCCESS;
+    }
     let done = match args.split_first() {
         Some((command, rest)) if command == "run" => flags(rest).and_then(|f| run(&f)),
         Some((command, rest)) if command == "export" => flags(rest).and_then(|f| export(&f)),
@@ -159,6 +187,17 @@ fn width_flag(flags: &Flags) -> Result<usize, String> {
         Err(format!(
             "--hidden {hidden}, where the engine reads {HIDDEN} or {WIDE}\n{USAGE}"
         ))
+    }
+}
+
+/// `--inputs`, plain unless the run is to train with mirrored inputs.
+fn inputs_flag(flags: &Flags) -> Result<Inputs, String> {
+    match flags.get("--inputs").map(Vec::as_slice) {
+        None => Ok(Inputs::Plain),
+        Some([name]) => {
+            cadence_train::data::inputs_named(name).map_err(|e| format!("--inputs: {e}\n{USAGE}"))
+        }
+        Some(_) => Err(format!("--inputs is given more than once\n{USAGE}")),
     }
 }
 
@@ -236,7 +275,8 @@ fn run(flags: &Flags) -> Result<(), String> {
         ));
     }
     let lr_start = first_rate(flags, stepped)?;
-    let from = continued(flags, hidden)?;
+    let inputs = inputs_flag(flags)?;
+    let from = continued(flags, hidden, inputs)?;
     let data: Vec<&str> = flags
         .get("--data")
         .map(|d| d.iter().map(String::as_str).collect())
@@ -254,39 +294,41 @@ fn run(flags: &Flags) -> Result<(), String> {
     cadence_train::data::record_manifests(Path::new(out), &verified)?;
     // A share that moves is recorded, and scored below, as the share the run ends on.
     cadence_train::data::record_result_share(Path::new(out), share_end)?;
+    cadence_train::data::record_inputs(Path::new(out), inputs)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let watcher = {
         let (stop, out, id) = (Arc::clone(&stop), PathBuf::from(out), id.to_string());
         std::thread::spawn(move || watch(&out, &id, hidden, &stop))
     };
-    let mut trainer = recipe!(hidden);
-    // The wide net's output layer is clipped tighter, so that its quantised sum loads.
-    if let Some(clip) = cadence_train::export::output_clip(hidden) {
-        trainer
-            .optimiser
-            .set_params_for_weight("l1w", clipped(clip));
-    }
     let settings = LocalSettings {
         threads: THREADS,
         test_set: None,
         output_directory: out,
         batch_queue_size: BATCH_QUEUE,
     };
-    if let Some(checkpoint) = &from {
-        trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
-    }
     let loader = DirectSequentialDataLoader::new(&data);
     let (sb, share) = (superbatches, (result_share, share_end));
-    if stepped {
-        let lr = schedule::stepped(sb);
-        trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
-    } else {
-        let lr = schedule::cosine_from(lr_start, sb);
-        trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
-    }
-    // Freed before the checkpoints are read back, each into a trainer of its own.
-    drop(trainer);
+    // The trainer is freed at the end of this, before the checkpoints are read back, each into a
+    // trainer of its own.
+    with_recipe!(inputs, hidden, |trainer| {
+        // The wide net's output layer is clipped tighter, so that its quantised sum loads.
+        if let Some(clip) = cadence_train::export::output_clip(hidden) {
+            trainer
+                .optimiser
+                .set_params_for_weight("l1w", clipped(clip));
+        }
+        if let Some(checkpoint) = &from {
+            trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
+        }
+        if stepped {
+            let lr = schedule::stepped(sb);
+            trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
+        } else {
+            let lr = schedule::cosine_from(lr_start, sb);
+            trainer.run(&training(id, batches, sb, share, lr), &settings, &loader);
+        }
+    });
     stop.store(true, Ordering::Relaxed);
     let mut seen = watcher
         .join()
@@ -322,21 +364,27 @@ fn first_rate(flags: &Flags, stepped: bool) -> Result<f32, String> {
 }
 
 /// `--from`, a saved checkpoint whose weights and optimiser state the run starts from, which must
-/// be of the width the run trains.
-fn continued(flags: &Flags, hidden: usize) -> Result<Option<PathBuf>, String> {
+/// be of the width and the input layout the run trains.
+fn continued(flags: &Flags, hidden: usize, inputs: Inputs) -> Result<Option<PathBuf>, String> {
     let Some(checkpoint) = flags.get("--from").and_then(|v| v.first()) else {
         return Ok(None);
     };
     let checkpoint = PathBuf::from(checkpoint);
     saved(std::slice::from_ref(&checkpoint))?;
     let width = width(&checkpoint)?;
-    if width == hidden {
-        Ok(Some(checkpoint))
-    } else {
+    let trained = cadence_train::data::run_inputs(checkpoint.parent().unwrap_or(Path::new(".")))?;
+    if width != hidden {
         Err(format!(
             "{} was trained at {width} units and this run is at {hidden}",
             checkpoint.display()
         ))
+    } else if trained != inputs {
+        Err(format!(
+            "{} was trained with {trained:?} inputs and this run is with {inputs:?}",
+            checkpoint.display()
+        ))
+    } else {
+        Ok(Some(checkpoint))
     }
 }
 
@@ -441,13 +489,18 @@ fn validation(
     let n = u32::try_from(examples.len()).unwrap_or(u32::MAX);
     let mut misread = Vec::new();
     for checkpoint in checkpoints {
-        let mut trainer = recipe!(width(checkpoint)?);
-        trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
-        let loss: f64 = examples
-            .iter()
-            .map(|e| cadence_train::validate::loss(trainer.eval(&e.fen), e, result_share, scale))
-            .sum::<f64>()
-            / f64::from(n);
+        let run = checkpoint.parent().unwrap_or(Path::new("."));
+        let inputs = cadence_train::data::run_inputs(run)?;
+        let loss: f64 = with_recipe!(inputs, width(checkpoint)?, |trainer| {
+            trainer.load_from_checkpoint(&checkpoint.to_string_lossy());
+            examples
+                .iter()
+                .map(|e| {
+                    cadence_train::validate::loss(trainer.eval(&e.fen), e, result_share, scale)
+                })
+                .sum::<f64>()
+                / f64::from(n)
+        });
         let superbatch = checkpoint
             .file_name()
             .and_then(|name| name.to_string_lossy().rsplit('-').next()?.parse().ok());
@@ -457,8 +510,14 @@ fn validation(
             .map_or_else(|| "not logged".to_string(), |t| format!("{t:.6}"));
         let file = checkpoint.join("quantised.bin");
         let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let held =
-            cadence_train::validate::quantised_check(&bytes, &examples, result_share, scale, loss);
+        let held = cadence_train::validate::quantised_check(
+            &bytes,
+            inputs,
+            &examples,
+            result_share,
+            scale,
+            loss,
+        );
         let quantised = held
             .as_ref()
             .map_or_else(|_| "outside the bar".to_string(), |q| format!("{q:.6}"));
@@ -518,11 +577,12 @@ fn export(flags: &Flags) -> Result<(), String> {
         .to_string();
     let manifest = read(Path::new(manifest_path))?;
     cadence_train::data::verify_export(run, &manifest)?;
-    let net = cadence_train::export::export(&quantised, provenance, &trainer, &manifest)
+    let inputs = cadence_train::data::run_inputs(run)?;
+    let net = cadence_train::export::export(&quantised, inputs, provenance, &trainer, &manifest)
         .map_err(|e| e.to_string())?;
     std::fs::write(&out, net.to_bytes()).map_err(|e| format!("{}: {e}", out.display()))?;
     println!(
-        "{}: provenance {}, trainer {}, manifest {}",
+        "{}: {inputs:?} inputs, provenance {}, trainer {}, manifest {}",
         out.display(),
         net.provenance(),
         net.trainer(),
@@ -600,7 +660,7 @@ fn overfit(flags: &Flags) -> Result<(), String> {
         .map(cadence_train::validate::example)
         .collect::<Result<Vec<_>, String>>()?;
     let mut failed = Vec::new();
-    let mut trainer = recipe!(HIDDEN);
+    let mut trainer = recipe!(HIDDEN, Chess768);
     let schedule = short_schedule("synthetic", SYNTHETIC_SUPERBATCHES, SYNTHETIC_BATCHES);
     let path = file.to_string_lossy().into_owned();
     trainer.run(
@@ -621,7 +681,7 @@ fn overfit(flags: &Flags) -> Result<(), String> {
     }
     if let Some(data) = real {
         let data: Vec<&str> = data.iter().map(String::as_str).collect();
-        let mut trainer = recipe!(HIDDEN);
+        let mut trainer = recipe!(HIDDEN, Chess768);
         let schedule = short_schedule("real", REAL_SUPERBATCHES, REAL_BATCHES);
         trainer.run(
             &schedule,
@@ -748,11 +808,14 @@ fn eval(flags: &Flags) -> Result<(), String> {
         .map(|line| line.split('[').next().unwrap_or(line).trim())
         .filter(|fen| !fen.is_empty())
         .collect();
-    let mut trainer = recipe!(width(Path::new(checkpoint))?);
-    trainer.load_from_checkpoint(checkpoint);
+    let run = Path::new(checkpoint).parent().unwrap_or(Path::new("."));
+    let inputs = cadence_train::data::run_inputs(run)?;
     let scale = f32::from(i16::try_from(SCALE).unwrap_or(i16::MAX));
-    for fen in positions {
-        println!("{:.4}\t{fen}", trainer.eval(fen) * scale);
-    }
+    with_recipe!(inputs, width(Path::new(checkpoint))?, |trainer| {
+        trainer.load_from_checkpoint(checkpoint);
+        for fen in positions {
+            println!("{:.4}\t{fen}", trainer.eval(fen) * scale);
+        }
+    });
     Ok(())
 }

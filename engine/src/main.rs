@@ -6,7 +6,7 @@
 
 use std::process::ExitCode;
 
-use cadence_engine::{bench, datagen, perft, texel, tune, uci};
+use cadence_engine::{bench, datagen, help, perft, texel, tune, uci};
 
 /// `cadence` with no subcommand speaks UCI on stdin.
 const SUBCOMMANDS: &[(&str, &str)] = &[
@@ -35,6 +35,14 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        match help::text(&args[1..]) {
+            Some(text) => println!("{text}"),
+            None => print!("{}", usage()),
+        }
+        return ExitCode::SUCCESS;
+    }
+
     match args.get(1).map(String::as_str) {
         None => uci::run(),
         // Each subcommand is one arm here and one row in SUBCOMMANDS.
@@ -45,23 +53,23 @@ fn main() -> ExitCode {
         Some("texel") => texel::run(&args[2..]),
         Some(name) => {
             eprintln!("cadence: unknown subcommand `{name}`");
-            usage();
+            eprint!("{}", usage());
             ExitCode::from(2)
         }
     }
 }
 
-fn usage() {
-    eprintln!();
-    eprintln!("usage: cadence [<subcommand>]");
-    eprintln!();
-    eprintln!("With no subcommand, cadence speaks UCI on stdin.");
-    if SUBCOMMANDS.is_empty() {
-        return;
+/// To stdout where `--help` asked for it, and to stderr after a usage error.
+fn usage() -> String {
+    use std::fmt::Write;
+    let mut text = String::from(
+        "\nusage: cadence [<subcommand>]\n\nWith no subcommand, cadence speaks UCI on stdin.\n",
+    );
+    if !SUBCOMMANDS.is_empty() {
+        text.push_str("\nsubcommands:\n");
+        for (name, blurb) in SUBCOMMANDS {
+            let _ = writeln!(text, "  {name:<10} {blurb}");
+        }
     }
-    eprintln!();
-    eprintln!("subcommands:");
-    for (name, blurb) in SUBCOMMANDS {
-        eprintln!("  {name:<10} {blurb}");
-    }
+    text
 }
