@@ -32,7 +32,7 @@ fn main() -> ExitCode {
     if args[1..].iter().any(|a| a == "--help" || a == "-h") {
         match args.get(1).map(String::as_str).and_then(help::text) {
             Some(text) => println!("{text}"),
-            None => usage(),
+            None => print!("{}", usage()),
         }
         return ExitCode::SUCCESS;
     }
@@ -47,18 +47,18 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("cadence-tools: {e}");
-            usage();
+            eprint!("{}", usage());
             ExitCode::from(2)
         }
     }
 }
 
-fn usage() {
-    eprintln!();
-    eprintln!("usage: cadence-tools <subcommand> [args]");
-    eprintln!();
-    eprintln!("subcommands:");
+/// To stdout where `--help` asked for it, and to stderr after a usage error.
+fn usage() -> String {
+    use std::fmt::Write;
+    let mut text = String::from("\nusage: cadence-tools <subcommand> [args]\n\nsubcommands:\n");
     for (name, blurb) in SUBCOMMANDS {
-        eprintln!("  {name:<10} {blurb}");
+        let _ = writeln!(text, "  {name:<10} {blurb}");
     }
+    text
 }

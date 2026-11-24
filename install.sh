@@ -61,6 +61,11 @@ ID=""
 FAULT=""
 TROUBLE=""
 CLEAN_DIRS=0
+ADDING=""
+UCI_RC=0
+MADE_LOG=""
+MADE_DATA=""
+MADE_BIN=""
 WHERE=default
 DEST=""
 TARGET=""
@@ -176,8 +181,32 @@ if [ -n "$PREFIX" ]; then
     while [ "$PREFIX" != / ] && [ "${PREFIX%/}" != "$PREFIX" ]; do PREFIX=${PREFIX%/}; done
 fi
 
+# The outermost folder `mkdir -p` would make for a path, or nothing where the path is there already.
+first_missing() {
+    local dir=$1 top=""
+    while [ -n "$dir" ] && [ ! -d "$dir" ]; do
+        top=$dir
+        dir=$(dirname "$dir")
+    done
+    printf '%s' "$top"
+}
+
+# Removes an empty folder and the empty ones above it, up to the outermost one this installer made.
+remove_made() {
+    local dir=$1 top=$2
+    [ -n "$top" ] || return 0
+    case "$dir/" in "$top"/*) ;; *) return 0 ;; esac
+    while rmdir "$dir" 2> /dev/null; do
+        echo "Removed the empty folder $(shown "$dir")."
+        [ "$dir" != "$top" ] || return 0
+        dir=$(dirname "$dir")
+    done
+}
+
 # --- The log -----------------------------------------------------------------------------------
 
+MADE_LOG=$(first_missing "$LOG_DIR")
+MADE_DATA=$(first_missing "$DATA_DIR")
 mkdir -p "$LOG_DIR" || { echo "Cannot create $LOG_DIR for the log." >&2; exit 1; }
 LOG="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
 OUT="$LOG.out"
@@ -239,15 +268,22 @@ kill_tree() {
 # Runs a command in the work folder for at most SECONDS, its input from one file, its output to
 # another and its errors to OUT. On expiry its process tree is killed and LIMITED is 1.
 limited() {
-    local seconds=$1 input=$2 output=$3 pid ticks=0
+    local seconds=$1 input=$2 output=$3
     shift 3
     LIMITED=0
     (cd "$WORK" && exec "$@") < "$input" > "$output" 2> "$OUT" &
-    pid=$!
-    while kill -0 "$pid" 2> /dev/null; do
+    # Bash names a child a signal stopped on its own stderr as it reaps it, which the reason in WHY
+    # says better, so the watch runs with that stream shut.
+    watch_child "$!" "$seconds" 2> /dev/null
+}
+
+# Waits for a child of limited, for at most SECONDS, returning its exit status or 124.
+watch_child() {
+    local pid=$1 seconds=$2 ticks=0
+    while kill -0 "$pid"; do
         if [ "$ticks" -ge $((seconds * 5)) ]; then
             kill_tree "$pid"
-            wait "$pid" 2> /dev/null
+            wait "$pid"
             LIMITED=1
             return 124
         fi
@@ -269,6 +305,8 @@ finish() {
             for dir in "$LOG_DIR" "$DATA_DIR/syzygy" "$DATA_DIR"; do
                 [ ! -d "$dir" ] || ! rmdir "$dir" 2> /dev/null || echo "Removed the empty folder $(shown "$dir")."
             done
+            remove_made "$(dirname "$LOG_DIR")" "$MADE_LOG"
+            remove_made "$(dirname "$DATA_DIR")" "$MADE_DATA"
         fi
     else
         echo
@@ -351,6 +389,12 @@ state_set() {
         && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
 }
 
+# A folder this installer made, kept from the first run that made it.
+state_made() {
+    [ -n "$2" ] && [ -z "$(state_get "$1")" ] || return 0
+    state_set "$1" "$(shown "$2")"
+}
+
 state_unset() {
     [ -n "$(state_get "$1")" ] || return 0
     { state_lines | grep -v "^$1="; true; } > "$STATE.new" && mv -f "$STATE.new" "$STATE" || fail "cannot write $STATE"
@@ -405,11 +449,20 @@ download() {
             curl -fsSL $secure -D "$OUT.headers" -o "$2" "$1"
         fi
     elif command -v wget > /dev/null 2>&1; then
-        if [ -n "$header" ]; then wget -q --header="$header" -O "$2" "$1" || rc=$?; else wget -q -O "$2" "$1" || rc=$?; fi
+        # wget's exit status does not tell a 404 from a 500, so its status line is read from -S.
+        local code
+        if [ -n "$header" ]; then
+            wget -q -S --header="$header" -O "$2" "$1" 2> "$OUT.wget" || rc=$?
+        else
+            wget -q -S -O "$2" "$1" 2> "$OUT.wget" || rc=$?
+        fi
+        cat "$OUT.wget" >&2
+        code=$(grep -oE 'HTTP/[0-9.]+ [0-9]{3}' "$OUT.wget" | tail -n 1 | grep -oE '[0-9]{3}$')
+        rm -f "$OUT.wget"
         case "$rc" in
             0) ;;
             4) echo "wget: network failure" >&2 ;;
-            8) echo "wget: the server answered with an error" >&2 ;;
+            8) if [ -n "$code" ]; then echo "wget: the server returned error: $code" >&2; else echo "wget: the server answered with an error" >&2; fi ;;
             *) echo "wget: exit $rc" >&2 ;;
         esac
         return "$rc"
@@ -441,24 +494,41 @@ said() {
     esac
 }
 
+# Runs an attempt, and once more after 3 seconds where it failed with any status but 1, a refusal a
+# second try would not change; 2 is a failure twice. WHAT, where given, tells the user of the retry.
+retry_once() {
+    local what=$1 rc=0
+    shift
+    "$@" || rc=$?
+    [ "$rc" != 0 ] || return 0
+    [ "$rc" != 1 ] || return 1
+    log "trying again in 3 seconds"
+    [ -z "$what" ] || say "$what failed, so it is tried once more in 3 seconds."
+    sleep 3
+    rc=0
+    "$@" || rc=$?
+    case "$rc" in 0 | 1) return "$rc" ;; *) return 2 ;; esac
+}
+
+# One download, the reason it failed left in TROUBLE: 1 is the server's refusal, 2 the network's.
+download_once() {
+    log "\$ download $1"
+    if download "$1" "$2" 2> "$OUT"; then
+        redact < "$OUT" >> "$LOG"
+        TROUBLE=""
+        return 0
+    fi
+    TROUBLE=$(said)
+    redact < "$OUT" >> "$LOG"
+    case "$TROUBLE" in " (not found)" | " (the server answered 4"*) return 1 ;; esac
+    return 2
+}
+
 # A download tried a second time where the first failed for the network rather than for the server's
 # answer, the reason left in TROUBLE: 1 is the server's refusal, and 2 the network's failure, twice.
 fetch() {
-    local attempt
     TROUBLE=""
-    for attempt in 1 2; do
-        log "\$ download $1"
-        if download "$1" "$2" 2> "$OUT"; then
-            redact < "$OUT" >> "$LOG"
-            TROUBLE=""
-            return 0
-        fi
-        TROUBLE=$(said)
-        redact < "$OUT" >> "$LOG"
-        case "$TROUBLE" in " (not found)" | " (the server answered 4"*) return 1 ;; esac
-        [ "$attempt" = 2 ] || { log "trying again in 3 seconds"; sleep 3; }
-    done
-    return 2
+    retry_once "" download_once "$1" "$2"
 }
 
 # A download the install needs, failed twice for the network, stops the run.
@@ -735,7 +805,19 @@ release_sums() {
 
 # The SHA-256 the release's SHA256SUMS gives a file, or nothing.
 listed() {
-    awk -v f="$1" '$2 == f || $2 == "*" f {print $1; exit}' "$WORK/SHA256SUMS"
+    awk -v f="$1" '{sub(/\r$/, "")} $2 == f || $2 == "*" f {print $1; exit}' "$WORK/SHA256SUMS"
+}
+
+# Every release has a build for each system release_name names, so a SHA256SUMS that gives one no
+# SHA-256 is damaged, which stops the run as a mismatch does and never builds from source.
+sums_entry() {
+    printf '%s' "$2" | grep -qxE '[0-9a-f]{64}' \
+        || tampered "Release $VERSION's SHA256SUMS gives no SHA-256 for $1, which every release of $VERSION has, so the file is damaged"
+}
+
+# Whether this version's releases have AVX-512 builds, which came with 0.7.0.
+avx512_released() {
+    [ "$(version_order "$VERSION" 0.7.0)" != -1 ]
 }
 
 # The file the release's SHA256SUMS gives a SHA-256 to, or nothing.
@@ -798,17 +880,18 @@ try_binary() {
     release_sums
     want=$(listed "$file")
     # A release from before the AVX-512 builds has none, and the AVX2 build it has also runs here.
-    if [ -z "$want" ] && [ "$BUILD" = avx512 ] && [ -z "$ASKED" ]; then
+    if [ -z "$want" ] && [ "$BUILD" = avx512 ] && ! avx512_released; then
+        if [ -n "$ASKED" ]; then
+            WHY="Release $VERSION has no AVX-512 binary, as no release before 0.7.0 has."
+            return 1
+        fi
         BUILD=avx2
         say "Release $VERSION has no AVX-512 binary, so its AVX2 build, which also runs here, is taken."
         name=$(release_name)
         file="cadence-$VERSION-$name$EXE"
         want=$(listed "$file")
     fi
-    if [ -z "$want" ]; then
-        WHY="Release $VERSION's SHA256SUMS lists no $file, so it has no binary for this system."
-        return 1
-    fi
+    sums_entry "$file" "$want"
     say "Release $VERSION has a binary for this system: $file."
     # One that cannot run here gives way to the tier below it, AVX-512 to AVX2 to generic, unless a
     # build was asked for by name; a timeout is no sign a lower tier would run, so it stops.
@@ -818,20 +901,25 @@ try_binary() {
         if [ -z "$ASKED" ] && [ "$LIMITED" != 1 ]; then
             case "$BUILD" in avx512) next=avx2 ;; avx2) next=generic ;; esac
         fi
-        while [ -n "$next" ]; do
+        # An Intel Mac has the AVX2 build and no generic one.
+        if [ -n "$next" ]; then
+            which=$BUILD
             BUILD=$next
-            name=$(release_name)
-            want=""
-            [ -z "$name" ] || want=$(listed "cadence-$VERSION-$name$EXE")
-            [ -z "$want" ] || break
-            case "$BUILD" in avx2) next=generic ;; *) next="" ;; esac
-        done
+            [ -n "$(release_name)" ] || next=""
+            BUILD=$which
+        fi
         if [ -z "$next" ]; then
-            [ "$ARCH" != x86_64 ] || [ "$BUILD" = generic ] || [ -n "$ASKED" ] \
+            # The case a user would report, so the log stays, as for a binary the system refused.
+            KEEP_LOG=1
+            [ "$ARCH" != x86_64 ] || [ "$BUILD" = generic ] || [ -n "$ASKED" ] || [ "$OS" = macos ] \
                 || say "--generic takes the generic build instead, for any x86-64 with POPCNT."
             stop "Nothing was installed. --source builds Cadence $VERSION from source here instead."
         fi
+        BUILD=$next
+        name=$(release_name)
         file="cadence-$VERSION-$name$EXE"
+        want=$(listed "$file")
+        sums_entry "$file" "$want"
         say "The release's $BUILD build, $file, is tried in its place."
     done
     BUILT="$WORK/$file"
@@ -1034,16 +1122,10 @@ check_rust() {
 
 # The tag the source is fetched at, the version asked for or found, checked against the repository's.
 resolve_tag() {
-    local tags attempt
-    for attempt in 1 2; do
-        log "\$ git ls-remote --tags --refs $REPO_URL"
-        tags=$(git ls-remote --tags --refs "$REPO_URL" 2> "$OUT") && break
-        redact < "$OUT" >> "$LOG"
-        [ "$attempt" = 1 ] || fail "could not list the releases at $REPO_URL, after trying twice. $NETWORK_HINT"
-        say "Listing the releases at $REPO_URL failed, so it is tried once more in 3 seconds."
-        sleep 3
-    done
-    tags=$(printf '%s\n' "$tags" | sed -n 's#.*refs/tags/##p')
+    local tags
+    retry_once "Listing the releases at $REPO_URL" list_tags \
+        || fail "could not list the releases at $REPO_URL, after trying twice. $NETWORK_HINT"
+    tags=$(sed -n 's#.*refs/tags/##p' "$WORK/tags")
     if ! printf '%s\n' "$tags" | grep -Fqx -- "$VERSION"; then
         case "$VERSION" in
             *+*) fail "there is no test base $VERSION at $REPO_URL" ;;
@@ -1052,21 +1134,28 @@ resolve_tag() {
     fi
 }
 
+# The repository's tags into the work folder, tried as a download is.
+list_tags() {
+    log "\$ git ls-remote --tags --refs $REPO_URL"
+    git ls-remote --tags --refs "$REPO_URL" > "$WORK/tags" 2> "$OUT" && return 0
+    redact < "$OUT" >> "$LOG"
+    return 2
+}
+
+# The version's tag into the source folder, tried as a download is.
+fetch_tag() {
+    run git -C "$SRC" fetch --quiet --depth 1 origin "+refs/tags/$VERSION:refs/tags/$VERSION" || return 2
+}
+
 fetch_source() {
     step "Fetching Cadence $VERSION"
     SRC="$WORK/cadence"
     rm -rf "$SRC"
     run git -c init.defaultBranch=main init --quiet "$SRC" || fail "could not create $SRC"
     run git -C "$SRC" remote add origin "$REPO_URL" || fail "could not name the repository in $SRC"
-    # A release names itself from its annotated tag, so the tag is fetched as itself, tried twice as a
-    # download is.
-    local attempt
-    for attempt in 1 2; do
-        run git -C "$SRC" fetch --quiet --depth 1 origin "+refs/tags/$VERSION:refs/tags/$VERSION" && break
-        [ "$attempt" = 1 ] || fail "could not fetch Cadence $VERSION, after trying twice. $NETWORK_HINT"
-        say "Fetching Cadence $VERSION failed, so it is tried once more in 3 seconds."
-        sleep 3
-    done
+    # A release names itself from its annotated tag, so the tag is fetched as itself.
+    retry_once "Fetching Cadence $VERSION" fetch_tag \
+        || fail "could not fetch Cadence $VERSION, after trying twice. $NETWORK_HINT"
     run git -C "$SRC" -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$VERSION" \
         || fail "could not check out Cadence $VERSION"
 }
@@ -1114,16 +1203,30 @@ check_commit() {
     say "The tag $VERSION is commit $got, the one the release names."
 }
 
+# Whether rustup holds a toolchain for a channel.
+has_toolchain() {
+    rustup toolchain list 2> /dev/null | grep -q "^$1-"
+}
+
+# The toolchain this run added, recorded for the uninstall to name.
+toolchain_added() {
+    [ -n "$ADDING" ] || return 0
+    state_set installed_toolchain "Rust $ADDING, which 'rustup toolchain uninstall $ADDING' removes"
+    ADDING=""
+}
+
 prepare_toolchain() {
     step "The Rust toolchain"
     local pinned
     pinned=$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' "$SRC/rust-toolchain.toml" 2> /dev/null)
-    # A toolchain this run adds is recorded, so the uninstall can name it.
-    if [ -n "$pinned" ] && ! rustup toolchain list 2> /dev/null | grep -q "^$pinned-"; then
-        state_set installed_toolchain "Rust $pinned, which 'rustup toolchain uninstall $pinned' removes"
+    # A toolchain this run adds is recorded once it is there, so the uninstall can name it.
+    ADDING=""
+    if [ -n "$pinned" ] && ! has_toolchain "$pinned"; then ADDING=$pinned; fi
+    if (cd "$SRC" && run rustup toolchain install); then
+        toolchain_added
+    else
+        say "This rustup installs the Rust version Cadence pins as the build starts instead."
     fi
-    (cd "$SRC" && run rustup toolchain install) \
-        || say "This rustup installs the Rust version Cadence pins as the build starts instead."
     log "rustc: $(cd "$SRC" && rustc --version 2>&1)"
     log "cargo: $(cd "$SRC" && cargo --version 2>&1)"
     TRIPLE=$(cd "$SRC" && rustc -vV 2>/dev/null | sed -n 's/^host: //p')
@@ -1206,6 +1309,8 @@ build() {
     encoded=$(for file in $files; do repo_flags "$SRC/$file"; done | awk '{printf "%s%s", (NR > 1 ? "\037" : ""), $0}')
     log "rustflags: $(printf '%s' "$encoded" | tr '\037' ' ')"
     (cd "$SRC" && run env -u RUSTFLAGS -u "$flags" CARGO_ENCODED_RUSTFLAGS="$encoded" cargo $args) || fail "the build failed"
+    # Where rustup installed the toolchain as the build started, it is there now.
+    [ -z "$ADDING" ] || ! has_toolchain "$ADDING" || toolchain_added
     BUILT="$SRC/target/release/cadence$EXE"
     [ -f "$BUILT" ] || fail "the build left no binary at $BUILT"
     FROM=source
@@ -1494,6 +1599,7 @@ install_binary() {
         before) say "Installing into $(shown "$DEST"), where Cadence was installed before." ;;
         *) say "Installing into $(shown "$DEST"), the default folder; --dir DIR installs into DIR instead." ;;
     esac
+    MADE_BIN=$(first_missing "$DEST")
     mkdir -p "$DEST" || fail "cannot create $DEST"
     # A file this script has no record of is never run to ask its name, since it may not be Cadence.
     if [ -e "$TARGET" ] && [ "$REPLACE" != 1 ]; then
@@ -1521,13 +1627,29 @@ install_binary() {
     state_set sha256 "$(checksum "$TARGET")"
     state_set build "${MADE:-$BUILD}"
     state_set from "$FROM"
+    # The folders this run made, so an uninstall removes them once they are empty.
+    state_made made_bin "$MADE_BIN"
+    state_made made_data "$MADE_DATA"
+    state_made made_log "$MADE_LOG"
     say "Installed $(shown "$TARGET")."
 }
 
+# The profile the user's shell reads. Terminal on macOS starts bash as a login shell, which reads
+# only the first of these that exists, so a new ~/.bash_profile would hide ~/.profile.
 shell_rc() {
+    local file
     case "${SHELL##*/}" in
         zsh) printf '%s' "$HOME/.zshrc" ;;
-        bash) if [ "$OS" = macos ]; then printf '%s' "$HOME/.bash_profile"; else printf '%s' "$HOME/.bashrc"; fi ;;
+        bash)
+            if [ "$OS" != macos ]; then
+                printf '%s' "$HOME/.bashrc"
+                return
+            fi
+            for file in .bash_profile .bash_login .profile; do
+                [ ! -e "$HOME/$file" ] || { printf '%s' "$HOME/$file"; return; }
+            done
+            printf '%s' "$HOME/.bash_profile"
+            ;;
         *) printf '%s' "$HOME/.profile" ;;
     esac
 }
@@ -1585,6 +1707,8 @@ offer_path() {
             return
         fi
         ask "Add $dest to your PATH in $rc, so a terminal finds cadence?" "$default" || return 0
+        # A profile this script makes goes at the uninstall, once its line is gone and it is empty.
+        [ -e "$rc" ] || state_set path_rc_made yes
         printf '\n%s\n%s\n' "$MARK" "$line" >> "$rc" || fail "could not write $rc"
         state_set path_rc "$rc"
         state_set path_line "$line"
@@ -1790,13 +1914,24 @@ afterwards() {
 
 uninstall() {
     step "Uninstalling Cadence"
-    local bin win tables kept="" what key
+    local bin win tables kept="" what key recorded rc old removed=0
     bin=$(state_path binary)
+    recorded=$bin
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
     if [ -e "$bin" ]; then
-        if ask "Remove $(shown "$bin")?" y; then
+        local remove=0
+        if [ -n "$recorded" ]; then
+            ! ask "Remove $(shown "$bin")?" y || remove=1
+        else
+            # A file this script has no record of may not be its own, as the install side holds too.
+            say "There is no install record, so $(shown "$bin") may not be one this installer put there: it is removed only if you answer yes here, and --yes alone keeps it."
+            if [ "$YES" != 1 ] && ask "Remove $(shown "$bin")?" n; then remove=1; fi
+        fi
+        if [ "$remove" = 1 ]; then
             rm -f "$bin" || fail "could not remove $bin; if Cadence is running, close it and run this again"
             say "Removed it."
+            remove_made "$(dirname "$bin")" "$(state_path made_bin)"
+            state_unset made_bin
         else
             kept="$kept, Cadence at $(shown "$bin")"
         fi
@@ -1806,9 +1941,14 @@ uninstall() {
     if [ -z "$kept" ]; then
         for key in binary version sha256 build from; do state_unset "$key"; done
     fi
-    if remove_path_line "$(state_get path_rc)" "$(state_get path_line)" ask; then
+    rc=$(state_get path_rc)
+    if remove_path_line "$rc" "$(state_get path_line)" ask; then
+        if [ -n "$(state_get path_rc_made)" ] && [ -f "$rc" ] && [ ! -s "$rc" ]; then
+            rm -f "$rc" && say "Removed $rc, which this installer made and which is now empty."
+        fi
         state_unset path_rc
         state_unset path_line
+        state_unset path_rc_made
     else
         kept="$kept, the PATH line in $(state_get path_rc)"
     fi
@@ -1836,7 +1976,15 @@ uninstall() {
     if [ -n "$kept" ]; then
         [ ! -f "$STATE" ] || say "The install record at $(shown "$STATE") is kept for what stays:${kept#,}."
     else
+        # The folders the first install made go once empty, after the record that names them.
+        MADE_DATA=$(state_path made_data)
+        MADE_LOG=$(state_path made_log)
         rm -f "$STATE"
+        for old in "$LOG_DIR"/install-*.log "$LOG_DIR"/install-*.log.out; do
+            [ -f "$old" ] && [ "$old" != "$LOG" ] && [ "$old" != "$OUT" ] || continue
+            rm -f "$old" && removed=$((removed + 1))
+        done
+        [ "$removed" = 0 ] || say "Removed $removed log file(s) of earlier runs from $(shown "$LOG_DIR")."
         CLEAN_DIRS=1
     fi
     say "Done."
