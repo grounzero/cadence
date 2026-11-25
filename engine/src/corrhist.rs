@@ -10,11 +10,11 @@ use crate::score::{self, Score};
 /// Enough that a game's pawn keys rarely collide, small enough to sit in cache beside the history.
 const TABLE_SLOTS: usize = 1 << 14;
 
-/// So the weighted mean does not round a small persistent correction away.
+/// So the update does not round a small persistent correction away.
 pub const GRAIN: i32 = 256;
 
-/// The weighted mean's denominator. An observation moves an entry at most `MAX_WEIGHT /
-/// WEIGHT_UNIT` of the distance to itself.
+/// The step's denominator. One observation adds at most `MAX_WEIGHT / WEIGHT_UNIT` of the error
+/// it reports.
 const WEIGHT_UNIT: i32 = 256;
 pub const MAX_WEIGHT: i32 = 16;
 
@@ -22,7 +22,7 @@ pub const MAX_WEIGHT: i32 = 16;
 pub const MAX_CORRECTION: Score = 256;
 const _: () = assert!(score::MAX_EVAL + MAX_CORRECTION < score::TB_WIN_IN_MAX_PLY);
 
-/// A larger disagreement is a tactic, not an evaluation error, and would dominate the mean.
+/// A larger disagreement is a tactic, not an evaluation error, and would dominate the table.
 pub const MAX_DELTA: Score = 1024;
 
 /// Per `Search`, not shared between threads, which keeps a node count a function of the code.
@@ -55,17 +55,20 @@ impl CorrectionHistory {
         (stored / GRAIN).clamp(-MAX_CORRECTION, MAX_CORRECTION)
     }
 
-    /// A deeper search is a better opinion, so it moves the entry further, up to the weight
-    /// ceiling.
+    /// `delta` is the error left after this entry's correction, so the entry adds a step of it
+    /// and stops when none is left. The step grows with depth, and shrinks as the entry nears its
+    /// bound, which it cannot pass.
     pub fn update(&mut self, pawn_key: u64, side: Colour, delta: Score, depth: u32) {
+        const LIMIT: i32 = MAX_CORRECTION * GRAIN;
         let delta = delta.clamp(-MAX_DELTA, MAX_DELTA);
         let weight = i32::try_from(depth)
             .unwrap_or(MAX_WEIGHT)
             .saturating_add(1)
             .min(MAX_WEIGHT);
+        let step = delta * GRAIN * weight / WEIGHT_UNIT;
         let slot = &mut self.slots[Self::index(pawn_key, side)];
-        let next = (*slot * (WEIGHT_UNIT - weight) + delta * GRAIN * weight) / WEIGHT_UNIT;
-        *slot = next.clamp(-MAX_CORRECTION * GRAIN, MAX_CORRECTION * GRAIN);
+        let next = *slot + step - *slot * step.abs() / LIMIT;
+        *slot = next.clamp(-LIMIT, LIMIT);
     }
 
     /// Separate halves per side: the evaluation corrected is already relative to the side to move.

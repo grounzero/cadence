@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What a gate can pin is the arithmetic and the refusals: a weighted mean at the stated weights,
+//! What a gate can pin is the arithmetic and the refusals: a step at the stated weights,
 //! saturation, a fresh slot correcting by nothing, separate sides, no clock and no float. Whether
 //! it makes the engine stronger is the SPRT's question.
 
@@ -26,8 +26,8 @@ fn a_fresh_table_corrects_by_nothing() {
 
 #[test]
 fn one_observation_moves_the_entry_by_its_weight_and_no_further() {
-    // The fold is `entry * (UNIT - w) + delta * GRAIN * w`, over `UNIT`,
-    // from an entry of zero. At depth 0 the weight is 1 of 256.
+    // From an entry of zero the step is `delta * GRAIN * w / UNIT`, and nothing pulls it back.
+    // At depth 0 the weight is 1 of 256.
     let mut t = CorrectionHistory::new();
     t.update(KEY_A, Colour::White, 256, 0);
     assert_eq!(t.correction(KEY_A, Colour::White), 1);
@@ -83,7 +83,7 @@ fn a_delta_past_the_bound_is_clamped_rather_than_folded_whole() {
     assert_eq!(
         bounded.correction(KEY_A, Colour::White),
         unbounded.correction(KEY_A, Colour::White),
-        "a tactic is not an evaluation error and does not dominate the mean"
+        "a tactic is not an evaluation error and does not dominate the table"
     );
 }
 
@@ -111,32 +111,25 @@ fn clearing_returns_it_to_fresh() {
 
 #[test]
 fn the_correction_is_reported_in_centipawns_and_the_grain_is_internal() {
-    // GRAIN buys resolution below a centipawn inside the slot; nothing
-    // outside the table ever sees it.
+    // GRAIN buys resolution below a centipawn inside the slot, so a small error is held whole at
+    // the shallowest weight; nothing outside the table ever sees it.
     let mut t = CorrectionHistory::new();
     for _ in 0..10_000 {
-        t.update(KEY_A, Colour::White, 10, 64);
+        let left = 10 - t.correction(KEY_A, Colour::White);
+        t.update(KEY_A, Colour::White, left, 0);
     }
-    let held = t.correction(KEY_A, Colour::White);
-    assert!(
-        (9..=10).contains(&held),
-        "a constant stream of ten converges to ten, less the truncation below"
-    );
+    assert_eq!(t.correction(KEY_A, Colour::White), 10);
 }
 
 #[test]
-fn the_fold_truncates_toward_zero_and_that_is_deliberate() {
-    // Both divisions floor, so a converged entry sits one unit short of its target. Kept identical
-    // to the arm the shadow measured, since the measurement transfers only to what was measured.
+fn an_error_that_never_shrinks_climbs_to_the_bound_and_stops() {
+    // Each step adds what is reported, so a report that ignores the correction keeps adding, and
+    // the pull toward zero grows until it cancels the step at the bound.
     let mut t = CorrectionHistory::new();
     for _ in 0..10_000 {
         t.update(KEY_A, Colour::White, 10, 64);
     }
-    assert_eq!(
-        t.correction(KEY_A, Colour::White),
-        9,
-        "pin the bias so a later session reads it as a choice, not a bug"
-    );
+    assert_eq!(t.correction(KEY_A, Colour::White), MAX_CORRECTION);
 }
 
 /// The search measures each error against the evaluation already corrected, so the table is fed
