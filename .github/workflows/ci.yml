@@ -2685,8 +2685,13 @@ jobs:
 
           # An older release found without --version is a downgrade, declined by default; one named by
           # --version under --yes is taken, and the upgrade then restores this one.
-          mkdir -p "$tmp/releases/api-old"
-          printf '[{"tag_name": "%s"}]\n' "$old" > "$tmp/releases/api-old/releases"
+          # A stable release is found as the latest, and a pre-release only in the list, served as the
+          # folder's index because the list and the latest share a path.
+          mkdir -p "$tmp/releases/api-old/releases"
+          case "$old" in
+            *-rc.*) printf '[{"tag_name": "%s"}]\n' "$old" > "$tmp/releases/api-old/releases/index.html" ;;
+            *) printf '{"tag_name": "%s"}\n' "$old" > "$tmp/releases/api-old/releases/latest" ;;
+          esac
           for mode in "" --update; do
             rc=0
             CADENCE_API_URL="$url/api-old/releases" bash install.sh --yes --test-urls $mode > down.txt 2>&1 || rc=$?
@@ -3109,8 +3114,14 @@ jobs:
 
             # An older release found without --version is a downgrade, declined by default; one named by
             # --version under --yes is taken, and the upgrade then restores this one.
-            New-Item -ItemType Directory -Force -Path (Join-Path $releases 'api-old') | Out-Null
-            Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases') -Value ('[{"tag_name": "' + $old + '"}]')
+            # A stable release is found as the latest, and a pre-release only in the list, served as the
+            # folder's index because the list and the latest share a path.
+            New-Item -ItemType Directory -Force -Path (Join-Path $releases 'api-old\releases') | Out-Null
+            if ($old -match '-rc\.') {
+              Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\index.html') -Value ('[{"tag_name": "' + $old + '"}]')
+            } else {
+              Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\latest') -Value ('{"tag_name": "' + $old + '"}')
+            }
             $env:CADENCE_API_URL = "$url/api-old/releases"
             foreach ($mode in @('', '--update')) {
               $list = @('--yes', '--test-urls')
