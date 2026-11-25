@@ -331,6 +331,26 @@ fn a_losing_capture_is_never_forced_on_the_side_to_move_at_the_horizon() {
     }
 }
 
+/// The side to move has no capture, so a horizon node here is its stand pat alone. Asked with a
+/// window far below it, the node answers with its own score rather than the window's edge.
+#[test]
+fn a_stand_pat_cutoff_returns_the_stand_pat() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for (fen, _) in both_colours(STAND_PAT, "a1a1") {
+        let mut b = support::position(&fen);
+        assert!(
+            generate_noisy(&b).is_empty(),
+            "{fen}: the side to move has a capture"
+        );
+        let stand_pat = eval::evaluate(&b);
+        let beta = stand_pat - 100;
+        let mut s = support::search(Limits::default(), &stop, &tt);
+        let score = s.node_window(&mut b, 0, 1, beta - 1, beta);
+        assert_eq!(score, stand_pat, "{fen}: the cutoff answered {score}");
+    }
+}
+
 /// Where no root move allows a capture or promotion, each leaf is one node, plus one for each root
 /// move the null window searches twice. `root_re_searches` computes that term from the static
 /// evaluations, so this pins the re-search rule as well as the cost of a quiet horizon.
