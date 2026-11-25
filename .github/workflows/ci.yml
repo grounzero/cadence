@@ -3992,8 +3992,9 @@ jobs:
           printf '[target.%s]\nrustflags = ["-Cprofile-generate=%s"]\n' "$TARGET" "$(native "$PWD/pgo/raw-build")" \
             > pgo/generate.toml
           start=$(date +%s)
-          CARGO_TARGET_DIR=target-gen cargo build --locked --release -p cadence-engine --bin cadence \
-            $CONFIG_ARG $TARGET_ARG --config pgo/generate.toml
+          CARGO_TARGET_DIR=target-gen cargo build --locked --release -p cadence-engine --bin cadence -v \
+            --color never $CONFIG_ARG $TARGET_ARG --config pgo/generate.toml > out/gen.log 2>&1 \
+            || { tail -n 50 out/gen.log; exit 1; }
           echo "instrumented build: $(( $(date +%s) - start )) s" | tee -a out/times.txt
           for i in 1 2; do
             start=$(date +%s)
@@ -4003,9 +4004,43 @@ jobs:
             "$PROFDATA" merge -o "pgo/bench-$i.profdata" pgo/raw-$i/*.profraw
           done
           (cd pgo && $hash bench-1.profdata bench-2.profdata) | tee out/profiles.sha256
-          for side in a b; do
+          # The second workload: Win at Chess at 1,000,000 nodes a position, which shares no position
+          # with the bench, held to the SHA-256 of the file the earlier readings profiled on.
+          revoke=""
+          if [ "$RUNNER_OS" = Windows ]; then revoke="--ssl-revoke-best-effort"; fi
+          curl -fsS --retry 3 --retry-all-errors $revoke -o pgo/wac.epd \
+            https://raw.githubusercontent.com/jdart1/arasan-chess/c399b3f293314c6770785da8db5404da69c33d64/tests/wacnew.epd
+          echo "9bfb7b42cf5bbc7f3d60ff767ca3be460e0ae4d9110ef9a71ddf0bd7071d4d46  pgo/wac.epd" | $hash -c -
+          py=python3; command -v python3 > /dev/null && python3 -c '' 2> /dev/null || py=python
+          mkdir -p pgo/raw-wac
+          start=$(date +%s)
+          LLVM_PROFILE_FILE="$(native "$PWD/pgo/raw-wac")/%p-%m.profraw" "$py" - \
+            "$(native "$PWD/target-gen/${SUB}release/cadence$EXE")" pgo/wac.epd 1000000 <<'PY'
+          import subprocess, sys
+          engine, epd, nodes = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          fens = [" ".join(line.split()[:4]) + " 0 1" for line in open(epd) if line.strip()]
+          p = subprocess.Popen([engine], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+          def send(s):
+              p.stdin.write(s + "\n")
+              p.stdin.flush()
+          def until(prefix):
+              for line in p.stdout:
+                  if line.startswith(prefix):
+                      return
+              sys.exit("the engine closed before " + prefix)
+          send("uci"); until("uciok")
+          for fen in fens:
+              send("ucinewgame"); send("position fen " + fen); send("go nodes %d" % nodes); until("bestmove")
+          send("quit"); p.wait()
+          print(len(fens), "positions")
+          PY
+          echo "instrumented WAC: $(( $(date +%s) - start )) s" | tee -a out/times.txt
+          "$PROFDATA" merge -o pgo/wac.profdata pgo/raw-wac/*.profraw
+          for side in a b w; do
+            profile=pgo/bench-1.profdata
+            [ "$side" = w ] && profile=pgo/wac.profdata
             printf '[target.%s]\nrustflags = ["-Cprofile-use=%s", "-Cllvm-args=-pgo-warn-missing-function"]\n' \
-              "$TARGET" "$(native "$PWD/pgo/bench-1.profdata")" > pgo/use.toml
+              "$TARGET" "$(native "$PWD/$profile")" > pgo/use.toml
             start=$(date +%s)
             CARGO_TARGET_DIR="target-use-$side" cargo build --locked --release -p cadence-engine --bin cadence -v \
               --color never $CONFIG_ARG $TARGET_ARG --config pgo/use.toml > "out/use-$side.log" 2>&1 \
@@ -4013,7 +4048,16 @@ jobs:
             echo "profile-guided build $side: $(( $(date +%s) - start )) s" | tee -a out/times.txt
             cp "target-use-$side/${SUB}release/cadence$EXE" "out/cadence-pgo-$side$EXE"
           done
-          (cd out && $hash cadence-plain$EXE cadence-pgo-a$EXE cadence-pgo-b$EXE) | tee out/binaries.sha256
+          (cd out && $hash cadence-plain$EXE cadence-pgo-a$EXE cadence-pgo-b$EXE cadence-pgo-w$EXE) | tee out/binaries.sha256
+          # The engine crate's options in the instrumented and the profile-using builds, paths and the
+          # profile option set aside, so any other difference between the two shows.
+          opts() { grep -a -- '--crate-name cadence_engine ' "$1" | head -n 1 | grep -oE -- "-C ?[a-z0-9-]+(=[^ \`']*)?" \
+            | grep -vE 'profile-(generate|use)|extra-filename|incremental' | sort; }
+          if diff <(opts out/gen.log) <(opts out/use-a.log) > out/flag-diff.txt; then
+            echo "the instrumented and profile-using builds pass the engine crate the same options:"; opts out/use-a.log
+          else
+            echo "::warning::the two builds' options differ"; cat out/flag-diff.txt
+          fi
 
       - name: Whether the profile reached the hot code, and the features held
         if: steps.cpu.outputs.run == 'true'
@@ -4035,8 +4079,9 @@ jobs:
           set -eu
           ./out/cadence-plain$EXE bench > out/bench-plain.txt
           ./out/cadence-pgo-a$EXE bench > out/bench-pgo.txt
+          ./out/cadence-pgo-w$EXE bench > out/bench-pgo-wac.txt
           body() { grep -v ' nps$' "$1" | sed 's/, [0-9]* ms$//'; }
-          for f in out/bench-pgo.txt out/bench-instrumented-1.txt out/bench-instrumented-2.txt; do
+          for f in out/bench-pgo.txt out/bench-pgo-wac.txt out/bench-instrumented-1.txt out/bench-instrumented-2.txt; do
             if body out/bench-plain.txt | diff - <(body "$f"); then
               echo "$f: every position's nodes and best move equal the plain build's"
             else
@@ -4048,7 +4093,7 @@ jobs:
           echo "bench $got nodes, as bench.txt says"
           # Context only, a shared runner being no timing host: five benches each, alternated.
           for i in 1 2 3 4 5; do
-            for b in plain pgo-a; do
+            for b in plain pgo-a pgo-w; do
               ms=$("./out/cadence-$b$EXE" bench | sed -n 's/.*positions, \([0-9]*\) ms$/\1/p')
               echo "$b $ms" | tee -a out/runner-times.txt
             done
