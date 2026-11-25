@@ -45,6 +45,7 @@ impl Session {
         let tokens: Vec<&str> = tokens.collect();
         let mut limits = Limits::parse(tokens.iter().copied());
         limits.move_overhead = Some(self.move_overhead);
+        limits.lag = self.lag;
         // A clock not ours reads as zero, which returns the first iteration and looks like a broken
         // engine from the pipe, so say which it is.
         if !limits.infinite

@@ -76,6 +76,9 @@ pub struct Session {
     /// Why the last `position` command failed, until a valid one clears it; every `go` meanwhile
     /// answers `bestmove 0000` and searches nothing.
     refused: Option<String>,
+    /// What a move of this game lost beyond the engine's own thinking, measured from the clocks
+    /// `go` gives; `ucinewgame` forgets it.
+    lag: Option<u64>,
 }
 
 /// `Use NNUE`, `EvalFile`, the net that file loaded and the net the build ships.
@@ -139,6 +142,7 @@ impl Session {
             probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
             refused: None,
+            lag: None,
         }
     }
 
@@ -175,6 +179,13 @@ impl Session {
     #[must_use]
     pub fn tt(&self) -> &Table {
         &self.tt
+    }
+
+    /// For the gates: the per-move lag this game has measured.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn measured_lag(&self) -> Option<u64> {
+        self.lag
     }
 
     /// `false` on `quit`.
