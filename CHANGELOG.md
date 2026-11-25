@@ -19,6 +19,12 @@ result.
 
 ## [Unreleased]
 
+### Changed
+
+- Search: a node the search visits again takes its static evaluation from
+  the hash table, where the entry holds it, rather than evaluating the
+  position again. Every evaluation is the same, so play is unchanged.
+
 ### Added
 
 - Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.

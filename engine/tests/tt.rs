@@ -136,8 +136,8 @@ fn an_entry_round_trips_through_the_two_words() {
     assert!(checked >= 1000, "only {checked} packings checked");
 }
 
-/// A static evaluation goes there when something reads one, and this makes that a deliberate
-/// change.
+/// An entry stored without a static evaluation leaves the field above the flag zero, which reads as
+/// none.
 #[test]
 fn the_unused_bits_of_a_slot_are_zero() {
     for (mv, score, depth, bound) in packable() {
@@ -151,6 +151,53 @@ fn the_unused_bits_of_a_slot_are_zero() {
                 );
             }
         }
+    }
+}
+
+/// The static evaluation comes back as stored where it is in reach of the field, and as none past
+/// it, from an entry and through a table.
+#[test]
+fn a_static_evaluation_round_trips_and_one_out_of_reach_reads_as_none() {
+    let max = tt::MAX_STORED_EVAL;
+    for (mv, score, depth, bound) in packable() {
+        let entry = Entry::new(mv, score, depth, bound, 5, true);
+        for eval in [-max, -1, 0, 1, max] {
+            let hit = entry
+                .with_eval(eval)
+                .decode()
+                .expect("a stored entry decodes");
+            assert_eq!(hit.eval, i16::try_from(eval).ok(), "{eval}");
+            assert_eq!((hit.mv, hit.score, hit.depth), (mv, score, depth));
+        }
+        for eval in [-max - 1, max + 1, MAX_EVAL] {
+            assert_eq!(entry.with_eval(eval).decode().and_then(|h| h.eval), None);
+        }
+    }
+    let t = table(1);
+    let key = 0x2545_F491_4F6C_DD1D;
+    t.store_with_eval(key, Move::NULL, 10, 4, Bound::Exact, false, Some(-123));
+    assert_eq!(t.probe(key).and_then(|h| h.eval), Some(-123));
+    t.store(key, Move::NULL, 10, 5, Bound::Exact, false);
+    assert_eq!(t.probe(key).and_then(|h| h.eval), None);
+}
+
+/// A node the next iteration visits again takes its static evaluation from the table, under the net
+/// and under the handcrafted evaluation; a debug build reads the board again at each and fails on a
+/// difference.
+#[test]
+fn a_node_visited_again_takes_its_static_evaluation_from_the_table() {
+    let fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4";
+    let board = || Board::from_fen(fen).expect("the FEN parses");
+    for mut pos in [bench_position(fen), Position::new(board())] {
+        let stop = AtomicBool::new(false);
+        let t = table(16);
+        let mut s = support::search(Limits::depth(7), &stop, &t);
+        s.run(&mut pos, &mut Vec::new());
+        assert!(
+            s.table_evals() > 0,
+            "no evaluation taken from the table, {} read",
+            s.static_evals()
+        );
     }
 }
 
