@@ -206,6 +206,23 @@ fn a_side_s_key_moves_with_its_own_pieces_and_not_with_pawns_or_the_other_side()
     assert_ne!(white.non_pawn[w], base.non_pawn[w], "the white king moved");
 }
 
+/// The keys are read from the pieces where they stand, so two move orders to one position agree.
+#[test]
+fn two_move_orders_to_one_position_read_the_same_keys() {
+    let reach = |moves: &[&str]| {
+        let mut b = Board::from_fen(START_FEN).expect("the start");
+        for uci in moves {
+            let m = parse_uci(&generate_legal(&b), uci).expect("a legal move");
+            b.play(m);
+        }
+        CorrectionKeys::of(&b)
+    };
+    assert_eq!(
+        reach(&["g1f3", "g8f6", "b1c3", "b8c6"]),
+        reach(&["b1c3", "b8c6", "g1f3", "g8f6"])
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The rule in the search, which is a different question from the table.
 // ---------------------------------------------------------------------------
@@ -214,8 +231,8 @@ mod support;
 
 use std::sync::atomic::AtomicBool;
 
-use cadence_core::START_FEN;
 use cadence_core::position::Board;
+use cadence_core::{START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
 use cadence_engine::search::Limits;
 use support::table;
