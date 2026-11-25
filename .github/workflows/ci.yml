@@ -3877,3 +3877,162 @@ jobs:
       - name: The proofs
         if: env.PROVE == 'true'
         run: cargo kani -p cadence-core -p cadence-engine -Z unstable-options --harness-timeout 10m
+
+  # A scoping run, dispatched by hand on a `pgo-` branch and never part of a pull request: each
+  # release target built plain and profile-guided from the bench, the two checked equal and kept.
+  pgo-scope:
+    name: pgo ${{ matrix.name }}
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'pgo-')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86-64-avx2
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: .exe
+          - name: windows-x86-64-generic
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            config: .cargo/x86-64-generic.toml
+            exe: .exe
+          - name: windows-x86-64-avx512
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            config: .cargo/x86-64-avx512.toml
+            avx512: true
+            exe: .exe
+          - name: linux-x86-64-avx2
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: linux-x86-64-generic
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-generic.toml
+          - name: linux-x86-64-avx512
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            config: .cargo/x86-64-avx512.toml
+            avx512: true
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x86-64
+            os: macos-26-intel
+            target: x86_64-apple-darwin
+    env:
+      CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
+      TARGET_ARG: ${{ matrix.avx512 && format('--target {0}', matrix.target) || '' }}
+      SUB: ${{ matrix.avx512 && format('{0}/', matrix.target) || '' }}
+      TARGET: ${{ matrix.target }}
+      EXE: ${{ matrix.exe }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The toolchain, llvm-profdata and the runner's processor
+        id: cpu
+        run: |
+          set -eu
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          [ "$host" = "$TARGET" ] || { echo "::error::expected $TARGET, runner is $host"; exit 1; }
+          rustup component add llvm-tools
+          profdata="$(rustc --print sysroot)/lib/rustlib/$TARGET/bin/llvm-profdata$EXE"
+          "$profdata" --version
+          echo "PROFDATA=$profdata" >> "$GITHUB_ENV"
+          run=true
+          if [ "${{ matrix.avx512 }}" = true ]; then
+            if [ "$RUNNER_OS" = Windows ]; then
+              tmp=$(cygpath -u "$RUNNER_TEMP")
+              printf '%s\n' \
+                "Add-Type -Namespace Scope -Name Cpu -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool IsProcessorFeaturePresent(uint feature);'" \
+                '[Scope.Cpu]::IsProcessorFeaturePresent(41)' > "$tmp/avx512.ps1"
+              answer=$(powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$tmp/avx512.ps1")" | tr -d '\r')
+              [ "$answer" = True ] || run=false
+            else
+              flags=$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
+              for f in avx512f avx512bw; do case " $flags " in *" $f "*) ;; *) run=false ;; esac; done
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          [ "$run" = true ] || echo "::notice title=${{ matrix.name }}::no AVX-512 here, so it cannot be profiled"
+          mkdir -p out
+
+      - name: The plain build
+        run: |
+          set -eu
+          start=$(date +%s)
+          cargo build --locked --release -p cadence-engine --bin cadence $CONFIG_ARG $TARGET_ARG
+          echo "plain build: $(( $(date +%s) - start )) s" | tee -a out/times.txt
+          cp "target/${SUB}release/cadence$EXE" "out/cadence-plain$EXE"
+
+      - name: Profile on the bench, then build with the profile, twice each
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          set -eu
+          native() { if command -v cygpath > /dev/null; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
+          if command -v sha256sum > /dev/null; then hash=sha256sum; else hash="shasum -a 256"; fi
+          mkdir -p pgo/raw-build pgo/raw-1 pgo/raw-2
+          printf '[target.%s]\nrustflags = ["-Cprofile-generate=%s"]\n' "$TARGET" "$(native "$PWD/pgo/raw-build")" \
+            > pgo/generate.toml
+          start=$(date +%s)
+          CARGO_TARGET_DIR=target-gen cargo build --locked --release -p cadence-engine --bin cadence \
+            $CONFIG_ARG $TARGET_ARG --config pgo/generate.toml
+          echo "instrumented build: $(( $(date +%s) - start )) s" | tee -a out/times.txt
+          for i in 1 2; do
+            start=$(date +%s)
+            LLVM_PROFILE_FILE="$(native "$PWD/pgo/raw-$i")/%p-%m.profraw" \
+              "target-gen/${SUB}release/cadence$EXE" bench > "out/bench-instrumented-$i.txt"
+            echo "instrumented bench $i: $(( $(date +%s) - start )) s" | tee -a out/times.txt
+            "$PROFDATA" merge -o "pgo/bench-$i.profdata" pgo/raw-$i/*.profraw
+          done
+          (cd pgo && $hash bench-1.profdata bench-2.profdata) | tee out/profiles.sha256
+          for side in a b; do
+            printf '[target.%s]\nrustflags = ["-Cprofile-use=%s"]\n' "$TARGET" "$(native "$PWD/pgo/bench-1.profdata")" \
+              > pgo/use.toml
+            start=$(date +%s)
+            CARGO_TARGET_DIR="target-use-$side" cargo build --locked --release -p cadence-engine --bin cadence \
+              $CONFIG_ARG $TARGET_ARG --config pgo/use.toml
+            echo "profile-guided build $side: $(( $(date +%s) - start )) s" | tee -a out/times.txt
+            cp "target-use-$side/${SUB}release/cadence$EXE" "out/cadence-pgo-$side$EXE"
+          done
+          (cd out && $hash cadence-plain$EXE cadence-pgo-a$EXE cadence-pgo-b$EXE) | tee out/binaries.sha256
+
+      - name: The bench and the search, plain against profile-guided
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          set -eu
+          ./out/cadence-plain$EXE bench > out/bench-plain.txt
+          ./out/cadence-pgo-a$EXE bench > out/bench-pgo.txt
+          body() { grep -v ' nps$' "$1" | sed 's/, [0-9]* ms$//'; }
+          for f in out/bench-pgo.txt out/bench-instrumented-1.txt out/bench-instrumented-2.txt; do
+            if body out/bench-plain.txt | diff - <(body "$f"); then
+              echo "$f: every position's nodes and best move equal the plain build's"
+            else
+              echo "::error::$f differs from the plain build's bench"; exit 1
+            fi
+          done
+          got=$(tail -n 1 out/bench-plain.txt | awk '{print $1}')
+          [ "$got" = "$(tr -d '[:space:]' < bench.txt)" ] || { echo "::error::bench $got against bench.txt"; exit 1; }
+          echo "bench $got nodes, as bench.txt says"
+          # Context only, a shared runner being no timing host: five benches each, alternated.
+          for i in 1 2 3 4 5; do
+            for b in plain pgo-a; do
+              ms=$("./out/cadence-$b$EXE" bench | sed -n 's/.*positions, \([0-9]*\) ms$/\1/p')
+              echo "$b $ms" | tee -a out/runner-times.txt
+            done
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: pgo-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
