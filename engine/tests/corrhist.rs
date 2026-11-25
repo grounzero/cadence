@@ -139,6 +139,24 @@ fn the_fold_truncates_toward_zero_and_that_is_deliberate() {
     );
 }
 
+/// The search measures each error against the evaluation already corrected, so the table is fed
+/// what is left of an error, and a repeated error must leave it holding all of it.
+#[test]
+fn an_error_measured_against_its_own_correction_is_learned_whole() {
+    for (error, depth) in [(100, 64), (-100, 64), (40, 6)] {
+        let mut t = CorrectionHistory::new();
+        for _ in 0..10_000 {
+            let left = error - t.correction(KEY_A, Colour::White);
+            t.update(KEY_A, Colour::White, left, depth);
+        }
+        assert_eq!(
+            t.correction(KEY_A, Colour::White),
+            error,
+            "a repeated error of {error} at depth {depth} is learned whole, not in part"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The rule in the search, which is a different question from the table.
 // ---------------------------------------------------------------------------
