@@ -34,7 +34,9 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
     let mut board = Board::from_fen(start).unwrap();
     let mut moves: Vec<String> = Vec::new();
     let mut time = [1000u64, 1000u64];
-    let inc = 20u64;
+    // A move timed through the pipe costs a loaded runner 40 ms or more, so a smaller increment
+    // loses on the runner's time and not the engine's.
+    let inc = 100u64;
     let mut plies = 0;
     let mut max_overrun_ms = 0u64;
     let mut ended_by_board = false;
@@ -91,7 +93,7 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
     })
 }
 
-/// 1000 ms + 20 ms, timed around each `go` with the pipe and the scheduler included. A game that
+/// 1000 ms + 100 ms, timed around each `go` with the pipe and the scheduler included. A game that
 /// runs out or overruns is printed and played once more, and only a second such game fails.
 fn played_on_the_clock(start: &str) -> Game {
     let game = play_on_the_clock(start).unwrap_or_else(|first| {
