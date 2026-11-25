@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
-use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
+use cadence_core::{Colour, Move, MoveList, generate_legal, parse_uci, to_uci};
 use cadence_nnue::AnyNetwork;
 
 use super::say::say;
-use super::{Running, Session};
+use super::{Played, Running, Session, Thinking};
 use crate::level;
 use crate::position::Position;
 use crate::search::{Learned, Limits, Search};
@@ -43,9 +43,7 @@ impl Session {
         let received = Instant::now();
         self.stop_search();
         let tokens: Vec<&str> = tokens.collect();
-        let mut limits = Limits::parse(tokens.iter().copied());
-        limits.move_overhead = Some(self.move_overhead);
-        limits.lag = self.lag;
+        let (limits, thinking) = self.limits_for(&tokens, received);
         // A clock not ours reads as zero, which returns the first iteration and looks like a broken
         // engine from the pipe, so say which it is.
         if !limits.infinite
@@ -133,7 +131,7 @@ impl Session {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
                         None => say(format_args!("bestmove {spelled}")),
                     }
-                    learned
+                    (learned, Instant::now())
                 })
         };
         match thread {
@@ -142,6 +140,7 @@ impl Session {
                     stop,
                     ponder_hit,
                     thread,
+                    thinking,
                 });
             }
             Err(e) => not_started(&e, &fallback),
@@ -166,8 +165,51 @@ impl Session {
     /// The search keeps its tree and spends the clock from here. A flag, because the search that
     /// must hear it is already running.
     pub(super) fn ponderhit(&mut self) {
-        if let Some(running) = &self.search {
+        if let Some(running) = &mut self.search {
             running.ponder_hit.store(true, Ordering::Relaxed);
+            // The move is ours from here, and so is the clock.
+            if let Some(thinking) = &mut running.thinking {
+                thinking.from = Instant::now();
+                thinking.pondering = false;
+            }
+        }
+    }
+
+    /// The limits a `go` searches with, the session's overhead, lag and move number among them,
+    /// and the clock the move is answered on where it has one of its own.
+    fn limits_for(&mut self, tokens: &[&str], received: Instant) -> (Limits, Option<Thinking>) {
+        let mut limits = Limits::parse(tokens.iter().copied());
+        limits.move_overhead = Some(self.move_overhead);
+        let us = self.board.side_to_move();
+        self.read_lag(&limits, us);
+        limits.lag = self.lag;
+        limits.move_number = Some(u32::from(self.board.fullmove_number()));
+        let thinking = if limits.infinite || limits.movetime.is_some() {
+            None
+        } else {
+            limits.clock(us).map(|(clock, inc)| Thinking {
+                side: us,
+                clock,
+                inc,
+                from: received,
+                pondering: limits.ponder,
+            })
+        };
+        (limits, thinking)
+    }
+
+    /// What our last move lost beyond its thinking: the clock it left, less the clock this `go`
+    /// gives. Only our own clock in one game says anything of our move.
+    fn read_lag(&mut self, limits: &Limits, us: Colour) {
+        let (Some(played), Some((clock, _))) = (self.played.take(), limits.clock(us)) else {
+            return;
+        };
+        if played.side == us {
+            let left = played
+                .clock
+                .saturating_add(played.inc)
+                .saturating_sub(played.spent);
+            self.lag = Some(time::fold_lag(self.lag, left.saturating_sub(clock)));
         }
     }
 
@@ -177,8 +219,16 @@ impl Session {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
             // The panic hook has already reported a panic in the search thread.
-            if let Ok(learned) = running.thread.join() {
+            if let Ok((learned, answered)) = running.thread.join() {
                 self.learned = learned;
+                // A ponder never hit was not a move played.
+                self.played = running.thinking.filter(|t| !t.pondering).map(|t| Played {
+                    side: t.side,
+                    clock: t.clock,
+                    inc: t.inc,
+                    spent: u64::try_from(answered.saturating_duration_since(t.from).as_millis())
+                        .unwrap_or(u64::MAX),
+                });
             }
         }
     }
