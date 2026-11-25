@@ -387,7 +387,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=970
+          floor=980
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             # The floor drops by the tests the slow files would have passed here, counted from their lists.
             slow=0
