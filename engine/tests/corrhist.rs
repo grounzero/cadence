@@ -5,12 +5,24 @@
 //! it makes the engine stronger is the SPRT's question.
 
 use cadence_core::Colour;
-use cadence_engine::corrhist::{CorrectionHistory, GRAIN, MAX_CORRECTION, MAX_DELTA, MAX_WEIGHT};
+use cadence_engine::corrhist::{
+    CorrectionHistory, CorrectionKeys, GRAIN, MAX_CORRECTION, MAX_DELTA, MAX_WEIGHT,
+};
 
 /// A key that is not any other key used here, so a test that means "a
 /// structure nobody has seen" gets one.
 const KEY_A: u64 = 0x1234_5678_9abc_def0;
 const KEY_B: u64 = 0x0fed_cba9_8765_4321;
+
+/// A position's keys, its pieces drawn from its pawn key so each name is one position.
+const A: CorrectionKeys = CorrectionKeys {
+    pawn: KEY_A,
+    non_pawn: [KEY_A.rotate_left(1), KEY_A.rotate_left(2)],
+};
+const B: CorrectionKeys = CorrectionKeys {
+    pawn: KEY_B,
+    non_pawn: [KEY_B.rotate_left(1), KEY_B.rotate_left(2)],
+};
 
 /// A grain of one would round a small correction away, and a correction reaching the mate scale
 /// could imply a mate that is not there.
@@ -20,30 +32,31 @@ const _: () = assert!(MAX_CORRECTION < 1000);
 #[test]
 fn a_fresh_table_corrects_by_nothing() {
     let t = CorrectionHistory::new();
-    assert_eq!(t.correction(KEY_A, Colour::White), 0);
-    assert_eq!(t.correction(KEY_A, Colour::Black), 0);
+    assert_eq!(t.correction(&A, Colour::White), 0);
+    assert_eq!(t.correction(&A, Colour::Black), 0);
 }
 
 #[test]
 fn one_observation_moves_the_entry_by_its_weight_and_no_further() {
     // From an entry of zero the step is `delta * GRAIN * w / UNIT`, and nothing pulls it back.
-    // At depth 0 the weight is 1 of 256.
+    // Each of the three tables takes it, so the correction moves three steps; at depth 0 the
+    // weight is 1 of 256.
     let mut t = CorrectionHistory::new();
-    t.update(KEY_A, Colour::White, 256, 0);
-    assert_eq!(t.correction(KEY_A, Colour::White), 1);
+    t.update(&A, Colour::White, 256, 0);
+    assert_eq!(t.correction(&A, Colour::White), 3);
 
-    // At the weight ceiling one observation moves a sixteenth of the way.
+    // At the weight ceiling each table moves a sixteenth of the way.
     let mut t = CorrectionHistory::new();
-    t.update(KEY_A, Colour::White, 256, 64);
-    assert_eq!(t.correction(KEY_A, Colour::White), 256 * MAX_WEIGHT / 256);
+    t.update(&A, Colour::White, 256, 64);
+    assert_eq!(t.correction(&A, Colour::White), 3 * 256 * MAX_WEIGHT / 256);
 }
 
 #[test]
 fn the_weight_rises_with_depth_and_then_stops() {
     let at = |depth: u32| {
         let mut t = CorrectionHistory::new();
-        t.update(KEY_A, Colour::White, MAX_DELTA, depth);
-        t.correction(KEY_A, Colour::White)
+        t.update(&A, Colour::White, MAX_DELTA, depth);
+        t.correction(&A, Colour::White)
     };
     assert!(at(0) < at(4), "a deeper observation carries more weight");
     assert!(
@@ -61,28 +74,28 @@ fn the_weight_rises_with_depth_and_then_stops() {
 fn a_repeated_observation_converges_and_saturates() {
     let mut t = CorrectionHistory::new();
     for _ in 0..10_000 {
-        t.update(KEY_A, Colour::White, MAX_DELTA, 64);
+        t.update(&A, Colour::White, MAX_DELTA, 64);
     }
-    let held = t.correction(KEY_A, Colour::White);
+    let held = t.correction(&A, Colour::White);
     assert_eq!(
         held, MAX_CORRECTION,
         "a correction is bounded whatever the stream says"
     );
     for _ in 0..10_000 {
-        t.update(KEY_A, Colour::White, -MAX_DELTA, 64);
+        t.update(&A, Colour::White, -MAX_DELTA, 64);
     }
-    assert_eq!(t.correction(KEY_A, Colour::White), -MAX_CORRECTION);
+    assert_eq!(t.correction(&A, Colour::White), -MAX_CORRECTION);
 }
 
 #[test]
 fn a_delta_past_the_bound_is_clamped_rather_than_folded_whole() {
     let mut bounded = CorrectionHistory::new();
     let mut unbounded = CorrectionHistory::new();
-    bounded.update(KEY_A, Colour::White, MAX_DELTA, 64);
-    unbounded.update(KEY_A, Colour::White, MAX_DELTA * 100, 64);
+    bounded.update(&A, Colour::White, MAX_DELTA, 64);
+    unbounded.update(&A, Colour::White, MAX_DELTA * 100, 64);
     assert_eq!(
-        bounded.correction(KEY_A, Colour::White),
-        unbounded.correction(KEY_A, Colour::White),
+        bounded.correction(&A, Colour::White),
+        unbounded.correction(&A, Colour::White),
         "a tactic is not an evaluation error and does not dominate the table"
     );
 }
@@ -90,10 +103,10 @@ fn a_delta_past_the_bound_is_clamped_rather_than_folded_whole() {
 #[test]
 fn the_two_sides_do_not_share_a_slot() {
     let mut t = CorrectionHistory::new();
-    t.update(KEY_A, Colour::White, MAX_DELTA, 64);
-    assert!(t.correction(KEY_A, Colour::White) > 0);
+    t.update(&A, Colour::White, MAX_DELTA, 64);
+    assert!(t.correction(&A, Colour::White) > 0);
     assert_eq!(
-        t.correction(KEY_A, Colour::Black),
+        t.correction(&A, Colour::Black),
         0,
         "the evaluation is relative to the side to move, so the two halves are separate"
     );
@@ -102,11 +115,11 @@ fn the_two_sides_do_not_share_a_slot() {
 #[test]
 fn clearing_returns_it_to_fresh() {
     let mut t = CorrectionHistory::new();
-    t.update(KEY_A, Colour::White, MAX_DELTA, 64);
-    t.update(KEY_B, Colour::Black, -MAX_DELTA, 64);
+    t.update(&A, Colour::White, MAX_DELTA, 64);
+    t.update(&B, Colour::Black, -MAX_DELTA, 64);
     t.clear();
-    assert_eq!(t.correction(KEY_A, Colour::White), 0);
-    assert_eq!(t.correction(KEY_B, Colour::Black), 0);
+    assert_eq!(t.correction(&A, Colour::White), 0);
+    assert_eq!(t.correction(&B, Colour::Black), 0);
 }
 
 #[test]
@@ -115,10 +128,10 @@ fn the_correction_is_reported_in_centipawns_and_the_grain_is_internal() {
     // the shallowest weight; nothing outside the table ever sees it.
     let mut t = CorrectionHistory::new();
     for _ in 0..10_000 {
-        let left = 10 - t.correction(KEY_A, Colour::White);
-        t.update(KEY_A, Colour::White, left, 0);
+        let left = 10 - t.correction(&A, Colour::White);
+        t.update(&A, Colour::White, left, 0);
     }
-    assert_eq!(t.correction(KEY_A, Colour::White), 10);
+    assert_eq!(t.correction(&A, Colour::White), 10);
 }
 
 #[test]
@@ -127,9 +140,9 @@ fn an_error_that_never_shrinks_climbs_to_the_bound_and_stops() {
     // the pull toward zero grows until it cancels the step at the bound.
     let mut t = CorrectionHistory::new();
     for _ in 0..10_000 {
-        t.update(KEY_A, Colour::White, 10, 64);
+        t.update(&A, Colour::White, 10, 64);
     }
-    assert_eq!(t.correction(KEY_A, Colour::White), MAX_CORRECTION);
+    assert_eq!(t.correction(&A, Colour::White), MAX_CORRECTION);
 }
 
 /// The search measures each error against the evaluation already corrected, so the table is fed
@@ -139,11 +152,11 @@ fn an_error_measured_against_its_own_correction_is_learned_whole() {
     for (error, depth) in [(100, 64), (-100, 64), (40, 6)] {
         let mut t = CorrectionHistory::new();
         for _ in 0..10_000 {
-            let left = error - t.correction(KEY_A, Colour::White);
-            t.update(KEY_A, Colour::White, left, depth);
+            let left = error - t.correction(&A, Colour::White);
+            t.update(&A, Colour::White, left, depth);
         }
         assert_eq!(
-            t.correction(KEY_A, Colour::White),
+            t.correction(&A, Colour::White),
             error,
             "a repeated error of {error} at depth {depth} is learned whole, not in part"
         );
@@ -168,6 +181,29 @@ fn an_error_learned_with_one_set_of_pieces_is_not_read_whole_with_another() {
         "rooks read {} of an error learned with knights",
         t.correction_at(&rooks)
     );
+}
+
+/// Each side's key reads that side's pieces other than pawns, and nothing else.
+#[test]
+fn a_side_s_key_moves_with_its_own_pieces_and_not_with_pawns_or_the_other_side() {
+    let keys = |fen: &str| CorrectionKeys::of(&Board::from_fen(fen).expect("a fen"));
+    let base = keys("4k3/pp3ppp/2n5/8/8/2N5/PP3PPP/4K3 w - - 0 1");
+    let pawns = keys("4k3/p4ppp/1pn5/8/8/2N1P3/PP3P1P/4K3 w - - 0 1");
+    let black = keys("4k3/pp3ppp/2r5/8/8/2N5/PP3PPP/4K3 w - - 0 1");
+    let white = keys("4k3/pp3ppp/2n5/8/8/2N5/PP3PPP/3K4 w - - 0 1");
+    let (w, b) = (Colour::White.index(), Colour::Black.index());
+    assert_ne!(pawns.pawn, base.pawn);
+    assert_eq!(
+        pawns.non_pawn, base.non_pawn,
+        "pawns move neither side's key"
+    );
+    assert_eq!(black.non_pawn[w], base.non_pawn[w]);
+    assert_ne!(
+        black.non_pawn[b], base.non_pawn[b],
+        "a black knight became a rook"
+    );
+    assert_eq!(white.non_pawn[b], base.non_pawn[b]);
+    assert_ne!(white.non_pawn[w], base.non_pawn[w], "the white king moved");
 }
 
 // ---------------------------------------------------------------------------
@@ -234,8 +270,8 @@ fn the_correction_is_bounded_where_the_search_reads_it() {
     // scale.
     let mut t = CorrectionHistory::new();
     for _ in 0..100_000 {
-        t.update(KEY_A, Colour::White, MAX_DELTA, MAX_WEIGHT as u32);
+        t.update(&A, Colour::White, MAX_DELTA, MAX_WEIGHT as u32);
     }
-    let c = t.correction(KEY_A, Colour::White);
+    let c = t.correction(&A, Colour::White);
     assert!(c.abs() <= MAX_CORRECTION);
 }

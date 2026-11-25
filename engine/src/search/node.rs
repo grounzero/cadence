@@ -12,6 +12,7 @@ use super::depth::{extension, iir_reduction, losing_capture, move_history, reduc
 use super::pruning::{futile_node, lmp_index};
 use super::{Expected, Search, Via, bound_for, order_first, remember_killer};
 use crate::conthist::{self, OFFSETS};
+use crate::corrhist::CorrectionKeys;
 use crate::picker::{Picker, Tables};
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -119,9 +120,9 @@ impl Search<'_> {
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
-        let pawn_key = board.pawn_key();
+        let keys = CorrectionKeys::of(board);
         let us_eval = board.side_to_move();
-        self.heuristics.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
+        self.heuristics.evals[ply] = self.corrected_eval(board, in_check, &keys, us_eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -232,7 +233,7 @@ impl Search<'_> {
         // aborted search computed is stored: the loop returns before this.
         let (best, bound) = within(best, original_alpha, beta, tb);
         self.store(key, ply, stored_depth(board, depth), best, best_move, bound);
-        self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
+        self.remember_correction(&keys, us_eval, ply, best, best_move, bound, depth);
         best
     }
 
