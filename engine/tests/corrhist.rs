@@ -150,6 +150,26 @@ fn an_error_measured_against_its_own_correction_is_learned_whole() {
     }
 }
 
+/// The same pawns behind different pieces are a different evaluation, so an error learned with
+/// knights is not read whole with rooks in their place.
+#[test]
+fn an_error_learned_with_one_set_of_pieces_is_not_read_whole_with_another() {
+    let knights = Board::from_fen("4k3/pp3ppp/2n5/8/8/2N5/PP3PPP/4K3 w - - 0 1").expect("a fen");
+    let rooks = Board::from_fen("4k3/pp3ppp/2r5/8/8/2R5/PP3PPP/4K3 w - - 0 1").expect("a fen");
+    assert_eq!(knights.pawn_key(), rooks.pawn_key(), "the same pawns");
+    let mut t = CorrectionHistory::new();
+    for _ in 0..10_000 {
+        let left = 100 - t.correction_at(&knights);
+        t.update_at(&knights, left, 64);
+    }
+    assert_eq!(t.correction_at(&knights), 100);
+    assert!(
+        t.correction_at(&rooks) < 100,
+        "rooks read {} of an error learned with knights",
+        t.correction_at(&rooks)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The rule in the search, which is a different question from the table.
 // ---------------------------------------------------------------------------

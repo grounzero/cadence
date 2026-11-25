@@ -49,6 +49,19 @@ impl CorrectionHistory {
         self.slots.iter().all(|&v| v == 0)
     }
 
+    /// For the gates: the correction a position reads, from its own keys and side to move.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn correction_at(&self, board: &cadence_core::position::Board) -> Score {
+        self.correction(board.pawn_key(), board.side_to_move())
+    }
+
+    /// For the gates: an update at a position, from its own keys and side to move.
+    #[cfg(feature = "counters")]
+    pub fn update_at(&mut self, board: &cadence_core::position::Board, delta: Score, depth: u32) {
+        self.update(board.pawn_key(), board.side_to_move(), delta, depth);
+    }
+
     #[must_use]
     pub fn correction(&self, pawn_key: u64, side: Colour) -> Score {
         let stored = self.slots[Self::index(pawn_key, side)];
