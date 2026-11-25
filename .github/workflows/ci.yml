@@ -3890,39 +3890,48 @@ jobs:
       matrix:
         include:
           - name: windows-x86-64-avx2
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+crt-static
             os: windows-latest
             target: x86_64-pc-windows-msvc
             exe: .exe
           - name: windows-x86-64-generic
+            features: +popcnt,+crt-static
             os: windows-latest
             target: x86_64-pc-windows-msvc
             config: .cargo/x86-64-generic.toml
             exe: .exe
           - name: windows-x86-64-avx512
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+crt-static,+avx512f,+avx512bw
             os: windows-latest
             target: x86_64-pc-windows-msvc
             config: .cargo/x86-64-avx512.toml
             avx512: true
             exe: .exe
           - name: linux-x86-64-avx2
+            features: +avx2,+bmi1,+popcnt,+lzcnt
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - name: linux-x86-64-generic
+            features: +popcnt
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-generic.toml
           - name: linux-x86-64-avx512
+            features: +avx2,+bmi1,+popcnt,+lzcnt,+avx512f,+avx512bw
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-avx512.toml
             avx512: true
           - name: linux-aarch64
+            features: +neon
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
           - name: macos-arm64
+            features: +neon
             os: macos-latest
             target: aarch64-apple-darwin
           - name: macos-x86-64
+            features: +avx2,+bmi1,+popcnt,+lzcnt
             os: macos-26-intel
             target: x86_64-apple-darwin
     env:
@@ -3995,15 +4004,30 @@ jobs:
           done
           (cd pgo && $hash bench-1.profdata bench-2.profdata) | tee out/profiles.sha256
           for side in a b; do
-            printf '[target.%s]\nrustflags = ["-Cprofile-use=%s"]\n' "$TARGET" "$(native "$PWD/pgo/bench-1.profdata")" \
-              > pgo/use.toml
+            printf '[target.%s]\nrustflags = ["-Cprofile-use=%s", "-Cllvm-args=-pgo-warn-missing-function"]\n' \
+              "$TARGET" "$(native "$PWD/pgo/bench-1.profdata")" > pgo/use.toml
             start=$(date +%s)
-            CARGO_TARGET_DIR="target-use-$side" cargo build --locked --release -p cadence-engine --bin cadence \
-              $CONFIG_ARG $TARGET_ARG --config pgo/use.toml
+            CARGO_TARGET_DIR="target-use-$side" cargo build --locked --release -p cadence-engine --bin cadence -v \
+              --color never $CONFIG_ARG $TARGET_ARG --config pgo/use.toml > "out/use-$side.log" 2>&1 \
+              || { tail -n 50 "out/use-$side.log"; exit 1; }
             echo "profile-guided build $side: $(( $(date +%s) - start )) s" | tee -a out/times.txt
             cp "target-use-$side/${SUB}release/cadence$EXE" "out/cadence-pgo-$side$EXE"
           done
           (cd out && $hash cadence-plain$EXE cadence-pgo-a$EXE cadence-pgo-b$EXE) | tee out/binaries.sha256
+
+      - name: Whether the profile reached the hot code, and the features held
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          set -eu
+          "$PROFDATA" show pgo/bench-1.profdata | tee out/profile-summary.txt
+          grep -E 'no profile data available for function' out/use-a.log > out/missing.txt || true
+          echo "functions with no profile data: $(wc -l < out/missing.txt)"
+          for c in cadence_engine cadence_nnue cadence_core; do
+            echo "  naming $c: $(grep -c "$c" out/missing.txt || true)"
+          done
+          grep -E -- "--crate-name cadence_engine " out/use-a.log | grep -oE -- "-C ?[a-z-]+=[^ ]+|-Cprofile-use=[^ ]+|-Cllvm-args=[^ ]+" \
+            | sort -u | tee out/engine-flags.txt
+          bash .github/check-features.sh "$TARGET" "${{ matrix.features }}" out/use-a.log | tee out/features.txt
 
       - name: The bench and the search, plain against profile-guided
         if: steps.cpu.outputs.run == 'true'
