@@ -963,20 +963,33 @@ fn a_score_cut_short_by_the_fifty_move_rule_is_not_reused_early_in_the_window() 
     );
 }
 
-/// Below a clock of 90 a deep result can still reach past the fifty-move draw: warmed at depth 12
-/// from a clock of 0, the children of a clock-88 root hold depth 11 at a clock of 89.
+/// Below a clock of 90 a result can still reach past the fifty-move draw. At a clock of 89 an exact
+/// draw planted at every child of the root is refused at depth 11 and taken at depth 10.
 #[test]
 fn a_deep_result_is_refused_where_its_depth_reaches_the_fifty_move_draw() {
-    let early = "7k/8/8/8/8/8/8/KQ6 w - - 0 1";
     let late = "7k/8/8/8/8/8/8/KQ6 w - - 88 1";
-    let warm = table(tt::DEFAULT_HASH_MB);
-    let _ = search_with(&mut support::position(early), 12, &warm);
-    let (_, on_warm, _) = search_with(&mut support::position(late), 2, &warm);
-    let empty = table(tt::DEFAULT_HASH_MB);
-    let (_, on_empty, _) = search_with(&mut support::position(late), 2, &empty);
+    let planted = |depth: Option<u8>| {
+        let t = table(tt::DEFAULT_HASH_MB);
+        let mut b = support::position(late);
+        if let Some(depth) = depth {
+            for m in generate_legal(&b).iter() {
+                b.make_move(m);
+                t.store(b.key(), Move::NULL, 0, depth, Bound::Exact, false);
+                b.unmake_move(m);
+            }
+        }
+        search_with(&mut b, 2, &t).1
+    };
+    let empty = planted(None);
     assert_eq!(
-        on_warm, on_empty,
-        "at a clock of 88 the table warmed to depth 12 scored {on_warm} and an empty one {on_empty}"
+        planted(Some(11)),
+        empty,
+        "a depth-11 result at a clock of 89 reaches the draw and was taken"
+    );
+    assert_ne!(
+        planted(Some(10)),
+        empty,
+        "a depth-10 result at a clock of 89 stops short of the draw and was not taken"
     );
 }
 
