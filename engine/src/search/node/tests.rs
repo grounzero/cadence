@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::{MAX_PLY, Move, generate_legal, parse_uci};
 
-use super::lookup::mate_window;
+use super::lookup::{Found, Lookup, mate_window};
 use crate::conthist;
 use crate::eval;
 use crate::position::Position;
@@ -361,4 +361,34 @@ fn a_null_window_is_answered_at_a_bound_and_unchanged_just_inside_it() {
     assert_eq!(mate_window(PLY, best, best + 1), Err(best));
     assert_eq!(mate_window(PLY, worst, worst + 1), Ok((worst, worst + 1)));
     assert_eq!(mate_window(PLY, best - 1, best), Ok((best - 1, best)));
+}
+
+/// A PV node takes no cutoff from the table, whatever the entry's bound, and still takes its move.
+/// A null-window node at the same depth takes the same entry's cutoff.
+#[test]
+fn a_pv_node_takes_no_table_cutoff_and_a_null_window_node_does() {
+    let stop = AtomicBool::new(false);
+    let tt = Table::new(1).expect("a one mebibyte table");
+    let mut search = Search::new(&stop, &tt);
+    let board = Board::from_fen(MIDDLEGAME).expect("the middlegame");
+    let mv = parse_uci(&generate_legal(&board), "h2h3").expect("a legal move");
+    let cases = [
+        (Bound::Exact, 50, (0, 1)),
+        (Bound::Lower, 400, (99, 100)),
+        (Bound::Upper, -400, (-100, -99)),
+    ];
+    for (i, &(bound, score, null)) in cases.iter().enumerate() {
+        let key = 0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(i as u64 + 1);
+        tt.store(key, mv, score, 20, bound, false);
+        let (mut alpha, mut beta) = (-100, 100);
+        match search.lookup(&board, key, 5, PLY, &mut alpha, &mut beta) {
+            Lookup::Search(Found { tt_move, .. }) => assert_eq!(tt_move, mv, "{bound:?}"),
+            Lookup::Cutoff(at) => panic!("a PV node took the table's {bound:?} {at}"),
+        }
+        let (mut alpha, mut beta) = null;
+        match search.lookup(&board, key, 5, PLY, &mut alpha, &mut beta) {
+            Lookup::Cutoff(at) => assert_eq!(at, Score::from(score), "{bound:?}"),
+            Lookup::Search(_) => panic!("a null-window node passed over the table's {bound:?}"),
+        }
+    }
 }
