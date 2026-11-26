@@ -1176,7 +1176,7 @@ fn answered(lines: &[String]) -> Move {
         .nth(1)
         .unwrap_or_else(|| panic!("{line}"));
     let legal = generate_legal(&board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1"));
-    parse_uci(&legal, spelled).unwrap_or_else(|_| panic!("{line}: not legal"))
+    parse_uci(&legal, spelled).unwrap_or_else(|| panic!("{line}: not legal"))
 }
 
 /// `stop` waits a bounded time for the search, then answers for it with a legal move.
