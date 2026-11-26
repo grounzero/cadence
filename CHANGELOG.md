@@ -44,6 +44,11 @@ result.
   centipawns of the best, and the levels are spaced by expected loss a
   move, from 110 centipawns at 1000 to 2 at 1800. They were fitted on the
   handcrafted evaluation, whose centipawns the network does not share.
+- Install scripts: an earlier install the user keeps when installing into
+  another folder stays in the install record, with the PATH entry the
+  installer added for it, so a later `--uninstall` offers to remove both.
+  Until now only the new install was recorded and the kept copy had to be
+  removed by hand.
 
 ## [0.7.0] - 2026-11-24
 

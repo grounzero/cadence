@@ -1554,6 +1554,7 @@ function Install-Binary {
         if ((Get-Sha256 $script:Target) -ne $want) { Fail "the binary at $($script:Target) does not match the one checked" }
     }
     Set-StateValue 'binary' $script:Target
+    Clear-KeptAt $script:Target
     Set-StateValue 'version' $script:Version
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)
     Set-StateValue 'build' $(if ($script:Made) { $script:Made } else { $script:Build })
@@ -1623,7 +1624,8 @@ function Remove-Previous([string]$Previous) {
         $default = $false
     }
     if (-not (Ask 'Remove that copy, and the PATH entry this script added for it?' $default)) {
-        Say 'Kept it. This script now records only the new install, so its uninstall will not remove that copy.'
+        Save-Kept $Previous $folder $sum
+        Say 'Kept it. The install record still names it, so an uninstall offers to remove it and its PATH entry.'
         return
     }
     try {
@@ -1637,6 +1639,73 @@ function Remove-Previous([string]$Previous) {
         [void](Remove-FromPath $added -Now)
         Remove-StateValue 'path_windows'
     }
+}
+
+# The kept copies the state records, one slot name each.
+function Get-KeptSlots {
+    return @(Get-StateLines | Where-Object { $_ -match '^(kept[0-9]+)_binary=' } | ForEach-Object { ($_ -split '_binary=')[0] })
+}
+
+# A copy the user keeps stays in the state under a slot of its own, with the PATH entry this script
+# added for its folder, so the uninstall can still offer to remove them.
+function Save-Kept([string]$Previous, [string]$Folder, [string]$Sum) {
+    $last = @(Get-KeptSlots | ForEach-Object { [int]$_.Substring(4) } | Sort-Object | Select-Object -Last 1)
+    $slot = 'kept' + $(if ($last.Count -gt 0) { $last[0] + 1 } else { 1 })
+    Set-StateValue "$($slot)_binary" $Previous
+    # Only a sum the copy still matches marks it as the file installed there.
+    if ($Sum -and (Get-Sha256 $Previous) -eq $Sum) { Set-StateValue "$($slot)_sha256" $Sum }
+    $added = Get-StateValue 'path_windows'
+    if ($added -and (Test-SameFile $added $Folder)) {
+        Set-StateValue "$($slot)_path_windows" $added
+        Remove-StateValue 'path_windows'
+    }
+}
+
+# A kept copy installed over becomes the install the state records, and its PATH entry goes back to
+# the key an install's own uses where that is free.
+function Clear-KeptAt([string]$Target) {
+    foreach ($slot in Get-KeptSlots) {
+        if (-not (Test-SameFile (Get-StatePath "$($slot)_binary") $Target)) { continue }
+        $added = Get-StateValue "$($slot)_path_windows"
+        if ($added -and -not (Get-StateValue 'path_windows')) { Set-StateValue 'path_windows' $added }
+        foreach ($key in @('binary', 'sha256', 'path_rc', 'path_line', 'path_rc_made', 'path_windows')) { Remove-StateValue "$($slot)_$key" }
+    }
+}
+
+# A kept copy, offered at the uninstall with the PATH entry this script added for it; yes by default
+# only while it is still the file installed there. Returns what stays.
+function Uninstall-Kept([string]$Slot) {
+    $left = @()
+    $bin = Get-StatePath "$($Slot)_binary"
+    $sum = Get-StateValue "$($Slot)_sha256"
+    if (Test-Path -LiteralPath $bin) {
+        $default = [bool]($sum -and (Get-Sha256 $bin) -eq $sum)
+        if (-not $default) { Say "The copy kept at $bin has changed since it was installed, or has no SHA-256 recorded, so it may be your own." }
+        if (Ask "Remove the copy kept at $($bin)?" $default) {
+            try {
+                Remove-Item -Force -LiteralPath $bin -ErrorAction Stop
+            } catch {
+                Fail "could not remove $($bin); if Cadence is running, close it and run this again"
+            }
+            Say 'Removed it.'
+        } else {
+            $left += "Cadence at $bin"
+        }
+    } else {
+        Say "There is no Cadence at $bin any more."
+    }
+    # A line install.sh kept in a profile under Git Bash is that script's to remove, so it is named.
+    $rc = Get-StateValue "$($Slot)_path_rc"
+    if ($rc) { $left += "the PATH line in $rc" }
+    $added = Get-StateValue "$($Slot)_path_windows"
+    if ($added) {
+        if (Remove-FromPath $added) { Remove-StateValue "$($Slot)_path_windows" } else { $left += "$added on your PATH" }
+    }
+    if ($left.Count -eq 0) {
+        Remove-StateValue "$($Slot)_binary"
+        Remove-StateValue "$($Slot)_sha256"
+    }
+    return $left
 }
 
 # A folder other than the default is the caller's to manage, so the offer defaults to no there.
@@ -1781,7 +1850,10 @@ function Uninstall-Cadence {
         $folder = if ($script:Prefix) { $script:Prefix } else { $DefaultPrefix }
         $bin = Join-Path $folder 'cadence.exe'
     }
-    if (Test-Path $bin) {
+    # A kept copy where an install would be is offered as the kept copy it is, below.
+    $keptThere = (-not $recorded) -and @(Get-KeptSlots | Where-Object { Test-SameFile (Get-StatePath "$($_)_binary") $bin }).Count -gt 0
+    if ($keptThere) {
+    } elseif (Test-Path $bin) {
         $remove = $false
         if ($recorded) {
             $remove = Ask "Remove $($bin)?" $true
@@ -1812,6 +1884,7 @@ function Uninstall-Cadence {
     if ($added) {
         if (Remove-FromPath $added) { Remove-StateValue 'path_windows' } else { $kept += "$added on your PATH" }
     }
+    foreach ($slot in Get-KeptSlots) { $kept += @(Uninstall-Kept $slot) }
     $tables = Get-StatePath 'tables'
     if ($tables -and (Test-Path -LiteralPath $tables)) {
         if (Ask "Remove the tablebases at $tables, about 1 GB?" $true) {
