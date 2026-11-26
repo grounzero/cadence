@@ -24,6 +24,11 @@ result.
 - Search: a node the search visits again takes its static evaluation from
   the hash table, where the entry holds it, rather than evaluating the
   position again. Every evaluation is the same, so play is unchanged.
+- Speed: a move's accumulator update is written into its slot of the search's
+  stack, 128 lanes at a time: each block of the parent's sums is read once,
+  every piece the move changed is applied to it, and it is written once. Before,
+  the update was returned and stored, and each changed piece made its own pass
+  over the sums. The search is unchanged, node for node.
 
 ### Added
 
