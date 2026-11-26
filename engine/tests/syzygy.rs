@@ -123,8 +123,11 @@ const ACROSS_TABLES: [&str; 10] = [
     "8/8/3k4/8/8/8/8/2B1K3 w - - 0 1",
 ];
 
+/// A position's WDL and DTZ answers, each `None` where the tables gave none.
+type Answer = (Option<Wdl>, Option<i32>);
+
 /// Every answer `ACROSS_TABLES` reads, probed twice over, with the most files held open at once.
-fn probed(tables: &Tables) -> (Vec<(Option<Wdl>, Option<i32>)>, usize) {
+fn probed(tables: &Tables) -> (Vec<Answer>, usize) {
     let mut answers = Vec::new();
     let mut most = 0;
     for _ in 0..2 {
