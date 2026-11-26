@@ -4,15 +4,16 @@
 //! Nothing is loaded until a path is set, so a search without one is the search it always was.
 
 use std::collections::BTreeSet;
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, Move, PieceType, generate_legal};
 use shakmaty::{CastlingMode, Chess, FromSetup as _};
-use shakmaty_syzygy::filesystem::{Filesystem, OsFilesystem, RandomAccessFile};
+use shakmaty_syzygy::filesystem::{Filesystem, OsFilesystem, RandomAccessFile, ReadHint};
 use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Metric, SyzygyError, Tablebase};
 
 use crate::score::{DRAW, Score, is_mate, tb_loss_in, tb_win_in};
@@ -30,9 +31,14 @@ pub enum Wdl {
     Win,
 }
 
+/// The most table files a set holds open at once, below the 256 a process may open by default on
+/// macOS; past it, the file read longest ago is closed and opened again when next read.
+pub const OPEN_FILES: usize = 128;
+
 /// One set, shared by every search thread a `go` starts.
 pub struct Tables {
     tablebase: Tablebase<Chess>,
+    filesystem: Arc<OpenOnce>,
     files: usize,
     /// The smaller of the limit and the largest table added; zero turns probing off.
     cardinality: usize,
@@ -44,10 +50,24 @@ pub struct Tables {
 
 /// The crate keeps every table it opens for as long as the set lives, so a second open of a path
 /// follows a failure: refused here, so a failed table costs one system call and not one per probe.
-#[derive(Default)]
 struct OpenOnce {
     os: OsFilesystem,
     opened: Mutex<BTreeSet<PathBuf>>,
+    pool: Arc<Pool>,
+}
+
+impl OpenOnce {
+    fn new(open_files: usize) -> OpenOnce {
+        OpenOnce {
+            os: OsFilesystem::default(),
+            opened: Mutex::new(BTreeSet::new()),
+            pool: Arc::new(Pool {
+                limit: open_files.max(1),
+                clock: AtomicU64::new(0),
+                slots: Mutex::new(Vec::new()),
+            }),
+        }
+    }
 }
 
 impl Filesystem for OpenOnce {
@@ -60,16 +80,124 @@ impl Filesystem for OpenOnce {
     }
 
     fn open(&self, path: &Path) -> io::Result<Box<dyn RandomAccessFile>> {
-        let first = self
-            .opened
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(path.to_path_buf());
+        let first = lock(&self.opened).insert(path.to_path_buf());
         if !first {
             return Err(io::Error::other("failed before, so not opened again"));
         }
-        self.os.open(path)
+        match Pool::add(&self.pool, path) {
+            Ok(file) => Ok(Box::new(file)),
+            Err(e) => {
+                // Too many files open says nothing about the table, so it is tried again.
+                if too_many_open(&e) {
+                    lock(&self.opened).remove(path);
+                }
+                Err(e)
+            }
+        }
     }
+}
+
+/// Every table file a set has opened, at most `limit` of them held open at once; a thread
+/// mid-read keeps a closed file open until its read returns.
+struct Pool {
+    limit: usize,
+    /// Counts reads, so the file read longest ago is the one closed.
+    clock: AtomicU64,
+    slots: Mutex<Vec<Arc<Slot>>>,
+}
+
+struct Slot {
+    path: PathBuf,
+    file: Mutex<Option<Arc<File>>>,
+    read: AtomicU64,
+}
+
+/// A table file as the crate holds it, opened again when read after the pool closed it.
+struct Pooled {
+    slot: Arc<Slot>,
+    pool: Arc<Pool>,
+}
+
+impl Pool {
+    fn add(pool: &Arc<Pool>, path: &Path) -> io::Result<Pooled> {
+        let slot = Arc::new(Slot {
+            path: path.to_path_buf(),
+            file: Mutex::new(None),
+            read: AtomicU64::new(pool.tick()),
+        });
+        let mut slots = lock(&pool.slots);
+        pool.open_in(&slots, &slot)?;
+        slots.push(Arc::clone(&slot));
+        Ok(Pooled {
+            slot,
+            pool: Arc::clone(pool),
+        })
+    }
+
+    fn tick(&self) -> u64 {
+        self.clock.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn file(&self, slot: &Slot) -> io::Result<Arc<File>> {
+        slot.read.store(self.tick(), Ordering::Relaxed);
+        if let Some(file) = lock(&slot.file).clone() {
+            return Ok(file);
+        }
+        let slots = lock(&self.slots);
+        self.open_in(&slots, slot)
+    }
+
+    /// Under the lock on `slots`, so two threads never open one file twice or close past the limit.
+    fn open_in(&self, slots: &[Arc<Slot>], slot: &Slot) -> io::Result<Arc<File>> {
+        if let Some(file) = lock(&slot.file).clone() {
+            return Ok(file);
+        }
+        let mut open: Vec<&Arc<Slot>> = slots.iter().filter(|s| lock(&s.file).is_some()).collect();
+        open.sort_by_key(|s| s.read.load(Ordering::Relaxed));
+        for closing in open
+            .iter()
+            .take((open.len() + 1).saturating_sub(self.limit))
+        {
+            *lock(&closing.file) = None;
+        }
+        let file = Arc::new(File::open(&slot.path)?);
+        *lock(&slot.file) = Some(Arc::clone(&file));
+        Ok(file)
+    }
+
+    fn held(&self) -> usize {
+        lock(&self.slots)
+            .iter()
+            .filter(|s| lock(&s.file).is_some())
+            .count()
+    }
+}
+
+impl RandomAccessFile for Pooled {
+    fn read_at(&self, buf: &mut [u8], offset: u64, _hint: ReadHint) -> io::Result<usize> {
+        let file = self.pool.file(&self.slot)?;
+        read_at(&file, buf, offset)
+    }
+}
+
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buf, offset)
+}
+
+/// The process's or the system's limit on open files, which closing a file can cure.
+fn too_many_open(e: &io::Error) -> bool {
+    let codes: &[i32] = if cfg!(windows) { &[4] } else { &[23, 24] };
+    e.raw_os_error().is_some_and(|code| codes.contains(&code))
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A root move's outcome for the side that plays it, under the fifty-move counter it is played at,
@@ -190,8 +318,18 @@ impl Tables {
     /// rest are kept.
     #[must_use]
     pub fn load(paths: &str, limit: usize) -> (Tables, Vec<String>) {
+        Tables::load_with_open_limit(paths, limit, OPEN_FILES)
+    }
+
+    /// The same, holding at most `open_files` table files open at once.
+    #[must_use]
+    pub fn load_with_open_limit(
+        paths: &str,
+        limit: usize,
+        open_files: usize,
+    ) -> (Tables, Vec<String>) {
         let separator = if cfg!(windows) { ';' } else { ':' };
-        let filesystem = Arc::new(OpenOnce::default());
+        let filesystem = Arc::new(OpenOnce::new(open_files));
         let mut tablebase = Tablebase::with_filesystem(filesystem.clone());
         let mut files = 0;
         let mut problems = Vec::new();
@@ -220,6 +358,7 @@ impl Tables {
         let cardinality = limit.min(tablebase.max_pieces());
         let tables = Tables {
             tablebase,
+            filesystem,
             files,
             cardinality,
             hits: AtomicU64::new(0),
@@ -232,6 +371,12 @@ impl Tables {
     #[must_use]
     pub fn files(&self) -> usize {
         self.files
+    }
+
+    /// The table files held open now.
+    #[must_use]
+    pub fn open_files(&self) -> usize {
+        self.filesystem.pool.held()
     }
 
     #[must_use]
@@ -434,7 +579,7 @@ impl Tables {
             } => format!("{metric} {material}"),
             other => other.to_string(),
         };
-        let mut named = self.named.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut named = lock(&self.named);
         if named.insert(table) {
             say(format_args!("info string Syzygy: {e}"));
         }
