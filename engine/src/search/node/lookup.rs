@@ -15,8 +15,8 @@ use crate::tt::Bound;
 const CUTOFF_CLOCK: u8 = 90;
 
 impl Search<'_> {
-    /// The move comes back whatever the depth says, so the two halves return separately, and the
-    /// hit's flag and static evaluation beside them.
+    /// The move comes back whatever the depth or window says, so the two halves return separately,
+    /// and the hit's flag and static evaluation beside them.
     fn probe(
         &self,
         board: &Board,
@@ -30,9 +30,11 @@ impl Search<'_> {
             return (Move::NULL, None, false, None);
         };
         let eval = hit.eval.map(Score::from);
-        // A result whose depth reaches the draw may rest on a line the clock now cuts short.
+        // A result whose depth reaches the draw may rest on a line the clock now cuts short, and a
+        // PV node searches its own line whatever an earlier search stored for it.
         let clock = board.halfmove_clock();
-        if u32::from(hit.depth) < depth
+        if beta > alpha + 1
+            || u32::from(hit.depth) < depth
             || clock >= CUTOFF_CLOCK
             || u32::from(clock) + u32::from(hit.depth) >= 100
         {
