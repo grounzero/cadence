@@ -93,7 +93,7 @@ impl<const H: usize> Network<H> {
     /// Never inlined, so that CI can find it in a release binary and check that it is vector code.
     #[inline(never)]
     fn moved(&self, parent: &[i16; H], child: &mut [i16; H], removed: &[usize], added: &[usize]) {
-        const { assert!(H % BLOCK == 0, "a width is a whole number of blocks") };
+        const { assert!(H.is_multiple_of(BLOCK), "a width of whole blocks") };
         let (from, _) = parent.as_chunks::<BLOCK>();
         let (to, _) = child.as_chunks_mut::<BLOCK>();
         for (at, (from, to)) in from.iter().zip(to).enumerate() {
