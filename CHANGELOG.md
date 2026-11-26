@@ -38,6 +38,12 @@ result.
 
 ### Fixed
 
+- Strength levels: `UCI_Elo`'s five levels are refitted on the network's
+  scale, by the rule that first chose them, with the reading taken again
+  on the network. Every level now samples among eight lines within 650
+  centipawns of the best, and the levels are spaced by expected loss a
+  move, from 110 centipawns at 1000 to 2 at 1800. They were fitted on the
+  handcrafted evaluation, whose centipawns the network does not share.
 - Install scripts: an earlier install the user keeps when installing into
   another folder stays in the install record, with the PATH entry the
   installer added for it, so a later `--uninstall` offers to remove both.
