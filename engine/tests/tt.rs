@@ -1010,6 +1010,64 @@ fn a_score_cut_short_by_the_fifty_move_rule_is_not_reused_early_in_the_window() 
     );
 }
 
+/// A game's moves to White's 50th, where Qf3+ allows ...Ke7, the third time that position stands.
+/// The 94th ply is White's 48th move, the same position with that one only once behind it.
+const REPEATED_GAME: &str = concat!(
+    "d2d4 g8f6 g1f3 e7e6 g2g3 b7b5 f1g2 d7d5 c1g5 b8d7 f3e5 d7e5 ",
+    "d4e5 h7h6 g5f6 g7f6 e5f6 d8f6 c2c3 h6h5 h2h4 b5b4 e1g1 h8g8 ",
+    "b1d2 c7c6 a1c1 c8d7 e2e4 b4c3 c1c3 a8b8 d1c1 f8b4 c3b3 g8g4 ",
+    "f1e1 b8b5 e1e3 f6d8 d2f1 d5d4 e3f3 d8b8 f1d2 b8c7 d2c4 b4f8 ",
+    "e4e5 b5c5 g2h3 g4g7 h3f1 d7c8 c1f4 g7g4 f4f6 c5c4 b3b8 g4g7 ",
+    "b8c8 c7c8 f1c4 a7a5 f6f4 c8d7 f3b3 d7a7 f4f3 a7c7 c4a6 c7e5 ",
+    "f3c6 e8e7 a6b5 e5d6 c6e8 e7f6 b3f3 f6e5 f3f7 g7f7 e8f7 d6e7 ",
+    "f7h5 e5d6 h5f3 e7d8 f3f4 e6e5 f4f3 d6e7 f3b7 e7f6 b7f3 f6e7 ",
+    "f3b7 e7f6",
+);
+
+/// The score `go` ends on, in centipawns.
+fn last_score(lines: &[String]) -> i32 {
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| l.contains(" score cp "))
+        .unwrap_or_else(|| panic!("no centipawn score in {lines:?}"));
+    let after = line.split(" score cp ").nth(1).expect("a score");
+    after
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"))
+}
+
+/// Qf3+ searched at White's 48th move leaves an exact score for the position after it. At the
+/// 50th the same position must still be searched, since one reply now completes a threefold.
+#[test]
+fn a_stored_score_is_not_reused_past_a_threefold_the_game_has_since_reached() {
+    let plies: Vec<&str> = REPEATED_GAME.split_whitespace().collect();
+    assert_eq!(plies.len(), 98);
+    let mut e = support::Engine::spawn();
+    e.send("uci");
+    e.read_until("uciok");
+    e.send(&format!(
+        "position startpos moves {}",
+        plies[..94].join(" ")
+    ));
+    e.send("go depth 4 searchmoves b7f3");
+    let early = last_score(&e.read_until("bestmove "));
+    e.send(&format!("position startpos moves {}", plies.join(" ")));
+    e.send("go depth 4 searchmoves b7f3");
+    let late = last_score(&e.read_until("bestmove "));
+    e.quit();
+    assert!(
+        early > 300,
+        "at the 48th move Qf3+ scored {early}, not a win"
+    );
+    assert_eq!(
+        late, 0,
+        "at the 50th move Qf3+ scored {late}, past the threefold it allows"
+    );
+}
+
 /// Below a clock of 90 a deep result can still reach past the fifty-move draw: warmed at depth 12
 /// from a clock of 0, the children of a clock-88 root hold depth 11 at a clock of 89.
 #[test]
