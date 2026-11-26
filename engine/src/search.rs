@@ -38,7 +38,7 @@ pub use depth::{
 #[cfg(debug_assertions)]
 pub use expected::Call;
 pub use expected::{Expected, Via};
-pub use limits::{Limits, PonderHit};
+pub use limits::Limits;
 pub(crate) use pruning::{
     FUTILITY_MARGIN, LMP_MULTIPLIER, PROBCUT_MARGIN, REVERSE_FUTILITY_MARGIN,
 };
@@ -101,8 +101,8 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
 pub struct Search<'a> {
     limits: Limits,
     stop: &'a AtomicBool,
-    /// Rather than new limits, because the search that must hear it is already running.
-    ponder_hit: Option<&'a PonderHit>,
+    /// A flag rather than new limits, because the search that must hear it is already running.
+    ponder_hit: Option<&'a AtomicBool>,
     tt: &'a Table,
     /// Shared by every thread of a `go`; `bench` and datagen never set it.
     tables: Option<&'a Tables>,
@@ -394,8 +394,8 @@ impl<'a> Search<'a> {
     }
 
     /// Without one, a `go ponder` still waits for `stop`.
-    pub fn set_ponder_hit(&mut self, hit: &'a PonderHit) {
-        self.ponder_hit = Some(hit);
+    pub fn set_ponder_hit(&mut self, flag: &'a AtomicBool) {
+        self.ponder_hit = Some(flag);
     }
 
     pub fn set_chess960(&mut self, on: bool) {

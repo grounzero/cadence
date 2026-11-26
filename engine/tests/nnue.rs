@@ -329,7 +329,8 @@ fn fresh(setup: &[&str]) -> (Vec<String>, String) {
     outcome(&Engine::go(&lines, SWITCH_GO))
 }
 
-/// The table holds scores, so turning the net on or off must leave none of the other evaluator's.
+/// The table holds scores and static evaluations, so turning the net on or off must leave none of
+/// the other evaluator's; a debug build also fails on a stored evaluation the board does not give.
 #[test]
 fn toggling_use_nnue_searches_as_a_fresh_table_does() {
     let file = net_file(
@@ -350,7 +351,8 @@ fn toggling_use_nnue_searches_as_a_fresh_table_does() {
     );
 }
 
-/// Another net scores the same positions differently, so loading one empties the table too.
+/// Another net scores the same positions differently, so loading one empties the table too, and so
+/// does emptying `EvalFile`, which returns to the net the build ships or to none.
 #[test]
 fn replacing_the_net_searches_as_a_fresh_table_does() {
     let a = net_file(
@@ -365,8 +367,45 @@ fn replacing_the_net_searches_as_a_fresh_table_does() {
     let load_b = format!("setoption name EvalFile value {}", b.display());
     let switched = after_switch(&[&load_a, ON], &[&load_b]);
     let fresh_b = fresh(&[&load_b, ON]);
+    let emptied = after_switch(&[&load_a, ON], &["setoption name EvalFile value <empty>"]);
+    let fresh_shipped = fresh(&[ON]);
     let _ = std::fs::remove_file(a);
     let _ = std::fs::remove_file(b);
     assert_eq!(switched.0.len(), 7);
     assert_eq!(switched, fresh_b, "net a, then net b");
+    assert_eq!(emptied, fresh_shipped, "net a, then the shipped net");
+}
+
+/// A path that is not a regular file is refused at once: a named pipe nothing writes to would hold
+/// the read forever, and a device has no size to check.
+#[cfg(unix)]
+#[test]
+fn eval_file_refuses_a_path_that_is_not_a_regular_file() {
+    let dir =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a folder for the pipe");
+    let fifo = dir.join("net.fifo");
+    let _ = std::fs::remove_file(&fifo);
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(made.success(), "mkfifo: {made:?}");
+    for path in [fifo.to_string_lossy().into_owned(), "/dev/null".to_string()] {
+        let asked = path.clone();
+        let lines = Engine::within(Duration::from_secs(20), move || {
+            let mut e = Engine::spawn();
+            e.send(&format!("setoption name EvalFile value {asked}"));
+            let lines = e.sync();
+            e.quit();
+            lines
+        });
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("info string EvalFile") && l.contains("not a regular file")),
+            "{path}: {lines:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

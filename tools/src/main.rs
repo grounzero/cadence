@@ -7,6 +7,7 @@
 
 mod convert;
 mod forward;
+mod help;
 mod magics;
 
 use std::process::ExitCode;
@@ -28,6 +29,13 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        match args.get(1).map(String::as_str).and_then(help::text) {
+            Some(text) => println!("{text}"),
+            None => print!("{}", usage()),
+        }
+        return ExitCode::SUCCESS;
+    }
     let result = match args.get(1).map(String::as_str) {
         Some("magics") => magics::run(&args[2..]),
         Some("convert") => convert::run(&args[2..]),
@@ -39,18 +47,18 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("cadence-tools: {e}");
-            usage();
+            eprint!("{}", usage());
             ExitCode::from(2)
         }
     }
 }
 
-fn usage() {
-    eprintln!();
-    eprintln!("usage: cadence-tools <subcommand> [args]");
-    eprintln!();
-    eprintln!("subcommands:");
+/// To stdout where `--help` asked for it, and to stderr after a usage error.
+fn usage() -> String {
+    use std::fmt::Write;
+    let mut text = String::from("\nusage: cadence-tools <subcommand> [args]\n\nsubcommands:\n");
     for (name, blurb) in SUBCOMMANDS {
-        eprintln!("  {name:<10} {blurb}");
+        let _ = writeln!(text, "  {name:<10} {blurb}");
     }
+    text
 }

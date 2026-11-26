@@ -12,7 +12,7 @@ use cadence_core::position::Board;
 use cadence_core::{Colour, Move, START_FEN, generate_legal, parse_uci};
 use cadence_engine::position::Position;
 use cadence_engine::score::{MATE, Score};
-use cadence_engine::search::{Limits, PonderHit, Search};
+use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
     Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, STABILITY_CALLS,
     STABILITY_SCALE, another_iteration_fits, budget, drop_scale, soft_for_drop, soft_for_run,
@@ -1269,7 +1269,7 @@ fn a_movetime_is_not_scaled() {
 #[test]
 fn the_run_survives_a_ponderhit() {
     let stop = AtomicBool::new(false);
-    let hit = PonderHit::new();
+    let hit = AtomicBool::new(false);
     let tt = Table::new(HASH_MB).expect("a table");
     let mut board = Position::new(Board::from_fen(MIDDLEGAME).expect("the middlegame position"));
     let mut s = support::search(limits("ponder wtime 20000 btime 20000"), &stop, &tt);
@@ -1277,7 +1277,7 @@ fn the_run_survives_a_ponderhit() {
     std::thread::scope(|scope| {
         scope.spawn(|| {
             std::thread::sleep(Duration::from_millis(200));
-            hit.hit();
+            hit.store(true, Ordering::Relaxed);
         });
         s.run(&mut board, &mut std::io::sink());
     });
@@ -1538,4 +1538,70 @@ fn the_prediction_stops_the_largest_stretch() {
             );
         }
     }
+}
+
+/// Sudden death at `time` a side, the lag measured as `lag` and the game at `move_number`.
+fn sudden_death(time: u64, lag: Option<u64>, move_number: u32) -> Budget {
+    let mut l = limits(&format!("wtime {time} btime {time}"));
+    l.lag = lag;
+    l.move_number = Some(move_number);
+    budget(&l, Colour::White).expect("a clock gives a budget")
+}
+
+/// With no increment every move left pays the lag again, so a move never spends the time thirty
+/// more moves will lose to it, however late the game.
+#[test]
+fn sudden_death_keeps_back_the_lag_of_the_moves_left() {
+    for move_number in [1, 40, 80, 200] {
+        for time in [300, 1_000, 2_000, 10_000, 60_000] {
+            let b = sudden_death(time, Some(50), move_number);
+            let kept = MOVE_OVERHEAD_MS + 30 * 50;
+            assert!(
+                b.hard <= time.saturating_sub(kept),
+                "{time} ms at move {move_number}: a hard budget of {} leaves less than {kept}",
+                b.hard
+            );
+        }
+    }
+}
+
+/// More moves are likely left early in a game, so more is kept back for their lag.
+#[test]
+fn an_early_move_keeps_back_more_than_a_late_one() {
+    let early = sudden_death(10_000, Some(50), 1);
+    let late = sudden_death(10_000, Some(50), 100);
+    assert!(
+        early.soft < late.soft,
+        "{early:?} at move 1, {late:?} at move 100"
+    );
+}
+
+/// The reserve is for a clock that gains nothing back, and a lag not yet measured keeps nothing.
+#[test]
+fn an_increment_or_an_unmeasured_lag_leaves_the_budget_as_it_was() {
+    for go in [
+        "wtime 2000 btime 2000 winc 100 binc 100",
+        "wtime 2000 btime 2000",
+    ] {
+        let plain = limits(go);
+        let mut lagged = plain;
+        lagged.move_number = Some(80);
+        if go.contains("winc") {
+            lagged.lag = Some(50);
+        }
+        assert_eq!(
+            budget(&lagged, Colour::White),
+            budget(&plain, Colour::White),
+            "{go}"
+        );
+    }
+    let mut counted = limits("wtime 2000 btime 2000 movestogo 10");
+    let plain = counted;
+    counted.lag = Some(50);
+    counted.move_number = Some(80);
+    assert_eq!(
+        budget(&counted, Colour::White),
+        budget(&plain, Colour::White),
+        "movestogo"
+    );
 }

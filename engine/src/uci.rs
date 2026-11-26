@@ -5,14 +5,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use cadence_core::position::Board;
-use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
+use cadence_core::{Colour, MAX_MOVES, START_FEN, generate_legal, parse_uci};
 use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
 use crate::level;
-use crate::search::{Learned, PonderHit};
+use crate::search::Learned;
 use crate::syzygy::{self, Tables};
 use crate::time;
 use crate::tt::{self, Table};
@@ -76,6 +77,32 @@ pub struct Session {
     /// Why the last `position` command failed, until a valid one clears it; every `go` meanwhile
     /// answers `bestmove 0000` and searches nothing.
     refused: Option<String>,
+    /// What a move of this game lost beyond the engine's own thinking, measured from the clocks
+    /// `go` gives; `ucinewgame` forgets it.
+    lag: Option<u64>,
+    /// The last move answered on a clock of its own side, which the next `go` reads the lag from.
+    played: Option<Played>,
+}
+
+/// A move answered on a clock: whose, what that clock and increment were, and how long the
+/// engine took.
+#[derive(Clone, Copy)]
+struct Played {
+    side: Colour,
+    clock: u64,
+    inc: u64,
+    spent: u64,
+}
+
+/// A clocked search not yet answered, and when its side's clock started: at `go`, or at the
+/// `ponderhit` that made a ponder a move.
+#[derive(Clone, Copy)]
+struct Thinking {
+    side: Colour,
+    clock: u64,
+    inc: u64,
+    from: Instant,
+    pondering: bool,
 }
 
 /// `Use NNUE`, `EvalFile`, the net that file loaded and the net the build ships.
@@ -98,8 +125,10 @@ type Shipped = (AnyNetwork, [u8; 32]);
 
 struct Running {
     stop: Arc<AtomicBool>,
-    ponder_hit: Arc<PonderHit>,
-    thread: JoinHandle<Vec<Learned>>,
+    ponder_hit: Arc<AtomicBool>,
+    /// The histories it was lent, and when it printed its `bestmove`.
+    thread: JoinHandle<(Vec<Learned>, Instant)>,
+    thinking: Option<Thinking>,
 }
 
 impl Default for Session {
@@ -139,6 +168,8 @@ impl Session {
             probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
             refused: None,
+            lag: None,
+            played: None,
         }
     }
 
@@ -177,8 +208,17 @@ impl Session {
         &self.tt
     }
 
+    /// For the gates: the per-move lag this game has measured.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn measured_lag(&self) -> Option<u64> {
+        self.lag
+    }
+
     /// `false` on `quit`.
     pub fn handle_line(&mut self, line: &str) -> bool {
+        // A byte-order mark some editors and pipes put first is not part of the command.
+        let line = line.strip_prefix('\u{feff}').unwrap_or(line);
         // A GUI may send arbitrary spacing, so split on whitespace rather than trusting the line's
         // shape.
         let mut tokens = line.split_whitespace();
@@ -277,12 +317,24 @@ impl Session {
                 self.stop_search();
                 self.tt.clear();
                 self.clear_learned();
+                self.lag = None;
+                self.played = None;
             }
             "quit" => return false,
             // Ignored, per the protocol.
             _ => {}
         }
         true
+    }
+
+    /// A line past [`MAX_LINE_BYTES`], of which `head` is the start: a `position` line fails as a
+    /// position does, so no `go` searches the board an earlier line left.
+    pub fn handle_discarded(&mut self, head: &str) {
+        let head = head.strip_prefix('\u{feff}').unwrap_or(head);
+        if head.split_whitespace().next() == Some("position") {
+            self.stop_search();
+            self.refuse(format!("the line was longer than {MAX_LINE_BYTES} bytes"));
+        }
     }
 
     /// Called on `quit` and at end of input.
@@ -358,12 +410,16 @@ fn start_position() -> Board {
 /// The newline is not counted.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 
+/// What a discarded line keeps of its start, enough for a byte-order mark and the command's name.
+pub const DISCARDED_HEAD_BYTES: usize = 32;
+
 /// What [`read_line`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Line {
     /// In the buffer, with its newline where it had one.
     Read,
-    /// Past the cap, and read to its newline or the end of input without being kept.
+    /// Past the cap, and read to its newline or the end of input with only its first
+    /// `DISCARDED_HEAD_BYTES` after any leading blanks, or the cap where that is fewer, kept.
     TooLong,
     End,
 }
@@ -396,18 +452,42 @@ pub fn read_line(
         read = true;
         let newline = chunk.iter().position(|&b| b == b'\n');
         let used = newline.map_or(chunk.len(), |i| i + 1);
+        let head = DISCARDED_HEAD_BYTES.min(cap);
         if !over && line.len() + newline.unwrap_or(chunk.len()) > cap {
             over = true;
-            line.clear();
+            let blanks = blank_prefix(line);
+            line.drain(..blanks);
+            line.truncate(head);
+            line.shrink_to(head);
         }
         if !over {
             line.extend_from_slice(&chunk[..used]);
+        } else if line.len() < head {
+            let mut part = &chunk[..used];
+            if line.is_empty() {
+                part = &part[blank_prefix(part)..];
+            }
+            line.extend_from_slice(&part[..(head - line.len()).min(part.len())]);
         }
         input.consume(used);
         if newline.is_some() {
             return Ok(if over { Line::TooLong } else { Line::Read });
         }
     }
+}
+
+/// The byte-order mark and blanks a line starts with, which a discarded line's head skips, so
+/// however many there are the head still holds the command's name.
+fn blank_prefix(bytes: &[u8]) -> usize {
+    let mark = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    mark + bytes[mark..]
+        .iter()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count()
 }
 
 #[must_use]
@@ -430,6 +510,7 @@ pub fn run() -> ExitCode {
                 say(format_args!(
                     "info string line discarded: longer than {MAX_LINE_BYTES} bytes"
                 ));
+                session.handle_discarded(&String::from_utf8_lossy(&raw));
                 continue;
             }
             Ok(Line::End) | Err(_) => break,

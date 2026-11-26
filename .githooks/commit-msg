@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Enforces the `Bench: <n>` trailer required by the bench contract.
 #

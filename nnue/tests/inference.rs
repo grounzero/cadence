@@ -463,6 +463,28 @@ fn a_width_is_read_only_by_its_own_loader() {
     ));
 }
 
+/// A file that is not a net is named as one whatever its length, and a net of another format by its
+/// format, not by a length weighed against the narrow width.
+#[test]
+fn a_foreign_file_is_named_before_its_length_is_weighed() {
+    let foreign = b"PK\x03\x04, an archive and not a net".to_vec();
+    assert_eq!(
+        AnyNetwork::from_bytes(&foreign).err(),
+        Some(LoadError::Magic)
+    );
+    assert_eq!(
+        AnyNetwork::for_datagen(&foreign).err(),
+        Some(LoadError::Magic)
+    );
+    let mut other_format = net().to_bytes();
+    other_format[4] = 2;
+    other_format.truncate(HEADER_LEN);
+    assert_eq!(
+        AnyNetwork::from_bytes(&other_format).err(),
+        Some(LoadError::Format(2))
+    );
+}
+
 /// Every lane at the activation's ceiling and every output weight `weight`, at the wide width.
 fn wide_extreme(weight: i16) -> Result<Network<WIDE>, LoadError> {
     let words: Vec<i16> = std::iter::repeat_n(0, NUM_INPUTS * WIDE)

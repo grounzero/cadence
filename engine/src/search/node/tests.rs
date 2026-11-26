@@ -10,15 +10,20 @@ use crate::conthist;
 use crate::eval;
 use crate::position::Position;
 use crate::score::{INFINITE, MATE_IN_MAX_PLY, Score, mate_in, mated_in};
-use crate::search::{Call, Expected, Search, Via};
+use crate::search::Search;
+// The call record exists in a debug build alone, so the tests that read it are built there too.
+#[cfg(debug_assertions)]
+use crate::search::{Call, Expected, Via};
 use crate::tt::{Bound, Table};
 
 const MIDDLEGAME: &str = "2rq1rk1/pb2bppp/1pn1pn2/8/2BP4/2N1PN2/PPQ2PPP/2R2RK1 w - - 4 14";
 
 /// Far above either position's value, so no preamble rule cuts the node and every child is
 /// searched as the parent asked.
+#[cfg(debug_assertions)]
 const HIGH: Score = 2_000;
 
+#[cfg(debug_assertions)]
 fn searcher<'a>(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
     let mut search = Search::new(stop, tt);
     search.trace_calls();
@@ -26,6 +31,7 @@ fn searcher<'a>(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
 }
 
 /// Every call recorded at one ply, in order: at the ply below a call site, its children alone.
+#[cfg(debug_assertions)]
 fn at(search: &Search<'_>, ply: usize) -> Vec<Call> {
     search
         .calls()
@@ -37,6 +43,7 @@ fn at(search: &Search<'_>, ply: usize) -> Vec<Call> {
 
 /// Below the reduction's depth, so every child is a full-depth null window and takes the
 /// opposite of a cut parent, and a cut under an all parent.
+#[cfg(debug_assertions)]
 #[test]
 fn a_null_window_node_hands_its_children_the_other_kind() {
     let stop = AtomicBool::new(false);
@@ -63,6 +70,7 @@ fn a_null_window_node_hands_its_children_the_other_kind() {
 }
 
 /// One late move searched alone from the middlegame at depth four, and the calls one ply below.
+#[cfg(debug_assertions)]
 fn late_move_alone(base: u32, alpha: Score, parent: Expected) -> Vec<Call> {
     let stop = AtomicBool::new(false);
     let root = Board::from_fen(MIDDLEGAME).expect("the middlegame");
@@ -80,6 +88,7 @@ fn late_move_alone(base: u32, alpha: Score, parent: Expected) -> Vec<Call> {
 /// The reduced search's child is expected to cut whatever the parent, and the re-search a
 /// reduced move earns runs at full depth and flips the parent. A high alpha is never beaten, so
 /// nothing is searched again; a low one always is.
+#[cfg(debug_assertions)]
 #[test]
 fn a_reduced_late_moves_child_is_a_cut_node_and_its_re_search_flips_the_parent() {
     use Expected::{All, Cut, Pv};
@@ -113,6 +122,7 @@ fn a_reduced_late_moves_child_is_a_cut_node_and_its_re_search_flips_the_parent()
 }
 
 /// With no reduction the move is searched once, at full depth, flipping the parent.
+#[cfg(debug_assertions)]
 #[test]
 fn an_unreduced_late_move_is_searched_once_at_full_depth() {
     use Expected::{All, Cut, Pv};
@@ -135,6 +145,7 @@ fn an_unreduced_late_move_is_searched_once_at_full_depth() {
     }
 }
 
+#[cfg(debug_assertions)]
 #[test]
 fn the_null_moves_child_is_an_all_node() {
     let stop = AtomicBool::new(false);
@@ -156,6 +167,7 @@ fn the_null_moves_child_is_an_all_node() {
 }
 
 /// A queen left to a pawn: the capture clears any raised beta, so the reduced search runs.
+#[cfg(debug_assertions)]
 #[test]
 fn probcuts_child_flips_the_parent() {
     const HANGING: &str = "4k3/8/8/3q4/4P3/8/8/4K3 w - - 0 1";
@@ -203,7 +215,7 @@ fn a_node_failing_low_takes_its_parents_flag() {
         let key = 0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(i as u64 + 1);
         search.tt_pv = [parent; MAX_PLY];
         search.tt_pv[ply] = own;
-        search.store(key, ply, 5, 0, Move::NULL, bound);
+        search.store(key, ply, 5, 0, Move::NULL, bound, None);
         let hit = tt.probe(key).expect("the entry was stored");
         assert_eq!(
             hit.pv, stored,

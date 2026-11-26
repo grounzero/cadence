@@ -10,6 +10,19 @@ use std::process::{Command, ExitCode, Stdio};
 /// The copyright notice lives in `LICENSE`, so a name or year change is one edit.
 const HEADER: &str = "// SPDX-License-Identifier: GPL-3.0-or-later";
 
+/// A shell script's tag, on line 2 because the interpreter line must be first.
+const SCRIPT_HEADER: &str = "# SPDX-License-Identifier: GPL-3.0-or-later";
+
+/// The shell scripts the tree ships, named because nothing marks a script as one.
+const SCRIPTS: &[&str] = &[
+    ".githooks/check-bench-declaration",
+    ".githooks/check-message-metadata",
+    ".githooks/commit-msg",
+    ".githooks/pre-commit",
+    ".github/check-features.sh",
+    "install.sh",
+];
+
 /// `__pycache__` embeds the compiling machine's absolute paths.
 const SKIP_DIRS: &[&str] = &[".git", "target", "__pycache__"];
 
@@ -28,7 +41,7 @@ const DEFAULT_PAIRS: usize = 5;
 
 /// What `check-headers` leaves unread, printed after its verdict whatever the verdict.
 const HEADERS_NOT_EXAMINED: &[&str] = &[
-    "files other than Rust, which nothing reads for a licence line",
+    "files other than Rust and the shell scripts in SCRIPTS, which nothing reads for a licence line",
     "the directories in SKIP_DIRS",
 ];
 
@@ -153,8 +166,21 @@ fn check_headers() -> ExitCode {
         }
     }
 
+    for rel in SCRIPTS {
+        let path = root.join(rel);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                if let Some(reason) = script_header_defect(&text) {
+                    bad.push((path, reason));
+                }
+            }
+            Err(e) => bad.push((path, format!("unreadable: {e}"))),
+        }
+    }
+    let total = files.len() + SCRIPTS.len();
+
     if bad.is_empty() {
-        println!("check-headers: {} file(s) OK", files.len());
+        println!("check-headers: {total} file(s) OK");
         return ExitCode::SUCCESS;
     }
 
@@ -163,12 +189,13 @@ fn check_headers() -> ExitCode {
         eprintln!("{}: {reason}", shown.display());
     }
     eprintln!(
-        "\ncheck-headers: {} of {} file(s) missing or misquoting the SPDX tag.",
-        bad.len(),
-        files.len()
+        "\ncheck-headers: {} of {total} file(s) missing or misquoting the SPDX tag.",
+        bad.len()
     );
     eprintln!("\nEvery .rs file must open with this exact line:\n");
     eprintln!("{HEADER}");
+    eprintln!("\nand every script in SCRIPTS must carry this one as its line 2:\n");
+    eprintln!("{SCRIPT_HEADER}");
     ExitCode::FAILURE
 }
 
@@ -177,6 +204,20 @@ fn header_defect(text: &str) -> Option<String> {
         Some(line) if line == HEADER => None,
         Some(line) => Some(format!("line 1: expected `{HEADER}`, found `{line}`")),
         None => Some("file is empty".to_string()),
+    }
+}
+
+fn script_header_defect(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    match (lines.next(), lines.next()) {
+        (Some(first), Some(line)) if first.starts_with("#!") && line == SCRIPT_HEADER => None,
+        (Some(first), _) if !first.starts_with("#!") => Some(format!(
+            "line 1: expected an interpreter line, found `{first}`"
+        )),
+        (_, Some(line)) => Some(format!(
+            "line 2: expected `{SCRIPT_HEADER}`, found `{line}`"
+        )),
+        _ => Some("no line 2".to_string()),
     }
 }
 
@@ -2115,6 +2156,23 @@ mod tests {
             "// SPDX-License-Identifier: GPL-3.0-only\n".to_string(),
         ] {
             assert!(header_defect(&text).is_some(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_script_carries_the_header_on_line_two() {
+        assert_eq!(
+            script_header_defect(&format!("#!/bin/sh\n{SCRIPT_HEADER}\necho\n")),
+            None
+        );
+        for text in [
+            String::new(),
+            "#!/bin/sh\n".to_string(),
+            format!("{SCRIPT_HEADER}\n#!/bin/sh\n"),
+            "#!/bin/sh\n#\n".to_string(),
+            "#!/bin/sh\n# SPDX-License-Identifier: GPL-3.0-only\n".to_string(),
+        ] {
+            assert!(script_header_defect(&text).is_some(), "{text:?}");
         }
     }
 

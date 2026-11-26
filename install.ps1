@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Installs the release binary for this system once its checksum and bench match the release's, or
-# builds Cadence from source at the release's tag where no binary fits or the check fails, on Windows
-# with PowerShell alone; install.sh does the same in Git Bash, WSL, Linux and macOS. It asks before
-# building, installing a compiler or Rust, replacing an install, changing the PATH or downloading
-# tablebases, unless --yes is given.
+# builds Cadence from source at the release's tag with --source or where the release has no binary for
+# this system, on Windows with PowerShell alone; install.sh does the same in Git Bash, WSL, Linux and
+# macOS. It asks before building, installing a compiler or Rust, replacing an install, changing the
+# PATH or downloading tablebases, unless --yes is given.
 
 Set-StrictMode -Version 2.0
 # Native programs report through their exit codes, which are read one by one, so their error output
@@ -17,6 +17,8 @@ $RepoUrl = "https://github.com/$Repo.git"
 $IssuesUrl = "https://github.com/$Repo/issues"
 # The servers below are replaced only as Test-Urls allows, so a test can serve its own.
 $ApiUrl = "https://api.github.com/repos/$Repo/releases"
+# GitHub redirects this to the latest stable release's page, whose address ends in its tag.
+$LatestUrl = "https://github.com/$Repo/releases/latest"
 $ReleasesUrl = "https://github.com/$Repo/releases/download"
 $AssetsUrl = $ReleasesUrl
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
@@ -27,7 +29,7 @@ $UciSeconds = 30
 $TablesBytes = 983957920
 # The workspace version these scripts ship with, which CI holds to Cargo.toml, so a version cut
 # changes it here too.
-$InstallerVersion = '0.7.0-rc.5'
+$InstallerVersion = '0.7.0'
 
 $script:Yes = $false
 $script:KeepLog = $false
@@ -57,9 +59,10 @@ $script:HeldFrom = ''
 $script:Released = ''
 $script:Unlisted = ''
 $script:Earlier = $false
-$script:Named = ''
-$script:Unread = ''
-$script:UnreadLimit = $false
+$script:Tagged = ''
+$script:Fault = ''
+$script:CleanDirs = $false
+$script:Adding = ''
 $script:Where = 'default'
 $script:Dest = ''
 $script:Target = ''
@@ -77,7 +80,8 @@ asked first; a build from source names the tag it builds.
   --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
   --generic        on x86-64, the generic build, for any processor with POPCNT
-  --build TIER     on x86-64, the avx2 or the generic build; avx2 only where the processor runs it
+  --build TIER     on x86-64, the avx512, avx2 or generic build; avx512 and avx2 only where the
+                   processor runs them, and avx512 only on Linux and Windows
   --source         build from source even where a release binary fits
   --update         as a plain run, which upgrades an older install, but also replace a file at
                    the install path that this script did not install, unless declined
@@ -85,9 +89,9 @@ asked first; a build from source names the tag it builds.
   --tables         download the 3-4-5 piece tablebases without asking
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
-  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_API_URL and CADENCE_TABLES_URL
-                   name servers of their own; without it, CADENCE_RELEASES_URL must be this
-                   repository's releases on github.com and the other two are refused
+  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_LATEST_URL, CADENCE_API_URL and
+                   CADENCE_TABLES_URL name servers of their own; without it, CADENCE_RELEASES_URL
+                   must be this repository's releases on github.com and the others are refused
   --help           show this and stop
 '@
 }
@@ -122,7 +126,7 @@ while ($i -lt $args.Count) {
     }
     $i++
 }
-if ($script:Build -notin @('', 'avx2', 'generic')) { Write-Host '--build takes avx2 or generic'; exit 2 }
+if ($script:Build -notin @('', 'avx512', 'avx2', 'generic')) { Write-Host '--build takes avx512, avx2 or generic'; exit 2 }
 # The build named on the command line, which an install of another build at the same version yields to.
 $script:Asked = $script:Build
 $script:AskedVersion = $script:Version
@@ -150,8 +154,37 @@ $State = Join-Path $DataDir 'install-state'
 $Work = Join-Path $DataDir "build.$PID"
 $CargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 
+# The outermost folder New-Item would make for a path, or the empty string where none is missing.
+function Get-FirstMissing([string]$Path) {
+    $top = ''
+    $dir = [System.IO.Path]::GetFullPath($Path)
+    while ($dir -and -not (Test-Path -LiteralPath $dir -PathType Container)) {
+        $top = $dir
+        $dir = Split-Path -Parent $dir
+    }
+    return $top
+}
+
+# Removes an empty folder and the empty ones above it, up to the outermost one this installer made.
+function Remove-Made([string]$Dir, [string]$Top) {
+    if (-not $Dir -or -not $Top) { return }
+    $Top = [System.IO.Path]::GetFullPath($Top).TrimEnd('\')
+    $Dir = [System.IO.Path]::GetFullPath($Dir).TrimEnd('\')
+    if ($Dir -ne $Top -and -not $Dir.StartsWith("$Top\", [System.StringComparison]::OrdinalIgnoreCase)) { return }
+    while ((Test-Path -LiteralPath $Dir -PathType Container) -and @(Get-ChildItem -Force -LiteralPath $Dir).Count -eq 0) {
+        Remove-Item -Force -LiteralPath $Dir -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $Dir) { return }
+        Write-Host "Removed the empty folder $Dir."
+        if ($Dir -eq $Top) { return }
+        $Dir = Split-Path -Parent $Dir
+    }
+}
+
 # --- The log -----------------------------------------------------------------------------------
 
+$script:MadeData = Get-FirstMissing $AppDir
+$script:MadeLog = ''
+$script:MadeBin = ''
 try {
     New-Item -ItemType Directory -Force -Path $AppDir -ErrorAction Stop | Out-Null
 } catch {
@@ -321,11 +354,13 @@ function Invoke-Limited([string]$Binary, [string]$Arguments, [string]$Feed, [int
     return @{ Code = $code; Out = $text; Failed = '' }
 }
 
+# The name a binary gives in answer to uci, or nothing, with how its run ended in UciRun.
 function Get-IdName([string]$Binary) {
     # The engine answered only its banner when Windows PowerShell piped this in, as if the first
     # command carried a byte order mark, so an empty line goes first to take one.
     try { Write-Log ('console input encoding: ' + [Console]::InputEncoding.WebName) } catch { }
     $run = Invoke-Limited $Binary '' "`nuci`nquit`n" $UciSeconds
+    $script:UciRun = $run
     $lines = @($run.Out -split "`r?`n" | Where-Object { $_ })
     Write-Log ('uci answered: ' + ($lines -join ' | '))
     foreach ($line in $lines) {
@@ -343,14 +378,19 @@ function Write-SystemReport {
     Write-Log ('powershell: ' + $PSVersionTable.PSVersion)
 }
 
-# CADENCE_RELEASES_URL may name only this repository's releases, and the other two servers stay as
-# they are, unless --test-urls lets a test name its own; whichever is in use is said.
+# CADENCE_RELEASES_URL may name only this repository's releases, and the other servers stay as they
+# are, unless --test-urls lets a test name its own; whichever is in use is said.
 function Test-Urls {
     if ($env:CADENCE_RELEASES_URL) {
         if ($env:CADENCE_RELEASES_URL -cnotin @($ReleasesUrl, "$ReleasesUrl/") -and -not $script:TestUrls) {
             Fail "CADENCE_RELEASES_URL is $env:CADENCE_RELEASES_URL, which is not $ReleasesUrl; only a test may name another server, with --test-urls"
         }
         $script:AssetsUrl = $env:CADENCE_RELEASES_URL.TrimEnd('/')
+    }
+    if ($env:CADENCE_LATEST_URL) {
+        if (-not $script:TestUrls) { Fail 'CADENCE_LATEST_URL is set, which only a test may do, with --test-urls' }
+        $script:LatestUrl = $env:CADENCE_LATEST_URL
+        Say "GitHub's latest release is read from $($script:LatestUrl), as CADENCE_LATEST_URL and --test-urls ask."
     }
     if ($env:CADENCE_API_URL) {
         if (-not $script:TestUrls) { Fail 'CADENCE_API_URL is set, which only a test may do, with --test-urls' }
@@ -390,27 +430,75 @@ public static extern bool IsProcessorFeaturePresent(uint feature);
     }
 }
 
+# Whether .NET says the processor has an x86 instruction set, or null where this .NET cannot say, as
+# Windows PowerShell's cannot: System.Runtime.Intrinsics came with .NET Core 3.
+function Test-NetFeature([string]$Name) {
+    $type = "System.Runtime.Intrinsics.X86.$Name" -as [type]
+    if (-not $type) { return $null }
+    try {
+        return [bool]$type::IsSupported
+    } catch {
+        return $null
+    }
+}
+
 function Confirm-System {
     Step 'This system'
     if ($Arch -ne 'x86_64') {
         $script:Build = 'native'
-        Say 'Windows on arm64, which Cadence has one build for.'
+        Say "Windows on arm64: Cadence's releases have no binary for it, so it is built from source here."
         return
     }
-    # PF_AVX2_INSTRUCTIONS_AVAILABLE. Windows names no flag for BMI1, LZCNT or POPCNT, which every
-    # processor with AVX2 also has, and the bench run catches a processor without POPCNT.
+    # PF_AVX2_INSTRUCTIONS_AVAILABLE. Windows names no flag for POPCNT, which every processor with AVX2
+    # also has, and the bench run catches a processor without it.
     $avx2 = Test-ProcessorFeature 40
-    Write-Log "AVX2: $avx2"
-    if ($avx2) {
+    # Windows names no flag for BMI1 or LZCNT either, so they are read from .NET where it can say.
+    $bmi1 = Test-NetFeature 'Bmi1'
+    $lzcnt = Test-NetFeature 'Lzcnt'
+    # PF_AVX512F_INSTRUCTIONS_AVAILABLE. Windows names no flag for AVX-512BW, so it is read from .NET
+    # where it can say; elsewhere a processor with AVX-512F is taken to have it, and the bench decides.
+    $avx512f = Test-ProcessorFeature 41
+    $avx512bw = Test-NetFeature 'Avx512BW'
+    Write-Log "AVX2: $avx2; BMI1: $bmi1; LZCNT: $lzcnt; AVX-512F: $avx512f; AVX-512BW: $avx512bw"
+    # What the AVX2 build needs and this processor is known to lack; the AVX-512 build needs it all too.
+    $lacks = @()
+    if (-not $avx2) { $lacks += 'AVX2' }
+    if ($bmi1 -eq $false) { $lacks += 'BMI1' }
+    if ($lzcnt -eq $false) { $lacks += 'LZCNT' }
+    if ($null -eq $bmi1 -or $null -eq $lzcnt) {
+        Say 'BMI1 and LZCNT could not be read here, so a processor with AVX2 is taken to have them, and the bench decides.'
+    } elseif ($bmi1 -and $lzcnt) {
+        Say 'BMI1 and LZCNT were read through .NET: this processor has both.'
+    } else {
+        Say "BMI1 and LZCNT were read through .NET: this processor lacks $(@($lacks | Where-Object { $_ -ne 'AVX2' }) -join ' and ')."
+    }
+    $avx512 = $lacks.Count -eq 0 -and $avx512f -and $avx512bw -ne $false
+    if ($avx512f -and $null -eq $avx512bw) {
+        Say 'AVX-512BW could not be read here, so a processor with AVX-512F is taken to have it, and the bench decides.'
+    } elseif ($avx512f) {
+        Say "AVX-512BW was read through .NET: this processor $(if ($avx512bw) { 'has' } else { 'lacks' }) it."
+    }
+    if ($avx512) {
+        Say 'Windows on x86-64, with AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT: the AVX-512 build runs here.'
+    } elseif ($lacks.Count -eq 0) {
         Say 'Windows on x86-64, with AVX2, BMI1, LZCNT and POPCNT: the AVX2 build runs here.'
     } else {
-        Say 'Windows on x86-64, without AVX2: the generic build runs here, for any x86-64 with POPCNT.'
+        Say "Windows on x86-64, without $($lacks -join ', '): the generic build runs here, for any x86-64 with POPCNT."
     }
-    if ($script:Build -eq 'avx2' -and -not $avx2) {
-        Fail '--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks AVX2'
+    if ($script:Build -eq 'avx512' -and -not $avx512) {
+        $missing = @()
+        if (-not $avx512f) { $missing += 'AVX-512F' }
+        if ($avx512bw -eq $false) { $missing += 'AVX-512BW' }
+        $missing += $lacks
+        Fail "--build avx512 needs AVX-512F, AVX-512BW, AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $($missing -join ', ')"
+    } elseif ($script:Build -eq 'avx2' -and $lacks.Count -gt 0) {
+        Fail "--build avx2 needs AVX2, BMI1, LZCNT and POPCNT, and this processor lacks $($lacks -join ', ')"
     } elseif ($script:Build) {
         Say "The $script:Build build, as asked."
-    } elseif ($avx2) {
+    } elseif ($avx512) {
+        $script:Build = 'avx512'
+        Say '--build avx2 takes the AVX2 build instead, and --generic the generic one, for any x86-64 with POPCNT.'
+    } elseif ($lacks.Count -eq 0) {
         $script:Build = 'avx2'
         Say '--generic takes the generic build instead, for any x86-64 with POPCNT.'
     } else {
@@ -440,6 +528,45 @@ function Compare-Version([string]$First, [string]$Second) {
     return 0
 }
 
+# The version GitHub's latest release redirects to, in Tag, read from the Location of its answer
+# without following it; one that is not x.y.z leaves Tag empty, and Rc 2 is no answer, twice.
+function Get-LatestRelease {
+    return Invoke-RetryOnce '' {
+        Write-Log "redirect of $LatestUrl"
+        $response = $null
+        try {
+            $request = [System.Net.HttpWebRequest]::Create($LatestUrl)
+            $request.AllowAutoRedirect = $false
+            $request.UserAgent = "Cadence installer $InstallerVersion"
+            $response = $request.GetResponse()
+            $code = [int]$response.StatusCode
+            $location = "$($response.Headers['Location'])"
+        } catch {
+            # PowerShell 7 throws at a redirect it was told not to follow, with the answer inside.
+            $failed = $_.Exception
+            if ($failed.InnerException -is [System.Net.WebException]) { $failed = $failed.InnerException }
+            $code = 0
+            if ($failed.PSObject.Properties['Response'] -and $failed.Response) {
+                try { $code = [int]$failed.Response.StatusCode } catch { $code = 0 }
+            }
+            if ($code -lt 300 -or $code -ge 400) {
+                $trouble = Get-DownloadTrouble $_
+                $refused = $trouble -eq ' (not found)' -or $trouble -like ' (the server answered 4*'
+                return @{ Rc = $(if ($refused) { 0 } else { 2 }); Tag = ''; Trouble = $trouble }
+            }
+            $response = $failed.Response
+            $location = "$($response.Headers['Location'])"
+        } finally {
+            if ($response) { $response.Close() }
+        }
+        Write-Log "answer: $code $location"
+        $tag = ''
+        if ($code -ge 300 -and $code -lt 400 -and $location -match '/releases/tag/([^/?#]+)$') { $tag = $Matches[1] }
+        if ($tag -notmatch '^\d+\.\d+\.\d+$') { $tag = '' }
+        return @{ Rc = 0; Tag = $tag; Trouble = '' }
+    }
+}
+
 # GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
 # pre-release by version is offered instead, and with neither nothing is built.
 function Find-Release {
@@ -448,29 +575,23 @@ function Find-Release {
         Say "Release $script:Version, as asked."
         return
     }
-    $tag = ''
     # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
     $headers = @{}
     if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-    Write-Log "downloading $ApiUrl/latest"
-    try {
-        $latest = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/latest" -Headers $headers -ErrorAction Stop
-        $tag = "$($latest.tag_name)"
-    } catch {
-        Test-RateLimit (Get-DownloadTrouble $_) $_
-    }
+    $latest = Get-LatestRelease
+    if ($latest.Rc -eq 2) { Stop-Offline "the name of Cadence's latest release from GitHub" $latest.Trouble }
+    $tag = $latest.Tag
     if ($tag -match '^\d+\.\d+\.\d+$') {
         $script:Version = $tag
         Say "The latest stable release is $tag."
     } else {
-        Write-Log "downloading ${ApiUrl}?per_page=100"
-        try {
-            $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=100" -Headers $headers -ErrorAction Stop
-        } catch {
-            $trouble = Get-DownloadTrouble $_
-            Test-RateLimit $trouble $_
-            Fail "could not read Cadence's releases from GitHub$trouble"
+        $list = Invoke-Fetch "${ApiUrl}?per_page=100" '' $headers
+        if ($list.Rc -eq 2) { Stop-Offline "the list of Cadence's releases from GitHub" $list.Trouble }
+        if ($list.Rc -ne 0) {
+            Test-RateLimit $list.Trouble $list.Failure
+            Fail "could not read Cadence's releases from GitHub$($list.Trouble)"
         }
+        $releases = $list.Answer
         foreach ($release in @($releases)) {
             $name = "$($release.tag_name)"
             if ($name -notmatch '^\d+\.\d+\.\d+-rc\.\d+$') { continue }
@@ -489,14 +610,13 @@ function Find-Release {
             if (-not (Ask "Install pre-release $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
         }
     }
-    # The installer's own version is offered only where a release of it is published.
+    # The installer's own version is offered only where a release of it publishes its SHA256SUMS.
     if ($script:Version -ne $InstallerVersion) {
-        Write-Log "downloading $ApiUrl/tags/$InstallerVersion"
-        try {
-            Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/tags/$InstallerVersion" -Headers $headers -ErrorAction Stop | Out-Null
+        $own = Invoke-Fetch "$AssetsUrl/$InstallerVersion/SHA256SUMS" (Join-Path $Work 'installer-sums')
+        if ($own.Rc -eq 0) {
             Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
-        } catch {
-            Write-Log "release $InstallerVersion is not offered$(Get-DownloadTrouble $_)"
+        } else {
+            Write-Log "release $InstallerVersion is not offered$($own.Trouble)"
         }
     }
 }
@@ -542,29 +662,77 @@ function Get-DownloadTrouble($Failure) {
     return ' (the log has the details)'
 }
 
-# The empty string once the file is in the work folder, or why it is not, in parentheses.
-function Save-Asset([string]$Name) {
-    $url = "$AssetsUrl/$($script:Version)/$Name"
-    Write-Log "downloading $url"
-    try {
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $Work $Name) -ErrorAction Stop
-        return ''
-    } catch {
-        return (Get-DownloadTrouble $_)
+# A download tried a second time where the first failed for the network rather than for the server's
+# answer, Rc 1 being the server's refusal and 2 the network's failure twice, with the reason in Trouble.
+# Without OutFile the answer is read as Invoke-RestMethod reads it, into Answer.
+function Invoke-Fetch([string]$Uri, [string]$OutFile, [hashtable]$Headers = @{}) {
+    return Invoke-RetryOnce '' {
+        Write-Log "downloading $Uri"
+        try {
+            if ($OutFile) {
+                Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $OutFile -Headers $Headers -ErrorAction Stop
+                return @{ Rc = 0; Trouble = ''; Failure = $null; Answer = $null }
+            }
+            $answer = Invoke-RestMethod -UseBasicParsing -Uri $Uri -Headers $Headers -ErrorAction Stop
+            return @{ Rc = 0; Trouble = ''; Failure = $null; Answer = $answer }
+        } catch {
+            $failure = $_
+            $trouble = Get-DownloadTrouble $failure
+        }
+        $refused = $trouble -eq ' (not found)' -or $trouble -like ' (the server answered 4*'
+        return @{ Rc = $(if ($refused) { 1 } else { 2 }); Trouble = $trouble; Failure = $failure; Answer = $null }
     }
 }
 
-# The release's SHA256SUMS in the work folder, downloaded once, or false with the reason in Why.
-function Get-ReleaseSums {
+# Runs an attempt, and once more after 3 seconds where its Rc is anything but 1, a refusal a second
+# try would not change; Rc 2 is a failure twice. What, where given, tells the user of the retry.
+function Invoke-RetryOnce([string]$What, [scriptblock]$Attempt) {
+    $result = & $Attempt
+    if ($result.Rc -eq 0 -or $result.Rc -eq 1) { return $result }
+    Write-Log 'trying again in 3 seconds'
+    if ($What) { Say "$What failed, so it is tried once more in 3 seconds." }
+    Start-Sleep -Seconds 3
+    $result = & $Attempt
+    if ($result.Rc -ne 0 -and $result.Rc -ne 1) { $result.Rc = 2 }
+    return $result
+}
+
+# A download the install needs, failed twice for the network, stops the run.
+function Stop-Offline([string]$What, [string]$Trouble) {
+    Fail "could not download $What$Trouble, after trying twice. $NetworkHint"
+}
+
+$NetworkHint = 'Check the network connection, or a proxy or firewall in the way, then run this again'
+
+# A release file that does not match what the release published stops the run, and nothing is built
+# in its place, since a download that was changed on its way may be changed again.
+function Stop-Tampered([string]$Detail) {
+    Say "$Detail."
+    Say 'The file may be corrupt, or tampered with on its way here, so it is not installed, and Cadence is not built from source in its place.'
+    Say "Run this again to download it afresh. If the same happens, report it: $IssuesUrl"
+    Fail 'the download does not match the release, so nothing was installed'
+}
+
+# A release file fetched into the work folder, as Invoke-Fetch answers.
+function Save-Asset([string]$Name) {
+    return (Invoke-Fetch "$AssetsUrl/$($script:Version)/$Name" (Join-Path $Work $Name))
+}
+
+# The release's SHA256SUMS in the work folder, downloaded once; a release without one has no binary
+# that can be checked, which stops the run. Telling an earlier install needs no stop, so Tolerant
+# returns false instead.
+function Get-ReleaseSums([switch]$Tolerant) {
     $sums = Join-Path $Work 'SHA256SUMS'
     if ((Test-Path -LiteralPath $sums) -and (Get-Item -LiteralPath $sums).Length -gt 0) { return $true }
-    $failed = Save-Asset 'SHA256SUMS'
-    if ($failed) {
-        Remove-Item -Force -LiteralPath $sums -ErrorAction SilentlyContinue
-        $script:Why = "Release $script:Version publishes no checksum file$failed, so none of its binaries is used."
+    $fetched = Save-Asset 'SHA256SUMS'
+    if ($fetched.Rc -eq 0) { return $true }
+    Remove-Item -Force -LiteralPath $sums -ErrorAction SilentlyContinue
+    if ($Tolerant) {
+        Write-Log "release $($script:Version)'s SHA256SUMS was not read$($fetched.Trouble)"
         return $false
     }
-    return $true
+    if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s SHA256SUMS" $fetched.Trouble }
+    Fail "release $($script:Version) publishes no checksum file$($fetched.Trouble), so none of its binaries can be checked; if the release exists, --source builds it from source at its tag"
 }
 
 # The file the release's SHA256SUMS gives a SHA-256 to, or the empty string.
@@ -574,6 +742,13 @@ function Get-ListedAs([string]$Sum) {
         if ($parts.Count -ge 2 -and $parts[0] -eq $Sum) { return $parts[1].TrimStart('*') }
     }
     return ''
+}
+
+# Every release has a build for each tier of Windows on x86-64, so a SHA256SUMS that gives one no
+# SHA-256 is damaged, which stops the run as a mismatch does and never builds from source.
+function Assert-SumsEntry([string]$File, [string]$Want) {
+    if ($Want -cmatch '^[0-9a-f]{64}$') { return }
+    Stop-Tampered "Release $($script:Version)'s SHA256SUMS gives no SHA-256 for $File, which every release of $($script:Version) has, so the file is damaged"
 }
 
 # The SHA-256 the release's SHA256SUMS gives a file, or the empty string.
@@ -630,7 +805,7 @@ function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Pat
 
 # The release workflow attests every binary it builds, run at the version's tag, and gh checks that
 # attestation where it is installed and signed in. Where gh cannot check, that is said and the install
-# goes on; an attestation that fails leaves Why.
+# goes on; any other failure, in whatever words, leaves Why.
 function Test-Attestation([string]$File) {
     $script:Attested = 'no'
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -659,73 +834,93 @@ function Test-Attestation([string]$File) {
         Say 'Its build attestation was not verified: this gh is too old to check one.'
         return $true
     }
-    # A verifier that never loaded its trust root reports a failed verification too, so it is read
-    # first, as gh failing to check. Otherwise a verdict is no attestation for this file, a signature
-    # that is not the release workflow's at the tag, or a certificate naming something else.
-    if (($said -join "`n") -cmatch 'failed to choose verifier|initialization may have failed') {
+    # A verifier or trust root that never loaded is gh failing to check. Every other failure is a
+    # verdict, so a wording gh has not used before stops the run.
+    if (($said -join "`n") -cmatch 'error creating Sigstore verifier|failed to choose verifier|initialization may have failed') {
         Say "Its build attestation was not verified: gh could not check it ($last)."
         return $true
     }
-    if (($said -join "`n") -cmatch 'HTTP 404.*/attestations/|[Nn]o attestations found|expected [A-Za-z]+ to be|verifying with issuer|[Vv]erification failed') {
-        $script:Why = "$File's build attestation does not verify ($last), so it is not used."
-        return $false
-    }
-    Say "Its build attestation was not verified: gh could not check it ($last)."
-    return $true
+    $script:Why = "$File's build attestation does not verify ($last)"
+    return $false
 }
 
-# Leaves the checked binary in Built, or the reason none is used in Why.
+# Leaves the checked binary in Built, or the reason there is none for this system in Why. A binary
+# that does not match the release stops the run, as does one that cannot run here.
 function Test-Binary {
     if ($Arch -ne 'x86_64') {
         $script:Why = "Cadence's releases have no binary for Windows on arm64."
         return
     }
     $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
-    if (-not (Get-ReleaseSums)) { return }
+    [void](Get-ReleaseSums)
     $want = Get-Listed $file
-    if (-not $want) {
-        $script:Why = "Release $script:Version's SHA256SUMS lists no $file, so there is no binary for this system."
-        return
+    # A release from before the AVX-512 builds has none, and the AVX2 build it has also runs here.
+    if (-not $want -and $script:Build -eq 'avx512' -and (Compare-Version $script:Version '0.7.0') -lt 0) {
+        if ($script:Asked) {
+            $script:Why = "Release $script:Version has no AVX-512 binary, as no release before 0.7.0 has."
+            return
+        }
+        $script:Build = 'avx2'
+        Say "Release $script:Version has no AVX-512 binary, so its AVX2 build, which also runs here, is taken."
+        $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
+        $want = Get-Listed $file
     }
+    Assert-SumsEntry $file $want
     Say "Release $script:Version has a binary for this system: $file."
+    # One that cannot run here gives way to the tier below it, AVX-512 to AVX2 to generic, unless a
+    # build was asked for by name; a timeout is no sign a lower tier would run, so it stops.
+    while ($true) {
+        $cannot = Test-ReleaseFile $file $want
+        if (-not $cannot) { return }
+        Say "$file cannot be used here: $cannot."
+        $next = ''
+        if (-not $script:Asked -and -not $script:Limited) {
+            $next = switch ($script:Build) { 'avx512' { 'avx2' } 'avx2' { 'generic' } default { '' } }
+        }
+        if (-not $next) { break }
+        $script:Build = $next
+        $file = "cadence-$($script:Version)-windows-x86-64-$($script:Build).exe"
+        $want = Get-Listed $file
+        Assert-SumsEntry $file $want
+        Say "The release's $($script:Build) build, $file, is tried in its place."
+    }
+    if ($script:Build -ne 'generic' -and -not $script:Asked) { Say '--generic takes the generic build instead, for any x86-64 with POPCNT.' }
+    # The case a user would report, so the log stays, as for a binary Windows refused.
+    $script:KeepLog = $true
+    Stop-Install "Nothing was installed. --source builds Cadence $($script:Version) from source here instead."
+}
 
-    Step "Checking $file"
-    $failed = Save-Asset $file
-    if ($failed) {
-        $script:Why = "Could not download $file$failed, so it is not used."
-        return
-    }
-    $path = Join-Path $Work $file
+# Holds a release binary to the release's SHA256SUMS, its attestation and its bench, leaving it in Built,
+# or returns why it cannot run here; a file that does not match the release stops the run.
+function Test-ReleaseFile([string]$File, [string]$Want) {
+    Step "Checking $File"
+    $fetched = Save-Asset $File
+    if ($fetched.Rc -eq 2) { Stop-Offline $File $fetched.Trouble }
+    if ($fetched.Rc -ne 0) { Stop-Tampered "Release $($script:Version) lists $File in its SHA256SUMS and does not serve it$($fetched.Trouble)" }
+    $path = Join-Path $Work $File
     $got = Get-Sha256 $path
-    Write-Log "${file}: SHA-256 $got; SHA256SUMS: $want"
-    if ($got -ne $want) {
-        $script:Why = "$file's SHA-256 is $got and SHA256SUMS says $want, so it is not used."
-        return
-    }
+    Write-Log "${File}: SHA-256 $got; SHA256SUMS: $Want"
+    if ($got -ne $Want) { Stop-Tampered "$File's SHA-256 is $got and the release's SHA256SUMS says $Want" }
     Say "Its SHA-256 matches the release's SHA256SUMS."
-    if (-not (Test-Attestation $file)) { return }
-    $want = Get-Listed 'bench.txt'
-    if (-not $want) {
-        $script:Why = "Release $script:Version's SHA256SUMS lists no bench.txt to check $file against, so it is not used."
-        return
-    }
-    $failed = Save-Asset 'bench.txt'
-    if ($failed) {
-        $script:Why = "Could not download the release's bench.txt$failed, so $file is not used."
-        return
-    }
+    if (-not (Test-Attestation $File)) { Stop-Tampered $script:Why }
+    $benchSum = Get-Listed 'bench.txt'
+    if (-not $benchSum) { Stop-Tampered "Release $($script:Version)'s SHA256SUMS lists no bench.txt to check $File against" }
+    # A second binary tried is held to the bench.txt the first one fetched.
     $bench = Join-Path $Work 'bench.txt'
-    if ((Get-Sha256 $bench) -ne $want) {
-        $script:Why = "The release's bench.txt does not match SHA256SUMS, so $file is not used."
-        return
+    if (-not (Test-Path -LiteralPath $bench) -or (Get-Sha256 $bench) -ne $benchSum) {
+        $fetched = Save-Asset 'bench.txt'
+        if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s bench.txt" $fetched.Trouble }
+        if ($fetched.Rc -ne 0) { Stop-Tampered "Release $($script:Version) lists bench.txt in its SHA256SUMS and does not serve it$($fetched.Trouble)" }
+        if ((Get-Sha256 $bench) -ne $benchSum) { Stop-Tampered "The release's bench.txt does not match its SHA256SUMS" }
     }
     $benchWant = "$(Get-Content -Raw -Path $bench)".Trim()
-    if (-not (Test-BenchAndName $path $benchWant "Cadence $script:Version")) {
-        $script:Why = 'I' + $script:Why.Substring(1) + ', so it is not used.'
-        return
+    if (Test-BenchAndName $path $benchWant "Cadence $script:Version") {
+        $script:Built = $path
+        $script:From = 'release'
+        return ''
     }
-    $script:Built = $path
-    $script:From = 'release'
+    if ($script:Fault -eq 'mismatch') { Stop-Tampered "${File}: $($script:Why)" }
+    return $script:Why
 }
 
 # --- The build ---------------------------------------------------------------------------------
@@ -735,6 +930,7 @@ function Request-Source {
         Step 'Building from source, as --source asks'
     } else {
         Say $script:Why
+        Say 'Only a system the releases have no binary for is built from source without --source.'
         Step 'Building from source instead'
     }
     Say 'Building takes several minutes and about 2 GB of disk space, for the source, the Rust'
@@ -785,6 +981,7 @@ function Test-Linker {
         '--accept-package-agreements', '--accept-source-agreements', '--override',
         '--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended')
     if ($code -ne 0) { Fail "the build tools' install failed" }
+    Set-StateValue 'installed_compiler' "the Visual Studio 2022 Build Tools, which 'winget uninstall --id Microsoft.VisualStudio.2022.BuildTools' removes"
     $found = Get-MsvcVersion
     if (-not $found) { Fail 'the C++ build tools are still not found after the install' }
     Write-Log "linker: Visual Studio C++ build tools $found"
@@ -794,15 +991,13 @@ function Install-Rustup {
     $rustupArch = 'x86_64'
     if ($Arch -ne 'x86_64') { $rustupArch = 'aarch64' }
     $init = Join-Path $Work 'rustup-init.exe'
-    Write-Log "downloading https://win.rustup.rs/$rustupArch"
-    try {
-        Invoke-WebRequest -UseBasicParsing -Uri "https://win.rustup.rs/$rustupArch" -OutFile $init -ErrorAction Stop
-    } catch {
-        Fail "could not download rustup-init.exe$(Get-DownloadTrouble $_)"
-    }
+    $fetched = Invoke-Fetch "https://win.rustup.rs/$rustupArch" $init
+    if ($fetched.Rc -eq 2) { Stop-Offline 'rustup-init.exe' $fetched.Trouble }
+    if ($fetched.Rc -ne 0) { Fail "could not download rustup-init.exe$($fetched.Trouble)" }
     if ((Invoke-Logged $init @('-y', '--default-toolchain', 'none')) -ne 0) { Fail "rustup's install failed" }
     $env:Path = "$CargoBin;$env:Path"
     if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) { Fail 'rustup is still not found after its install' }
+    Set-StateValue 'installed_rust' "rustup and every Rust toolchain it holds, which 'rustup self uninstall' removes"
 }
 
 function Test-Rust {
@@ -832,18 +1027,31 @@ function Test-Rust {
     }
 }
 
-# The tag the source is fetched at, the version asked for or found, checked against the repository's.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's,
+# and in Tagged the commit its annotated tag names, which every release has; a test base's may be plain.
 function Resolve-Tag {
-    Write-Log "`$ git ls-remote --tags --refs $RepoUrl"
-    $listing = git ls-remote --tags --refs $RepoUrl 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $listed = Invoke-RetryOnce "Listing the releases at $RepoUrl" {
+        Write-Log "`$ git ls-remote --tags $RepoUrl"
+        $listing = @(git ls-remote --tags $RepoUrl 2>&1)
+        if ($LASTEXITCODE -eq 0) { return @{ Rc = 0; Lines = $listing } }
         foreach ($line in $listing) { Write-Log "$line" }
-        Fail "could not list the releases at $RepoUrl"
+        return @{ Rc = 2; Lines = @() }
     }
-    $tags = @($listing | ForEach-Object { "$_" -replace '^.*refs/tags/', '' })
+    if ($listed.Rc -ne 0) { Fail "could not list the releases at $RepoUrl, after trying twice. $NetworkHint" }
+    $tags = @($listed.Lines | ForEach-Object { "$_" -replace '^.*refs/tags/', '' })
     if ($tags -notcontains $script:Version) {
         if ($script:Version.Contains('+')) { Fail "there is no test base $script:Version at $RepoUrl" }
         Fail "there is no release $script:Version at $RepoUrl"
+    }
+    # An annotated tag is listed twice, the second time peeled to the commit it names.
+    $script:Tagged = ''
+    foreach ($line in $listed.Lines) {
+        $parts = @("$line".Trim() -split '\s+')
+        if ($parts.Count -ge 2 -and $parts[1] -ceq "refs/tags/$($script:Version)^{}") { $script:Tagged = $parts[0]; break }
+    }
+    if ($script:Version.Contains('+')) { return }
+    if ($script:Tagged -cnotmatch '^[0-9a-f]{40}$') {
+        Fail "the tag $($script:Version) at $RepoUrl is not an annotated tag naming a commit, as a release's is, so it is not built"
     }
 }
 
@@ -856,66 +1064,109 @@ function Get-Source {
     $code = Invoke-Logged 'git' @('-C', $script:Src, 'remote', 'add', 'origin', $RepoUrl)
     if ($code -ne 0) { Fail "could not name the repository in $($script:Src)" }
     # A release names itself from its annotated tag, so the tag is fetched as itself.
-    $code = Invoke-Logged 'git' @('-C', $script:Src, 'fetch', '--quiet', '--depth', '1', 'origin',
-        "+refs/tags/$($script:Version):refs/tags/$($script:Version)")
-    if ($code -ne 0) { Fail "could not fetch Cadence $script:Version" }
+    $fetched = Invoke-RetryOnce "Fetching Cadence $script:Version" {
+        $code = Invoke-Logged 'git' @('-C', $script:Src, 'fetch', '--quiet', '--depth', '1', 'origin',
+            "+refs/tags/$($script:Version):refs/tags/$($script:Version)")
+        return @{ Rc = $(if ($code -eq 0) { 0 } else { 2 }) }
+    }
+    if ($fetched.Rc -ne 0) { Fail "could not fetch Cadence $script:Version, after trying twice. $NetworkHint" }
     $code = Invoke-Logged 'git' @('-C', $script:Src, '-c', 'advice.detachedHead=false', 'checkout', '--quiet',
         '--detach', "refs/tags/$($script:Version)")
     if ($code -ne 0) { Fail "could not check out Cadence $script:Version" }
 }
 
-# The commit the release's notes say it was built from, in Named, or nothing where no release names
-# one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
-# Unread says why, and the build goes on without the check.
-function Get-ReleaseCommit {
-    $script:Named = ''
-    $script:Unread = ''
-    $script:UnreadLimit = $false
-    if ($script:Version.Contains('+')) { return }
-    $headers = @{}
-    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-    Write-Log "downloading $ApiUrl/tags/$($script:Version)"
-    try {
-        $release = Invoke-RestMethod -UseBasicParsing -Uri "$ApiUrl/tags/$($script:Version)" -Headers $headers -ErrorAction Stop
-    } catch {
-        $trouble = Get-DownloadTrouble $_
-        if ($trouble -ne ' (not found)') { $script:Unread = $trouble }
-        $script:UnreadLimit = Test-GitHubLimit $_
-        return
-    }
-    if ("$($release.body)" -match 'built from ([0-9a-f]{40}) at the tag') { $script:Named = $Matches[1] }
-    if (-not $script:Named) { Fail "release $($script:Version)'s notes name no commit, so its source cannot be checked against them" }
-}
-
-# The fetched tag must be the commit the release names before anything is built from it.
+# The fetched source must be the commit the release's annotated tag names, and match what the release
+# publishes, before anything is built from it; a test base has no release to match.
 function Test-Commit {
     $got = "$(git -C $script:Src rev-parse HEAD 2>$null)".Trim()
     if ($LASTEXITCODE -ne 0 -or -not $got) { Fail "could not read the commit Cadence $($script:Version) was fetched at" }
-    Write-Log "fetched commit: $got; the release names: $(if ($script:Named) { $script:Named } else { 'none' })"
-    if ($script:Unread) {
-        Say "GitHub's API did not answer$($script:Unread), so the commit release $($script:Version) names could not be read. It is built at its tag, commit $got, without that check."
-        if ($script:UnreadLimit) { Say 'GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time.' }
+    Write-Log "fetched commit: $got; the tag names: $(if ($script:Tagged) { $script:Tagged } else { 'none' })"
+    if ($script:Version.Contains('+')) {
+        Say "Test base $($script:Version) is commit $got; a test base has no release to name one."
         return
     }
-    if (-not $script:Named) {
-        if ($script:Version.Contains('+')) {
-            Say "Test base $($script:Version) is commit $got; a test base has no release to name one."
-        } else {
-            Say "Version $($script:Version) has no release page naming its commit, so it is built at its tag, commit $got."
+    if ($got -ne $script:Tagged) {
+        Fail "the tag $($script:Version) names commit $($script:Tagged), and the source fetched at it is commit $got, so it is not built"
+    }
+    Say "The tag $($script:Version) names commit $got, the one fetched."
+    Test-Released $got
+}
+
+# A file the release's SHA256SUMS lists, fetched into the work folder and held to its SHA-256 there.
+function Save-ReleaseFile([string]$Name) {
+    $fetched = Save-Asset $Name
+    if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s $Name" $fetched.Trouble }
+    if ($fetched.Rc -ne 0) { Stop-Tampered "Release $($script:Version) lists $Name in its SHA256SUMS and does not serve it$($fetched.Trouble)" }
+    if ((Get-Sha256 (Join-Path $Work $Name)) -ne (Get-Listed $Name)) { Stop-Tampered "The release's $Name does not match its SHA256SUMS" }
+}
+
+# The source is held to the release's bench.txt, and to the commit its SOURCE names where SHA256SUMS
+# lists one, each file held to SHA256SUMS. A version with no SHA256SUMS has no release to hold it to.
+function Test-Released([string]$Got) {
+    $sums = Join-Path $Work 'SHA256SUMS'
+    if (-not ((Test-Path -LiteralPath $sums) -and (Get-Item -LiteralPath $sums).Length -gt 0)) {
+        $fetched = Save-Asset 'SHA256SUMS'
+        if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s SHA256SUMS" $fetched.Trouble }
+        if ($fetched.Rc -ne 0) {
+            Remove-Item -Force -LiteralPath $sums -ErrorAction SilentlyContinue
+            Say "Version $($script:Version) publishes no SHA256SUMS$($fetched.Trouble), so it has no release to hold its source to, and it is built at its tag."
+            return
         }
+    }
+    if (-not (Get-Listed 'bench.txt')) { Stop-Tampered "Release $($script:Version)'s SHA256SUMS lists no bench.txt to check its source against" }
+    Save-ReleaseFile 'bench.txt'
+    $released = "$(Get-Content -Raw -Path (Join-Path $Work 'bench.txt'))".Trim()
+    $own = ''
+    $ownPath = Join-Path $script:Src 'bench.txt'
+    if (Test-Path -LiteralPath $ownPath) { $own = "$(Get-Content -Raw -Path $ownPath)".Trim() }
+    if ($released -cne $own) {
+        Fail "release $($script:Version)'s bench.txt says $(if ($released) { $released } else { 'nothing' }) and the source at its tag says $(if ($own) { $own } else { 'nothing' }), so it is not built"
+    }
+    Say "The source's bench.txt says $own, as the release's does."
+    if (-not (Get-Listed 'SOURCE')) {
+        Say "Release $($script:Version) lists no SOURCE in its SHA256SUMS, so it predates the file naming a release's commit, and its tag and bench.txt are the checks."
         return
     }
-    if ($got -ne $script:Named) {
-        Fail "the tag $($script:Version) is commit $got, and the release names $($script:Named), so it is not built"
+    Save-ReleaseFile 'SOURCE'
+    Say "Release $($script:Version)'s SOURCE matches its SHA256SUMS."
+    if (-not (Test-Attestation 'SOURCE')) { Stop-Tampered $script:Why }
+    $named = "$(Get-Content -Raw -Path (Join-Path $Work 'SOURCE'))".Trim()
+    if ($named -cnotmatch '^[0-9a-f]{40}$') { Stop-Tampered "Release $($script:Version)'s SOURCE names no commit" }
+    if ($named -ne $Got) {
+        Fail "release $($script:Version)'s SOURCE names commit $named, and its tag names $Got, so it is not built"
     }
-    Say "The tag $($script:Version) is commit $got, the one the release names."
+    Say "Release $($script:Version)'s SOURCE names commit $Got, the one fetched."
+}
+
+# Whether rustup holds a toolchain for a channel.
+function Test-Toolchain([string]$Channel) {
+    return [bool](@(rustup toolchain list 2>$null) -match ('^' + [regex]::Escape($Channel) + '-'))
+}
+
+# The toolchain this run added, recorded for the uninstall to name.
+function Add-ToolchainRecord {
+    if (-not $script:Adding) { return }
+    Set-StateValue 'installed_toolchain' "Rust $($script:Adding), which 'rustup toolchain uninstall $($script:Adding)' removes"
+    $script:Adding = ''
 }
 
 function Initialize-Toolchain {
     Step 'The Rust toolchain'
+    # A toolchain this run adds is recorded once it is there, so the uninstall can name it.
+    $pinned = ''
+    $pin = Join-Path $script:Src 'rust-toolchain.toml'
+    if (Test-Path -LiteralPath $pin) {
+        foreach ($line in Get-Content -LiteralPath $pin) {
+            if ($line -match '^channel\s*=\s*"(.*)"$') { $pinned = $Matches[1] }
+        }
+    }
+    $script:Adding = ''
+    if ($pinned -and -not (Test-Toolchain $pinned)) { $script:Adding = $pinned }
     Push-Location $script:Src
     try {
-        if ((Invoke-Logged 'rustup' @('toolchain', 'install')) -ne 0) {
+        if ((Invoke-Logged 'rustup' @('toolchain', 'install')) -eq 0) {
+            Add-ToolchainRecord
+        } else {
             Say 'This rustup installs the Rust version Cadence pins as the build starts instead.'
         }
         Write-Log ('rustc: ' + "$(rustc --version 2>&1)")
@@ -999,6 +1250,17 @@ function Invoke-Build {
             Say "Cadence $script:Version has no generic settings for $script:Triple, so it is built for that system's baseline."
             $script:Made = 'baseline'
         }
+    } elseif ($script:Build -eq 'avx512') {
+        # A version from before the AVX-512 builds has no settings for them, and its AVX2 ones run
+        # here.
+        $avx512 = Join-Path $script:Src '.cargo\x86-64-avx512.toml'
+        if ((Test-Path $avx512) -and (Select-String -Path $avx512 -Pattern $section -Quiet)) {
+            $cargoArgs += @('--config', '.cargo/x86-64-avx512.toml')
+            $files += '.cargo\x86-64-avx512.toml'
+        } else {
+            Say "Cadence $script:Version has no AVX-512 settings for $script:Triple, so it is built as the AVX2 build."
+            $script:Made = 'avx2'
+        }
     } elseif ($script:Build -eq 'avx2') {
         if (-not (Select-String -Path (Join-Path $script:Src '.cargo\config.toml') -Pattern $section -Quiet)) {
             Say "Cadence $script:Version has no AVX2 settings for $script:Triple, so it is built for that system's baseline."
@@ -1031,13 +1293,17 @@ function Invoke-Build {
         foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     }
     if ($code -ne 0) { Fail 'the build failed' }
+    # Where rustup installed the toolchain as the build started, it is there now.
+    if ($script:Adding -and (Test-Toolchain $script:Adding)) { Add-ToolchainRecord }
     $script:Built = Join-Path $script:Src 'target\release\cadence.exe'
     if (-not (Test-Path $script:Built)) { Fail "the build left no binary at $script:Built" }
     $script:From = 'source'
 }
 
 # Runs a binary's bench and asks its name, leaving the reason in Why if either is not the one wanted.
+# Fault is mismatch where it ran and answered otherwise, and run where it could not run here.
 function Test-BenchAndName([string]$Binary, [string]$Want, [string]$Name) {
+    $script:Fault = 'run'
     Say 'Running its bench.'
     Write-Log '$ cadence bench'
     $run = Invoke-Limited $Binary 'bench' '' $BenchSeconds
@@ -1061,16 +1327,29 @@ function Test-BenchAndName([string]$Binary, [string]$Want, [string]$Name) {
         return $false
     }
     if (-not $got -or $got -ne $Want) {
-        $script:Why = "its bench counts $(if ($got) { $got } else { 'nothing' }) and bench.txt says $Want"
+        $script:Fault = 'mismatch'
+        $script:Why = "its bench counts $(if ($got) { "$got nodes" } else { 'no nodes' }) and bench.txt says $Want"
         return $false
     }
     $script:Id = Get-IdName $Binary
-    Write-Log "id name: $script:Id"
+    Write-Log "id name: $script:Id, exit $($script:UciRun.Code)"
     if ($script:Limited) {
         $script:Why = "it did not answer uci within $UciSeconds seconds, so it was stopped"
         return $false
     }
+    # One that stops while answering cannot run here, as one stopping in its bench cannot; only one
+    # that runs and names itself otherwise is a mismatch.
+    if ($script:UciRun.Failed) {
+        $script:Why = "it cannot start on this system, $($script:UciRun.Failed)"
+        return $false
+    }
+    if ($script:UciRun.Code -ne 0) {
+        $what = if ($script:UciRun.Code -eq -1073741795) { ' (an illegal instruction, one this processor lacks)' } else { '' }
+        $script:Why = "it stopped while answering uci with exit $($script:UciRun.Code)$what"
+        return $false
+    }
     if ($script:Id -ne $Name) {
+        $script:Fault = 'mismatch'
         $script:Why = "it calls itself '$script:Id' and not '$Name'"
         return $false
     }
@@ -1136,13 +1415,12 @@ function Find-ReleasedAs([string]$Sum) {
     $script:Unlisted = ''
     $headers = @{}
     if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-    Write-Log "downloading ${ApiUrl}?per_page=100"
-    try {
-        $releases = Invoke-RestMethod -UseBasicParsing -Uri "${ApiUrl}?per_page=100" -Headers $headers -ErrorAction Stop
-    } catch {
-        $script:Unlisted = Get-DownloadTrouble $_
+    $fetched = Invoke-Fetch "${ApiUrl}?per_page=100" '' $headers
+    if ($fetched.Rc -ne 0) {
+        $script:Unlisted = $fetched.Trouble
         return $false
     }
+    $releases = $fetched.Answer
     foreach ($release in @($releases)) {
         foreach ($asset in @($release.assets)) {
             if ($asset -and $asset.PSObject.Properties['digest'] -and "$($asset.digest)" -eq "sha256:$Sum") {
@@ -1161,14 +1439,14 @@ function Find-EarlierInstall {
     $sum = Get-Sha256 $script:Target
     $name = ''
     $sums = $false
-    if (-not $script:Version.Contains('+') -and (Get-ReleaseSums)) {
+    if (-not $script:Version.Contains('+') -and (Get-ReleaseSums -Tolerant)) {
         $sums = $true
         $name = Get-ListedAs $sum
     }
     if ($name.StartsWith("cadence-$($script:Version)-")) {
         Say "An earlier installer put Cadence at $($script:Target) without recording its version; its SHA-256 is release $($script:Version)'s $name."
         $script:Installed = $script:Version
-        $script:HeldBuild = if ($name -match '-generic(\.exe)?$') { 'generic' } elseif ($name -match '-avx2(\.exe)?$') { 'avx2' } else { 'native' }
+        $script:HeldBuild = if ($name -match '-generic(\.exe)?$') { 'generic' } elseif ($name -match '-avx512(\.exe)?$') { 'avx512' } elseif ($name -match '-avx2(\.exe)?$') { 'avx2' } else { 'native' }
         $script:HeldFrom = 'release'
         Set-StateValue 'version' $script:Installed
         Set-StateValue 'sha256' $sum
@@ -1250,6 +1528,7 @@ function Install-Binary {
         'before' { Say "Installing into $($script:Dest), where Cadence was installed before." }
         default { Say "Installing into $($script:Dest), the default folder; --dir DIR installs into DIR instead." }
     }
+    $script:MadeBin = Get-FirstMissing $script:Dest
     New-Item -ItemType Directory -Force -Path $script:Dest | Out-Null
     # A file this script has no record of is never run to ask its name, since it may not be Cadence.
     if ((Test-Path -LiteralPath $script:Target) -and -not $script:Replace) {
@@ -1279,6 +1558,10 @@ function Install-Binary {
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)
     Set-StateValue 'build' $(if ($script:Made) { $script:Made } else { $script:Build })
     Set-StateValue 'from' $script:From
+    # The folders this run made, so an uninstall removes them once they are empty.
+    foreach ($made in @(@('made_bin', $script:MadeBin), @('made_data', $script:MadeData))) {
+        if ($made[1] -and -not (Get-StateValue $made[0])) { Set-StateValue $made[0] $made[1] }
+    }
     Say "Installed $script:Target."
 }
 
@@ -1308,7 +1591,8 @@ function Set-UserPath([string[]]$Entries) {
     [Environment]::SetEnvironmentVariable('CADENCE_INSTALLER_UNSET', $null, 'User')
 }
 
-# Removes a folder this script added to the user PATH, asking first unless Now is given.
+# Removes a folder this script added to the user PATH, asking first unless Now is given, and returns
+# whether it is off the PATH: false where the user keeps it.
 function Remove-FromPath([string]$Added, [switch]$Now) {
     $entries = @(Get-UserPath)
     if ($entries -notcontains $Added) {
@@ -1316,7 +1600,10 @@ function Remove-FromPath([string]$Added, [switch]$Now) {
     } elseif ($Now -or (Ask "Remove $Added from your PATH, which this script added?" $true)) {
         Set-UserPath @($entries | Where-Object { $_ -ne $Added })
         Say "Removed $Added from your PATH."
+    } else {
+        return $false
     }
+    return $true
 }
 
 # A copy an earlier run installed in another folder, offered for removal with the PATH entry this
@@ -1347,7 +1634,7 @@ function Remove-Previous([string]$Previous) {
     Say "Removed $Previous."
     $added = Get-StateValue 'path_windows'
     if ($added -and (Test-SameFile $added $folder)) {
-        Remove-FromPath $added -Now
+        [void](Remove-FromPath $added -Now)
         Remove-StateValue 'path_windows'
     }
 }
@@ -1415,11 +1702,9 @@ function Get-Tables {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Set-StateValue 'tables' $dir
     $sums = Join-Path $Work 'sha256'
-    try {
-        Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/sha256" -OutFile $sums -ErrorAction Stop
-    } catch {
-        Fail "could not download the tables' published checksums$(Get-DownloadTrouble $_)"
-    }
+    $listing = Invoke-Fetch "$TablesUrl/sha256" $sums
+    if ($listing.Rc -eq 2) { Stop-Offline "the tables' published checksums" $listing.Trouble }
+    if ($listing.Rc -ne 0) { Fail "could not download the tables' published checksums$($listing.Trouble)" }
     # Every name becomes a path below, so each must be a table's name and each sum a SHA-256.
     $wanted = @(Get-Content -Path $sums | ForEach-Object {
         $parts = @("$_".Trim() -split '\s+')
@@ -1445,11 +1730,9 @@ function Get-Tables {
         if (-not $have) {
             $fetched++
             $part = "$path.part"
-            try {
-                Invoke-WebRequest -UseBasicParsing -Uri "$TablesUrl/$group/$($table.File)" -OutFile $part -ErrorAction Stop
-            } catch {
-                Fail "could not download $($table.File)$(Get-DownloadTrouble $_)"
-            }
+            $download = Invoke-Fetch "$TablesUrl/$group/$($table.File)" $part
+            if ($download.Rc -eq 2) { Stop-Offline $table.File $download.Trouble }
+            if ($download.Rc -ne 0) { Fail "could not download $($table.File)$($download.Trouble)" }
             if ((Get-FileHash -Algorithm SHA256 -Path $part).Hash.ToLower() -ne $table.Sum) {
                 Remove-Item -Force $part
                 Fail "$($table.File) does not match its published checksum"
@@ -1487,34 +1770,79 @@ function Show-Done {
     Say "Report bugs as GitHub issues: $IssuesUrl"
 }
 
+# The install record keeps the keys of whatever the user keeps, and goes once everything has, with
+# the folders the install made once they are empty.
 function Uninstall-Cadence {
     Step 'Uninstalling Cadence'
+    $kept = @()
     $bin = Get-StatePath 'binary'
+    $recorded = [bool]$bin
     if (-not $bin) {
         $folder = if ($script:Prefix) { $script:Prefix } else { $DefaultPrefix }
         $bin = Join-Path $folder 'cadence.exe'
     }
     if (Test-Path $bin) {
-        if (Ask "Remove $($bin)?" $true) {
+        $remove = $false
+        if ($recorded) {
+            $remove = Ask "Remove $($bin)?" $true
+        } else {
+            # A file this script has no record of may not be its own, as the install side holds too.
+            Say "There is no install record, so $bin may not be one this installer put there: it is removed only if you answer yes here, and --yes alone keeps it."
+            if (-not $script:Yes) { $remove = Ask "Remove $($bin)?" $false }
+        }
+        if ($remove) {
             try {
                 Remove-Item -Force -Path $bin -ErrorAction Stop
             } catch {
                 Fail "could not remove $($bin); if Cadence is running, close it and run this again"
             }
             Say 'Removed it.'
+            Remove-Made (Split-Path -Parent $bin) (Get-StatePath 'made_bin')
+            Remove-StateValue 'made_bin'
+        } else {
+            $kept += "Cadence at $bin"
         }
     } else {
         Say "There is no Cadence at $bin."
     }
-    $added = Get-StateValue 'path_windows'
-    if ($added) { Remove-FromPath $added }
-    $tables = Get-StatePath 'tables'
-    if ($tables -and (Test-Path -LiteralPath $tables) -and (Ask "Remove the tablebases at $tables, about 1 GB?" $true)) {
-        Remove-Item -Recurse -Force -LiteralPath $tables -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $tables) { Fail "could not remove $tables; if a chess program has them open, close it and run this again" }
-        Say 'Removed them.'
+    if ($kept.Count -eq 0) {
+        foreach ($key in @('binary', 'version', 'sha256', 'build', 'from')) { Remove-StateValue $key }
     }
-    if (Test-Path $State) { Remove-Item -Force -Path $State }
+    $added = Get-StateValue 'path_windows'
+    if ($added) {
+        if (Remove-FromPath $added) { Remove-StateValue 'path_windows' } else { $kept += "$added on your PATH" }
+    }
+    $tables = Get-StatePath 'tables'
+    if ($tables -and (Test-Path -LiteralPath $tables)) {
+        if (Ask "Remove the tablebases at $tables, about 1 GB?" $true) {
+            Remove-Item -Recurse -Force -LiteralPath $tables -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $tables) { Fail "could not remove $tables; if a chess program has them open, close it and run this again" }
+            Say 'Removed them.'
+            Remove-StateValue 'tables'
+        } else {
+            $kept += "the tablebases at $tables"
+        }
+    } else {
+        Remove-StateValue 'tables'
+    }
+    # What this script installed to build Cadence is the user's to keep or remove, so it is named.
+    foreach ($key in @('installed_compiler', 'installed_rust', 'installed_toolchain')) {
+        $what = Get-StateValue $key
+        if ($what) { Say "To build Cadence, this installer also installed $what." }
+    }
+    if ($kept.Count -gt 0) {
+        if (Test-Path -LiteralPath $State) { Say "The install record at $State is kept for what stays: $($kept -join ', ')." }
+    } else {
+        # The folders the first install made go once empty, after the record that names them.
+        $script:MadeData = Get-StatePath 'made_data'
+        $script:MadeLog = Get-StatePath 'made_log'
+        if (Test-Path -LiteralPath $State) { Remove-Item -Force -LiteralPath $State }
+        $old = @(Get-ChildItem -Force -File -Path $AppDir -Filter 'install-*.log*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -ne $Log -and $_.FullName -ne "$Log.out" })
+        foreach ($file in $old) { Remove-Item -Force -LiteralPath $file.FullName -ErrorAction SilentlyContinue }
+        if ($old.Count -gt 0) { Say "Removed $($old.Count) log file(s) of earlier runs from $AppDir." }
+        $script:CleanDirs = $true
+    }
     Say 'Done.'
 }
 
@@ -1529,8 +1857,9 @@ try {
     } else {
         Step "Cadence's installer"
         Say "This installs Cadence's release binary for this system once its checksum and bench match the"
-        Say "release's, or builds it from source where no binary fits. It asks before building, installing a"
-        Say 'compiler or Rust, replacing an install, changing your PATH or downloading tablebases.'
+        Say "release's, and stops if they do not. It builds from source with --source, or where the release"
+        Say 'has no binary for this system. It asks before building, installing a compiler or Rust, replacing'
+        Say 'an install, changing your PATH or downloading tablebases.'
         Say "Release files come from $AssetsUrl."
         Test-Version
         New-Item -ItemType Directory -Force -Path $Work | Out-Null
@@ -1547,7 +1876,6 @@ try {
                 Request-Source
                 Test-Git
                 Resolve-Tag
-                Get-ReleaseCommit
                 Get-Source
                 Test-Commit
                 Test-Linker
@@ -1578,6 +1906,16 @@ try {
         Write-Host "The log is at $Log."
     } else {
         Remove-Item -Force -Path $Log -ErrorAction SilentlyContinue
+        # The uninstall's own log was the last thing in them, so they go once it does.
+        if ($script:CleanDirs) {
+            foreach ($dir in @((Join-Path $AppDir 'syzygy'), $AppDir)) {
+                if ((Test-Path -LiteralPath $dir -PathType Container) -and @(Get-ChildItem -Force -LiteralPath $dir).Count -eq 0) {
+                    Remove-Item -Force -LiteralPath $dir -ErrorAction SilentlyContinue
+                    if (-not (Test-Path -LiteralPath $dir)) { Write-Host "Removed the empty folder $dir." }
+                }
+            }
+            foreach ($top in @($script:MadeData, $script:MadeLog)) { Remove-Made (Split-Path -Parent $AppDir) $top }
+        }
     }
 }
 exit $code

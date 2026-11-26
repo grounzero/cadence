@@ -5,14 +5,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
-use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
+use cadence_core::{Colour, Move, MoveList, generate_legal, parse_uci, to_uci};
 use cadence_nnue::AnyNetwork;
 
 use super::say::say;
-use super::{Running, Session};
+use super::{Played, Running, Session, Thinking};
 use crate::level;
 use crate::position::Position;
-use crate::search::{Learned, Limits, PonderHit, Search};
+use crate::search::{Learned, Limits, Search};
 use crate::syzygy::{Rank, Tables};
 use crate::time;
 use crate::tt::Table;
@@ -43,8 +43,7 @@ impl Session {
         let received = Instant::now();
         self.stop_search();
         let tokens: Vec<&str> = tokens.collect();
-        let mut limits = Limits::parse(tokens.iter().copied());
-        limits.move_overhead = Some(self.move_overhead);
+        let (limits, thinking) = self.limits_for(&tokens, received);
         // A clock not ours reads as zero, which returns the first iteration and looks like a broken
         // engine from the pipe, so say which it is.
         if !limits.infinite
@@ -58,21 +57,27 @@ impl Session {
             ));
         }
         let stop = Arc::new(AtomicBool::new(false));
-        let ponder_hit = Arc::new(PonderHit::new());
+        let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
-        let root_filter = search_moves(&tokens, &generate_legal(&board));
+        let Some(root_filter) = search_moves(&tokens, &generate_legal(&board)) else {
+            say(format_args!(
+                "info string go: searchmoves names no legal move here; searching nothing"
+            ));
+            say(format_args!("bestmove 0000"));
+            return;
+        };
         // Owed whatever happens next, so spelled before anything can fail to start.
         let fallback = first_answer(&board, &root_filter, self.chess960);
         let (tables, net) = (self.tables.clone(), self.active_net());
         let chess960 = self.chess960;
         let level = self.level();
-        let multipv = self.multipv;
+        let (threads, multipv) = self.threads_and_lines(level.is_some());
         let ponder = self.ponder;
-        let threads = self.threads;
         let tunables = self.tunables;
-        // Lent to the thread and returned by it, padded or cut to one set per thread.
+        // Lent to the thread and returned by it, padded or cut to one set per thread the option
+        // names, so a level keeps the helpers' sets.
         let mut learned = std::mem::take(&mut self.learned);
-        learned.resize_with(threads, Learned::new);
+        learned.resize_with(self.threads, Learned::new);
         let thread = {
             let stop = Arc::clone(&stop);
             let ponder_hit = Arc::clone(&ponder_hit);
@@ -86,11 +91,9 @@ impl Session {
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
                     let legal = generate_legal(&board);
-                    let us = board.side_to_move();
-                    let hard = time::budget(&limits, us).map(|b| Duration::from_millis(b.hard));
-                    let on_hit = time::hit_budget(&limits, us)
-                        .map(|b| (&*ponder_hit, Duration::from_millis(b.hard)));
-                    let go_on = || probing_allowed(&stop, received, hard, on_hit);
+                    let hard = time::budget(&limits, board.side_to_move())
+                        .map(|b| Duration::from_millis(b.hard));
+                    let go_on = || probing_allowed(&stop, received, hard);
                     let (root_filter, decided, rank) =
                         tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
                     let mut pos = position_for(board, net);
@@ -128,7 +131,7 @@ impl Session {
                         Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
                         None => say(format_args!("bestmove {spelled}")),
                     }
-                    learned
+                    (learned, Instant::now())
                 })
         };
         match thread {
@@ -137,17 +140,76 @@ impl Session {
                     stop,
                     ponder_hit,
                     thread,
+                    thinking,
                 });
             }
             Err(e) => not_started(&e, &fallback),
         }
     }
 
-    /// The search keeps its tree and spends the clock from when the line was read. Told rather than
-    /// restarted, because the search that must hear it is already running.
+    /// The threads and lines a `go` searches with: a level owns the line count, and its move is
+    /// reproducible only on one thread, so it takes one of each and says so.
+    fn threads_and_lines(&self, level: bool) -> (usize, usize) {
+        if !level {
+            return (self.threads, self.multipv);
+        }
+        if self.threads > 1 || self.multipv > 1 {
+            say(format_args!(
+                "info string go: UCI_LimitStrength is on, so this search runs on one thread \
+                 and shows one line"
+            ));
+        }
+        (1, 1)
+    }
+
+    /// The search keeps its tree and spends the clock from here. A flag, because the search that
+    /// must hear it is already running.
     pub(super) fn ponderhit(&mut self) {
-        if let Some(running) = &self.search {
-            running.ponder_hit.hit();
+        if let Some(running) = &mut self.search {
+            running.ponder_hit.store(true, Ordering::Relaxed);
+            // The move is ours from here, and so is the clock.
+            if let Some(thinking) = &mut running.thinking {
+                thinking.from = Instant::now();
+                thinking.pondering = false;
+            }
+        }
+    }
+
+    /// The limits a `go` searches with, the session's overhead, lag and move number among them,
+    /// and the clock the move is answered on where it has one of its own.
+    fn limits_for(&mut self, tokens: &[&str], received: Instant) -> (Limits, Option<Thinking>) {
+        let mut limits = Limits::parse(tokens.iter().copied());
+        limits.move_overhead = Some(self.move_overhead);
+        let us = self.board.side_to_move();
+        self.read_lag(&limits, us);
+        limits.lag = self.lag;
+        limits.move_number = Some(u32::from(self.board.fullmove_number()));
+        let thinking = if limits.infinite || limits.movetime.is_some() {
+            None
+        } else {
+            limits.clock(us).map(|(clock, inc)| Thinking {
+                side: us,
+                clock,
+                inc,
+                from: received,
+                pondering: limits.ponder,
+            })
+        };
+        (limits, thinking)
+    }
+
+    /// What our last move lost beyond its thinking: the clock it left, less the clock this `go`
+    /// gives. Only our own clock in one game says anything of our move.
+    fn read_lag(&mut self, limits: &Limits, us: Colour) {
+        let (Some(played), Some((clock, _))) = (self.played.take(), limits.clock(us)) else {
+            return;
+        };
+        if played.side == us {
+            let left = played
+                .clock
+                .saturating_add(played.inc)
+                .saturating_sub(played.spent);
+            self.lag = Some(time::fold_lag(self.lag, left.saturating_sub(clock)));
         }
     }
 
@@ -157,8 +219,16 @@ impl Session {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
             // The panic hook has already reported a panic in the search thread.
-            if let Ok(learned) = running.thread.join() {
+            if let Ok((learned, answered)) = running.thread.join() {
                 self.learned = learned;
+                // A ponder never hit was not a move played.
+                self.played = running.thinking.filter(|t| !t.pondering).map(|t| Played {
+                    side: t.side,
+                    clock: t.clock,
+                    inc: t.inc,
+                    spent: u64::try_from(answered.saturating_duration_since(t.from).as_millis())
+                        .unwrap_or(u64::MAX),
+                });
             }
         }
     }
@@ -198,7 +268,7 @@ struct ParallelGo<'a> {
     stop: &'a Arc<AtomicBool>,
     /// Given to every worker: a helper without it ponders all search long, and a primary without it
     /// never answers a `ponderhit`.
-    ponder_hit: &'a Arc<PonderHit>,
+    ponder_hit: &'a Arc<AtomicBool>,
     tt: &'a Arc<Table>,
     chess960: bool,
     threads: usize,
@@ -384,20 +454,8 @@ fn report_given(worker_index: usize, search: &Search<'_>) {
 
 /// Asked before each of the root's probes, so a stop or a spent budget waits for one probe at most.
 /// A read the operating system has blocked finishes before the next question is asked.
-fn probing_allowed(
-    stop: &AtomicBool,
-    received: Instant,
-    hard: Option<Duration>,
-    on_hit: Option<(&PonderHit, Duration)>,
-) -> bool {
-    if stop.load(Ordering::Relaxed) {
-        return false;
-    }
-    // A ponder probes on until it is hit, and from the hit as a fresh search would.
-    if let Some((hit, hard)) = on_hit {
-        return hit.received().is_none_or(|at| at.elapsed() < hard);
-    }
-    hard.is_none_or(|hard| received.elapsed() < hard)
+fn probing_allowed(stop: &AtomicBool, received: Instant, hard: Option<Duration>) -> bool {
+    !stop.load(Ordering::Relaxed) && hard.is_none_or(|hard| received.elapsed() < hard)
 }
 
 /// The root's ranking narrows `filter`, the `searchmoves` list or empty for every move, and says
@@ -435,17 +493,17 @@ const GO_KEYWORDS: [&str; 12] = [
     "infinite",
 ];
 
-/// The moves after `searchmoves`; one not legal here is named and left out, and none legal leaves
-/// the root unfiltered.
-fn search_moves(tokens: &[&str], legal: &MoveList) -> Vec<Move> {
+/// The moves after `searchmoves`, empty where the word is absent; one not legal here is named and
+/// left out. `None` is a list naming no legal move, an empty one included, so nothing is searched.
+fn search_moves(tokens: &[&str], legal: &MoveList) -> Option<Vec<Move>> {
     let Some(at) = tokens.iter().position(|&t| t == "searchmoves") else {
-        return Vec::new();
+        return Some(Vec::new());
     };
     let mut moves = Vec::new();
-    for &token in tokens[at + 1..]
+    let named = tokens[at + 1..]
         .iter()
-        .take_while(|t| !GO_KEYWORDS.contains(t))
-    {
+        .take_while(|t| !GO_KEYWORDS.contains(t));
+    for &token in named {
         match parse_uci(legal, token) {
             Some(m) => moves.push(m),
             None => say(format_args!(
@@ -453,7 +511,7 @@ fn search_moves(tokens: &[&str], legal: &MoveList) -> Vec<Move> {
             )),
         }
     }
-    moves
+    (!moves.is_empty()).then_some(moves)
 }
 
 /// Spelled in the position it is played in, not at the root. `None` where an aborted first
@@ -477,48 +535,5 @@ fn position_for(board: Board, net: Option<AnyNetwork>) -> Position {
     match net {
         Some(net) => Position::with_net(board, net),
         None => Position::new(board),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{Duration, Instant};
-
-    use super::probing_allowed;
-    use crate::search::PonderHit;
-
-    /// A ponder probes the root until it is hit, and from then only until the hard deadline the hit
-    /// brings, counted from when the hit was read.
-    #[test]
-    fn root_probing_stops_at_the_deadline_a_hit_brings() {
-        let stop = AtomicBool::new(false);
-        let received = Instant::now();
-        let late = PonderHit::new();
-        let on_late = Some((&late, Duration::from_millis(50)));
-        assert!(
-            probing_allowed(&stop, received, None, on_late),
-            "a ponder not yet hit probes on"
-        );
-        let past = Instant::now()
-            .checked_sub(Duration::from_millis(100))
-            .expect("an instant 100 ms back");
-        late.hit_at(past);
-        assert!(
-            !probing_allowed(&stop, received, None, on_late),
-            "a hit 100 ms back, with 50 ms to spend, probed on"
-        );
-        let early = PonderHit::new();
-        early.hit();
-        let on_early = Some((&early, Duration::from_secs(60)));
-        assert!(
-            probing_allowed(&stop, received, None, on_early),
-            "inside the hit's deadline"
-        );
-        stop.store(true, Ordering::Relaxed);
-        assert!(
-            !probing_allowed(&stop, received, None, on_early),
-            "stop still ends it"
-        );
     }
 }

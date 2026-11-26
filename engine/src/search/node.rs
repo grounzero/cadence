@@ -112,16 +112,17 @@ impl Search<'_> {
 
         // Before generation: that saving is most of what the table is for.
         let key = board.key();
-        let (tt_move, tb) = match self.lookup(board, key, depth, ply, &mut alpha, &mut beta) {
-            Lookup::Search { tt_move, bounds } => (tt_move, bounds),
+        let found = match self.lookup(board, key, depth, ply, &mut alpha, &mut beta) {
+            Lookup::Search(found) => found,
             Lookup::Cutoff(score) => return score,
         };
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
         let pawn_key = board.pawn_key();
-        let us_eval = board.side_to_move();
-        self.heuristics.evals[ply] = self.corrected_eval(board, in_check, pawn_key, us_eval);
+        // Before any move is made: the correction row and the history rows below are the mover's.
+        let us = board.side_to_move();
+        let raw_eval = self.corrected_eval(board, ply, in_check, pawn_key, us, found.eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -142,7 +143,7 @@ impl Search<'_> {
         let pv = beta > alpha + 1;
         // Last above the move loop, so the margins, the count and every child read the shortened
         // depth.
-        let depth = self.iir_depth(depth, pv, in_check, tt_move);
+        let depth = self.iir_depth(depth, pv, in_check, found.tt_move);
 
         let mut legal = generate_legal(board);
         if legal.is_empty() {
@@ -152,9 +153,7 @@ impl Search<'_> {
         if board.halfmove_clock() >= 100 {
             return DRAW;
         }
-        // Before any move is made: the history row read here and per move below is the mover's.
-        let us = board.side_to_move();
-        let (killers, mut picker) = self.order(board, &mut legal, tt_move, us, ply);
+        let (killers, mut picker) = self.order(board, &mut legal, found.tt_move, us, ply);
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts. An open window refuses
@@ -168,7 +167,7 @@ impl Search<'_> {
         self.stats.lmp_nodes.add_if(give_up.is_some());
 
         let original_alpha = alpha;
-        alpha = alpha.max(tb.0);
+        alpha = alpha.max(found.bounds.0);
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         // Written at one site above `make_move`, so every rule giving a move up is excluded unasked.
@@ -230,9 +229,10 @@ impl Search<'_> {
         }
         // Fail-soft, so the bound follows the value, not the window it was found in. Nothing an
         // aborted search computed is stored: the loop returns before this.
-        let (best, bound) = within(best, original_alpha, beta, tb);
-        self.store(key, ply, stored_depth(board, depth), best, best_move, bound);
-        self.remember_correction(pawn_key, us_eval, ply, best, best_move, bound, depth);
+        let (best, bound) = within(best, original_alpha, beta, found.bounds);
+        let depth_stored = stored_depth(board, depth);
+        self.store(key, ply, depth_stored, best, best_move, bound, raw_eval);
+        self.remember_correction(pawn_key, us, ply, best, best_move, bound, depth);
         best
     }
 
