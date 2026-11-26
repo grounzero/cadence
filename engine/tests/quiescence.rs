@@ -15,7 +15,7 @@ use cadence_engine::eval;
 use cadence_engine::picker::{capture_key, noisy_key, sort_noisy};
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, Score, mate_in};
-use cadence_engine::search::Limits;
+use cadence_engine::search::{Learned, Limits};
 use cadence_engine::see::see;
 use support::table;
 
@@ -348,6 +348,36 @@ fn a_stand_pat_cutoff_returns_the_stand_pat() {
         let mut s = support::search(Limits::default(), &stop, &tt);
         let score = s.node_window(&mut b, 0, 1, beta - 1, beta);
         assert_eq!(score, stand_pat, "{fen}: the cutoff answered {score}");
+    }
+}
+
+/// Every root move is a king move, so every leaf has the root's pawns with the other side to move,
+/// and one seeded correction reaches all of them. The stand pat carries it, so the score moves by it.
+#[test]
+fn the_stand_pat_carries_the_correction_for_its_pawns_and_side() {
+    for (fen, _) in both_colours(STAND_PAT, "a1a1") {
+        let mut b = support::position(&fen);
+        let expected = best_static_reply(&mut b);
+        let leaf_side = b.side_to_move().flip();
+        let mut learned = Learned::new();
+        for _ in 0..10_000 {
+            learned
+                .corrhist_mut()
+                .update(b.pawn_key(), leaf_side, 100, 64);
+        }
+        let correction = learned.corrhist_mut().correction(b.pawn_key(), leaf_side);
+        assert!(correction > 0, "{fen}: the seed did not take");
+        let stop = AtomicBool::new(false);
+        let tt = table();
+        let mut s = support::search(Limits::depth(1), &stop, &tt);
+        s.swap_learned(&mut learned);
+        s.run(&mut b, &mut Vec::new());
+        s.swap_learned(&mut learned);
+        assert_eq!(
+            s.score(),
+            expected - correction,
+            "{fen}: each leaf's stand pat is its evaluation plus {correction}"
+        );
     }
 }
 

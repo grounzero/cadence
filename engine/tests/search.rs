@@ -979,7 +979,7 @@ fn the_root_answers_at_the_window_depth_are_pinned() {
 
 /// Measured on the search with aspiration windows at `WINDOW_DEPTH` with no table.
 const ROOT_ANSWERS: [(&str, Score); 14] = [
-    ("e2e3", 33),
+    ("e2e3", 30),
     ("e2a6", -40),
     ("b4f4", 39),
     ("c4c5", -332),

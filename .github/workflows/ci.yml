@@ -387,7 +387,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=970
+          floor=990
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             # The floor drops by the tests the slow files would have passed here, counted from their lists.
             slow=0
@@ -1036,6 +1036,8 @@ jobs:
       # --version keeps GitHub's rate-limited API out of it. The checks read what the script said.
       - name: install.sh takes the release binary, stops at a corrupt one, and builds with --source
         if: env.SCRIPT == 'install.sh'
+        # A build from source takes at most about 4 minutes, so a stall fails here rather than at the job's limit.
+        timeout-minutes: 15
         run: |
           tmp=$RUNNER_TEMP
           py=python3
@@ -1122,10 +1124,16 @@ jobs:
           [ "$rc" -eq 0 ] || { echo "::error::install.sh exited $rc building with --source"; exit 1; }
           grep -qF '== Building from source, as --source asks' source.txt \
             || { echo "::error::install.sh did not build as --source asks"; exit 1; }
+          # The release folder is built as every release up to 0.7.0 was, with no SOURCE, so the tag and
+          # bench.txt are what the source is held to.
           commit=$(git rev-parse "$RELEASE_VERSION^{commit}")
-          grep -qF "The tag $RELEASE_VERSION is commit $commit, the one the release names." source.txt \
-            || { echo "::error::install.sh did not check the tag against the commit the release names"; exit 1; }
-          tag=$(grep -nF "The tag $RELEASE_VERSION is commit" source.txt | head -n 1 | cut -d: -f1)
+          grep -qF "The tag $RELEASE_VERSION names commit $commit, the one fetched." source.txt \
+            || { echo "::error::install.sh did not check the source against the commit the tag names"; exit 1; }
+          grep -qF "The source's bench.txt says $(tr -d '[:space:]' < "$tmp/releases/good/$RELEASE_VERSION/bench.txt"), as the release's does." source.txt \
+            || { echo "::error::install.sh did not hold the source's bench.txt to the release's"; exit 1; }
+          grep -qF "Release $RELEASE_VERSION lists no SOURCE in its SHA256SUMS, so it predates the file naming a release's commit" source.txt \
+            || { echo "::error::install.sh did not say the release predates SOURCE"; exit 1; }
+          tag=$(grep -nF "The tag $RELEASE_VERSION names commit" source.txt | head -n 1 | cut -d: -f1)
           tools=$(grep -nF '== The Rust toolchain' source.txt | head -n 1 | cut -d: -f1)
           [ "$tag" -lt "$tools" ] || { echo "::error::install.sh checked the tag only after the toolchain"; exit 1; }
           grep -qF "It was built here from source at the tag $RELEASE_VERSION, so its bench is the check it passed." source.txt \
@@ -1137,6 +1145,8 @@ jobs:
 
       - name: install.ps1 takes the release binary, stops at a corrupt one, and builds with --source
         if: env.SCRIPT == 'install.ps1'
+        # A build from source takes at most about 4 minutes, so a stall fails here rather than at the job's limit.
+        timeout-minutes: 15
         shell: powershell
         run: |
           $releases = Join-Path $env:RUNNER_TEMP 'releases'
@@ -1246,9 +1256,14 @@ jobs:
             Write-Host $out
             if ($code -ne 0) { throw "install.ps1 exited $code building with --source" }
             if (-not $out.Contains('== Building from source, as --source asks')) { throw 'install.ps1 did not build as --source asks' }
+            # The release folder is built as every release up to 0.7.0 was, with no SOURCE, so the tag and
+            # bench.txt are what the source is held to.
             $commit = "$(git rev-parse "$($env:RELEASE_VERSION)^{commit}")".Trim()
-            if (-not $out.Contains("The tag $env:RELEASE_VERSION is commit $commit, the one the release names.")) { throw 'install.ps1 did not check the tag against the commit the release names' }
-            if ($out.IndexOf("The tag $env:RELEASE_VERSION is commit") -gt $out.IndexOf('== The Rust toolchain')) { throw 'install.ps1 checked the tag only after the toolchain' }
+            if (-not $out.Contains("The tag $env:RELEASE_VERSION names commit $commit, the one fetched.")) { throw 'install.ps1 did not check the source against the commit the tag names' }
+            $count = (Get-Content -Raw (Join-Path $releases "good\$env:RELEASE_VERSION\bench.txt")).Trim()
+            if (-not $out.Contains("The source's bench.txt says $count, as the release's does.")) { throw "install.ps1 did not hold the source's bench.txt to the release's" }
+            if (-not $out.Contains("Release $env:RELEASE_VERSION lists no SOURCE in its SHA256SUMS, so it predates the file naming a release's commit")) { throw 'install.ps1 did not say the release predates SOURCE' }
+            if ($out.IndexOf("The tag $env:RELEASE_VERSION names commit") -gt $out.IndexOf('== The Rust toolchain')) { throw 'install.ps1 checked the tag only after the toolchain' }
             if (-not $out.Contains("It was built here from source at the tag $env:RELEASE_VERSION, so its bench is the check it passed.")) { throw 'install.ps1 did not say how the build was checked' }
             if ($out.Contains('its SHA-256 and its bench are the checks it passed')) { throw 'install.ps1 claimed a SHA-256 for a build' }
           } finally {
@@ -1281,10 +1296,10 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
       # What the refusals below are served: a binary whose checksum matches but whose attestation cannot,
-      # a genuine binary under another version, an API whose release names another commit, one that
-      # refuses every request, one listing candidates out of version order, a binary that never answers
-      # uci, 290 small tables, and a table list naming a path outside. Stand-ins for gh and the Rust
-      # toolchain go beside them.
+      # a genuine binary under another version, release notes naming another commit or none, an API that
+      # refuses every request, one listing candidates out of version order, releases whose SOURCE or
+      # bench.txt holds the source to its tag, a binary that never answers uci, 290 small tables, and a
+      # table list naming a path outside. Stand-ins for gh and the Rust toolchain go beside them.
       - name: Fixtures for the installers' refusals
         run: |
           tmp=$RUNNER_TEMP
@@ -1297,18 +1312,41 @@ jobs:
           cp "$r/good/$v/$RELEASE_FILE" "$r/good/$v/bench.txt" "$r/tampered/$v/"
           printf 'x' >> "$r/tampered/$v/$RELEASE_FILE"
           (cd "$r/tampered/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
-          printf '[{"tag_name": "0.6.0-rc.3"}, {"tag_name": "0.6.0-rc.10"}, {"tag_name": "0.6.0-rc.9"}, {"tag_name": "0.5.23"}]\n' \
-            > "$r/api-list/releases"
+          # The candidates out of order, one key on a line apart from its value, keys before and after
+          # other fields, and a key and a higher candidate quoted inside a release's notes.
+          {
+            printf '[ {"body": "Notes that quote \\"tag_name\\": \\"0.6.0-rc.99\\" and end in a \\\\", "tag_name" : "0.6.0-rc.3"},\n'
+            printf '  {\n    "draft": false, "tag_name"\n      :\n    "0.6.0-rc.10"\n  },\n'
+            printf '  {"assets": [{"name": "x \\"tag_name\\""}],"tag_name":"0.6.0-rc.9"}, {"tag_name":\t"0.5.23" } ]\n'
+          } > "$r/api-list/releases"
+          cat "$r/api-list/releases"
+          # Notes naming another commit, and notes edited to name none, neither of which an installer reads.
           printf '{"tag_name": "%s", "body": "Cadence %s, built from %s at the tag %s."}\n' \
             "$v" "$v" 0000000000000000000000000000000000000000 "$v" > "$r/moved/releases/tags/$v"
+          mkdir -p "$r/api-edited/releases/tags"
+          printf '{"tag_name": "%s", "body": "Cadence %s.\\n\\nNotes written again by hand, naming no commit."}\n' \
+            "$v" "$v" > "$r/api-edited/releases/tags/$v"
           cp "$r/good/$v/bench.txt" "$r/hang/$v/"
-          # A latest release other than this one, and the installer's own version published beside it.
+          # An API whose latest release is another than the redirect's, and the installer's own version
+          # published as release files.
           iv=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
-          mkdir -p "$r/api-known/releases/tags"
+          mkdir -p "$r/api-known/releases" "$r/known/$iv"
           printf '{"tag_name": "9.9.9"}\n' > "$r/api-known/releases/latest"
-          mkdir -p "$r/nolist"
-          printf '{"tag_name": "9.9.9"}\n' > "$r/nolist/latest"
-          printf '{"tag_name": "%s"}\n' "$iv" > "$r/api-known/releases/tags/$iv"
+          cp "$r/good/$v/SHA256SUMS" "$r/known/$iv/"
+          # The commit the tag names, read as the installers read it, in a SOURCE beside the release's
+          # bench.txt; one naming another commit; and the right SOURCE beside a bench.txt one node off.
+          commit=$(git ls-remote --tags https://github.com/grounzero/cadence.git | awk -v t="refs/tags/$v^{}" '$2 == t {print $1}')
+          printf '%s' "$commit" | grep -Eqx '[0-9a-f]{40}' || { echo "::error::the tag $v names no commit"; exit 1; }
+          [ "$commit" = "$(git rev-parse "$v^{commit}")" ] || { echo "::error::the tag $v is $commit there and not here"; exit 1; }
+          mkdir -p "$r/source-right/$v" "$r/source-wrong/$v" "$r/source-bench/$v"
+          cp "$r/good/$v/bench.txt" "$r/source-right/$v/"
+          cp "$r/good/$v/bench.txt" "$r/source-wrong/$v/"
+          echo $(( $(tr -d '[:space:]' < "$r/good/$v/bench.txt") + 1 )) > "$r/source-bench/$v/bench.txt"
+          printf '%s\n' "$commit" > "$r/source-right/$v/SOURCE"
+          printf '%s\n' "$commit" > "$r/source-bench/$v/SOURCE"
+          printf '%040d\n' 0 > "$r/source-wrong/$v/SOURCE"
+          for kind in source-right source-wrong source-bench; do (cd "$r/$kind/$v" && $hash bench.txt SOURCE > SHA256SUMS); done
+          echo "TAG_COMMIT=$commit" >> "$GITHUB_ENV"
           # Bytes no system starts as a program, with a NUL so no shell runs them as a script. They stand
           # for this system's build and each tier below it, since a release lists every one it has.
           cp "$r/good/$v/bench.txt" "$r/noexec/$v/"
@@ -1472,7 +1510,7 @@ jobs:
                   if self.path.startswith("/forbidden/"):
                       self.send_error(403, "Forbidden")
                       return
-                  # A release list that cannot be read, beside a latest release that can.
+                  # A release list that cannot be read, beside a latest release the redirect names.
                   if self.path.startswith("/nolist") and "?" in self.path:
                       self.send_error(503, "Service Unavailable")
                       return
@@ -1480,6 +1518,15 @@ jobs:
                   if self.path.startswith("/flaky/") and self.path not in Handler.seen:
                       Handler.seen.add(self.path)
                       self.send_error(503, "Service Unavailable")
+                      return
+                  # GitHub's latest release, answered with a redirect to its page, or to the list of
+                  # releases where it names none.
+                  if self.path.startswith("/latest/"):
+                      tag = self.path[len("/latest/"):]
+                      self.send_response(302)
+                      self.send_header("Location", "https://github.com/grounzero/cadence/releases" + ("/tag/" + tag if tag else ""))
+                      self.send_header("Content-Length", "0")
+                      self.end_headers()
                       return
                   if self.path.startswith("/limited/"):
                       self.send_response(403)
@@ -1639,9 +1686,10 @@ jobs:
 
       # Each refusal read from what the script said: a server other than this repository's named
       # without --test-urls, a binary the system will not start, an attestation that fails or names
-      # another tag, a tag that is not the commit its release names, a binary that never answers, and
-      # a table name that would leave the folder, each stopping the run without a build. What is not a
-      # refusal goes on: gh failing to check, and GitHub's API refusing. The newest candidate is the
+      # another tag, a source that is not the commit its release's SOURCE names or not its bench.txt, a
+      # binary that never answers, and a table name that would leave the folder, each stopping the run
+      # without a build. What is not a refusal goes on: gh failing to check, GitHub's API refusing, and
+      # release notes edited by hand. The latest release is the redirect's, and the newest candidate the
       # highest.
       - name: install.sh refuses what it must
         if: env.SCRIPT == 'install.sh'
@@ -1677,17 +1725,39 @@ jobs:
           CADENCE_API_URL="$url/api-list/releases" bash install.sh --yes --version "$v" --dir "$tmp/plain" > api.txt 2>&1 || rc=$?
           [ "$rc" -ne 0 ] || bad "install.sh took CADENCE_API_URL without --test-urls"
           said api.txt "CADENCE_API_URL is set, which only a test may do, with --test-urls" "the refusal of the API does not say why"
+          rc=0
+          CADENCE_LATEST_URL="$url/latest/$v" bash install.sh --yes --version "$v" --dir "$tmp/plain" > latest-plain.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat latest-plain.txt; bad "install.sh took CADENCE_LATEST_URL without --test-urls"; }
+          said latest-plain.txt "CADENCE_LATEST_URL is set, which only a test may do, with --test-urls" \
+            "the refusal of the latest release's address does not say why"
 
-          # The list puts rc.3 first and rc.10 after rc.9; nothing is served for rc.10, so the run then fails.
-          CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/api-list/releases" bash install.sh --yes --test-urls \
-            --dir "$tmp/newest" > newest.txt 2>&1 || true
+          # The latest stable release is the one the redirect names, and the API, whose latest release is
+          # another, is not asked for it.
+          rc=0
+          CADENCE_RELEASES_URL="$url/good" CADENCE_LATEST_URL="$url/latest/$v" CADENCE_API_URL="$url/api-known/releases" \
+            bash install.sh --yes --test-urls --dir "$tmp/latest" > latest.txt 2>&1 || rc=$?
+          [ "$rc" -eq 0 ] || { cat latest.txt; bad "install.sh exited $rc installing the release the redirect names"; }
+          said latest.txt "GitHub's latest release is read from $url/latest/$v, as CADENCE_LATEST_URL and --test-urls ask." \
+            "install.sh did not say where it reads the latest release"
+          said latest.txt "The latest stable release is $v." "install.sh did not take the release the redirect names"
+          if grep -qF '9.9.9' latest.txt; then cat latest.txt; bad "install.sh took the API's latest release"; fi
+          grep -qF "GET /latest/$v " "$tmp/serve.log" || { cat "$tmp/serve.log"; bad "install.sh did not ask for the redirect"; }
+          if grep -qF 'GET /api-known/releases/latest' "$tmp/serve.log"; then bad "install.sh asked the API for the latest release"; fi
+
+          # The redirect names no stable release, so the list is read: it puts rc.3 first, rc.10 after
+          # rc.9 with its key on a line of its own, and a higher one inside notes. Nothing is served
+          # for rc.10, so the run then fails.
+          CADENCE_RELEASES_URL="$url/none" CADENCE_LATEST_URL="$url/latest/" CADENCE_API_URL="$url/api-list/releases" \
+            bash install.sh --yes --test-urls --dir "$tmp/newest" > newest.txt 2>&1 || true
           said newest.txt "The newest pre-release is 0.6.0-rc.10." "install.sh did not take the highest candidate"
           if grep -qF 'This installer comes with' newest.txt; then
-            bad "install.sh offered its own version, which the API there does not publish"
+            bad "install.sh offered its own version, which the server there does not publish"
           fi
+          # The installer's own version is offered where its release files are, whatever the API says.
           iv=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
-          CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/api-known/releases" bash install.sh --yes --test-urls \
-            --dir "$tmp/known" > known.txt 2>&1 || true
+          CADENCE_RELEASES_URL="$url/known" CADENCE_LATEST_URL="$url/latest/9.9.9" CADENCE_API_URL="$url/api-known/releases" \
+            bash install.sh --yes --test-urls --dir "$tmp/known" > known.txt 2>&1 || true
+          said known.txt "The latest stable release is 9.9.9." "install.sh did not take the release the redirect names"
           said known.txt "This installer comes with Cadence $iv; --version $iv installs that one instead." \
             "install.sh did not offer its own version where it is published"
 
@@ -1773,16 +1843,57 @@ jobs:
             if grep -qF 'Building from source' tampered.txt; then bad "install.sh built from source in place of a tampered binary"; fi
             [ ! -e "$tmp/tampered/cadence" ] && [ ! -e "$tmp/tampered/cadence.exe" ] || bad "a binary was installed"
           fi
-          # A tag that is not the commit its release names is never built, though --source asks.
+          # A build from source with the stand-in toolchain, whose build is the release binary, and the
+          # stand-in gh answering as its third argument says, in a home that hides the real Rust.
+          exe=""
+          [ "$RUNNER_OS" != Windows ] || exe=.exe
+          from_source() {
+            local name=$1 files=$2 gh=$3
+            shift 3
+            mkdir -p "$tmp/$name-home"
+            env HOME="$tmp/$name-home" USERPROFILE="$(cygpath -w "$tmp/$name-home" 2> /dev/null || echo "$tmp/$name-home")" \
+              PATH="$tmp/fake-gh:$tmp/fake-rust:$PATH" FAKE_GH="$gh" FAKE_GH_ARGS="$tmp/gh-args-$name" \
+              FAKE_BUILT="$tmp/releases/good/$v/$RELEASE_FILE" FAKE_EXE=$exe FAKE_HOST=$RUST_HOST CADENCE_RELEASES_URL="$url/$files" \
+              "$@" bash install.sh --yes --test-urls --source --version "$v" --dir "$tmp/$name" > "$name.txt" 2>&1
+          }
+          count=$(tr -d '[:space:]' < "$tmp/releases/good/$v/bench.txt")
+          # Nothing reads a release's notes, so notes naming another commit, or none, build as others do.
+          for notes in moved api-edited; do
+            rc=0
+            from_source "notes-$notes" good setup CADENCE_API_URL="$url/$notes/releases" || rc=$?
+            [ "$rc" -eq 0 ] || { cat "notes-$notes.txt"; bad "install.sh exited $rc where the release's notes were edited ($notes)"; }
+            said "notes-$notes.txt" "The tag $v names commit $TAG_COMMIT, the one fetched." "install.sh did not check the tag's commit ($notes)"
+            if grep -qF 'the release names' "notes-$notes.txt"; then cat "notes-$notes.txt"; bad "install.sh read the release's notes ($notes)"; fi
+            cmp "$tmp/notes-$notes/cadence$exe" "$tmp/releases/good/$v/$RELEASE_FILE" || bad "the stand-in build was not installed ($notes)"
+          done
+          # A SOURCE naming another commit than the tag's, and a bench.txt other than the source's, are
+          # never built, though --source asks; nor is a SOURCE whose attestation gh refuses.
           rc=0
-          CADENCE_API_URL="$url/moved/releases" bash install.sh --yes --test-urls --source --version "$v" --dir "$tmp/moved-tag" \
-            > moved-tag.txt 2>&1 || rc=$?
-          [ "$rc" -ne 0 ] || { cat moved-tag.txt; bad "install.sh built a tag that is not the commit its release names"; }
-          commit=$(git rev-parse "$v^{commit}")
-          said moved-tag.txt "the tag $v is commit $commit, and the release names 0000000000000000000000000000000000000000, so it is not built" \
-            "install.sh did not refuse a tag that is not the commit its release names"
-          if grep -qF '== The Rust toolchain' moved-tag.txt; then bad "install.sh reached the toolchain before checking the tag"; fi
-          [ ! -e "$tmp/moved-tag" ] || bad "a binary was installed from a moved tag"
+          from_source source-wrong source-wrong setup || rc=$?
+          [ "$rc" -ne 0 ] || { cat source-wrong.txt; bad "install.sh built a source that is not the commit its release's SOURCE names"; }
+          said source-wrong.txt "release $v's SOURCE names commit 0000000000000000000000000000000000000000, and its tag names $TAG_COMMIT, so it is not built" \
+            "install.sh did not refuse a source that is not the commit its release's SOURCE names"
+          rc=0
+          from_source source-bench source-bench setup || rc=$?
+          [ "$rc" -ne 0 ] || { cat source-bench.txt; bad "install.sh built a source whose bench.txt is not the release's"; }
+          said source-bench.txt "release $v's bench.txt says $((count + 1)) and the source at its tag says $count, so it is not built" \
+            "install.sh did not refuse a source whose bench.txt is not the release's"
+          rc=0
+          from_source source-verdict source-right verdict || rc=$?
+          [ "$rc" -ne 0 ] || { cat source-verdict.txt; bad "install.sh built where gh refused the SOURCE's attestation"; }
+          said source-verdict.txt "SOURCE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" \
+            "install.sh did not refuse the SOURCE's attestation"
+          said source-verdict.txt "The file may be corrupt, or tampered with on its way here" "install.sh did not say SOURCE may be tampered with"
+          for name in source-wrong source-bench source-verdict; do
+            if grep -qF '== The Rust toolchain' "$name.txt"; then cat "$name.txt"; bad "install.sh reached the toolchain before checking the source ($name)"; fi
+            [ ! -e "$tmp/$name/cadence$exe" ] || bad "a binary was installed from a source it refused ($name)"
+          done
+          # A version with no release files has nothing but its tag to hold the source to, and says so.
+          rc=0
+          from_source unreleased none setup || rc=$?
+          [ "$rc" -eq 0 ] || { cat unreleased.txt; bad "install.sh exited $rc building a version with no release files"; }
+          said unreleased.txt "Version $v publishes no SHA256SUMS (not found), so it has no release to hold its source to, and it is built at its tag." \
+            "install.sh did not say the version has no release to hold its source to"
 
           # A bench that counts other than bench.txt says is a mismatch, which stops the run as a
           # checksum does.
@@ -1876,33 +1987,31 @@ jobs:
           said bad-tables.txt "the published checksums name '../K.rtbw', which is not a table's file name, so nothing was downloaded" \
             "install.sh did not refuse the table name"
 
-          # GitHub's API refusing, as past its hourly limit: the build goes on without the commit check,
-          # which still comes before the toolchain, and the end claims no SHA-256 for a build. The
-          # stand-in toolchain's build is the release binary, and a home of its own hides the real one.
+          # A release whose SOURCE names the tag's commit, held to its SHA256SUMS and to its attestation
+          # where gh can check one, builds with GitHub's API refusing, which a build from source never
+          # asks; the checks come before the toolchain, and the end claims no SHA-256 for a build.
           rc=0
-          exe=""
-          [ "$RUNNER_OS" != Windows ] || exe=.exe
-          mkdir -p "$tmp/api-down-home"
-          HOME="$tmp/api-down-home" USERPROFILE="$(cygpath -w "$tmp/api-down-home" 2> /dev/null || echo "$tmp/api-down-home")" \
-            PATH="$tmp/fake-rust:$PATH" FAKE_BUILT="$tmp/releases/good/$v/$RELEASE_FILE" FAKE_EXE=$exe FAKE_HOST=$RUST_HOST \
-            CADENCE_API_URL="$url/forbidden/releases" bash install.sh --yes --test-urls --source \
-            --version "$v" --dir "$tmp/api-down" > api-down.txt 2>&1 || rc=$?
-          [ "$rc" -eq 0 ] || { cat api-down.txt; bad "install.sh exited $rc when GitHub's API refused"; }
-          said api-down.txt "GitHub's API did not answer (the server answered 403), so the commit release $v names could not be read. It is built at its tag, commit " \
-            "install.sh did not say plainly that the API refused"
-          if grep -qF 'limits how often' api-down.txt; then bad "install.sh called a 403 GitHub's rate limit without GitHub saying so"; fi
-          said api-down.txt "It was built here from source at the tag $v, so its bench is the check it passed." \
+          from_source source-right source-right setup CADENCE_API_URL="$url/forbidden/releases" || rc=$?
+          [ "$rc" -eq 0 ] || { cat source-right.txt; bad "install.sh exited $rc on a release whose SOURCE names the tag's commit"; }
+          said source-right.txt "The source's bench.txt says $count, as the release's does." "install.sh did not hold the source's bench.txt to the release's"
+          said source-right.txt "Release $v's SOURCE matches its SHA256SUMS." "install.sh did not hold SOURCE to SHA256SUMS"
+          said source-right.txt "Its build attestation was not verified: gh could not check it (" "install.sh did not ask gh about SOURCE"
+          said "$tmp/gh-args-source-right" "SOURCE --repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v" \
+            "gh was not asked about SOURCE for the release workflow at this version's tag"
+          said source-right.txt "Release $v's SOURCE names commit $TAG_COMMIT, the one fetched." "install.sh did not check the commit SOURCE names"
+          if grep -qF "GitHub's API did not answer" source-right.txt; then bad "install.sh asked GitHub's API to build from source"; fi
+          said source-right.txt "It was built here from source at the tag $v, so its bench is the check it passed." \
             "install.sh did not say how the build was checked"
-          if grep -qF 'its SHA-256 and its bench are the checks it passed' api-down.txt; then bad "install.sh claimed a SHA-256 for a build"; fi
-          api=$(grep -n "GitHub's API did not answer" api-down.txt | head -n 1 | cut -d: -f1)
-          tools=$(grep -n '== The Rust toolchain' api-down.txt | head -n 1 | cut -d: -f1)
-          [ -n "$api" ] && [ -n "$tools" ] && [ "$api" -lt "$tools" ] || bad "install.sh did not check the tag before the toolchain"
-          cmp "$tmp/api-down/cadence$exe" "$tmp/releases/good/$v/$RELEASE_FILE" || bad "the stand-in build was not installed"
+          if grep -qF 'its SHA-256 and its bench are the checks it passed' source-right.txt; then bad "install.sh claimed a SHA-256 for a build"; fi
+          named=$(grep -n "SOURCE names commit" source-right.txt | head -n 1 | cut -d: -f1)
+          tools=$(grep -n '== The Rust toolchain' source-right.txt | head -n 1 | cut -d: -f1)
+          [ -n "$named" ] && [ -n "$tools" ] && [ "$named" -lt "$tools" ] || bad "install.sh did not check the source before the toolchain"
+          cmp "$tmp/source-right/cadence$exe" "$tmp/releases/good/$v/$RELEASE_FILE" || bad "the stand-in build was not installed"
           # The stand-in rustup holds no toolchain, so the one this run installed is recorded for the
           # uninstall to name.
           if [ "$RUNNER_OS" != Windows ]; then
             grep -qF "installed_toolchain=Rust $(git show "$v:rust-toolchain.toml" | sed -n 's/^channel *= *"\(.*\)"$/\1/p'), which 'rustup toolchain uninstall" \
-              "$tmp/api-down-home/.local/share/cadence/install-state" || bad "the toolchain the build installed was not recorded"
+              "$tmp/source-right-home/.local/share/cadence/install-state" || bad "the toolchain the build installed was not recorded"
           fi
           # The source route's git calls are tried a second time where the first fails, as a download is.
           # The real git is named before PATH puts the flaky one first, or the flaky one would call itself.
@@ -1937,7 +2046,8 @@ jobs:
           fi
           # Finding the release: a refusal is the rate limit only where GitHub's answer says it is.
           for api in forbidden limited; do
-            CADENCE_API_URL="$url/$api/releases" bash install.sh --yes --test-urls --dir "$tmp/find-$api" > "find-$api.txt" 2>&1 \
+            CADENCE_LATEST_URL="$url/latest/" CADENCE_API_URL="$url/$api/releases" bash install.sh --yes --test-urls \
+              --dir "$tmp/find-$api" > "find-$api.txt" 2>&1 \
               && { cat "find-$api.txt"; bad "install.sh found a release through an API that refuses"; }
           done
           said find-forbidden.txt "could not read Cadence's releases from GitHub (the server answered 403)" "install.sh did not say the API refused"
@@ -2138,21 +2248,51 @@ jobs:
             if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 took release files from another repository on github.com' }
             Said $run 'which is not https://github.com/grounzero/cadence/releases/download; only a test may name another server' 'the refusal of another repository does not say why'
             Remove-Item Env:CADENCE_RELEASES_URL
+            $env:CADENCE_LATEST_URL = "$url/latest/$v"
+            $run = Install @('--yes', '--version', $v, '--dir', (Join-Path $tmp 'plain'))
+            Remove-Item Env:CADENCE_LATEST_URL
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 took CADENCE_LATEST_URL without --test-urls' }
+            Said $run 'CADENCE_LATEST_URL is set, which only a test may do, with --test-urls' "the refusal of the latest release's address does not say why"
             $env:CADENCE_API_URL = "$url/api-list/releases"
             $run = Install @('--yes', '--version', $v, '--dir', (Join-Path $tmp 'plain'))
             if ($run.Code -eq 0) { throw 'install.ps1 took CADENCE_API_URL without --test-urls' }
             Said $run 'CADENCE_API_URL is set, which only a test may do, with --test-urls' 'the refusal of the API does not say why'
 
-            # The list puts rc.3 first and rc.10 after rc.9; nothing is served for rc.10, so the run then fails.
+            # The latest stable release is the one the redirect names, and the API, whose latest release is
+            # another, is not asked for it.
             $env:CADENCE_RELEASES_URL = "$url/good"
+            $env:CADENCE_LATEST_URL = "$url/latest/$v"
+            $env:CADENCE_API_URL = "$url/api-known/releases"
+            $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'latest'))
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) installing the release the redirect names" }
+            Said $run "GitHub's latest release is read from $url/latest/$v, as CADENCE_LATEST_URL and --test-urls ask." 'install.ps1 did not say where it reads the latest release'
+            Said $run "The latest stable release is $v." 'install.ps1 did not take the release the redirect names'
+            if ($run.Out.Contains('9.9.9')) { Write-Host $run.Out; throw "install.ps1 took the API's latest release" }
+            # The server still holds its log open, so it is read with sharing allowed.
+            $stream = [System.IO.File]::Open((Join-Path $tmp 'serve.log'), 'Open', 'Read', 'ReadWrite')
+            try { $served = (New-Object System.IO.StreamReader $stream).ReadToEnd() } finally { $stream.Close() }
+            if (-not $served.Contains("GET /latest/$v ")) { Write-Host $served; throw 'install.ps1 did not ask for the redirect' }
+            if ($served.Contains('GET /api-known/releases/latest')) { throw 'install.ps1 asked the API for the latest release' }
+
+            # The redirect names no stable release, so the list is read: it puts rc.3 first, rc.10 after
+            # rc.9 with its key on a line of its own, and a higher one inside notes. Nothing is served
+            # for rc.10, so the run then fails.
+            $env:CADENCE_RELEASES_URL = "$url/none"
+            $env:CADENCE_LATEST_URL = "$url/latest/"
+            $env:CADENCE_API_URL = "$url/api-list/releases"
             $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'newest'))
             Said $run 'The newest pre-release is 0.6.0-rc.10.' 'install.ps1 did not take the highest candidate'
-            if ($run.Out.Contains('This installer comes with')) { throw 'install.ps1 offered its own version, which the API there does not publish' }
+            if ($run.Out.Contains('This installer comes with')) { throw 'install.ps1 offered its own version, which the server there does not publish' }
+            # The installer's own version is offered where its release files are, whatever the API says.
             $iv = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
+            $env:CADENCE_RELEASES_URL = "$url/known"
+            $env:CADENCE_LATEST_URL = "$url/latest/9.9.9"
             $env:CADENCE_API_URL = "$url/api-known/releases"
             $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'known'))
+            Said $run 'The latest stable release is 9.9.9.' 'install.ps1 did not take the release the redirect names'
             Said $run "This installer comes with Cadence $iv; --version $iv installs that one instead." 'install.ps1 did not offer its own version where it is published'
-            Remove-Item Env:CADENCE_API_URL
+            Remove-Item Env:CADENCE_API_URL, Env:CADENCE_LATEST_URL
+            $env:CADENCE_RELEASES_URL = "$url/good"
 
             # A binary Windows will not start: an inherited ACL denies running it, as a managed machine's policy does.
             $blocked = Join-Path $tmp 'blocked'
@@ -2268,15 +2408,60 @@ jobs:
               if ($run.Out.Contains('Building from source')) { throw 'install.ps1 built from source in place of a tampered binary' }
               if (Test-Path (Join-Path $tmp 'tampered\cadence.exe')) { throw 'a binary was installed' }
             }
-            # A tag that is not the commit its release names is never built, though --source asks.
+            # A build from source with the stand-in toolchain, whose build is the release binary, and the
+            # stand-in gh answering as Gh says, under a profile and a home of their own.
             Remove-Item Env:CADENCE_RELEASES_URL -ErrorAction SilentlyContinue
-            $env:CADENCE_API_URL = "$url/moved/releases"
-            $run = Install @('--yes', '--test-urls', '--source', '--version', $v, '--dir', (Join-Path $tmp 'moved-tag'))
-            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 built a tag that is not the commit its release names' }
-            $commit = "$(git rev-parse "$v^{commit}")".Trim()
-            Said $run "the tag $v is commit $commit, and the release names 0000000000000000000000000000000000000000, so it is not built" 'install.ps1 did not refuse a tag that is not the commit its release names'
-            if ($run.Out.Contains('== The Rust toolchain')) { Write-Host $run.Out; throw 'install.ps1 reached the toolchain before checking the tag' }
-            if (Test-Path (Join-Path $tmp 'moved-tag')) { throw 'a binary was installed from a moved tag' }
+            $fake = Join-Path $releases "good\$v\$env:RELEASE_FILE"
+            function FromSource([string]$Name, [string]$Files, [string]$Gh, [string]$Api = '') {
+              $kept = @{ Profile = $env:USERPROFILE; Home = $env:LOCALAPPDATA; Path = $env:Path }
+              $env:USERPROFILE = Join-Path $tmp "$Name-profile"
+              $env:LOCALAPPDATA = Join-Path $tmp "$Name-home"
+              New-Item -ItemType Directory -Force -Path $env:USERPROFILE, $env:LOCALAPPDATA | Out-Null
+              $env:Path = (Join-Path $tmp 'fake-gh-cmd') + ';' + (Join-Path $tmp 'fake-rust-cmd') + ';' + $env:Path
+              $env:FAKE_GH = $Gh
+              $env:FAKE_GH_ARGS = Join-Path $tmp "gh-args-$Name.txt"
+              $env:FAKE_BUILT = $fake
+              $env:FAKE_HOST = $env:RUST_HOST
+              $env:CADENCE_RELEASES_URL = "$url/$Files"
+              if ($Api) { $env:CADENCE_API_URL = $Api }
+              try {
+                return Install @('--yes', '--test-urls', '--source', '--version', $v, '--dir', (Join-Path $tmp $Name))
+              } finally {
+                $env:USERPROFILE = $kept.Profile
+                $env:LOCALAPPDATA = $kept.Home
+                $env:Path = $kept.Path
+                Remove-Item Env:FAKE_GH, Env:FAKE_GH_ARGS, Env:FAKE_BUILT, Env:FAKE_HOST, Env:CADENCE_RELEASES_URL -ErrorAction SilentlyContinue
+              }
+            }
+            $count = (Get-Content -Raw (Join-Path $releases "good\$v\bench.txt")).Trim()
+            # Nothing reads a release's notes, so notes naming none, or another commit, build as others do.
+            foreach ($notes in @('api-edited', 'moved')) {
+              $run = FromSource "notes-$notes" 'good' 'setup' "$url/$notes/releases"
+              if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) where the release's notes were edited ($notes)" }
+              Said $run "The tag $v names commit $env:TAG_COMMIT, the one fetched." "install.ps1 did not check the tag's commit ($notes)"
+              if ($run.Out.Contains('the release names')) { Write-Host $run.Out; throw "install.ps1 read the release's notes ($notes)" }
+              if ((Get-FileHash -Algorithm SHA256 (Join-Path $tmp "notes-$notes\cadence.exe")).Hash -ne (Get-FileHash -Algorithm SHA256 $fake).Hash) { throw "the stand-in build was not installed ($notes)" }
+            }
+            # A SOURCE naming another commit than the tag's, and a bench.txt other than the source's, are
+            # never built, though --source asks; nor is a SOURCE whose attestation gh refuses.
+            $wrong = FromSource 'source-wrong' 'source-wrong' 'setup'
+            if ($wrong.Code -eq 0) { Write-Host $wrong.Out; throw "install.ps1 built a source that is not the commit its release's SOURCE names" }
+            Said $wrong "release $v's SOURCE names commit 0000000000000000000000000000000000000000, and its tag names $env:TAG_COMMIT, so it is not built" "install.ps1 did not refuse a source that is not the commit its release's SOURCE names"
+            $benchOff = FromSource 'source-bench' 'source-bench' 'setup'
+            if ($benchOff.Code -eq 0) { Write-Host $benchOff.Out; throw "install.ps1 built a source whose bench.txt is not the release's" }
+            Said $benchOff "release $v's bench.txt says $([int64]$count + 1) and the source at its tag says $count, so it is not built" "install.ps1 did not refuse a source whose bench.txt is not the release's"
+            $verdict = FromSource 'source-verdict' 'source-right' 'verdict'
+            if ($verdict.Code -eq 0) { Write-Host $verdict.Out; throw "install.ps1 built where gh refused the SOURCE's attestation" }
+            Said $verdict "SOURCE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" "install.ps1 did not refuse the SOURCE's attestation"
+            Said $verdict 'The file may be corrupt, or tampered with on its way here' 'install.ps1 did not say SOURCE may be tampered with'
+            foreach ($refused in @(@{ Run = $wrong; Dir = 'source-wrong' }, @{ Run = $benchOff; Dir = 'source-bench' }, @{ Run = $verdict; Dir = 'source-verdict' })) {
+              if ($refused.Run.Out.Contains('== The Rust toolchain')) { Write-Host $refused.Run.Out; throw "install.ps1 reached the toolchain before checking the source ($($refused.Dir))" }
+              if (Test-Path (Join-Path $tmp "$($refused.Dir)\cadence.exe")) { throw "a binary was installed from a source it refused ($($refused.Dir))" }
+            }
+            # A version with no release files has nothing but its tag to hold the source to, and says so.
+            $run = FromSource 'unreleased' 'none' 'setup'
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) building a version with no release files" }
+            Said $run "Version $v publishes no SHA256SUMS (not found), so it has no release to hold its source to, and it is built at its tag." 'install.ps1 did not say the version has no release to hold its source to'
 
             # A bench that counts other than bench.txt says is a mismatch, which stops the run as a
             # checksum does.
@@ -2380,44 +2565,29 @@ jobs:
             Said $run "the published checksums name '../K.rtbw', which is not a table's file name, so nothing was downloaded" 'install.ps1 did not refuse the table name'
             Remove-Item Env:CADENCE_TABLES_URL
 
-            # GitHub's API refusing, as past its hourly limit: the build goes on without the commit check,
-            # which still comes before the toolchain, and the end claims no SHA-256 for a build. The
-            # stand-in toolchain's build is the release binary, and a profile of its own hides the real one.
-            Remove-Item Env:CADENCE_RELEASES_URL -ErrorAction SilentlyContinue
-            $env:CADENCE_API_URL = "$url/forbidden/releases"
-            $fake = Join-Path $releases "good\$v\$env:RELEASE_FILE"
-            $env:FAKE_BUILT = $fake
-            $env:FAKE_HOST = $env:RUST_HOST
-            $savedProfile = $env:USERPROFILE
-            $path = $env:Path
-            $env:USERPROFILE = Join-Path $tmp 'api-down-profile'
-            New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
-            $env:LOCALAPPDATA = Join-Path $tmp 'api-down-home'
-            New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
-            $env:Path = (Join-Path $tmp 'fake-rust-cmd') + ';' + $env:Path
-            try {
-              $run = Install @('--yes', '--test-urls', '--source', '--version', $v, '--dir', (Join-Path $tmp 'api-down'))
-            } finally {
-              $env:USERPROFILE = $savedProfile
-              $env:LOCALAPPDATA = $lad
-              $env:Path = $path
-              Remove-Item Env:FAKE_BUILT, Env:FAKE_HOST -ErrorAction SilentlyContinue
-            }
-            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) when GitHub's API refused" }
-            Said $run "GitHub's API did not answer (the server answered 403), so the commit release $v names could not be read. It is built at its tag, commit " 'install.ps1 did not say plainly that the API refused'
-            if ($run.Out.Contains('limits how often')) { throw "install.ps1 called a 403 GitHub's rate limit without GitHub saying so" }
+            # A release whose SOURCE names the tag's commit, held to its SHA256SUMS and to its attestation
+            # where gh can check one, builds with GitHub's API refusing, which a build from source never
+            # asks; the checks come before the toolchain, and the end claims no SHA-256 for a build.
+            $run = FromSource 'source-right' 'source-right' 'setup' "$url/forbidden/releases"
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 exited $($run.Code) on a release whose SOURCE names the tag's commit" }
+            Said $run "The source's bench.txt says $count, as the release's does." "install.ps1 did not hold the source's bench.txt to the release's"
+            Said $run "Release $v's SOURCE matches its SHA256SUMS." 'install.ps1 did not hold SOURCE to SHA256SUMS'
+            Said $run 'Its build attestation was not verified: gh could not check it (' 'install.ps1 did not ask gh about SOURCE'
+            if (-not (Get-Content -Raw (Join-Path $tmp 'gh-args-source-right.txt')).Contains("SOURCE --repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v")) { throw "gh was not asked about SOURCE for the release workflow at this version's tag" }
+            Said $run "Release $v's SOURCE names commit $env:TAG_COMMIT, the one fetched." 'install.ps1 did not check the commit SOURCE names'
+            if ($run.Out.Contains("GitHub's API did not answer")) { throw "install.ps1 asked GitHub's API to build from source" }
             Said $run "It was built here from source at the tag $v, so its bench is the check it passed." 'install.ps1 did not say how the build was checked'
             if ($run.Out.Contains('its SHA-256 and its bench are the checks it passed')) { throw 'install.ps1 claimed a SHA-256 for a build' }
-            $api = $run.Out.IndexOf("GitHub's API did not answer")
+            $named = $run.Out.IndexOf('SOURCE names commit')
             $tools = $run.Out.IndexOf('== The Rust toolchain')
-            if ($api -lt 0 -or $tools -lt 0 -or $api -gt $tools) { throw 'install.ps1 did not check the tag before the toolchain' }
-            $built = Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'api-down\cadence.exe')
+            if ($named -lt 0 -or $tools -lt 0 -or $named -gt $tools) { throw 'install.ps1 did not check the source before the toolchain' }
+            $built = Get-FileHash -Algorithm SHA256 (Join-Path $tmp 'source-right\cadence.exe')
             if ($built.Hash -ne (Get-FileHash -Algorithm SHA256 $fake).Hash) { throw 'the stand-in build was not installed' }
             # The stand-in rustup holds no toolchain, so the one this run installed is recorded for the
             # uninstall to name.
             $channel = [regex]::Match((git show "${v}:rust-toolchain.toml" | Out-String), '(?m)^channel\s*=\s*"([^"]+)"').Groups[1].Value
             if (-not $channel) { throw "the tag $v pins no channel in rust-toolchain.toml" }
-            $recorded = @(Get-Content (Join-Path $tmp 'api-down-home\Cadence\install-state'))
+            $recorded = @(Get-Content (Join-Path $tmp 'source-right-home\Cadence\install-state'))
             if (-not ($recorded -like "installed_toolchain=Rust $channel, which 'rustup toolchain uninstall $channel' removes")) { Write-Host ($recorded -join "`n"); throw 'the toolchain the build installed was not recorded' }
             # The source route's git calls are tried a second time where the first fails, as a download is.
             $marks = Join-Path $tmp 'flaky-git-marks'
@@ -2474,12 +2644,13 @@ jobs:
             if ($recorded -like 'installed_toolchain=*') { Write-Host ($recorded -join "`n"); throw 'install.ps1 recorded a toolchain whose install failed' }
             # Finding the release: a refusal is the rate limit only where GitHub's answer says it is.
             $found = @{}
+            $env:CADENCE_LATEST_URL = "$url/latest/"
             foreach ($api in @('forbidden', 'limited')) {
               $env:CADENCE_API_URL = "$url/$api/releases"
               $found[$api] = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp "find-$api"))
               if ($found[$api].Code -eq 0) { Write-Host $found[$api].Out; throw 'install.ps1 found a release through an API that refuses' }
             }
-            Remove-Item Env:CADENCE_API_URL
+            Remove-Item Env:CADENCE_API_URL, Env:CADENCE_LATEST_URL
             Said $found['forbidden'] "could not read Cadence's releases from GitHub (the server answered 403)" 'install.ps1 did not say the API refused'
             if ($found['forbidden'].Out.Contains('limits how often')) { throw "install.ps1 called a 403 GitHub's rate limit without GitHub saying so" }
             Said $found['limited'] "GitHub refused to name Cadence's releases (the server answered 403): it limits how often one address asks." "install.ps1 did not name GitHub's rate limit where GitHub said so"
@@ -2567,7 +2738,7 @@ jobs:
             if ((Get-Content -Raw install.ps1).Contains('one build')) { throw 'install.ps1 still says Cadence has one build' }
             Write-Host 'every refusal held'
           } finally {
-            Remove-Item Env:CADENCE_RELEASES_URL, Env:CADENCE_API_URL, Env:CADENCE_TABLES_URL -ErrorAction SilentlyContinue
+            Remove-Item Env:CADENCE_RELEASES_URL, Env:CADENCE_LATEST_URL, Env:CADENCE_API_URL, Env:CADENCE_TABLES_URL -ErrorAction SilentlyContinue
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
           # The step's shell exits with the last native exit code, which a refused install left at 1.
@@ -2684,12 +2855,23 @@ jobs:
           [ "$(marks)" = 1 ] || bad "the second run added the PATH entry again"
 
           # An older release found without --version is a downgrade, declined by default; one named by
-          # --version under --yes is taken, and the upgrade then restores this one.
-          mkdir -p "$tmp/releases/api-old"
-          printf '[{"tag_name": "%s"}]\n' "$old" > "$tmp/releases/api-old/releases"
+          # --version under --yes is taken, and the upgrade then restores this one. A stable one is found
+          # through the redirect naming it, and a candidate in the list where the redirect names none.
+          mkdir -p "$tmp/releases/api-old/releases"
+          case "$old" in
+            *-rc.*)
+              printf '[{"tag_name": "%s"}]\n' "$old" > "$tmp/releases/api-old/releases/index.html"
+              latest="$url/latest/"
+              ;;
+            *)
+              printf '{"tag_name": "%s"}\n' "$old" > "$tmp/releases/api-old/releases/latest"
+              latest="$url/latest/$old"
+              ;;
+          esac
           for mode in "" --update; do
             rc=0
-            CADENCE_API_URL="$url/api-old/releases" bash install.sh --yes --test-urls $mode > down.txt 2>&1 || rc=$?
+            CADENCE_LATEST_URL="$latest" CADENCE_API_URL="$url/api-old/releases" bash install.sh --yes --test-urls $mode \
+              > down.txt 2>&1 || rc=$?
             [ "$rc" -ne 0 ] || { cat down.txt; bad "install.sh ${mode:-without --update} downgraded by default"; }
             said down.txt "It is newer than $old, so installing $old would be a downgrade." "the downgrade was not named"
             said down.txt "Downgrade it to $old? [y/N]: n (--yes)" "the downgrade did not default to no"
@@ -2706,14 +2888,15 @@ jobs:
           said back.txt "Upgrade it to $v? [Y/n]: y (--yes)" "the upgrade back to $v was not offered"
 
           # A build from source asked for at the same version replaces the release binary installed, and
-          # the moved tag then stops it before anything is built. Where the release has a generic
-          # binary beside the AVX2 or AVX-512 one, asking for it replaces that one, and --build avx512 is
-          # refused on a processor without AVX-512.
+          # a SOURCE naming another commit then stops it before anything is built. Where the release has a
+          # generic binary beside the AVX2 or AVX-512 one, asking for it replaces that one, and --build
+          # avx512 is refused on a processor without AVX-512.
           rc=0
-          CADENCE_API_URL="$url/moved/releases" bash install.sh --yes --test-urls --source --version "$v" > source.txt 2>&1 || rc=$?
-          [ "$rc" -ne 0 ] || { cat source.txt; bad "install.sh built a tag that is not the commit its release names"; }
+          PATH="$tmp/fake-gh:$PATH" FAKE_GH=setup FAKE_GH_ARGS="$tmp/gh-args-2" CADENCE_RELEASES_URL="$url/source-wrong" \
+            bash install.sh --yes --test-urls --source --version "$v" > source.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat source.txt; bad "install.sh built a source that is not the commit its release's SOURCE names"; }
           said source.txt "and --source asks for it built from source, so it is replaced." "install.sh took --source at the same version as up to date"
-          said source.txt "and the release names 0000000000000000000000000000000000000000, so it is not built" "the moved tag did not stop the build"
+          said source.txt "SOURCE names commit 0000000000000000000000000000000000000000, and its tag names" "the SOURCE naming another commit did not stop the build"
           case "$ASSET" in
             *-avx2)
               if grep -qE 'the (AVX2|AVX-512) build runs here' up.txt; then
@@ -2933,8 +3116,8 @@ jobs:
           [ "$RUNNER_OS" != Windows ] || recorded=$(cygpath -w "$put")
           printf 'binary=%s\n' "$recorded" > "$st"
           rc=0
-          env HOME="$home" LOCALAPPDATA="$lad" CADENCE_RELEASES_URL="$url/good" CADENCE_API_URL="$url/nolist" \
-            bash install.sh --yes --test-urls > nolist.txt 2>&1 || rc=$?
+          env HOME="$home" LOCALAPPDATA="$lad" CADENCE_RELEASES_URL="$url/good" CADENCE_LATEST_URL="$url/latest/9.9.9" \
+            CADENCE_API_URL="$url/nolist" bash install.sh --yes --test-urls > nolist.txt 2>&1 || rc=$?
           [ "$rc" -ne 0 ] || { cat nolist.txt; bad "install.sh replaced a file it could not look up"; }
           said nolist.txt "The list of published releases could not be read (the server answered 503), so whether it is a release's binary is not known." \
             "install.sh did not say the release list could not be read"
@@ -3108,9 +3291,16 @@ jobs:
             Remove-Item Env:CADENCE_TABLES_URL
 
             # An older release found without --version is a downgrade, declined by default; one named by
-            # --version under --yes is taken, and the upgrade then restores this one.
-            New-Item -ItemType Directory -Force -Path (Join-Path $releases 'api-old') | Out-Null
-            Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases') -Value ('[{"tag_name": "' + $old + '"}]')
+            # --version under --yes is taken, and the upgrade then restores this one. A stable one is found
+            # through the redirect naming it, and a candidate in the list where the redirect names none.
+            New-Item -ItemType Directory -Force -Path (Join-Path $releases 'api-old\releases') | Out-Null
+            if ($old -match '-rc\.') {
+              Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\index.html') -Value ('[{"tag_name": "' + $old + '"}]')
+              $env:CADENCE_LATEST_URL = "$url/latest/"
+            } else {
+              Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\latest') -Value ('{"tag_name": "' + $old + '"}')
+              $env:CADENCE_LATEST_URL = "$url/latest/$old"
+            }
             $env:CADENCE_API_URL = "$url/api-old/releases"
             foreach ($mode in @('', '--update')) {
               $list = @('--yes', '--test-urls')
@@ -3121,7 +3311,7 @@ jobs:
               Said $run "Downgrade it to $($old)? [y/N]: n (--yes)" 'the downgrade did not default to no'
               if ((Snapshot) -ne $after) { throw 'a declined downgrade changed the install' }
             }
-            Remove-Item Env:CADENCE_API_URL
+            Remove-Item Env:CADENCE_API_URL, Env:CADENCE_LATEST_URL
             $run = Install @('--yes', '--version', $old)
             if ($run.Code -ne 0) { Write-Host $run.Out; throw "install.ps1 --yes --version $old exited $($run.Code)" }
             Said $run "Downgrading it to $old, as --yes and --version $old ask." "install.ps1 --yes --version $old did not downgrade"
@@ -3130,15 +3320,25 @@ jobs:
             Said $run "Upgrade it to $($v)? [Y/n]: y (--yes)" "the upgrade back to $v was not offered"
 
             # A build from source asked for at the same version replaces the release binary installed, and
-            # the moved tag then stops it before anything is built. Asking for the generic binary
-            # replaces the AVX2 or AVX-512 one, and --build avx512 is refused on a processor without
+            # a SOURCE naming another commit then stops it before anything is built. Asking for the generic
+            # binary replaces the AVX2 or AVX-512 one, and --build avx512 is refused on a processor without
             # AVX-512.
-            $env:CADENCE_API_URL = "$url/moved/releases"
-            $run = Install @('--yes', '--test-urls', '--source', '--version', $v)
-            Remove-Item Env:CADENCE_API_URL
-            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 built a tag that is not the commit its release names' }
+            $releasesUrl = $env:CADENCE_RELEASES_URL
+            $path = $env:Path
+            $env:CADENCE_RELEASES_URL = "$url/source-wrong"
+            $env:Path = (Join-Path $env:RUNNER_TEMP 'fake-gh-cmd') + ';' + $env:Path
+            $env:FAKE_GH = 'setup'
+            $env:FAKE_GH_ARGS = Join-Path $env:RUNNER_TEMP 'gh-args-2.txt'
+            try {
+              $run = Install @('--yes', '--test-urls', '--source', '--version', $v)
+            } finally {
+              $env:Path = $path
+              if ($releasesUrl) { $env:CADENCE_RELEASES_URL = $releasesUrl } else { Remove-Item Env:CADENCE_RELEASES_URL -ErrorAction SilentlyContinue }
+              Remove-Item Env:FAKE_GH, Env:FAKE_GH_ARGS -ErrorAction SilentlyContinue
+            }
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw "install.ps1 built a source that is not the commit its release's SOURCE names" }
             Said $run 'and --source asks for it built from source, so it is replaced.' 'install.ps1 took --source at the same version as up to date'
-            Said $run 'and the release names 0000000000000000000000000000000000000000, so it is not built' 'the moved tag did not stop the build'
+            Said $run 'SOURCE names commit 0000000000000000000000000000000000000000, and its tag names' 'the SOURCE naming another commit did not stop the build'
             if ($upgrade.Out.Contains('the AVX2 build runs here') -or $upgrade.Out.Contains('the AVX-512 build runs here')) {
               $was = "$(@(Get-Content $state) -match '^build=')" -replace '^build=', ''
               $run = Install @('--yes', '--generic', '--version', $v)
@@ -3326,9 +3526,10 @@ jobs:
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $put) | Out-Null
             Set-Content -Encoding ascii -Path $put -Value 'put here by hand'
             Set-Content -Encoding ascii -Path (Join-Path $env:LOCALAPPDATA 'Cadence\install-state') -Value "binary=$put"
+            $env:CADENCE_LATEST_URL = "$url/latest/9.9.9"
             $env:CADENCE_API_URL = "$url/nolist"
             $run = Install @('--yes', '--test-urls')
-            Remove-Item Env:CADENCE_API_URL
+            Remove-Item Env:CADENCE_API_URL, Env:CADENCE_LATEST_URL
             if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 replaced a file it could not look up' }
             Said $run "The list of published releases could not be read (the server answered 503), so whether it is a release's binary is not known." 'install.ps1 did not say the release list could not be read'
             Said $run 'Replace it with Cadence 9.9.9? [y/N]: n (--yes)' 'install.ps1 did not keep the unknown file by default'

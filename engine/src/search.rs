@@ -228,6 +228,12 @@ impl Learned {
         self.conthist.clear();
         self.corrhist.clear();
     }
+
+    /// For the gates: the correction table, so a test can seed a known correction.
+    #[cfg(feature = "counters")]
+    pub fn corrhist_mut(&mut self) -> &mut CorrectionHistory {
+        &mut self.corrhist
+    }
 }
 
 impl Default for Learned {
