@@ -7,6 +7,7 @@ against other engines' published ratings.
 
 | Version | Estimate | Games | Measured | Evidence |
 | --- | --- | ---: | --- | --- |
+| [0.7.0](https://github.com/grounzero/cadence/releases/tag/0.7.0) | 3418 ± 9 | 2,800 | 2026-11-25 to 2026-11-26 | [below](#the-engines-in-each-gauntlet) |
 | [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | 4,000 | 2026-11-11 to 2026-11-12 | [below](#060-rc3-about-2796) |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | 2,000 | 2026-09-28 | [below](#048-about-2289) |
 
@@ -29,6 +30,20 @@ Cadence's games and score against it, the rating that score alone implies
 for Cadence, and how far that implied rating sits from the gauntlet's fit.
 An engine that plays weaker than its list rating gives Cadence a higher
 implied rating, so it sits above the fit.
+
+**0.7.0**, on the list computed 2026-11-22. The fit is 3418:
+
+| Engine | Version | List rating | Games | Cadence scored | Implied for Cadence | Against the fit |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| [akimbo](https://github.com/jw1912/akimbo/tree/v0.8.0) | 0.8.0 | 3535 | 400 | 36.9% | 3442 | +24 |
+| [Texel](https://github.com/peterosterlund2/texel/tree/1.11) | 1.11 | 3505 | 400 | 40.0% | 3435 | +17 |
+| [Velvet](https://github.com/mhonert/velvet-chess/tree/v5.3.0) | 5.3.0 | 3494 | 400 | 54.0% | 3522, excluded | +104 |
+| [Marvin](https://github.com/bmdanielsson/marvin-chess/tree/v6.3.0) | 6.3.0 | 3459 | 400 | 86.1% | 3776, excluded | +358 |
+| [Stash](https://github.com/mhouppin/stash-bot/tree/v37.0) | 37.0 | 3417 | 400 | 50.2% | 3419 | +1 |
+| [Weiss](https://github.com/TerjeKir/weiss/tree/v2.0) | 2.0 | 3318 | 400 | 65.0% | 3426 | +8 |
+| [Monolith](https://github.com/cimarronOST/Monolith/tree/v3) | 3 | 3259 | 400 | 67.9% | 3389 | -29 |
+| [Svart](https://github.com/1337crisis/svart/tree/v6.0.0) | 6 | 3254 | 400 | 68.5% | 3389 | -29 |
+| [Inanis](https://github.com/Tearth/Inanis/tree/v1.6.0) | 1.6.0 | 3091 | 400 | 86.4% | 3412 | -6 |
 
 **0.6.0-rc.3**, on the list computed 2026-10-17. The fit, anchored on the
 seven engines other than Reckless, is 2796:
@@ -202,6 +217,12 @@ other tag are as written.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
+| [`gauntlet-2026-11-26.pgn`](gauntlet-2026-11-26.pgn) | 12,180,519 | `b142c83e4a625e8107449760e7ae33bca1d1b8ab0a6176e4f159435870292719` |
+| [`gauntlet-2026-11-26-excluded.pgn`](gauntlet-2026-11-26-excluded.pgn) | 3,320,194 | `b279ca0fed34962b1bdcb8012ab43f807d918a40deecf8d7a01d191e9ab4fceb` |
+| [`anchors-2026-11-26.csv`](anchors-2026-11-26.csv) | 210 | `2afd8dac4f84020604fb4e5902590d527760d2c3add1aee2b656151e3d2bb22c` |
+| [`anchors-2026-11-26-all-nine.csv`](anchors-2026-11-26-all-nine.csv) | 274 | `c81f0a808f9414b9618418aca085fb626000496c253cc3db72f9840d604a4a06` |
+| [`gauntlet-2026-11-26-ordo.txt`](gauntlet-2026-11-26-ordo.txt) | 730 | `fbfbd8fbcfa333f4824ba85551188e6b53c8639edfc0f9f367186594e2b3ebbe` |
+| [`gauntlet-2026-11-26-ordo-all-nine.txt`](gauntlet-2026-11-26-ordo-all-nine.txt) | 874 | `f5a89fd572bfd098a28d7968a4950763192f8cdf601c381d79770ed8cef94d48` |
 | [`gauntlet-2026-11-12.pgn`](gauntlet-2026-11-12.pgn) | 16,784,750 | `fbbb30e075af8a1f5157ad4a40e07948e6aa21b88155efc9dae05e2da82555db` |
 | [`anchors-2026-11-12.csv`](anchors-2026-11-12.csv) | 219 | `d51a560f4a6eb815d9b86df238a4d8c055431b92a65510e6b95867688e9d3630` |
 | [`anchors-2026-11-12-with-reckless.csv`](anchors-2026-11-12-with-reckless.csv) | 253 | `83243ae0423f7dba052baa2c9c5a128df166111097354f64e11fdcb7a02b4ba3` |
@@ -239,17 +260,6 @@ author; the games are unchanged.
 | [`gauntlet-2026-09-28.pgn`](gauntlet-2026-09-28.pgn) | 7,294,342 | `2b9ce5a0d825b8a4d64cce9f5831ba9112849528856fb8e4a55b67d7c1ef3273` |
 | [`anchors-2026-09-05.csv`](anchors-2026-09-05.csv) | 102 | `62ae77e079fe7fe235f43316114a448bdc1d91397b3536c779b5598acc1c3146` |
 | [`gauntlet-2026-09-28-ordo.txt`](gauntlet-2026-09-28-ordo.txt) | 516 | `2c429fe6b8bb0d4d5d82aaa5712f355ed9903101b9da25743339a6686c010c63` |
-
-## On Lichess: 2222 blitz
-
-The bot [Mithandros](https://lichess.org/@/Mithandros)'s Lichess blitz
-rating on 2026-10-03, from 1,257 rated games (give or take about 90).
-
-Lichess ratings are their own scale, built from games against people and
-other bots. They are not CCRL ratings. The bot has also played several
-versions of Cadence over that time, with settings a rating list would turn
-off: it thinks on the opponent's time and uses an opening book. So this
-number does not belong to any one version.
 
 ## What these figures are not
 

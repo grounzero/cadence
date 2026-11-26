@@ -1,0 +1,16 @@
+
+   # PLAYER                      :  RATING  ERROR  POINTS  PLAYED   (%)
+   1 akimbo-0.8.0-macos-arm64    :  3535.0   ----   252.5     400    63
+   2 texel-1.11-macos-arm64      :  3505.0   ----   240.0     400    60
+   3 velvet-5.3.0-macos-arm64    :  3494.0   ----   184.0     400    46
+   4 Cadence 0.7.0               :  3473.8    7.8  2220.0    3600    62
+   5 marvin-6.3.0-macos-arm64    :  3459.0   ----    55.5     400    14
+   6 stash-37.0-macos-arm64      :  3417.0   ----   199.0     400    50
+   7 weiss-2.0-macos-arm64       :  3318.0   ----   140.0     400    35
+   8 monolith-3-macos-arm64      :  3259.0   ----   128.5     400    32
+   9 svart-6-macos-arm64         :  3254.0   ----   126.0     400    32
+  10 inanis-1.6.0-macos-arm64    :  3091.0   ----    54.5     400    14
+
+White advantage = 0.00 +/- 0.00
+Draw rate (equal opponents) = 60.93 % +/- 1.17
+
