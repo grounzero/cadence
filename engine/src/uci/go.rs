@@ -45,18 +45,6 @@ impl Session {
         self.stop_search();
         let tokens: Vec<&str> = tokens.collect();
         let (limits, thinking) = self.limits_for(&tokens, received);
-        // A clock not ours reads as zero, which returns the first iteration and looks like a broken
-        // engine from the pipe, so say which it is.
-        if !limits.infinite
-            && limits.movetime.is_none()
-            && limits.is_clocked()
-            && limits.clock(self.board.side_to_move()).is_none()
-        {
-            say(format_args!(
-                "info string go: no clock for the side to move; treating it \
-                 as none left rather than as unlimited"
-            ));
-        }
         let stop = Arc::new(AtomicBool::new(false));
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
@@ -203,6 +191,18 @@ impl Session {
         self.read_lag(&limits, us);
         limits.lag = self.lag;
         limits.move_number = Some(u32::from(self.board.fullmove_number()));
+        // A clock not ours reads as zero, which returns the first iteration and looks like a broken
+        // engine from the pipe, so say which it is.
+        if !limits.infinite
+            && limits.movetime.is_none()
+            && limits.is_clocked()
+            && limits.clock(us).is_none()
+        {
+            say(format_args!(
+                "info string go: no clock for the side to move; treating it \
+                 as none left rather than as unlimited"
+            ));
+        }
         let thinking = if limits.infinite || limits.movetime.is_some() {
             None
         } else {
