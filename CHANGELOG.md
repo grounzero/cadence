@@ -36,6 +36,15 @@ result.
 - Install scripts: a build from source checks the source against the commit the release's annotated tag names, against the release's `bench.txt` and, where the release publishes one, against its attested `SOURCE`. Nothing reads the release notes any more.
 - Install scripts: the latest stable release is found through GitHub's redirect to it rather than its API, which is asked only for pre-releases.
 
+### Fixed
+
+- Tablebases: the engine holds at most 128 table files open at once,
+  closing the one read longest ago and opening it again when it is next
+  read. A 6-piece set, about 1,300 files, no longer runs past the
+  operating system's open-file limit and stops being used part way
+  through a session, and the 3-4-5 piece set no longer needs the limit
+  raised on macOS.
+
 ## [0.7.0] - 2026-11-24
 
 ### Added
