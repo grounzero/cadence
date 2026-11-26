@@ -19,16 +19,19 @@ use support::Engine;
 const MAX_OVERRUN_MS: u64 = 150;
 
 /// A game on the clock: the plies played, the clocks left, the worst overrun past the engine's hard
-/// cap, and whether the board ended it with a mate, a stalemate or the fifty-move rule.
+/// cap, the longest round trip excused, and whether the board ended it with a mate, a stalemate or
+/// the fifty-move rule.
 struct Game {
     plies: u32,
     clocks: [u64; 2],
     worst_overrun_ms: u64,
+    worst_round_trip_ms: u64,
     ended_by_board: bool,
 }
 
 /// The game from `start`; or the first move timed past the clock or past the cap by more than
-/// [`MAX_OVERRUN_MS`].
+/// [`MAX_OVERRUN_MS`]. Each move is charged its time less an `isready` round trip measured just
+/// before it, so a slow runner's pipe is excused and the engine's own budget is not.
 fn play_on_the_clock(start: &str) -> Result<Game, String> {
     let mut e = Engine::spawn();
     let mut board = Board::from_fen(start).unwrap();
@@ -37,6 +40,7 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
     let inc = 20u64;
     let mut plies = 0;
     let mut max_overrun_ms = 0u64;
+    let mut max_round_trip_ms = 0u64;
     let mut ended_by_board = false;
     while plies < 120 {
         let legal = generate_legal(&board);
@@ -47,13 +51,18 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
         let us = board.side_to_move().index();
         e.send(&format!("position fen {start} moves {}", moves.join(" ")));
         e.sync();
+        let asked = Instant::now();
+        e.sync();
+        let round_trip = u64::try_from(asked.elapsed().as_millis()).unwrap();
+        max_round_trip_ms = max_round_trip_ms.max(round_trip);
         let start = Instant::now();
         e.send(&format!(
             "go wtime {} btime {} winc {inc} binc {inc}",
             time[0], time[1]
         ));
         let lines = e.read_until("bestmove ");
-        let spent = u64::try_from(start.elapsed().as_millis()).unwrap();
+        let timed = u64::try_from(start.elapsed().as_millis()).unwrap();
+        let spent = timed.saturating_sub(round_trip);
         let mv = lines
             .last()
             .unwrap()
@@ -64,7 +73,8 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
         if spent >= time[us] {
             e.quit();
             return Err(format!(
-                "ply {plies}: {spent} ms spent with {} ms on the clock",
+                "ply {plies}: {timed} ms timed, less a {round_trip} ms round trip, with {} ms on \
+                 the clock",
                 time[us]
             ));
         }
@@ -74,7 +84,8 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
         if spent > cap + MAX_OVERRUN_MS {
             e.quit();
             return Err(format!(
-                "ply {plies}: {spent} ms spent against a cap of {cap} ms"
+                "ply {plies}: {timed} ms timed, less a {round_trip} ms round trip, against a cap \
+                 of {cap} ms"
             ));
         }
         time[us] = time[us] - spent + inc;
@@ -87,6 +98,7 @@ fn play_on_the_clock(start: &str) -> Result<Game, String> {
         plies,
         clocks: time,
         worst_overrun_ms: max_overrun_ms,
+        worst_round_trip_ms: max_round_trip_ms,
         ended_by_board,
     })
 }
@@ -102,9 +114,13 @@ fn played_on_the_clock(start: &str) -> Game {
         plies,
         clocks,
         worst_overrun_ms,
+        worst_round_trip_ms,
         ended_by_board,
     } = &game;
-    println!("{plies} plies, clocks {clocks:?}, worst overrun {worst_overrun_ms} ms past the cap");
+    println!(
+        "{plies} plies, clocks {clocks:?}, worst overrun {worst_overrun_ms} ms past the cap, \
+         longest round trip excused {worst_round_trip_ms} ms"
+    );
     println!("ended by the board: {ended_by_board}");
     game
 }

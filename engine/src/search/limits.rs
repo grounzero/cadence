@@ -32,6 +32,11 @@ pub struct Limits {
     pub mate: Option<u32>,
     /// Kept back from every budget; `None` is `time::MOVE_OVERHEAD_MS`, so a literal leaves it alone.
     pub move_overhead: Option<u64>,
+    /// Milliseconds a move loses beyond the engine's own thinking, as the session measured it; set
+    /// by the session and never by `go`.
+    pub lag: Option<u64>,
+    /// The game's move number, from which the moves likely left are reckoned; set by the session.
+    pub move_number: Option<u32>,
 }
 
 impl Limits {

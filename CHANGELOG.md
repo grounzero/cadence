@@ -19,10 +19,22 @@ result.
 
 ## [Unreleased]
 
+### Changed
+
+- Search: a node the search visits again takes its static evaluation from
+  the hash table, where the entry holds it, rather than evaluating the
+  position again. Every evaluation is the same, so play is unchanged.
+
 ### Added
 
 - Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.
 - Tools: `cadence-tools forward` prints the offset rounding leaves between a net and its unquantised weights; `--correct-bias OUT` writes the net with its output bias moved against it, and `--fens FILE` reads the positions from a file.
+- Releases: each release publishes `SOURCE`, the commit its tag names, listed in `SHA256SUMS` and attested as the binaries are.
+
+### Changed
+
+- Install scripts: a build from source checks the source against the commit the release's annotated tag names, against the release's `bench.txt` and, where the release publishes one, against its attested `SOURCE`. Nothing reads the release notes any more.
+- Install scripts: the latest stable release is found through GitHub's redirect to it rather than its API, which is asked only for pre-releases.
 
 ## [0.7.0] - 2026-11-24
 

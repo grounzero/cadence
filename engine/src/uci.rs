@@ -5,9 +5,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use cadence_core::position::Board;
-use cadence_core::{MAX_MOVES, START_FEN, generate_legal, parse_uci};
+use cadence_core::{Colour, MAX_MOVES, START_FEN, generate_legal, parse_uci};
 use cadence_nnue::AnyNetwork;
 use cadence_nnue::net::EMBEDDED;
 
@@ -76,6 +77,32 @@ pub struct Session {
     /// Why the last `position` command failed, until a valid one clears it; every `go` meanwhile
     /// answers `bestmove 0000` and searches nothing.
     refused: Option<String>,
+    /// What a move of this game lost beyond the engine's own thinking, measured from the clocks
+    /// `go` gives; `ucinewgame` forgets it.
+    lag: Option<u64>,
+    /// The last move answered on a clock of its own side, which the next `go` reads the lag from.
+    played: Option<Played>,
+}
+
+/// A move answered on a clock: whose, what that clock and increment were, and how long the
+/// engine took.
+#[derive(Clone, Copy)]
+struct Played {
+    side: Colour,
+    clock: u64,
+    inc: u64,
+    spent: u64,
+}
+
+/// A clocked search not yet answered, and when its side's clock started: at `go`, or at the
+/// `ponderhit` that made a ponder a move.
+#[derive(Clone, Copy)]
+struct Thinking {
+    side: Colour,
+    clock: u64,
+    inc: u64,
+    from: Instant,
+    pondering: bool,
 }
 
 /// `Use NNUE`, `EvalFile`, the net that file loaded and the net the build ships.
@@ -99,7 +126,9 @@ type Shipped = (AnyNetwork, [u8; 32]);
 struct Running {
     stop: Arc<AtomicBool>,
     ponder_hit: Arc<AtomicBool>,
-    thread: JoinHandle<Vec<Learned>>,
+    /// The histories it was lent, and when it printed its `bestmove`.
+    thread: JoinHandle<(Vec<Learned>, Instant)>,
+    thinking: Option<Thinking>,
 }
 
 impl Default for Session {
@@ -139,6 +168,8 @@ impl Session {
             probe_limit: syzygy::MAX_PROBE_LIMIT,
             search: None,
             refused: None,
+            lag: None,
+            played: None,
         }
     }
 
@@ -175,6 +206,13 @@ impl Session {
     #[must_use]
     pub fn tt(&self) -> &Table {
         &self.tt
+    }
+
+    /// For the gates: the per-move lag this game has measured.
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn measured_lag(&self) -> Option<u64> {
+        self.lag
     }
 
     /// `false` on `quit`.
@@ -279,6 +317,8 @@ impl Session {
                 self.stop_search();
                 self.tt.clear();
                 self.clear_learned();
+                self.lag = None;
+                self.played = None;
             }
             "quit" => return false,
             // Ignored, per the protocol.
