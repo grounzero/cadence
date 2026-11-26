@@ -36,6 +36,14 @@ result.
 - Install scripts: a build from source checks the source against the commit the release's annotated tag names, against the release's `bench.txt` and, where the release publishes one, against its attested `SOURCE`. Nothing reads the release notes any more.
 - Install scripts: the latest stable release is found through GitHub's redirect to it rather than its API, which is asked only for pre-releases.
 
+### Fixed
+
+- Install scripts: an earlier install the user keeps when installing into
+  another folder stays in the install record, with the PATH entry the
+  installer added for it, so a later `--uninstall` offers to remove both.
+  Until now only the new install was recorded and the kept copy had to be
+  removed by hand.
+
 ## [0.7.0] - 2026-11-24
 
 ### Added

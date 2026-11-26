@@ -3032,6 +3032,37 @@ jobs:
           said changed-2.txt "It has changed since it was installed: its SHA-256 is not the one recorded." "the changed copy was not named as changed"
           said changed-2.txt "Remove that copy, and the PATH entry this script added for it? [y/N]: n (--yes)" "the changed copy's removal did not default to no"
           [ "$(cat "$first")" = 'changed by hand' ] || bad "the changed copy was removed or rewritten"
+          # The kept copy stays in the record with its PATH entry, so the uninstall offers both; changed, the
+          # copy is kept by default, and its PATH entry goes.
+          st=$home/.local/share/cadence/install-state
+          [ "$RUNNER_OS" != Windows ] || st=$home/Cadence/install-state
+          said changed-2.txt "Kept it. The install record still names it" "the kept copy was not said to stay in the record"
+          grep -q '^kept1_binary=' "$st" || { cat "$st"; bad "the record does not name the kept copy"; }
+          if [ "$RUNNER_OS" = Windows ]; then
+            grep -q '^kept1_path_windows=' "$st" || { cat "$st"; bad "the record lost the kept copy's PATH entry"; }
+          else
+            grep -q '^kept1_path_line=' "$st" || { cat "$st"; bad "the record lost the kept copy's PATH line"; }
+          fi
+          moved --uninstall > changed-3.txt 2>&1 || { cat changed-3.txt; bad "the uninstall beside a kept copy failed"; }
+          said changed-3.txt "Remove the copy kept at" "the uninstall did not offer the kept copy"
+          said changed-3.txt "? [y/N]: n (--yes)" "the changed kept copy's removal did not default to no"
+          [ "$(cat "$first")" = 'changed by hand' ] || bad "the uninstall removed the changed kept copy"
+          [ ! -e "$home/elsewhere/cadence$exe" ] || bad "the uninstall left the new install"
+          if [ "$RUNNER_OS" = Windows ]; then
+            left=$(powershell.exe -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path', 'User')" | tr -d '\r' | tr ';' '\n' \
+              | grep -cixF "$(cygpath -w "$home/Cadence")" || true)
+            [ "$left" = 0 ] || bad "the kept copy's PATH entry was left"
+          elif { cat "$home/.bashrc" "$home/.bash_profile" 2> /dev/null || true; } | grep -qxF '# Added by the Cadence installer'; then
+            bad "the kept copy's PATH line was left"
+          fi
+          said changed-3.txt "is kept for what stays: Cadence at" "the uninstall did not say why the record stays"
+          grep -q '^kept1_binary=' "$st" || { cat "$st"; bad "the record no longer names the kept copy"; }
+          # Unchanged since it was kept, as a copy kept by an answer of no is, it is removed by default.
+          sum=$( (sha256sum "$first" 2> /dev/null || shasum -a 256 "$first") | cut -d ' ' -f 1)
+          printf 'kept1_sha256=%s\n' "$sum" >> "$st"
+          moved --uninstall > changed-4.txt 2>&1 || { cat changed-4.txt; bad "the uninstall of a kept copy failed"; }
+          said changed-4.txt "? [Y/n]: y (--yes)" "the unchanged kept copy's removal did not default to yes"
+          [ ! -e "$first" ] && [ ! -e "$st" ] || { cat changed-4.txt; bad "the uninstall left the kept copy or the record"; }
 
           # The folder the state records, spelled with a trailing slash or reached through a link, is that
           # folder: the install in it is found up to date and is never removed.
@@ -3456,6 +3487,29 @@ jobs:
             Said $changed 'It has changed since it was installed: its SHA-256 is not the one recorded.' 'the changed copy was not named as changed'
             Said $changed 'Remove that copy, and the PATH entry this script added for it? [y/N]: n (--yes)' "the changed copy's removal did not default to no"
             if ((Get-Content -Raw (Join-Path $firstFolder 'cadence.exe')).Trim() -ne 'changed by hand') { throw 'the changed copy was removed or rewritten' }
+            # The kept copy stays in the record with its PATH entry, so the uninstall offers both; changed,
+            # the copy is kept by default, and its PATH entry goes.
+            $movedState = Join-Path $env:LOCALAPPDATA 'Cadence\install-state'
+            Said $changed 'Kept it. The install record still names it' 'the kept copy was not said to stay in the record'
+            $record = @(Get-Content $movedState)
+            if (-not ($record -match '^kept1_binary=')) { Write-Host ($record -join "`n"); throw 'the record does not name the kept copy' }
+            if (-not ($record -match '^kept1_path_windows=')) { Write-Host ($record -join "`n"); throw "the record lost the kept copy's PATH entry" }
+            $run = Install @('--yes', '--test-urls', '--uninstall')
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the uninstall beside a kept copy failed' }
+            Said $run 'Remove the copy kept at' 'the uninstall did not offer the kept copy'
+            Said $run '? [y/N]: n (--yes)' "the changed kept copy's removal did not default to no"
+            if ((Get-Content -Raw (Join-Path $firstFolder 'cadence.exe')).Trim() -ne 'changed by hand') { throw 'the uninstall removed the changed kept copy' }
+            if (Test-Path (Join-Path $elsewhere 'cadence.exe')) { throw 'the uninstall left the new install' }
+            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+            if ($userPath -contains $firstFolder) { throw "the kept copy's PATH entry was left" }
+            Said $run 'is kept for what stays: Cadence at' 'the uninstall did not say why the record stays'
+            # Unchanged since it was kept, as a copy kept by an answer of no is, it is removed by default.
+            $sum = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $firstFolder 'cadence.exe')).Hash.ToLower()
+            Add-Content -Path $movedState -Value "kept1_sha256=$sum" -Encoding ascii
+            $run = Install @('--yes', '--test-urls', '--uninstall')
+            if ($run.Code -ne 0) { Write-Host $run.Out; throw 'the uninstall of a kept copy failed' }
+            Said $run '? [Y/n]: y (--yes)' "the unchanged kept copy's removal did not default to yes"
+            if ((Test-Path (Join-Path $firstFolder 'cadence.exe')) -or (Test-Path $movedState)) { Write-Host $run.Out; throw 'the uninstall left the kept copy or the record' }
 
             # The folder the state records, spelled with a trailing separator or reached through a junction,
             # is that folder: the install in it is found up to date and is never removed.

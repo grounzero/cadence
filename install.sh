@@ -1729,6 +1729,7 @@ install_binary() {
         [ "$(checksum "$TARGET")" = "$want" ] || fail "the binary at $TARGET does not match the one checked"
     fi
     state_set binary "$(shown "$TARGET")"
+    forget_kept "$TARGET"
     state_set version "$VERSION"
     state_set sha256 "$(checksum "$TARGET")"
     state_set build "${MADE:-$BUILD}"
@@ -1885,7 +1886,8 @@ retire_previous() {
         default=n
     fi
     if ! ask "Remove that copy, and the PATH entry this script added for it?" "$default"; then
-        say "Kept it. This script now records only the new install, so its uninstall will not remove that copy."
+        keep_previous "$previous" "$folder" "$sum"
+        say "Kept it. The install record still names it, so an uninstall offers to remove it and its PATH entry."
         return 0
     fi
     rm -f "$previous" || fail "could not remove $previous; if Cadence is running, close it and run this again"
@@ -1900,6 +1902,100 @@ retire_previous() {
         remove_path_windows "$win" now
         state_unset path_windows
     fi
+}
+
+# The kept copies the state records, one slot name a line.
+kept_slots() {
+    [ -f "$STATE" ] || return 0
+    state_lines | sed -n 's/^\(kept[0-9][0-9]*\)_binary=.*/\1/p'
+}
+
+is_kept() {
+    local slot
+    for slot in $(kept_slots); do
+        ! same_file "$(state_path "${slot}_binary")" "$1" || return 0
+    done
+    return 1
+}
+
+# A copy the user keeps stays in the state under a slot of its own, with the PATH entries this script
+# added for its folder, so the uninstall can still offer to remove them.
+keep_previous() {
+    local previous=$1 folder=$2 sum=$3 last slot win key
+    last=$(kept_slots | sed 's/^kept//' | sort -n | tail -n 1)
+    slot=kept$((${last:-0} + 1))
+    state_set "${slot}_binary" "$(shown "$previous")"
+    # Only a sum the copy still matches marks it as the file installed there.
+    [ -z "$sum" ] || [ "$(checksum "$previous")" != "$sum" ] || state_set "${slot}_sha256" "$sum"
+    if [ -n "$(state_get path_line)" ] && [ "$(state_get path_line)" = "export PATH=\"$folder:\$PATH\"" ]; then
+        for key in path_rc path_line path_rc_made; do
+            [ -z "$(state_get "$key")" ] || state_set "${slot}_$key" "$(state_get "$key")"
+            state_unset "$key"
+        done
+    fi
+    win=$(state_get path_windows)
+    if [ -n "$win" ] && same_file "$(cygpath -u "$win")" "$folder"; then
+        state_set "${slot}_path_windows" "$win"
+        state_unset path_windows
+    fi
+}
+
+# A kept copy installed over becomes the install the state records, and its PATH entries go back to
+# the keys an install's own use where those are free.
+forget_kept() {
+    local slot key
+    for slot in $(kept_slots); do
+        same_file "$(state_path "${slot}_binary")" "$1" || continue
+        for key in path_rc path_line path_rc_made path_windows; do
+            [ -n "$(state_get "$key")" ] || [ -z "$(state_get "${slot}_$key")" ] \
+                || state_set "$key" "$(state_get "${slot}_$key")"
+        done
+        for key in binary sha256 path_rc path_line path_rc_made path_windows; do state_unset "${slot}_$key"; done
+    done
+}
+
+# A kept copy, offered at the uninstall with the PATH entries this script added for it; yes by default
+# only while it is still the file installed there. What stays is added to KEPT_LEFT.
+uninstall_kept() {
+    local slot=$1 bin sum rc line win default=n left=0 key
+    bin=$(state_path "${slot}_binary")
+    sum=$(state_get "${slot}_sha256")
+    if [ -e "$bin" ]; then
+        [ -z "$sum" ] || [ "$(checksum "$bin")" != "$sum" ] || default=y
+        [ "$default" = y ] || say "The copy kept at $(shown "$bin") has changed since it was installed, or has no SHA-256 recorded, so it may be your own."
+        if ask "Remove the copy kept at $(shown "$bin")?" "$default"; then
+            rm -f "$bin" || fail "could not remove $bin; if Cadence is running, close it and run this again"
+            say "Removed it."
+        else
+            KEPT_LEFT="$KEPT_LEFT, Cadence at $(shown "$bin")"
+            left=1
+        fi
+    else
+        say "There is no Cadence at $(shown "$bin") any more."
+    fi
+    rc=$(state_get "${slot}_path_rc")
+    line=$(state_get "${slot}_path_line")
+    if [ -n "$line" ]; then
+        if remove_path_line "$rc" "$line" ask; then
+            if [ -n "$(state_get "${slot}_path_rc_made")" ] && [ -f "$rc" ] && [ ! -s "$rc" ]; then
+                rm -f "$rc" && say "Removed $rc, which this installer made and which is now empty."
+            fi
+            for key in path_rc path_line path_rc_made; do state_unset "${slot}_$key"; done
+        else
+            KEPT_LEFT="$KEPT_LEFT, the PATH line in $rc"
+            left=1
+        fi
+    fi
+    win=$(state_get "${slot}_path_windows")
+    if [ -n "$win" ]; then
+        if remove_path_windows "$win" ask; then
+            state_unset "${slot}_path_windows"
+        else
+            KEPT_LEFT="$KEPT_LEFT, $win on your PATH"
+            left=1
+        fi
+    fi
+    [ "$left" = 1 ] || { state_unset "${slot}_binary"; state_unset "${slot}_sha256"; }
 }
 
 # Each command on a line of its own, so it can be copied whole.
@@ -2024,7 +2120,10 @@ uninstall() {
     bin=$(state_path binary)
     recorded=$bin
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
-    if [ -e "$bin" ]; then
+    # A kept copy where an install would be is offered as the kept copy it is, below.
+    if [ -z "$recorded" ] && is_kept "$bin"; then
+        :
+    elif [ -e "$bin" ]; then
         local remove=0
         if [ -n "$recorded" ]; then
             ! ask "Remove $(shown "$bin")?" y || remove=1
@@ -2062,6 +2161,9 @@ uninstall() {
     if [ -n "$win" ]; then
         if remove_path_windows "$win" ask; then state_unset path_windows; else kept="$kept, $win on your PATH"; fi
     fi
+    KEPT_LEFT=""
+    for key in $(kept_slots); do uninstall_kept "$key"; done
+    kept="$kept$KEPT_LEFT"
     tables=$(state_path tables)
     if [ -n "$tables" ] && [ -d "$tables" ]; then
         if ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
