@@ -57,7 +57,13 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            let stand_pat = self.static_eval(board);
+            // Corrected as the main search's evaluation is, for this structure and side to move.
+            let correction = self
+                .heuristics
+                .corrhist
+                .correction(board.pawn_key(), board.side_to_move());
+            self.stats.corrhist_applied.add_if(correction != 0);
+            let stand_pat = self.static_eval(board) + correction;
             if stand_pat >= beta {
                 // A stand-pat cut on a stalemate would score it as the evaluation.
                 return if has_legal_move(board) { beta } else { DRAW };

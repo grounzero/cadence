@@ -40,6 +40,49 @@ pub const fn mirrors(king: Square) -> bool {
     king.file().index() > 3
 }
 
+/// How many buckets a king-bucketed net splits its first layer into, each a full set of
+/// `NUM_INPUTS` rows.
+pub const KING_BUCKETS: usize = 4;
+
+/// The bucket of a king on files a to d, a rank to a row from its own back rank: the back-rank
+/// corner, the back-rank centre, the second rank, and everything beyond. The trainer is handed
+/// this table as it stands, so the two sides cannot hold different ones.
+#[rustfmt::skip]
+pub const KING_BUCKET: [usize; 32] = [
+    0, 0, 1, 1,
+    2, 2, 2, 2,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+];
+
+/// The bucket of this perspective's own king, read as the mirrored index reads it: the rank from
+/// its own back rank and the file folded onto a to d. A king that changes bucket changes every row
+/// its perspective reads, as one that changes half does.
+#[inline]
+#[must_use]
+pub const fn king_bucket(persp: Colour, king: Square) -> usize {
+    let file = king.file().index();
+    let folded = if file > 3 { 7 - file } else { file };
+    KING_BUCKET[king.rank().relative(persp).index() * 4 + folded]
+}
+
+/// The mirrored index inside the block of rows its perspective's king bucket owns. A net trained
+/// with king buckets over mirrored inputs is read by this index alone.
+#[inline]
+#[must_use]
+pub const fn bucketed_feature_index(
+    persp: Colour,
+    king: Square,
+    piece: Piece,
+    sq: Square,
+) -> usize {
+    king_bucket(persp, king) * NUM_INPUTS + mirrored_feature_index(persp, king, piece, sq)
+}
+
 // --- the pins ----------------------------------------------------------------
 // Change one and every trained net stops loading correctly.
 const _: () = assert!(feature_index(Colour::White, Piece::WPawn, Square::A1) == 0);
@@ -70,3 +113,25 @@ const _: () =
     assert!(mirrored_feature_index(Colour::Black, Square::H8, Piece::BKing, Square::H8) == 320);
 const _: () =
     assert!(mirrored_feature_index(Colour::Black, Square::A8, Piece::WPawn, Square::A8) == 384);
+// King buckets: the back rank splits between the b and c files after mirroring, and each
+// perspective counts ranks from its own side.
+const _: () = assert!(king_bucket(Colour::White, Square::B1) == 0);
+const _: () = assert!(king_bucket(Colour::White, Square::C1) == 1);
+const _: () = assert!(king_bucket(Colour::White, Square::E1) == 1);
+const _: () = assert!(king_bucket(Colour::White, Square::G1) == 0);
+const _: () = assert!(king_bucket(Colour::White, Square::H2) == 2);
+const _: () = assert!(king_bucket(Colour::White, Square::E8) == 3);
+const _: () = assert!(king_bucket(Colour::Black, Square::E8) == 1);
+const _: () = assert!(king_bucket(Colour::Black, Square::G8) == 0);
+const _: () = assert!(king_bucket(Colour::Black, Square::A7) == 2);
+const _: () = assert!(king_bucket(Colour::Black, Square::E1) == 3);
+const _: () =
+    assert!(bucketed_feature_index(Colour::White, Square::G1, Piece::WPawn, Square::A1) == 7);
+const _: () =
+    assert!(bucketed_feature_index(Colour::White, Square::E1, Piece::WPawn, Square::A1) == 775);
+const _: () =
+    assert!(bucketed_feature_index(Colour::White, Square::A3, Piece::WPawn, Square::A1) == 2304);
+const _: () =
+    assert!(bucketed_feature_index(Colour::Black, Square::G8, Piece::BKing, Square::G8) == 321);
+const _: () =
+    assert!(bucketed_feature_index(Colour::Black, Square::E7, Piece::WPawn, Square::A8) == 1927);

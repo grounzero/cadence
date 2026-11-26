@@ -5,7 +5,10 @@
 
 use bullet_lib::game::inputs::{Chess768, ChessBucketsMirrored, SparseInputType};
 use bulletformat::{BulletFormat, ChessBoard};
-use cadence_core::features::{NUM_INPUTS, feature_index, mirrored_feature_index};
+use cadence_core::features::{
+    KING_BUCKET, KING_BUCKETS, NUM_INPUTS, bucketed_feature_index, feature_index, king_bucket,
+    mirrored_feature_index,
+};
 use cadence_core::movegen::generate_legal;
 use cadence_core::position::Board;
 use cadence_core::{Colour, Piece, PieceType, Square};
@@ -107,10 +110,57 @@ fn every_mirrored_feature_index_is_the_trainers() {
     assert_eq!(compared, 2 * 64 * 63 * 2 * 5 * 62);
 }
 
+/// The same walk with the trainer given the engine's bucket table: each perspective's own king
+/// stands in every bucket and on each half while the other's stands in every bucket too.
+#[test]
+fn every_bucketed_feature_index_is_the_trainers() {
+    let inputs = ChessBucketsMirrored::new(KING_BUCKET);
+    assert_eq!(inputs.num_inputs(), KING_BUCKETS * NUM_INPUTS);
+    let mut compared = 0_u64;
+    for mover in [Colour::White, Colour::Black] {
+        for white in 0..64 {
+            for black in (0..64).filter(|&black| black != white) {
+                let kings = [Square::new(white), Square::new(black)];
+                let own = |persp: Colour| kings[persp.index()];
+                for colour in [Colour::White, Colour::Black] {
+                    for kind in PieceType::ALL {
+                        if kind == PieceType::King {
+                            continue;
+                        }
+                        for index in (0..64).filter(|&i| i != white && i != black) {
+                            let pieces = [
+                                (Piece::WKing, kings[0]),
+                                (Piece::BKing, kings[1]),
+                                (Piece::new(colour, kind), Square::new(index)),
+                            ];
+                            let mut trainer = Vec::new();
+                            inputs.map_features(&with_kings(pieces, mover), |stm, ntm| {
+                                trainer.push((stm, ntm));
+                            });
+                            let mut engine = pieces.map(|(piece, sq)| {
+                                let other = mover.flip();
+                                (
+                                    bucketed_feature_index(mover, own(mover), piece, sq),
+                                    bucketed_feature_index(other, own(other), piece, sq),
+                                )
+                            });
+                            trainer.sort_unstable();
+                            engine.sort_unstable();
+                            assert_eq!(trainer, engine, "{pieces:?}, {mover:?} to move");
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(compared, 2 * 64 * 63 * 2 * 5 * 62);
+}
+
 /// Castling positions, Chess960's among them, each with the file White's king and then Black's
 /// lands on. Between them a king crosses the middle either way, stays on its half, stays on its
-/// square, and trades squares with its rook.
-const CASTLES: [(&str, [u8; 2]); 9] = [
+/// square, trades squares with its rook, and changes bucket with and without changing half.
+const CASTLES: [(&str, [u8; 2]); 10] = [
     (
         "r3k2r/pppppppp/2n5/8/8/5N2/PPPPPPPP/R3K2R w KQkq - 0 1",
         *b"gc",
@@ -126,10 +176,11 @@ const CASTLES: [(&str, [u8; 2]); 9] = [
     ("3k3r/pppppppp/8/8/8/8/PPPPPPPP/3K3R w Hh - 0 1", *b"gg"),
     ("r2k4/pppppppp/8/8/8/8/PPPPPPPP/R2K4 w Aa - 0 1", *b"cc"),
     ("2rk4/pppppppp/8/8/8/8/PPPPPPPP/2RK4 w Cc - 0 1", *b"cc"),
+    ("rk6/pppppppp/8/8/8/8/PPPPPPPP/RK6 w Aa - 0 1", *b"cc"),
 ];
 
 /// One real board: the trainer's record of it must be the bytes the converter writes, king
-/// squares included, and its mirrored features the engine's index for every piece.
+/// squares included, and its mirrored and its bucketed features the engine's index for every piece.
 fn board_agrees(board: &Board) {
     let mut bitboards = [0_u64; 8];
     for sq in board.occupied() {
@@ -167,6 +218,29 @@ fn board_agrees(board: &Board) {
         "{}",
         board.to_fen(cadence_core::FenStyle::Shredder)
     );
+    let mut trainer = Vec::new();
+    ChessBucketsMirrored::new(KING_BUCKET).map_features(&record, |stm, ntm| {
+        trainer.push((stm, ntm));
+    });
+    let mut engine: Vec<(usize, usize)> = board
+        .occupied()
+        .into_iter()
+        .map(|sq| {
+            let piece = board.piece_at(sq).expect("an occupied square");
+            (
+                bucketed_feature_index(mover, board.king_square(mover), piece, sq),
+                bucketed_feature_index(other, board.king_square(other), piece, sq),
+            )
+        })
+        .collect();
+    trainer.sort_unstable();
+    engine.sort_unstable();
+    assert_eq!(
+        trainer,
+        engine,
+        "bucketed, {}",
+        board.to_fen(cadence_core::FenStyle::Shredder)
+    );
 }
 
 /// The side to move castles so that its king lands on `file`, and whether the king changed half.
@@ -195,17 +269,23 @@ fn castle(board: &mut Board, file: u8) -> bool {
 }
 
 /// Each castling position is compared before any castle, after White's and after Black's, so both
-/// perspectives are read on either side of a king's crossing.
+/// perspectives are read on either side of a king's crossing and of its change of bucket.
 #[test]
-fn castling_positions_mirror_as_the_trainer_does() {
-    let mut crossings = 0;
+fn castling_positions_mirror_and_bucket_as_the_trainer_does() {
+    let (mut crossings, mut buckets, mut bucket_alone) = (0, 0, 0);
     for (fen, files) in CASTLES {
         let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
         board_agrees(&board);
         for file in files {
-            crossings += usize::from(castle(&mut board, file));
+            let us = board.side_to_move();
+            let before = king_bucket(us, board.king_square(us));
+            let crossed = castle(&mut board, file);
+            let changed = before != king_bucket(us, board.king_square(us));
+            crossings += usize::from(crossed);
+            buckets += usize::from(changed);
+            bucket_alone += usize::from(changed && !crossed);
             board_agrees(&board);
         }
     }
-    assert_eq!(crossings, 8);
+    assert_eq!((crossings, buckets, bucket_alone), (8, 6, 4));
 }

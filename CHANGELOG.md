@@ -38,6 +38,11 @@ result.
 
 ### Fixed
 
+- Install scripts: an earlier install the user keeps when installing into
+  another folder stays in the install record, with the PATH entry the
+  installer added for it, so a later `--uninstall` offers to remove both.
+  Until now only the new install was recorded and the kept copy had to be
+  removed by hand.
 - Tablebases: the engine holds at most 128 table files open at once,
   closing the one read longest ago and opening it again when it is next
   read. A 6-piece set, about 1,300 files, no longer runs past the
