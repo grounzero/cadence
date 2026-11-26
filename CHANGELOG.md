@@ -38,6 +38,11 @@ result.
 
 ### Fixed
 
+- Install scripts: an earlier install the user keeps when installing into
+  another folder stays in the install record, with the PATH entry the
+  installer added for it, so a later `--uninstall` offers to remove both.
+  Until now only the new install was recorded and the kept copy had to be
+  removed by hand.
 - Tablebases: a table read held up by a stalled drive no longer holds up
   the answer. `stop` and `quit` wait at most a second for the search, and
   a timed search is answered at most a tenth of a second past its own
