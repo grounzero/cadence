@@ -7,7 +7,7 @@ against other engines' published ratings.
 
 | Version | Estimate | Games | Measured | Evidence |
 | --- | --- | ---: | --- | --- |
-| [0.7.0](https://github.com/grounzero/cadence/releases/tag/0.7.0) | 3418 ± 9 | 2,800 | 2026-11-25 to 2026-11-26 | [below](#the-engines-in-each-gauntlet) |
+| [0.7.0](https://github.com/grounzero/cadence/releases/tag/0.7.0) | 3418 ± 9 | 2,800 | 2026-11-24 to 2026-11-26 | [below](#the-engines-in-each-gauntlet) |
 | [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | 4,000 | 2026-11-11 to 2026-11-12 | [below](#060-rc3-about-2796) |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | 2,000 | 2026-09-28 | [below](#048-about-2289) |
 
