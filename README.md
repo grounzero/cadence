@@ -159,7 +159,8 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 On macOS, raise the open-file limit with `ulimit -n` before starting the
 engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
 A 6-piece set on Linux may need a higher limit too. Keep the tables on a local
-disk: a stalled network drive can delay `stop`.
+disk: if a stalled drive holds a read, `stop` is answered within a second and a
+timed search just past its deadline, with the move of its last completed depth.
 
 ### Unusual commands
 

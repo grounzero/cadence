@@ -36,6 +36,14 @@ result.
 - Install scripts: a build from source checks the source against the commit the release's annotated tag names, against the release's `bench.txt` and, where the release publishes one, against its attested `SOURCE`. Nothing reads the release notes any more.
 - Install scripts: the latest stable release is found through GitHub's redirect to it rather than its API, which is asked only for pre-releases.
 
+### Fixed
+
+- Tablebases: a table read held up by a stalled drive no longer holds up
+  the answer. `stop` and `quit` wait at most a second for the search, and
+  a timed search is answered at most a tenth of a second past its own
+  deadline, with the move of its last completed depth, or the first legal
+  move if it had none.
+
 ## [0.7.0] - 2026-11-24
 
 ### Added
