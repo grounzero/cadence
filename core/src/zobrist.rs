@@ -75,6 +75,13 @@ const fn build() -> Tables {
 
 static TABLES: Tables = build();
 
+/// The same keys at compile time, for a table built from them there.
+#[must_use]
+pub(crate) const fn piece_and_side_keys() -> ([[u64; 64]; 12], u64) {
+    let tables = build();
+    (tables.piece, tables.side)
+}
+
 #[inline]
 #[must_use]
 pub fn piece(piece: Piece, sq: Square) -> u64 {

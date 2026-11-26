@@ -93,8 +93,9 @@ pub(super) struct Found {
 }
 
 impl Search<'_> {
-    /// The mate bounds, which narrow the window in place, then the table and the tablebases. The
-    /// node's value when one of them answers it, and otherwise what its search starts from.
+    /// A move that repeats and the mate bounds, which narrow the window in place, then the table
+    /// and the tablebases. The node's value when one of them answers it, and otherwise what its
+    /// search starts from.
     pub(super) fn lookup(
         &mut self,
         board: &Board,
@@ -104,13 +105,25 @@ impl Search<'_> {
         alpha: &mut Score,
         beta: &mut Score,
     ) -> Lookup {
+        // The node is worth at least the draw, and takes no cutoff from a score stored under an
+        // earlier history.
+        let repeats = ply > 0 && *alpha < DRAW && board.has_upcoming_repetition();
+        if repeats {
+            if DRAW >= *beta {
+                return Lookup::Cutoff(DRAW);
+            }
+            // Not where an open window would be left one point wide, since a node's kind reads it.
+            if *beta > DRAW + 1 {
+                *alpha = DRAW;
+            }
+        }
         (*alpha, *beta) = match mate_window(ply, *alpha, *beta) {
             Ok(window) => window,
             Err(score) => return Lookup::Cutoff(score),
         };
         let (alpha, beta) = (*alpha, *beta);
         let (tt_move, cutoff, hit_pv, eval) = self.probe(board, key, depth, ply, alpha, beta);
-        if let Some(score) = cutoff {
+        if let Some(score) = cutoff.filter(|_| !repeats) {
             return Lookup::Cutoff(score);
         }
         // Before any child is searched, since a child that fails low reads it, and before the
