@@ -36,6 +36,15 @@ result.
 - Install scripts: a build from source checks the source against the commit the release's annotated tag names, against the release's `bench.txt` and, where the release publishes one, against its attested `SOURCE`. Nothing reads the release notes any more.
 - Install scripts: the latest stable release is found through GitHub's redirect to it rather than its API, which is asked only for pre-releases.
 
+### Fixed
+
+- Strength levels: `UCI_Elo`'s five levels are refitted on the network's
+  scale, by the rule that first chose them, with the reading taken again
+  on the network. Every level now samples among eight lines within 650
+  centipawns of the best, and the levels are spaced by expected loss a
+  move, from 110 centipawns at 1000 to 2 at 1800. They were fitted on the
+  handcrafted evaluation, whose centipawns the network does not share.
+
 ## [0.7.0] - 2026-11-24
 
 ### Added
