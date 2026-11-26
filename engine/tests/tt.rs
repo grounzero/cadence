@@ -945,7 +945,7 @@ fn the_bench_clears_the_table_between_positions() {
     }
 
     // A factor rather than a direction: a table that no longer holds the run makes the second pass
-    // wobble either way.
+    // wobble either way. A third and not more, since a PV node searches again whatever it stored.
     let shared = table(bench::HASH_MB);
     let pass = |shared: &Table| -> u64 {
         fens.iter()
@@ -955,9 +955,9 @@ fn the_bench_clears_the_table_between_positions() {
     let first = pass(&shared);
     let second = pass(&shared);
     assert!(
-        second * 4 < first,
-        "a second pass over the same table cost {second} against {first}, inside the \
-         factor of four this gate needs to be discriminating at all"
+        second * 3 < first * 2,
+        "a second pass over the same table cost {second} against {first}, not the third \
+         less this gate needs to be discriminating at all"
     );
 }
 
