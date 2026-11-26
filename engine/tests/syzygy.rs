@@ -1154,3 +1154,74 @@ fn a_rounded_five_piece_distance_on_the_hundredth_half_move_is_not_a_certain_win
     }
     assert!(rounded > 0, "no quiet move read a rounded distance");
 }
+
+/// Long enough that a search waiting on the read fails each gate below by a wide margin.
+const HELD_MS: &str = "20000";
+
+/// A session whose first open of a table the operating system holds, as a stalled drive would, and
+/// whose root is in the tables, so a `go` reads one before it searches.
+fn held_up() -> Engine {
+    let mut e = Engine::spawn_with(&[("CADENCE_TABLE_OPEN_DELAY_MS", HELD_MS)]);
+    e.send(&format!("setoption name SyzygyPath value {}", fixtures()));
+    e.send("position fen k7/8/1K6/8/8/8/7Q/8 w - - 0 1");
+    e.sync();
+    e
+}
+
+/// The `bestmove` line's move, which must be legal at the root `held_up` sets.
+fn answered(lines: &[String]) -> Move {
+    let line = lines.last().expect("a bestmove line");
+    let spelled = line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_else(|| panic!("{line}"));
+    let legal = generate_legal(&board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1"));
+    parse_uci(&legal, spelled).unwrap_or_else(|_| panic!("{line}: not legal"))
+}
+
+/// `stop` waits a bounded time for the search, then answers for it with a legal move.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn stop_is_answered_while_a_tablebase_read_is_held_up() {
+    let (waited, lines) = Engine::within(std::time::Duration::from_secs(60), || {
+        let mut e = held_up();
+        e.send("go infinite");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let sent = std::time::Instant::now();
+        e.send("stop");
+        let lines = e.read_until("bestmove ");
+        (sent.elapsed(), lines)
+    });
+    assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
+    answered(&lines);
+}
+
+/// No `stop` comes, so the answer is owed by the move's own deadline.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_timed_search_held_up_in_a_tablebase_read_answers_by_its_deadline() {
+    let (waited, lines) = Engine::within(std::time::Duration::from_secs(60), || {
+        let mut e = held_up();
+        let sent = std::time::Instant::now();
+        e.send("go movetime 300");
+        let lines = e.read_until("bestmove ");
+        (sent.elapsed(), lines)
+    });
+    assert!(waited < std::time::Duration::from_secs(2), "{waited:?}");
+    answered(&lines);
+}
+
+/// The process ends without waiting for the read.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn quit_ends_a_session_held_up_in_a_tablebase_read() {
+    let waited = Engine::within(std::time::Duration::from_secs(60), || {
+        let mut e = held_up();
+        e.send("go infinite");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let sent = std::time::Instant::now();
+        e.quit();
+        sent.elapsed()
+    });
+    assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
+}
