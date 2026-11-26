@@ -371,7 +371,7 @@ fn a_pv_node_takes_no_table_cutoff_and_a_null_window_node_does() {
     let tt = Table::new(1).expect("a one mebibyte table");
     let mut search = Search::new(&stop, &tt);
     let board = Board::from_fen(MIDDLEGAME).expect("the middlegame");
-    let mv = generate_legal(&board)[0];
+    let mv = parse_uci(&generate_legal(&board), "h2h3").expect("a legal move");
     let cases = [
         (Bound::Exact, 50, (0, 1)),
         (Bound::Lower, 400, (99, 100)),
