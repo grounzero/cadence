@@ -108,6 +108,61 @@ fn named_positions_probe_to_their_known_outcome() {
     assert_eq!(tables.failures(), 0);
 }
 
+/// Positions across most of the fixture tables, whose probes open their files and those of the
+/// endings their captures reach.
+const ACROSS_TABLES: [&str; 10] = [
+    "k7/8/1K6/8/8/8/7Q/8 w - - 0 1",
+    "8/8/8/4k3/8/8/8/R3K3 w - - 0 1",
+    "8/8/8/4k3/8/8/8/1N2K1B1 w - - 0 1",
+    "8/8/3k4/8/8/2r5/8/R3K3 w - - 0 1",
+    "8/4k3/8/3p4/8/4P3/8/4K3 w - - 0 1",
+    "8/8/3k4/8/8/2r5/8/RR2K3 w - - 0 1",
+    "8/4k3/8/8/8/3PP3/8/4K3 w - - 0 1",
+    "8/8/3k4/5b2/8/8/8/R3K3 w - - 0 1",
+    "8/4k3/3p4/8/8/3PP3/8/4K3 b - - 0 1",
+    "8/8/3k4/8/8/8/8/2B1K3 w - - 0 1",
+];
+
+/// Every answer `ACROSS_TABLES` reads, probed twice over, with the most files held open at once.
+fn probed(tables: &Tables) -> (Vec<(Option<Wdl>, Option<i32>)>, usize) {
+    let mut answers = Vec::new();
+    let mut most = 0;
+    for _ in 0..2 {
+        for fen in ACROSS_TABLES {
+            let b = board(fen);
+            answers.push((tables.probe_wdl(&b), tables.probe_dtz(&b)));
+            most = most.max(tables.open_files());
+        }
+    }
+    (answers, most)
+}
+
+/// At its limit a set closes nothing; past it, down to two files, it answers as an unlimited one
+/// does and never holds more than its limit open.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_set_at_or_past_its_open_file_limit_answers_as_an_unlimited_one() {
+    let dir = fixture_set("open-limit").display().to_string();
+    let unlimited = loaded(&dir);
+    let (expected, needed) = probed(&unlimited);
+    assert!(needed > 2, "the positions open only {needed} files");
+    for limit in [needed, needed - 1, 2] {
+        let (tables, problems) = Tables::load_with_open_limit(&dir, 7, limit);
+        assert!(problems.is_empty(), "{problems:?}");
+        let (answers, most) = probed(&tables);
+        assert_eq!(answers, expected, "limit {limit}");
+        assert!(most <= limit, "limit {limit}: {most} open");
+        if limit == needed {
+            assert_eq!(
+                tables.open_files(),
+                needed,
+                "at the limit, nothing is closed"
+            );
+        }
+        assert_eq!(tables.failures(), unlimited.failures(), "limit {limit}");
+    }
+}
+
 /// No move here mates or zeroes, so at a counter of 99 every win runs past the hundredth half-move:
 /// a cursed win, still ranked above every draw.
 #[test]

@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use cadence_core::position::Board;
@@ -30,9 +30,14 @@ pub enum Wdl {
     Win,
 }
 
+/// The most table files a set holds open at once, below the 256 a process may open by default on
+/// macOS.
+pub const OPEN_FILES: usize = 128;
+
 /// One set, shared by every search thread a `go` starts.
 pub struct Tables {
     tablebase: Tablebase<Chess>,
+    filesystem: Arc<OpenOnce>,
     files: usize,
     /// The smaller of the limit and the largest table added; zero turns probing off.
     cardinality: usize,
@@ -48,6 +53,7 @@ pub struct Tables {
 struct OpenOnce {
     os: OsFilesystem,
     opened: Mutex<BTreeSet<PathBuf>>,
+    open: AtomicUsize,
 }
 
 impl Filesystem for OpenOnce {
@@ -68,7 +74,9 @@ impl Filesystem for OpenOnce {
         if !first {
             return Err(io::Error::other("failed before, so not opened again"));
         }
-        self.os.open(path)
+        let file = self.os.open(path)?;
+        self.open.fetch_add(1, Ordering::Relaxed);
+        Ok(file)
     }
 }
 
@@ -190,6 +198,16 @@ impl Tables {
     /// rest are kept.
     #[must_use]
     pub fn load(paths: &str, limit: usize) -> (Tables, Vec<String>) {
+        Tables::load_with_open_limit(paths, limit, OPEN_FILES)
+    }
+
+    /// The same, holding at most `open_files` table files open at once.
+    #[must_use]
+    pub fn load_with_open_limit(
+        paths: &str,
+        limit: usize,
+        _open_files: usize,
+    ) -> (Tables, Vec<String>) {
         let separator = if cfg!(windows) { ';' } else { ':' };
         let filesystem = Arc::new(OpenOnce::default());
         let mut tablebase = Tablebase::with_filesystem(filesystem.clone());
@@ -220,6 +238,7 @@ impl Tables {
         let cardinality = limit.min(tablebase.max_pieces());
         let tables = Tables {
             tablebase,
+            filesystem,
             files,
             cardinality,
             hits: AtomicU64::new(0),
@@ -232,6 +251,12 @@ impl Tables {
     #[must_use]
     pub fn files(&self) -> usize {
         self.files
+    }
+
+    /// The table files held open now.
+    #[must_use]
+    pub fn open_files(&self) -> usize {
+        self.filesystem.open.load(Ordering::Relaxed)
     }
 
     #[must_use]
