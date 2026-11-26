@@ -172,27 +172,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `features` is what each leg's flags must resolve to, read off every rustc command line.
+        # `features` is what each leg's flags must resolve to, read off every rustc command line, and
+        # `vector` the register width the accumulator update's check expects in the release binary.
         include:
           - os: ubuntu-latest
             name: x86_64-unknown-linux-gnu
             target: x86_64-unknown-linux-gnu
             features: +avx2,+bmi1,+popcnt,+lzcnt
+            vector: avx2
           - os: macos-latest
             name: aarch64-apple-darwin
             target: aarch64-apple-darwin
             features: +neon
+            vector: neon
           # The bot's triple, built natively on its host and otherwise tested nowhere.
           - os: ubuntu-24.04-arm
             name: aarch64-unknown-linux-gnu
             target: aarch64-unknown-linux-gnu
             features: +neon
+            vector: neon
           # The baseline plus POPCNT, and no AVX2, BMI1 or LZCNT: the released generic binary.
           - os: ubuntu-latest
             name: x86_64-unknown-linux-gnu, generic
             target: x86_64-unknown-linux-gnu
             config: .cargo/x86-64-generic.toml
             features: +popcnt
+            vector: sse2
           # The AVX2 build with a static C runtime, the one a rating list is asked to rate.
           - os: windows-latest
             name: x86_64-pc-windows-msvc
@@ -477,6 +482,24 @@ jobs:
           echo "$out" | grep -q 'target-cpu' \
             || { echo "::error::the feature check refused the build, but not for its target-cpu"; exit 1; }
 
+      # The accumulator's update read out of the binary that ships, then a planted halfword the check
+      # must refuse. Windows builds the same source for the same features and has no objdump.
+      - name: The accumulator update is vector code
+        if: env.CI_BENCH == 'true' && matrix.vector
+        shell: bash
+        run: |
+          objdump -d --no-show-raw-insn target/release/cadence > update.dis
+          bash .github/check-vector-update.sh ${{ matrix.vector }} update.dis | tee vector.log
+          printf '### the accumulator update\n%s\n' "$(cat vector.log)" >> "$GITHUB_STEP_SUMMARY"
+          awk '{ print } /accumulator.*5moved.*>:$/ && !d { print "       0:\taddw\t%ax,(%rbx)"; d = 1 }' \
+            update.dis > planted.dis
+          if bash .github/check-vector-update.sh ${{ matrix.vector }} planted.dis > planted.log; then
+            echo "::error::the vector check passed a planted halfword addition"
+            exit 1
+          fi
+          grep -q 'not vector code' planted.log \
+            || { cat planted.log; echo "::error::the vector check refused the plant for another reason"; exit 1; }
+
       # The build shim must not pass on an inherited RUSTFLAGS, which would replace the config's flags
       # for the worker's build. A target added beside it prints what the shim's recipes would see.
       - name: The Makefile clears an inherited RUSTFLAGS
@@ -638,6 +661,7 @@ jobs:
             name: x86_64-apple-darwin
             target: x86_64-apple-darwin
             features: +avx2,+bmi1,+popcnt,+lzcnt
+            vector: avx2
     env: *check-env
     defaults: *check-defaults
     steps: *check-steps
