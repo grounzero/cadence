@@ -36,7 +36,7 @@ pub use features::{
     mirrored_feature_index, mirrors,
 };
 pub use fen::{FenError, FenStyle, START_FEN};
-pub use movegen::{generate_legal, generate_noisy, has_legal_move};
+pub use movegen::{generate_legal, generate_noisy, has_legal_move, is_legal};
 pub use mv::{MAX_MOVES, Move, MoveList, parse_uci, to_uci};
 pub use perft::{perft, perft_divide};
 pub use position::{Board, StateInfo};
