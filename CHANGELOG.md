@@ -32,6 +32,12 @@ result.
 
 ### Added
 
+- Networks: a net file may name a third input layout, king buckets. Its first
+  layer holds four blocks of rows, and each side reads the block its own king's
+  square names (a corner pair of its back rank, the four squares between them,
+  its second rank, or anywhere else) on a board flipped left to right as a
+  mirrored net's is. No net of this layout ships, so play is unchanged, and an
+  earlier build refuses such a file by its length.
 - Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.
 - Tools: `cadence-tools forward` prints the offset rounding leaves between a net and its unquantised weights; `--correct-bias OUT` writes the net with its output bias moved against it, and `--fens FILE` reads the positions from a file.
 - Releases: each release publishes `SOURCE`, the commit its tag names, listed in `SHA256SUMS` and attested as the binaries are.

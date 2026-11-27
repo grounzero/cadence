@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The first layer's sums for both perspectives, refreshed from a board or updated from its
-//! parent by the pieces a move changed, and the stack of them a search walks. A mirrored net's
-//! perspective is rebuilt from the board when its own king crosses the middle.
+//! parent by the pieces a move changed, and the stack of them a search walks. A perspective indexed
+//! by its own king is rebuilt from the board when that king crosses the middle or changes bucket.
 
-use cadence_core::features::{feature_index, mirrored_feature_index, mirrors};
+use cadence_core::features::{
+    bucketed_feature_index, feature_index, king_bucket, mirrored_feature_index, mirrors,
+};
 use cadence_core::position::Board;
 use cadence_core::{Colour, DirtyPieces, MAX_DIRTY, MAX_PLY, Piece, PieceType, Square};
 
@@ -51,8 +53,8 @@ impl<const H: usize> Network<H> {
     }
 
     /// `update` written into `child`, whatever it held, so a search's stack is never copied twice.
-    /// A perspective whose own king crossed the middle is rebuilt from `board`; any other is moved
-    /// by every subtraction before any addition, as a DFRC castle can empty and fill one square.
+    /// A perspective whose own king `crossed` is rebuilt from `board`; any other is moved by every
+    /// subtraction before any addition, as a DFRC castle can empty and fill one square.
     pub fn update_into(
         &self,
         parent: &Accumulator<H>,
@@ -126,15 +128,18 @@ impl<const H: usize> Network<H> {
         sums
     }
 
-    /// Whether the move took this perspective's own king from one half of a mirrored net's board
-    /// to the other, which changes the index of every piece it reads.
+    /// Whether the move took this perspective's own king to the other half of the board, or to
+    /// another king bucket of a bucketed net: either changes the index of every piece it reads.
     fn crossed(&self, dirty: &DirtyPieces, persp: Colour) -> bool {
-        self.inputs() == Inputs::Mirrored
+        let inputs = self.inputs();
+        inputs != Inputs::Plain
             && dirty.as_slice().iter().any(|d| {
                 d.piece == Piece::new(persp, PieceType::King)
                     && matches!(
                         (d.from.get(), d.to.get()),
                         (Some(from), Some(to)) if mirrors(from) != mirrors(to)
+                            || (inputs == Inputs::Bucketed
+                                && king_bucket(persp, from) != king_bucket(persp, to))
                     )
             })
     }
@@ -144,6 +149,7 @@ impl<const H: usize> Network<H> {
         match self.inputs() {
             Inputs::Plain => feature_index(persp, piece, sq),
             Inputs::Mirrored => mirrored_feature_index(persp, king, piece, sq),
+            Inputs::Bucketed => bucketed_feature_index(persp, king, piece, sq),
         }
     }
 

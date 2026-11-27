@@ -221,6 +221,8 @@ pub fn run_result_share(run: &Path, given: Option<f32>) -> Result<f32, String> {
 pub const INPUTS_FILE: &str = "inputs";
 const PLAIN: &str = "plain";
 const MIRRORED: &str = "mirrored";
+/// What a run is told when it is asked for the layout the engine reads and no recipe trains.
+const UNTRAINED: &str = "no recipe trains a net with king buckets";
 
 /// The layout a name on the command line or in a run's record stands for.
 ///
@@ -241,12 +243,13 @@ pub fn inputs_named(name: &str) -> Result<Inputs, String> {
 ///
 /// # Errors
 ///
-/// A file that cannot be written.
+/// A file that cannot be written, or the layout with king buckets, which no recipe trains.
 pub fn record_inputs(out: &Path, inputs: Inputs) -> Result<(), String> {
     let path = out.join(INPUTS_FILE);
     let name = match inputs {
         Inputs::Plain => PLAIN,
         Inputs::Mirrored => MIRRORED,
+        Inputs::Bucketed => return Err(UNTRAINED.to_string()),
     };
     std::fs::write(&path, format!("{name}\n")).map_err(|e| format!("{}: {e}", path.display()))
 }

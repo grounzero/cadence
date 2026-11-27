@@ -6,7 +6,7 @@
 use core::fmt;
 use std::sync::Arc;
 
-use cadence_core::features::NUM_INPUTS;
+use cadence_core::features::{KING_BUCKETS, NUM_INPUTS};
 
 /// Units a perspective at the narrow width, which every width-generic type here takes unless told
 /// otherwise. The shipped net may be wider, so a caller that loads it takes `AnyNetwork`.
@@ -25,10 +25,11 @@ const FORMAT: u16 = 1;
 /// The activation byte naming the one this build computes: clamped to [0, QA], then squared.
 const SCRELU: u8 = 0;
 pub const HEADER_LEN: usize = 128;
-/// The feature weights, their biases, both perspectives' output weights and the output bias.
+/// The feature weights, their biases, both perspectives' output weights and the output bias, for a
+/// first layer of one row a piece and square; `Inputs::payload_len` is any layout's.
 #[must_use]
 pub const fn payload_len(hidden: usize) -> usize {
-    2 * (NUM_INPUTS * hidden + hidden + 2 * hidden + 1)
+    Inputs::Plain.payload_len(hidden)
 }
 /// A net of the narrow width's payload.
 pub const PAYLOAD_LEN: usize = payload_len(HIDDEN);
@@ -37,11 +38,11 @@ pub const PAYLOAD_LEN: usize = payload_len(HIDDEN);
 /// each promotion; an empty file ships none.
 pub const EMBEDDED: &[u8] = include_bytes!("../net.cdnn");
 
-/// Each compiled constant the header repeats, at its offset, and the width a load asks for, so a
-/// file for another build or another width is refused.
-const fn architecture(hidden: usize) -> [(&'static str, usize, u16); 5] {
+/// Each compiled constant the header repeats, at its offset, with the rows its layout has and the
+/// width a load asks for, so a file for another build, layout or width is refused.
+const fn architecture(rows: usize, hidden: usize) -> [(&'static str, usize, u16); 5] {
     [
-        ("inputs", 6, NUM_INPUTS as u16),
+        ("inputs", 6, rows as u16),
         ("hidden width", WIDTH_AT, hidden as u16),
         ("QA", 12, QA as u16),
         ("QB", 14, QB as u16),
@@ -68,11 +69,53 @@ const CANARY: &str = "canary";
 const MAX_ACTIVE: usize = 32;
 
 /// How a perspective's pieces index the first layer: as they stand, or with the board flipped left
-/// to right while that perspective's own king is on files e to h.
+/// to right while that perspective's own king is on files e to h. `Bucketed` flips it so too, and
+/// reads the block of rows its own king's bucket names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inputs {
     Plain,
     Mirrored,
+    Bucketed,
+}
+
+impl Inputs {
+    /// The first layer's rows: one a piece and square, and under `Bucketed` as many a king bucket.
+    #[must_use]
+    pub const fn rows(self) -> usize {
+        match self {
+            Inputs::Plain | Inputs::Mirrored => NUM_INPUTS,
+            Inputs::Bucketed => KING_BUCKETS * NUM_INPUTS,
+        }
+    }
+
+    /// The bytes of weights a net of this layout holds at `hidden` units a perspective.
+    #[must_use]
+    pub const fn payload_len(self, hidden: usize) -> usize {
+        2 * (self.rows() * hidden + hidden + 2 * hidden + 1)
+    }
+
+    const fn byte(self) -> u8 {
+        match self {
+            Inputs::Plain => 0,
+            Inputs::Mirrored => 1,
+            Inputs::Bucketed => 2,
+        }
+    }
+
+    const fn named(byte: u8) -> Option<Inputs> {
+        match byte {
+            0 => Some(Inputs::Plain),
+            1 => Some(Inputs::Mirrored),
+            2 => Some(Inputs::Bucketed),
+            _ => None,
+        }
+    }
+
+    /// The layout a header's byte asks for, plain where it names none. A length or an inputs word
+    /// is weighed against the rows it implies before the byte itself is refused.
+    fn implied(byte: u8) -> Inputs {
+        Inputs::named(byte).unwrap_or(Inputs::Plain)
+    }
 }
 
 /// Where the net's training data came from: only a self-play net may generate more data.
@@ -112,7 +155,7 @@ pub enum LoadError {
         file: u16,
         build: u16,
     },
-    /// An input layout byte that names neither layout this build reads.
+    /// An input layout byte that names no layout this build reads.
     Inputs(u8),
     Reserved,
     Trainer,
@@ -168,7 +211,7 @@ impl fmt::Display for LoadError {
             LoadError::Inputs(v) => {
                 write!(
                     f,
-                    "input layout {v}, where this build reads 0, plain, or 1, mirrored"
+                    "input layout {v}, where this build reads 0 plain, 1 mirrored or 2 king buckets"
                 )
             }
             LoadError::Lane { lane, bound } => {
@@ -200,14 +243,11 @@ fn write_header(origin: &Origin, hidden: usize) -> [u8; HEADER_LEN] {
     let mut out = [0; HEADER_LEN];
     out[..4].copy_from_slice(&MAGIC);
     out[4..6].copy_from_slice(&FORMAT.to_le_bytes());
-    for (_, at, value) in architecture(hidden) {
+    for (_, at, value) in architecture(origin.inputs.rows(), hidden) {
         out[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }
     out[ACTIVATION_AT] = SCRELU;
-    out[INPUTS_AT] = match origin.inputs {
-        Inputs::Plain => 0,
-        Inputs::Mirrored => 1,
-    };
+    out[INPUTS_AT] = origin.inputs.byte();
     let name = origin.provenance.to_string();
     out[PROVENANCE_LEN_AT] = u8::try_from(name.len()).unwrap_or(0);
     out[TRAINER].copy_from_slice(&origin.trainer);
@@ -227,7 +267,8 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
         return Err(LoadError::Format(word(4)));
     }
     let activation = ("activation", ACTIVATION_AT, u16::from(SCRELU));
-    for (field, at, build) in architecture(hidden) {
+    let rows = Inputs::implied(h[INPUTS_AT]).rows();
+    for (field, at, build) in architecture(rows, hidden) {
         if word(at) != build {
             return Err(LoadError::Architecture {
                 field,
@@ -244,11 +285,8 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
             build,
         });
     }
-    let inputs = match h[INPUTS_AT] {
-        0 => Inputs::Plain,
-        1 => Inputs::Mirrored,
-        other => return Err(LoadError::Inputs(other)),
-    };
+    let layout = h[INPUTS_AT];
+    let inputs = Inputs::named(layout).ok_or(LoadError::Inputs(layout))?;
     if h[RESERVED].iter().any(|&b| b != 0) {
         return Err(LoadError::Reserved);
     }
@@ -288,9 +326,9 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
 }
 
 /// The weights, laid out as the trainer exports them: one column of `H` per input feature, `H`
-/// being the hidden width the header names.
+/// being the hidden width the header names. A bucketed net's columns stand a king bucket at a time.
 pub struct Network<const H: usize = HIDDEN> {
-    pub(crate) weights: Box<[[i16; H]; NUM_INPUTS]>,
+    pub(crate) weights: Box<[[i16; H]]>,
     pub(crate) bias: [i16; H],
     /// The side to move's perspective first, then the other's.
     pub(crate) output: [[i16; H]; 2],
@@ -349,13 +387,15 @@ impl Network {
 }
 
 impl<const H: usize> Network<H> {
-    /// `from_bytes` at width `H`, refusing a header that names another.
+    /// `from_bytes` at width `H`, refusing a header that names another. The length is weighed
+    /// first, against the rows the header's layout byte implies.
     ///
     /// # Errors
     ///
     /// A file of the wrong length or header, or weights that could overflow, named by `LoadError`.
     pub fn load(bytes: &[u8]) -> Result<Network<H>, LoadError> {
-        let want = HEADER_LEN + payload_len(H);
+        let layout = bytes.get(INPUTS_AT).copied().unwrap_or(0);
+        let want = HEADER_LEN + Inputs::implied(layout).payload_len(H);
         let Some((header, _)) = bytes
             .split_first_chunk::<HEADER_LEN>()
             .filter(|_| bytes.len() == want)
@@ -372,7 +412,7 @@ impl<const H: usize> Network<H> {
             .iter()
             .map(|&w| i16::from_le_bytes(w));
         let mut next = || words.next().unwrap_or(0);
-        let mut weights = zeroed_columns::<H>();
+        let mut weights = zeroed_columns::<H>(origin.inputs.rows());
         fill(weights.as_flattened_mut(), &mut next);
         let mut bias = [0; H];
         fill(&mut bias, &mut next);
@@ -473,7 +513,7 @@ impl<const H: usize> Network<H> {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = write_header(&self.origin, H).to_vec();
-        out.reserve(payload_len(H));
+        out.reserve(self.origin.inputs.payload_len(H));
         let words = self
             .weights
             .iter()
@@ -488,18 +528,21 @@ impl<const H: usize> Network<H> {
     }
 
     /// No lane, product or sum the inference forms may overflow, so every build and every target
-    /// computes the same numbers.
+    /// computes the same numbers. A lane is bounded within each king bucket's rows, since a
+    /// perspective reads all its pieces from one bucket.
     fn check(&self) -> Result<(), LoadError> {
         let mut magnitudes = [0_i64; NUM_INPUTS];
         for lane in 0..H {
-            for (m, column) in magnitudes.iter_mut().zip(self.weights.iter()) {
-                *m = i64::from(column[lane]).abs();
-            }
-            magnitudes.select_nth_unstable_by(MAX_ACTIVE - 1, |a, b| b.cmp(a));
-            let bound =
-                i64::from(self.bias[lane]).abs() + magnitudes[..MAX_ACTIVE].iter().sum::<i64>();
-            if bound > i64::from(i16::MAX) {
-                return Err(LoadError::Lane { lane, bound });
+            for bucket in self.weights.as_chunks::<NUM_INPUTS>().0 {
+                for (m, column) in magnitudes.iter_mut().zip(bucket) {
+                    *m = i64::from(column[lane]).abs();
+                }
+                magnitudes.select_nth_unstable_by(MAX_ACTIVE - 1, |a, b| b.cmp(a));
+                let largest: i64 = magnitudes[..MAX_ACTIVE].iter().sum();
+                let bound = i64::from(self.bias[lane]).abs() + largest;
+                if bound > i64::from(i16::MAX) {
+                    return Err(LoadError::Lane { lane, bound });
+                }
             }
         }
         for (perspective, weights) in self.output.iter().enumerate() {
@@ -521,6 +564,12 @@ impl<const H: usize> Network<H> {
     /// `seeded` at width `H`, its output weights drawn small enough that the wide net's sum loads.
     #[must_use]
     pub fn generate(seed: u64, provenance: Provenance) -> Network<H> {
+        Network::generate_as(seed, Inputs::Plain, provenance)
+    }
+
+    /// `generate` with the rows of `inputs`, behind a header that names it.
+    #[must_use]
+    pub fn generate_as(seed: u64, inputs: Inputs, provenance: Provenance) -> Network<H> {
         let mut state = seed;
         let mut draw = |span: i16| {
             let (out, next) = cadence_core::rng::splitmix64(state);
@@ -528,7 +577,7 @@ impl<const H: usize> Network<H> {
             let span_u = u64::from(span.unsigned_abs()) * 2 + 1;
             i16::try_from(out % span_u).unwrap_or(0) - span
         };
-        let mut weights = zeroed_columns::<H>();
+        let mut weights = zeroed_columns::<H>(inputs.rows());
         fill(weights.as_flattened_mut(), || draw(400));
         let mut bias = [0; H];
         fill(&mut bias, || draw(200));
@@ -540,7 +589,7 @@ impl<const H: usize> Network<H> {
             output,
             output_bias: draw(500),
             origin: Origin {
-                inputs: Inputs::Plain,
+                inputs,
                 provenance,
                 trainer: [b'0'; 40],
                 manifest: [0; 32],
@@ -563,7 +612,7 @@ impl AnyNetwork {
     ///
     /// As `file_len`, then as `Network::load`.
     pub fn from_bytes(bytes: &[u8]) -> Result<AnyNetwork, LoadError> {
-        if AnyNetwork::file_len(bytes)? == HEADER_LEN + payload_len(WIDE) {
+        if AnyNetwork::shape(bytes)?.1 == WIDE {
             Ok(Network::<WIDE>::load(bytes)?.into())
         } else {
             Ok(Network::<HIDDEN>::load(bytes)?.into())
@@ -576,7 +625,7 @@ impl AnyNetwork {
     ///
     /// As `from_bytes`, `LoadError::Canary` and `LoadError::NotSelfPlay`.
     pub fn for_datagen(bytes: &[u8]) -> Result<AnyNetwork, LoadError> {
-        if AnyNetwork::file_len(bytes)? == HEADER_LEN + payload_len(WIDE) {
+        if AnyNetwork::shape(bytes)?.1 == WIDE {
             Ok(Network::<WIDE>::load_for_datagen(bytes)?.into())
         } else {
             Ok(Network::<HIDDEN>::load_for_datagen(bytes)?.into())
@@ -588,16 +637,22 @@ impl AnyNetwork {
     ///
     /// # Errors
     ///
-    /// `Magic`, `Format` or `Width` for a header this build does not read, and `Length` for one too
-    /// short to name a width.
+    /// `Magic`, `Format`, `Width` or `Inputs` for a header this build does not read, and `Length`
+    /// for one too short to name a width.
     pub fn file_len(head: &[u8]) -> Result<usize, LoadError> {
+        let (inputs, hidden) = AnyNetwork::shape(head)?;
+        Ok(HEADER_LEN + inputs.payload_len(hidden))
+    }
+
+    /// The layout and the width the header in `head` names, once its magic and format are this
+    /// build's.
+    fn shape(head: &[u8]) -> Result<(Inputs, usize), LoadError> {
         if !head.starts_with(&MAGIC) {
             return Err(LoadError::Magic);
         }
-        let narrow = HEADER_LEN + payload_len(HIDDEN);
         let Some(h) = head.first_chunk::<HEADER_LEN>() else {
             return Err(LoadError::Length {
-                want: narrow,
+                want: HEADER_LEN + payload_len(HIDDEN),
                 got: head.len(),
             });
         };
@@ -605,11 +660,12 @@ impl AnyNetwork {
         if word(4) != FORMAT {
             return Err(LoadError::Format(word(4)));
         }
-        match usize::from(word(WIDTH_AT)) {
-            WIDE => Ok(HEADER_LEN + payload_len(WIDE)),
-            HIDDEN => Ok(narrow),
-            _ => Err(LoadError::Width(word(WIDTH_AT))),
-        }
+        let hidden @ (WIDE | HIDDEN) = usize::from(word(WIDTH_AT)) else {
+            return Err(LoadError::Width(word(WIDTH_AT)));
+        };
+        let layout = h[INPUTS_AT];
+        let inputs = Inputs::named(layout).ok_or(LoadError::Inputs(layout))?;
+        Ok((inputs, hidden))
     }
 
     /// The loader for the net a build ships, of either width: `None` for no bytes.
@@ -684,11 +740,8 @@ impl From<Arc<Network<WIDE>>> for AnyNetwork {
     }
 }
 
-fn zeroed_columns<const H: usize>() -> Box<[[i16; H]; NUM_INPUTS]> {
-    vec![[0; H]; NUM_INPUTS]
-        .into_boxed_slice()
-        .try_into()
-        .unwrap_or_else(|_| unreachable!("a vector of NUM_INPUTS columns is NUM_INPUTS long"))
+fn zeroed_columns<const H: usize>(rows: usize) -> Box<[[i16; H]]> {
+    vec![[0; H]; rows].into_boxed_slice()
 }
 
 fn fill(cells: &mut [i16], mut next: impl FnMut() -> i16) {
