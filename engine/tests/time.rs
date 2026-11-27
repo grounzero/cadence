@@ -14,9 +14,9 @@ use cadence_engine::position::Position;
 use cadence_engine::score::{MATE, Score};
 use cadence_engine::search::{Limits, Search};
 use cadence_engine::time::{
-    Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, STABILITY_CALLS,
-    STABILITY_SCALE, another_iteration_fits, budget, drop_scale, soft_for_drop, soft_for_run,
-    starts_another,
+    Budget, DROP_SCALE_MAX, DROP_STEP, DROP_WINDOW, MOVE_OVERHEAD_MS, MOVES_LEFT_FLOOR,
+    MOVES_LEFT_HORIZON, STABILITY_CALLS, STABILITY_SCALE, another_iteration_fits, budget,
+    drop_scale, soft_for_drop, soft_for_run, starts_another,
 };
 use cadence_engine::tt::Table;
 use support::Engine;
@@ -1548,18 +1548,61 @@ fn sudden_death(time: u64, lag: Option<u64>, move_number: u32) -> Budget {
     budget(&l, Colour::White).expect("a clock gives a budget")
 }
 
-/// With no increment every move left pays the lag again, so a move never spends the time thirty
-/// more moves will lose to it, however late the game.
+/// With no increment every move left pays the lag again, so a move never spends the time the
+/// floor's moves will lose to it, however late the game.
 #[test]
 fn sudden_death_keeps_back_the_lag_of_the_moves_left() {
-    for move_number in [1, 40, 80, 200] {
+    for move_number in [1, 40, 80, 200, 400] {
         for time in [300, 1_000, 2_000, 10_000, 60_000] {
             let b = sudden_death(time, Some(50), move_number);
-            let kept = MOVE_OVERHEAD_MS + 30 * 50;
+            let kept = MOVE_OVERHEAD_MS + MOVES_LEFT_FLOOR * 50;
             assert!(
                 b.hard <= time.saturating_sub(kept),
                 "{time} ms at move {move_number}: a hard budget of {} leaves less than {kept}",
                 b.hard
+            );
+        }
+    }
+}
+
+/// The move a clock with no increment runs out on, from the first, when every move spends its
+/// whole hard budget and `extra` more and loses `lag` besides.
+fn move_run_out_on(time: u64, overhead: u64, lag: u64, extra: u64) -> u64 {
+    let mut clock = time;
+    let mut move_number = 1;
+    loop {
+        let mut l = limits(&format!("wtime {clock} btime {clock}"));
+        l.lag = Some(lag);
+        l.move_number = Some(u32::try_from(move_number).expect("a move number in range"));
+        l.move_overhead = Some(overhead);
+        let b = budget(&l, Colour::White).expect("a clock gives a budget");
+        let cost = b.hard + extra + lag;
+        if cost > clock {
+            return move_number;
+        }
+        clock -= cost;
+        move_number += 1;
+    }
+}
+
+/// Spending the whole hard budget every move, a clock with no increment pays every move before
+/// the horizon at any lag it has read. With a first iteration's few milliseconds on top, a `Move
+/// Overhead` of a second carries it past the horizon too.
+#[test]
+fn a_clock_with_no_increment_lasts_to_the_horizon() {
+    for time in [60_000, 180_000] {
+        for lag in [50, 70, 100] {
+            for overhead in [MOVE_OVERHEAD_MS, 1_000] {
+                let out = move_run_out_on(time, overhead, lag, 0);
+                assert!(
+                    out >= MOVES_LEFT_HORIZON,
+                    "{time} ms, lag {lag}, overhead {overhead}: out on move {out}"
+                );
+            }
+            let out = move_run_out_on(time, 1_000, lag, 3);
+            assert!(
+                out > MOVES_LEFT_HORIZON,
+                "{time} ms, lag {lag}, 3 ms a move more: out on move {out}"
             );
         }
     }

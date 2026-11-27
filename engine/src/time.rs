@@ -11,21 +11,23 @@ use crate::search::Limits;
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
 pub const MOVE_OVERHEAD_MS: u64 = 5;
 
-/// The fewest moves a game is reckoned to have left, so a long game still keeps back for its end.
-pub const MOVES_LEFT_FLOOR: u64 = 30;
+/// The move a clock with no increment is kept for, some way past the longest of the engine's own
+/// online games without one. Every move before it keeps back the lag of the moves still to it.
+pub const MOVES_LEFT_HORIZON: u64 = 150;
 
-/// Moves reckoned left at the first move, one fewer every two moves down to the floor.
-pub const MOVES_LEFT_START: u64 = 50;
+/// The fewest moves kept for, so a game past the horizon still keeps back for its end.
+pub const MOVES_LEFT_FLOOR: u64 = 60;
 
 /// The most one move's reading of the lag counts for, so a single stall does not empty the clock.
 pub const MAX_LAG_READING_MS: u64 = 500;
 
-/// Moves likely left at `move_number`, never under the floor; an unknown move number is the first.
+/// Moves from `move_number` to the horizon, never under the floor; an unknown move number is the
+/// first.
 #[must_use]
 pub fn moves_left(move_number: Option<u32>) -> u64 {
     let number = u64::from(move_number.unwrap_or(1));
-    MOVES_LEFT_START
-        .saturating_sub(number / 2)
+    MOVES_LEFT_HORIZON
+        .saturating_sub(number)
         .max(MOVES_LEFT_FLOOR)
 }
 
