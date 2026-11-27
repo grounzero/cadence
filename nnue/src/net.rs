@@ -67,6 +67,9 @@ const CANARY: &str = "canary";
 
 /// At most 32 pieces stand on a board, so no lane ever sums more feature weights than this.
 const MAX_ACTIVE: usize = 32;
+/// The first-layer rows every net is stored at, the widest layout's, so an update indexes a
+/// length known at compile time. A narrower layout fills the first rows and the rest stay zero.
+const ROWS: usize = KING_BUCKETS * NUM_INPUTS;
 
 /// How a perspective's pieces index the first layer: as they stand, or with the board flipped left
 /// to right while that perspective's own king is on files e to h. `Bucketed` flips it so too, and
@@ -328,7 +331,7 @@ fn read_header(h: &[u8; HEADER_LEN], hidden: usize) -> Result<Origin, LoadError>
 /// The weights, laid out as the trainer exports them: one column of `H` per input feature, `H`
 /// being the hidden width the header names. A bucketed net's columns stand a king bucket at a time.
 pub struct Network<const H: usize = HIDDEN> {
-    pub(crate) weights: Box<[[i16; H]]>,
+    pub(crate) weights: Box<[[i16; H]; ROWS]>,
     pub(crate) bias: [i16; H],
     /// The side to move's perspective first, then the other's.
     pub(crate) output: [[i16; H]; 2],
@@ -412,8 +415,11 @@ impl<const H: usize> Network<H> {
             .iter()
             .map(|&w| i16::from_le_bytes(w));
         let mut next = || words.next().unwrap_or(0);
-        let mut weights = zeroed_columns::<H>(origin.inputs.rows());
-        fill(weights.as_flattened_mut(), &mut next);
+        let mut weights = zeroed_columns::<H>();
+        fill(
+            weights[..origin.inputs.rows()].as_flattened_mut(),
+            &mut next,
+        );
         let mut bias = [0; H];
         fill(&mut bias, &mut next);
         let mut output = [[0; H]; 2];
@@ -514,8 +520,7 @@ impl<const H: usize> Network<H> {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = write_header(&self.origin, H).to_vec();
         out.reserve(self.origin.inputs.payload_len(H));
-        let words = self
-            .weights
+        let words = self.weights[..self.origin.inputs.rows()]
             .iter()
             .flatten()
             .chain(&self.bias)
@@ -533,7 +538,10 @@ impl<const H: usize> Network<H> {
     fn check(&self) -> Result<(), LoadError> {
         let mut magnitudes = [0_i64; NUM_INPUTS];
         for lane in 0..H {
-            for bucket in self.weights.as_chunks::<NUM_INPUTS>().0 {
+            for bucket in self.weights[..self.origin.inputs.rows()]
+                .as_chunks::<NUM_INPUTS>()
+                .0
+            {
                 for (m, column) in magnitudes.iter_mut().zip(bucket) {
                     *m = i64::from(column[lane]).abs();
                 }
@@ -577,8 +585,8 @@ impl<const H: usize> Network<H> {
             let span_u = u64::from(span.unsigned_abs()) * 2 + 1;
             i16::try_from(out % span_u).unwrap_or(0) - span
         };
-        let mut weights = zeroed_columns::<H>(inputs.rows());
-        fill(weights.as_flattened_mut(), || draw(400));
+        let mut weights = zeroed_columns::<H>();
+        fill(weights[..inputs.rows()].as_flattened_mut(), || draw(400));
         let mut bias = [0; H];
         fill(&mut bias, || draw(200));
         let mut output = [[0; H]; 2];
@@ -740,8 +748,11 @@ impl From<Arc<Network<WIDE>>> for AnyNetwork {
     }
 }
 
-fn zeroed_columns<const H: usize>(rows: usize) -> Box<[[i16; H]]> {
-    vec![[0; H]; rows].into_boxed_slice()
+fn zeroed_columns<const H: usize>() -> Box<[[i16; H]; ROWS]> {
+    vec![[0; H]; ROWS]
+        .into_boxed_slice()
+        .try_into()
+        .unwrap_or_else(|_| unreachable!("a vector of ROWS columns is ROWS long"))
 }
 
 fn fill(cells: &mut [i16], mut next: impl FnMut() -> i16) {
