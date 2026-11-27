@@ -15,6 +15,7 @@ pub mod attacks;
 pub mod bitboard;
 pub mod castling;
 pub mod chess960;
+pub mod cycles;
 pub mod dirty;
 pub mod features;
 pub mod fen;
@@ -30,7 +31,10 @@ pub mod zobrist;
 pub use bitboard::Bitboard;
 pub use castling::{CastleSide, CastlingRights};
 pub use dirty::{DirtyPiece, DirtyPieces, MAX_DIRTY, MAX_DIRTY_REACHABLE};
-pub use features::{NUM_INPUTS, feature_index, mirrored_feature_index, mirrors};
+pub use features::{
+    KING_BUCKET, KING_BUCKETS, NUM_INPUTS, bucketed_feature_index, feature_index, king_bucket,
+    mirrored_feature_index, mirrors,
+};
 pub use fen::{FenError, FenStyle, START_FEN};
 pub use movegen::{generate_legal, generate_noisy, has_legal_move};
 pub use mv::{MAX_MOVES, Move, MoveList, parse_uci, to_uci};

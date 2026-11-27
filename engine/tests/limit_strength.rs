@@ -155,7 +155,7 @@ fn the_number_is_inert_at_every_value_while_the_gate_is_off() {
     }
 }
 
-/// The number defaults to the top of the ladder, two lines at the narrowest margin.
+/// The number defaults to the top of the ladder, which samples the fewest lines of any rung.
 #[test]
 fn the_gate_alone_takes_the_top_of_the_ladder() {
     let out = search(FENS[0], &["setoption name UCI_LimitStrength value true"]);

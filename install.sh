@@ -14,6 +14,8 @@ REPO_URL="https://github.com/$REPO.git"
 ISSUES_URL="https://github.com/$REPO/issues"
 # The servers below are replaced only as check_urls allows, so a test can serve its own.
 API_URL="https://api.github.com/repos/$REPO/releases"
+# GitHub redirects this to the latest stable release's page, whose address ends in its tag.
+LATEST_URL="https://github.com/$REPO/releases/latest"
 RELEASES_URL="https://github.com/$REPO/releases/download"
 ASSETS_URL=$RELEASES_URL
 TABLES_URL="https://tablebase.lichess.ovh/tables/standard"
@@ -54,9 +56,8 @@ HELD=""
 EARLIER=0
 RELEASED=""
 UNLISTED=""
-NAMED=""
-UNREAD=""
-UNREAD_LIMIT=0
+TAGGED=""
+LATEST=""
 ID=""
 FAULT=""
 TROUBLE=""
@@ -92,9 +93,9 @@ asked first; a build from source names the tag it builds.
   --tables         download the 3-4-5 piece tablebases without asking
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
-  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_API_URL and CADENCE_TABLES_URL
-                   name servers of their own; without it, CADENCE_RELEASES_URL must be this
-                   repository's releases on github.com and the other two are refused
+  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_LATEST_URL, CADENCE_API_URL and
+                   CADENCE_TABLES_URL name servers of their own; without it, CADENCE_RELEASES_URL
+                   must be this repository's releases on github.com and the others are refused
   --help           show this and stop
 EOF
 }
@@ -571,8 +572,8 @@ system_report() {
     log "cpu: ${cpu:-unknown}, $(uname -m)"
 }
 
-# CADENCE_RELEASES_URL may name only this repository's releases, and the other two servers stay as
-# they are, unless --test-urls lets a test name its own; whichever is in use is said.
+# CADENCE_RELEASES_URL may name only this repository's releases, and the other servers stay as they
+# are, unless --test-urls lets a test name its own; whichever is in use is said.
 check_urls() {
     if [ -n "${CADENCE_RELEASES_URL:-}" ]; then
         case "$CADENCE_RELEASES_URL" in
@@ -583,6 +584,11 @@ check_urls() {
                 ;;
         esac
         ASSETS_URL=${CADENCE_RELEASES_URL%/}
+    fi
+    if [ -n "${CADENCE_LATEST_URL:-}" ]; then
+        [ "$TEST_URLS" = 1 ] || fail "CADENCE_LATEST_URL is set, which only a test may do, with --test-urls"
+        LATEST_URL=$CADENCE_LATEST_URL
+        say "GitHub's latest release is read from $LATEST_URL, as CADENCE_LATEST_URL and --test-urls ask."
     fi
     if [ -n "${CADENCE_API_URL:-}" ]; then
         [ "$TEST_URLS" = 1 ] || fail "CADENCE_API_URL is set, which only a test may do, with --test-urls"
@@ -741,6 +747,83 @@ newest_candidate() {
         | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1 | awk '{print $5}'
 }
 
+# The string values a JSON document on standard input gives a key, one to a line, whatever the
+# spacing and field order; a key inside a string is not one, and \" and \\ are read as one character.
+json_values() {
+    awk -v key="$1" '
+        function unescape(r,    out, i, e) {
+            out = ""
+            while ((i = index(r, "\\")) > 0) {
+                e = substr(r, i + 1, 1)
+                out = out substr(r, 1, i - 1) ((e == "\"" || e == "\\" || e == "/") ? e : "\\" e)
+                r = substr(r, i + 2)
+            }
+            return out r
+        }
+        {
+            # Split at every quote, the pieces alternate between outside a string and inside one.
+            n = split($0, part, "\"")
+            inside = 0
+            raw = ""
+            for (k = 1; k <= n; k++) {
+                if (!inside) {
+                    t = part[k]
+                    gsub(/[ \t\r]/, "", t)
+                    if (t != "") {
+                        value = named && t == ":"
+                        named = 0
+                    }
+                    inside = 1
+                    continue
+                }
+                raw = raw part[k]
+                # A quote after an odd run of backslashes is escaped, so the string goes on past it.
+                if (k < n && match(part[k], /\\+$/) && RLENGTH % 2) {
+                    raw = raw "\""
+                    continue
+                }
+                if (value) print unescape(raw)
+                named = !value && raw == key
+                value = 0
+                raw = ""
+                inside = 0
+            }
+        }'
+}
+
+# The version GitHub's latest release redirects to, in LATEST, read from the Location of its answer
+# without following it; one that is not x.y.z leaves LATEST empty, and no answer returns 2.
+latest_once() {
+    local answer code location tag secure="" rc=0
+    LATEST=""
+    log "\$ redirect of $LATEST_URL"
+    case "$LATEST_URL" in https://*) secure="--proto =https --tlsv1.2" ;; esac
+    if command -v curl > /dev/null 2>&1; then
+        answer=$(curl -sS $secure -o /dev/null -w '%{http_code} %{redirect_url}' "$LATEST_URL" 2> "$OUT") || answer=""
+    elif command -v wget > /dev/null 2>&1; then
+        wget -q -S --max-redirect=0 -O /dev/null "$LATEST_URL" 2> "$OUT" || rc=$?
+        [ "$rc" != 4 ] || echo "wget: network failure" >> "$OUT"
+        answer="$(grep -oE 'HTTP/[0-9.]+ [0-9]{3}' "$OUT" | tail -n 1 | grep -oE '[0-9]{3}$') $(tr -d '\r' < "$OUT" \
+            | sed -n 's/^ *[Ll]ocation: *//p' | tail -n 1)"
+    else
+        fail "neither curl nor wget is installed, so nothing can be downloaded"
+    fi
+    redact < "$OUT" >> "$LOG"
+    log "answer: $answer"
+    code=${answer%% *}
+    location=${answer#* }
+    case "$code" in
+        "" | 000) TROUBLE=$(said); return 2 ;;
+        5??) TROUBLE=" (the server answered $code)"; return 2 ;;
+    esac
+    TROUBLE=""
+    case "$code-$location" in
+        3??-*/releases/tag/*) tag=${location##*/releases/tag/} ;;
+        *) return 0 ;;
+    esac
+    if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then LATEST=$tag; fi
+}
+
 # GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
 # pre-release by version is offered instead, and with neither nothing is built.
 find_release() {
@@ -749,13 +832,11 @@ find_release() {
         say "Release $VERSION, as asked."
         return 0
     fi
-    local tag="" rc=0
-    fetch "$API_URL/latest" "$WORK/latest.json" || rc=$?
+    local rc=0
+    retry_once "" latest_once || rc=$?
     [ "$rc" != 2 ] || offline "the name of Cadence's latest release from GitHub"
-    [ "$rc" != 0 ] || tag=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/latest.json" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
-    rate_limited "$TROUBLE"
-    if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
-        VERSION=$tag
+    if [ -n "$LATEST" ]; then
+        VERSION=$LATEST
         say "The latest stable release is $VERSION."
     else
         rc=0
@@ -765,8 +846,7 @@ find_release() {
             rate_limited "$TROUBLE"
             fail "could not read Cadence's releases from GitHub$TROUBLE"
         fi
-        VERSION=$(grep -o '"tag_name":[[:space:]]*"[^"]*"' "$WORK/releases.json" | sed 's/.*"\([^"]*\)"$/\1/' \
-            | newest_candidate)
+        VERSION=$(json_values tag_name < "$WORK/releases.json" | newest_candidate)
         if [ -z "$VERSION" ]; then
             [ "$SOURCE" != 1 ] || stop "With no published release, --source needs --version."
             say "Cadence has no published release yet, so there is no binary to install."
@@ -779,9 +859,9 @@ find_release() {
             ask "Install pre-release $VERSION?" y || stop "Nothing was installed."
         fi
     fi
-    # The installer's own version is offered only where a release of it is published.
+    # The installer's own version is offered only where a release of it publishes its SHA256SUMS.
     if [ "$VERSION" != "$INSTALLER_VERSION" ]; then
-        if fetch "$API_URL/tags/$INSTALLER_VERSION" "$WORK/installer-release.json"; then
+        if fetch "$ASSETS_URL/$INSTALLER_VERSION/SHA256SUMS" "$WORK/installer-sums"; then
             say "This installer comes with Cadence $INSTALLER_VERSION; --version $INSTALLER_VERSION installs that one instead."
         else
             log "release $INSTALLER_VERSION is not offered$TROUBLE"
@@ -1120,7 +1200,8 @@ check_rust() {
     esac
 }
 
-# The tag the source is fetched at, the version asked for or found, checked against the repository's.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's,
+# and in TAGGED the commit its annotated tag names, which every release has; a test base's may be plain.
 resolve_tag() {
     local tags
     retry_once "Listing the releases at $REPO_URL" list_tags \
@@ -1132,12 +1213,18 @@ resolve_tag() {
             *) fail "there is no release $VERSION at $REPO_URL" ;;
         esac
     fi
+    # An annotated tag is listed twice, the second time peeled to the commit it names.
+    TAGGED=$(awk -v r="refs/tags/$VERSION^{}" '$2 == r {print $1; exit}' "$WORK/tags")
+    case "$VERSION" in *+*) return 0 ;; esac
+    printf '%s' "$TAGGED" | grep -Eqx '[0-9a-f]{40}' \
+        || fail "the tag $VERSION at $REPO_URL is not an annotated tag naming a commit, as a release's is, so it is not built"
 }
 
-# The repository's tags into the work folder, tried as a download is.
+# The repository's tags, each annotated one also peeled to its commit, into the work folder, tried as a
+# download is.
 list_tags() {
-    log "\$ git ls-remote --tags --refs $REPO_URL"
-    git ls-remote --tags --refs "$REPO_URL" > "$WORK/tags" 2> "$OUT" && return 0
+    log "\$ git ls-remote --tags $REPO_URL"
+    git ls-remote --tags "$REPO_URL" > "$WORK/tags" 2> "$OUT" && return 0
     redact < "$OUT" >> "$LOG"
     return 2
 }
@@ -1160,47 +1247,66 @@ fetch_source() {
         || fail "could not check out Cadence $VERSION"
 }
 
-# The commit the release's notes say it was built from, in NAMED, or nothing where no release names
-# one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
-# UNREAD says why, and the build goes on without the check.
-release_commit() {
-    local rc=0
-    NAMED=""
-    UNREAD=""
-    UNREAD_LIMIT=0
-    case "$VERSION" in *+*) return 0 ;; esac
-    fetch "$API_URL/tags/$VERSION" "$WORK/release.json" || rc=$?
-    [ "$rc" != 2 ] || offline "release $VERSION's notes from GitHub"
-    if [ "$rc" != 0 ]; then
-        [ "$TROUBLE" = " (not found)" ] || UNREAD=${TROUBLE:- (no answer)}
-        ! github_limit || UNREAD_LIMIT=1
-        return 0
-    fi
-    NAMED=$(grep -oE "built from [0-9a-f]{40} at the tag" "$WORK/release.json" | head -n 1 | awk '{print $3}')
-    [ -n "$NAMED" ] || fail "release $VERSION's notes name no commit, so its source cannot be checked against them"
-}
-
-# The fetched tag must be the commit the release names before anything is built from it.
+# The fetched source must be the commit the release's annotated tag names, and match what the release
+# publishes, before anything is built from it; a test base has no release to match.
 check_commit() {
     local got
     got=$(git -C "$SRC" rev-parse HEAD 2> /dev/null) || fail "could not read the commit Cadence $VERSION was fetched at"
-    log "fetched commit: $got; the release names: ${NAMED:-none}"
-    if [ -n "$UNREAD" ]; then
-        say "GitHub's API did not answer$UNREAD, so the commit release $VERSION names could not be read. It is built at its tag, commit $got, without that check."
-        [ "$UNREAD_LIMIT" = 0 ] \
-            || say "GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time."
+    log "fetched commit: $got; the tag names: ${TAGGED:-none}"
+    case "$VERSION" in
+        *+*)
+            say "Test base $VERSION is commit $got; a test base has no release to name one."
+            return
+            ;;
+    esac
+    [ "$got" = "$TAGGED" ] \
+        || fail "the tag $VERSION names commit $TAGGED, and the source fetched at it is commit $got, so it is not built"
+    say "The tag $VERSION names commit $got, the one fetched."
+    check_released "$got"
+}
+
+# A file the release's SHA256SUMS lists, fetched into the work folder and held to its SHA-256 there.
+release_file() {
+    local want rc=0
+    want=$(listed "$1")
+    fetch "$ASSETS_URL/$VERSION/$1" "$WORK/$1" || rc=$?
+    [ "$rc" != 2 ] || offline "release $VERSION's $1"
+    [ "$rc" = 0 ] || tampered "Release $VERSION lists $1 in its SHA256SUMS and does not serve it$TROUBLE"
+    [ "$(checksum "$WORK/$1")" = "$want" ] || tampered "The release's $1 does not match its SHA256SUMS"
+}
+
+# The source is held to the release's bench.txt, and to the commit its SOURCE names where SHA256SUMS
+# lists one, each file held to SHA256SUMS. A version with no SHA256SUMS has no release to hold it to.
+check_released() {
+    local got=$1 rc=0 released own named
+    if [ ! -s "$WORK/SHA256SUMS" ]; then
+        fetch "$ASSETS_URL/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" || rc=$?
+        [ "$rc" != 2 ] || offline "release $VERSION's SHA256SUMS"
+        if [ "$rc" != 0 ]; then
+            rm -f "$WORK/SHA256SUMS"
+            say "Version $VERSION publishes no SHA256SUMS$TROUBLE, so it has no release to hold its source to, and it is built at its tag."
+            return
+        fi
+    fi
+    [ -n "$(listed bench.txt)" ] || tampered "Release $VERSION's SHA256SUMS lists no bench.txt to check its source against"
+    release_file bench.txt
+    released=$(tr -d '[:space:]' < "$WORK/bench.txt")
+    own=$(tr -d '[:space:]' 2> /dev/null < "$SRC/bench.txt")
+    [ "$released" = "$own" ] \
+        || fail "release $VERSION's bench.txt says ${released:-nothing} and the source at its tag says ${own:-nothing}, so it is not built"
+    say "The source's bench.txt says $own, as the release's does."
+    if [ -z "$(listed SOURCE)" ]; then
+        say "Release $VERSION lists no SOURCE in its SHA256SUMS, so it predates the file naming a release's commit, and its tag and bench.txt are the checks."
         return
     fi
-    if [ -z "$NAMED" ]; then
-        case "$VERSION" in
-            *+*) say "Test base $VERSION is commit $got; a test base has no release to name one." ;;
-            *) say "Version $VERSION has no release page naming its commit, so it is built at its tag, commit $got." ;;
-        esac
-        return
-    fi
-    [ "$got" = "$NAMED" ] \
-        || fail "the tag $VERSION is commit $got, and the release names $NAMED, so it is not built"
-    say "The tag $VERSION is commit $got, the one the release names."
+    release_file SOURCE
+    say "Release $VERSION's SOURCE matches its SHA256SUMS."
+    attested SOURCE || tampered "$WHY"
+    named=$(tr -d '\r\n' < "$WORK/SOURCE")
+    printf '%s' "$named" | grep -Eqx '[0-9a-f]{40}' || tampered "Release $VERSION's SOURCE names no commit"
+    [ "$named" = "$got" ] \
+        || fail "release $VERSION's SOURCE names commit $named, and its tag names $got, so it is not built"
+    say "Release $VERSION's SOURCE names commit $got, the one fetched."
 }
 
 # Whether rustup holds a toolchain for a channel.
@@ -1623,6 +1729,7 @@ install_binary() {
         [ "$(checksum "$TARGET")" = "$want" ] || fail "the binary at $TARGET does not match the one checked"
     fi
     state_set binary "$(shown "$TARGET")"
+    forget_kept "$TARGET"
     state_set version "$VERSION"
     state_set sha256 "$(checksum "$TARGET")"
     state_set build "${MADE:-$BUILD}"
@@ -1779,7 +1886,8 @@ retire_previous() {
         default=n
     fi
     if ! ask "Remove that copy, and the PATH entry this script added for it?" "$default"; then
-        say "Kept it. This script now records only the new install, so its uninstall will not remove that copy."
+        keep_previous "$previous" "$folder" "$sum"
+        say "Kept it. The install record still names it, so an uninstall offers to remove it and its PATH entry."
         return 0
     fi
     rm -f "$previous" || fail "could not remove $previous; if Cadence is running, close it and run this again"
@@ -1794,6 +1902,100 @@ retire_previous() {
         remove_path_windows "$win" now
         state_unset path_windows
     fi
+}
+
+# The kept copies the state records, one slot name a line.
+kept_slots() {
+    [ -f "$STATE" ] || return 0
+    state_lines | sed -n 's/^\(kept[0-9][0-9]*\)_binary=.*/\1/p'
+}
+
+is_kept() {
+    local slot
+    for slot in $(kept_slots); do
+        ! same_file "$(state_path "${slot}_binary")" "$1" || return 0
+    done
+    return 1
+}
+
+# A copy the user keeps stays in the state under a slot of its own, with the PATH entries this script
+# added for its folder, so the uninstall can still offer to remove them.
+keep_previous() {
+    local previous=$1 folder=$2 sum=$3 last slot win key
+    last=$(kept_slots | sed 's/^kept//' | sort -n | tail -n 1)
+    slot=kept$((${last:-0} + 1))
+    state_set "${slot}_binary" "$(shown "$previous")"
+    # Only a sum the copy still matches marks it as the file installed there.
+    [ -z "$sum" ] || [ "$(checksum "$previous")" != "$sum" ] || state_set "${slot}_sha256" "$sum"
+    if [ -n "$(state_get path_line)" ] && [ "$(state_get path_line)" = "export PATH=\"$folder:\$PATH\"" ]; then
+        for key in path_rc path_line path_rc_made; do
+            [ -z "$(state_get "$key")" ] || state_set "${slot}_$key" "$(state_get "$key")"
+            state_unset "$key"
+        done
+    fi
+    win=$(state_get path_windows)
+    if [ -n "$win" ] && same_file "$(cygpath -u "$win")" "$folder"; then
+        state_set "${slot}_path_windows" "$win"
+        state_unset path_windows
+    fi
+}
+
+# A kept copy installed over becomes the install the state records, and its PATH entries go back to
+# the keys an install's own use where those are free.
+forget_kept() {
+    local slot key
+    for slot in $(kept_slots); do
+        same_file "$(state_path "${slot}_binary")" "$1" || continue
+        for key in path_rc path_line path_rc_made path_windows; do
+            [ -n "$(state_get "$key")" ] || [ -z "$(state_get "${slot}_$key")" ] \
+                || state_set "$key" "$(state_get "${slot}_$key")"
+        done
+        for key in binary sha256 path_rc path_line path_rc_made path_windows; do state_unset "${slot}_$key"; done
+    done
+}
+
+# A kept copy, offered at the uninstall with the PATH entries this script added for it; yes by default
+# only while it is still the file installed there. What stays is added to KEPT_LEFT.
+uninstall_kept() {
+    local slot=$1 bin sum rc line win default=n left=0 key
+    bin=$(state_path "${slot}_binary")
+    sum=$(state_get "${slot}_sha256")
+    if [ -e "$bin" ]; then
+        [ -z "$sum" ] || [ "$(checksum "$bin")" != "$sum" ] || default=y
+        [ "$default" = y ] || say "The copy kept at $(shown "$bin") has changed since it was installed, or has no SHA-256 recorded, so it may be your own."
+        if ask "Remove the copy kept at $(shown "$bin")?" "$default"; then
+            rm -f "$bin" || fail "could not remove $bin; if Cadence is running, close it and run this again"
+            say "Removed it."
+        else
+            KEPT_LEFT="$KEPT_LEFT, Cadence at $(shown "$bin")"
+            left=1
+        fi
+    else
+        say "There is no Cadence at $(shown "$bin") any more."
+    fi
+    rc=$(state_get "${slot}_path_rc")
+    line=$(state_get "${slot}_path_line")
+    if [ -n "$line" ]; then
+        if remove_path_line "$rc" "$line" ask; then
+            if [ -n "$(state_get "${slot}_path_rc_made")" ] && [ -f "$rc" ] && [ ! -s "$rc" ]; then
+                rm -f "$rc" && say "Removed $rc, which this installer made and which is now empty."
+            fi
+            for key in path_rc path_line path_rc_made; do state_unset "${slot}_$key"; done
+        else
+            KEPT_LEFT="$KEPT_LEFT, the PATH line in $rc"
+            left=1
+        fi
+    fi
+    win=$(state_get "${slot}_path_windows")
+    if [ -n "$win" ]; then
+        if remove_path_windows "$win" ask; then
+            state_unset "${slot}_path_windows"
+        else
+            KEPT_LEFT="$KEPT_LEFT, $win on your PATH"
+            left=1
+        fi
+    fi
+    [ "$left" = 1 ] || { state_unset "${slot}_binary"; state_unset "${slot}_sha256"; }
 }
 
 # Each command on a line of its own, so it can be copied whole.
@@ -1918,7 +2120,10 @@ uninstall() {
     bin=$(state_path binary)
     recorded=$bin
     [ -n "$bin" ] || bin="${PREFIX:-$DEFAULT_PREFIX}/cadence$EXE"
-    if [ -e "$bin" ]; then
+    # A kept copy where an install would be is offered as the kept copy it is, below.
+    if [ -z "$recorded" ] && is_kept "$bin"; then
+        :
+    elif [ -e "$bin" ]; then
         local remove=0
         if [ -n "$recorded" ]; then
             ! ask "Remove $(shown "$bin")?" y || remove=1
@@ -1956,6 +2161,9 @@ uninstall() {
     if [ -n "$win" ]; then
         if remove_path_windows "$win" ask; then state_unset path_windows; else kept="$kept, $win on your PATH"; fi
     fi
+    KEPT_LEFT=""
+    for key in $(kept_slots); do uninstall_kept "$key"; done
+    kept="$kept$KEPT_LEFT"
     tables=$(state_path tables)
     if [ -n "$tables" ] && [ -d "$tables" ]; then
         if ask "Remove the tablebases at $(shown "$tables"), about 1 GB?" y; then
@@ -2020,7 +2228,6 @@ if [ -z "$BUILT" ]; then
     offer_source
     check_git
     resolve_tag
-    release_commit
     fetch_source
     check_commit
     check_linker

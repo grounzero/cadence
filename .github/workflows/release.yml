@@ -1,8 +1,9 @@
 # Release binaries from a version tag: nine builds, their checksums and a provenance attestation for
-# each, with bench.txt and the two install scripts summed beside them, drafted for publishing by hand,
-# a release candidate as a pre-release. A manual run or a change to this file only builds and checks,
-# unless a manual run at an existing tag (`--ref <tag>`) asks for the draft, which re-runs a failed
-# release with the tag's own workflow, so its attestations name the tag as the installers require.
+# each, with bench.txt, the two install scripts and SOURCE, which names the tag's commit and is attested
+# as each binary is, summed beside them, drafted for publishing by hand, a release candidate as a
+# pre-release. A manual run or a change to this file only builds and checks, unless a manual run at an
+# existing tag (`--ref <tag>`) asks for the draft, which re-runs a failed release with the tag's own
+# workflow, so its attestations name the tag as the installers require.
 
 name: release
 
@@ -316,7 +317,7 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The nine together, summed with bench.txt and the install scripts on every run, so a dry run
+  # The nine together, summed with bench.txt, the install scripts and SOURCE on every run, so a dry run
   # checks what a release would assemble.
   assemble:
     name: the nine together
@@ -340,8 +341,12 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # SOURCE holds the commit the tag names, 40 lowercase hex digits and a newline, so an install
+      # from source can hold the commit it fetched to the release's own record of it.
       - name: Nine binaries and their checksums
         shell: bash
+        env:
+          COMMIT: ${{ needs.version.outputs.commit }}
         run: |
           cd dist
           ls -l
@@ -351,7 +356,9 @@ jobs:
           [ "$n" -eq 9 ] || { echo "::error::$n digests and not nine"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           cp ../install.sh ../install.ps1 ../bench.txt .
-          sha256sum cadence-* install.sh install.ps1 bench.txt | tee SHA256SUMS
+          printf '%s\n' "$COMMIT" > SOURCE
+          grep -Eqx '[0-9a-f]{40}' SOURCE || { echo "::error::SOURCE does not hold one commit"; exit 1; }
+          sha256sum cadence-* install.sh install.ps1 bench.txt SOURCE | tee SHA256SUMS
           cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
 
   # Only at a pushed tag or a run asking for the draft, and the only job that may write: it attests
@@ -419,9 +426,11 @@ jobs:
           merge-multiple: true
 
       # Counted and held to the digests the build jobs took, so what is attested is what they checked.
-      # The install scripts and bench.txt come from the tagged commit and are summed beside the binaries.
+      # The install scripts and bench.txt come from the tagged commit, and SOURCE names that commit.
       - name: Checksums
         shell: bash
+        env:
+          COMMIT: ${{ needs.version.outputs.commit }}
         run: |
           cd dist
           n=$(ls cadence-* | wc -l)
@@ -430,12 +439,17 @@ jobs:
           [ "$n" -eq 9 ] || { echo "::error::$n digests and not nine"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           cp ../install.sh ../install.ps1 ../bench.txt .
-          sha256sum cadence-* install.sh install.ps1 bench.txt > SHA256SUMS
+          printf '%s\n' "$COMMIT" > SOURCE
+          grep -Eqx '[0-9a-f]{40}' SOURCE || { echo "::error::SOURCE does not hold one commit"; exit 1; }
+          sha256sum cadence-* install.sh install.ps1 bench.txt SOURCE > SHA256SUMS
           cat SHA256SUMS
 
+      # SOURCE is attested with the binaries, so an install from source can check it as it checks them.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/cadence-*
+          subject-path: |
+            dist/cadence-*
+            dist/SOURCE
 
       # A re-run replaces an earlier draft of the same version, hand edits included, and refuses once the
       # release is published.
@@ -463,7 +477,7 @@ jobs:
               echo "A release candidate, published as a pre-release."
             fi
             echo
-            echo "Nine binaries: Windows and Linux x86-64, each in an AVX-512 build for processors with AVX-512F and AVX-512BW, an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of the install scripts and of bench.txt, which holds the bench count each binary was checked against where its build machine could run it; the install scripts check the bench again on the machine they install on. Each binary carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo "Nine binaries: Windows and Linux x86-64, each in an AVX-512 build for processors with AVX-512F and AVX-512BW, an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of the install scripts, of bench.txt, which holds the bench count each binary was checked against where its build machine could run it, and of SOURCE, which holds the commit the tag names; the install scripts check the bench again on the machine they install on. Each binary and SOURCE carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
             echo "The macOS binaries are not notarized. Before running one, make it executable and clear its quarantine flag: \`chmod +x <file>\`, then \`xattr -d com.apple.quarantine <file>\`. Or build from source."
             echo
@@ -485,5 +499,5 @@ jobs:
             echo "replaced the earlier draft $id"
           done
           gh release create "$VERSION" "${kind[@]}" --title "Cadence $VERSION" \
-            --notes-file notes.txt dist/cadence-* dist/install.sh dist/install.ps1 dist/bench.txt dist/SHA256SUMS \
+            --notes-file notes.txt dist/cadence-* dist/install.sh dist/install.ps1 dist/bench.txt dist/SOURCE dist/SHA256SUMS \
             LICENSE

@@ -19,10 +19,52 @@ result.
 
 ## [Unreleased]
 
+### Changed
+
+- Search: a node the search visits again takes its static evaluation from
+  the hash table, where the entry holds it, rather than evaluating the
+  position again. Every evaluation is the same, so play is unchanged.
+- Speed: a move's accumulator update is written into its slot of the search's
+  stack, 128 lanes at a time: each block of the parent's sums is read once,
+  every piece the move changed is applied to it, and it is written once. Before,
+  the update was returned and stored, and each changed piece made its own pass
+  over the sums. The search is unchanged, node for node.
+
 ### Added
 
 - Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.
 - Tools: `cadence-tools forward` prints the offset rounding leaves between a net and its unquantised weights; `--correct-bias OUT` writes the net with its output bias moved against it, and `--fens FILE` reads the positions from a file.
+- Releases: each release publishes `SOURCE`, the commit its tag names, listed in `SHA256SUMS` and attested as the binaries are.
+
+### Changed
+
+- Install scripts: a build from source checks the source against the commit the release's annotated tag names, against the release's `bench.txt` and, where the release publishes one, against its attested `SOURCE`. Nothing reads the release notes any more.
+- Install scripts: the latest stable release is found through GitHub's redirect to it rather than its API, which is asked only for pre-releases.
+
+### Fixed
+
+- Strength levels: `UCI_Elo`'s five levels are refitted on the network's
+  scale, by the rule that first chose them, with the reading taken again
+  on the network. Every level now samples among eight lines within 650
+  centipawns of the best, and the levels are spaced by expected loss a
+  move, from 110 centipawns at 1000 to 2 at 1800. They were fitted on the
+  handcrafted evaluation, whose centipawns the network does not share.
+- Install scripts: an earlier install the user keeps when installing into
+  another folder stays in the install record, with the PATH entry the
+  installer added for it, so a later `--uninstall` offers to remove both.
+  Until now only the new install was recorded and the kept copy had to be
+  removed by hand.
+- Tablebases: the engine holds at most 128 table files open at once,
+  closing the one read longest ago and opening it again when it is next
+  read. A 6-piece set, about 1,300 files, no longer runs past the
+  operating system's open-file limit and stops being used part way
+  through a session, and the 3-4-5 piece set no longer needs the limit
+  raised on macOS.
+- Tablebases: a table read held up by a stalled drive no longer holds up
+  the answer. `stop` and `quit` wait at most a second for the search, and
+  a timed search is answered at most a tenth of a second past its own
+  deadline, with the move of its last completed depth, or the first legal
+  move if it had none.
 
 ## [0.7.0] - 2026-11-24
 

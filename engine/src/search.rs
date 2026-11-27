@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList};
@@ -110,6 +111,9 @@ pub struct Search<'a> {
     probing: Option<&'a Tables>,
     /// What the tables read at the root, which the report prints in place of the search's score.
     root_rank: Option<Rank>,
+    /// Given each completed iteration's best move, for the session to answer with if this thread
+    /// is held up past where it should answer.
+    standing: Option<&'a Mutex<Move>>,
     /// Spelling in `info` lines only.
     chess960: bool,
     /// What this run reads: [`Tunables::HCE`] unless a net scores the position, and then `given`.
@@ -227,6 +231,12 @@ impl Learned {
         self.history.clear();
         self.conthist.clear();
         self.corrhist.clear();
+    }
+
+    /// For the gates: the correction table, so a test can seed a known correction.
+    #[cfg(feature = "counters")]
+    pub fn corrhist_mut(&mut self) -> &mut CorrectionHistory {
+        &mut self.corrhist
     }
 }
 
@@ -357,6 +367,7 @@ impl<'a> Search<'a> {
             tables: None,
             probing: None,
             root_rank: None,
+            standing: None,
             chess960: false,
             tunables: Tunables::HCE,
             given: Tunables::DEFAULT,
@@ -458,6 +469,18 @@ impl<'a> Search<'a> {
     /// Changes what the report prints and nothing the search decides.
     pub fn set_root_rank(&mut self, rank: Option<Rank>) {
         self.root_rank = rank;
+    }
+
+    /// Written once an iteration, so the search decides nothing differently for it.
+    pub fn set_standing(&mut self, standing: &'a Mutex<Move>) {
+        self.standing = Some(standing);
+    }
+
+    /// Stands until the next iteration completes.
+    fn publish_standing(&self, best: Move) {
+        if let Some(standing) = self.standing {
+            *standing.lock().unwrap_or_else(PoisonError::into_inner) = best;
+        }
     }
 
     /// From the next run on; a move not legal at the root is never searched.

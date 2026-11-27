@@ -51,9 +51,13 @@ pub struct Hit {
     pub bound: Bound,
     /// The node that stored it had a full window, or inherited the flag.
     pub pv: bool,
+    /// The node's static evaluation before any correction, where it read one in reach of the
+    /// field. The key does not carry the fifty-move clock, so a scaling by it goes on after this.
+    pub eval: Option<i16>,
 }
 
-/// The data word of a slot. The fifteen bits above the flag are deliberately empty.
+/// The data word of a slot. The fifteen bits above the flag hold the static evaluation, zero for
+/// none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(transparent)]
 pub struct Entry(u64);
@@ -64,6 +68,12 @@ const DEPTH_SHIFT: u32 = 32;
 const BOUND_SHIFT: u32 = 40;
 const AGE_SHIFT: u32 = 42;
 const PV_SHIFT: u32 = 48;
+const EVAL_SHIFT: u32 = 49;
+const EVAL_MASK: u64 = 0x7FFF;
+/// Added to an evaluation as it is stored, so the field's zero is none.
+const EVAL_OFFSET: i32 = 1 << 14;
+/// The widest evaluation an entry holds; a wider one is stored as none and read from the board.
+pub const MAX_STORED_EVAL: i32 = EVAL_OFFSET - 1;
 
 impl Entry {
     /// No bound, so it decodes to nothing.
@@ -80,6 +90,16 @@ impl Entry {
                 | (((age & AGE_MASK) as u64) << AGE_SHIFT)
                 | ((pv as u64) << PV_SHIFT),
         )
+    }
+
+    /// The same entry holding `eval`, or holding none where `eval` is past `MAX_STORED_EVAL`.
+    #[must_use]
+    pub const fn with_eval(self, eval: i32) -> Entry {
+        if eval < -MAX_STORED_EVAL || eval > MAX_STORED_EVAL {
+            return self;
+        }
+        let field = (eval + EVAL_OFFSET) as u64;
+        Entry((self.0 & !(EVAL_MASK << EVAL_SHIFT)) | (field << EVAL_SHIFT))
     }
 
     #[must_use]
@@ -114,6 +134,10 @@ impl Entry {
             depth: (self.0 >> DEPTH_SHIFT) as u8,
             bound,
             pv: (self.0 >> PV_SHIFT) & 1 == 1,
+            eval: match ((self.0 >> EVAL_SHIFT) & EVAL_MASK) as i32 {
+                0 => None,
+                field => Some((field - EVAL_OFFSET) as i16),
+            },
         })
     }
 }
@@ -269,11 +293,32 @@ impl Table {
 
     /// `pv` is stored and never read here: what a full bucket gives up does not depend on it.
     pub fn store(&self, key: u64, mv: Move, score: i16, depth: u8, bound: Bound, pv: bool) {
+        self.store_with_eval(key, mv, score, depth, bound, pv, None);
+    }
+
+    /// `store`, with the node's static evaluation where it read one.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's fields, each its own type, as `store` takes them"
+    )]
+    pub fn store_with_eval(
+        &self,
+        key: u64,
+        mv: Move,
+        score: i16,
+        depth: u8,
+        bound: Bound,
+        pv: bool,
+        eval: Option<i32>,
+    ) {
         let Some(bucket) = self.bucket(key) else {
             return;
         };
         let generation = self.generation();
-        let fresh = Entry::new(mv, score, depth, bound, generation, pv);
+        let mut fresh = Entry::new(mv, score, depth, bound, generation, pv);
+        if let Some(eval) = eval {
+            fresh = fresh.with_eval(eval);
+        }
         let mut victim = 0;
         let mut worst = i32::MAX;
         for (i, slot) in bucket.slots.iter().enumerate() {
@@ -337,23 +382,28 @@ mod proofs {
         }
     }
 
-    /// An entry decodes to what built it, its age masked to six bits and its spare high bits empty.
+    /// An entry decodes to what built it, its age masked to six bits, its evaluation held where it
+    /// is in reach of the field and none otherwise.
     #[kani::proof]
     fn an_entry_decodes_to_what_built_it() {
         let mv = Move::from_bits(kani::any());
         let (score, depth, age, pv) = (kani::any(), kani::any(), kani::any(), kani::any());
+        let eval: i32 = kani::any();
         let bound = bound();
-        let entry = Entry::new(mv, score, depth, bound, age, pv);
+        let plain = Entry::new(mv, score, depth, bound, age, pv);
+        assert!(plain.to_bits() >> EVAL_SHIFT == 0);
+        let entry = plain.with_eval(eval);
+        let held = (-MAX_STORED_EVAL..=MAX_STORED_EVAL).contains(&eval);
         let hit = Hit {
             mv,
             score,
             depth,
             bound,
             pv,
+            eval: held.then_some(eval as i16),
         };
         assert!(entry.decode() == Some(hit));
         assert!(entry.age() == age & AGE_MASK);
-        assert!(entry.to_bits() >> (PV_SHIFT + 1) == 0);
     }
 
     /// A slot read back answers the key it was written under and no other.

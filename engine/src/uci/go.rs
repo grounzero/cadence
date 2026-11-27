@@ -5,11 +5,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use cadence_core::position::Board;
-use cadence_core::{Move, MoveList, generate_legal, parse_uci, to_uci};
+use cadence_core::{Colour, Move, MoveList, generate_legal, parse_uci, to_uci};
 use cadence_nnue::AnyNetwork;
 
+use super::answer::{self, Answer, DEADLINE_GRACE, Finishing, Gated, STOP_WAIT};
 use super::say::say;
-use super::{Running, Session};
+use super::{Played, Running, Session, Thinking};
 use crate::level;
 use crate::position::Position;
 use crate::search::{Learned, Limits, Search};
@@ -43,20 +44,7 @@ impl Session {
         let received = Instant::now();
         self.stop_search();
         let tokens: Vec<&str> = tokens.collect();
-        let mut limits = Limits::parse(tokens.iter().copied());
-        limits.move_overhead = Some(self.move_overhead);
-        // A clock not ours reads as zero, which returns the first iteration and looks like a broken
-        // engine from the pipe, so say which it is.
-        if !limits.infinite
-            && limits.movetime.is_none()
-            && limits.is_clocked()
-            && limits.clock(self.board.side_to_move()).is_none()
-        {
-            say(format_args!(
-                "info string go: no clock for the side to move; treating it \
-                 as none left rather than as unlimited"
-            ));
-        }
+        let (limits, thinking) = self.limits_for(&tokens, received);
         let stop = Arc::new(AtomicBool::new(false));
         let ponder_hit = Arc::new(AtomicBool::new(false));
         let mut board = self.board.duplicate();
@@ -69,6 +57,14 @@ impl Session {
         };
         // Owed whatever happens next, so spelled before anything can fail to start.
         let fallback = first_answer(&board, &root_filter, self.chess960);
+        let answer = Arc::new(Answer::new(
+            generate_legal(&board),
+            self.chess960,
+            fallback.clone(),
+        ));
+        let us = board.side_to_move();
+        let hard = time::budget(&limits, us).map(|b| Duration::from_millis(b.hard));
+        let hit_hard = time::hit_budget(&limits, us).map(|b| Duration::from_millis(b.hard));
         let (tables, net) = (self.tables.clone(), self.active_net());
         let chess960 = self.chess960;
         let level = self.level();
@@ -85,15 +81,15 @@ impl Session {
             // Its own handle, so a `setoption name Hash` mid-search replaces the session's table
             // without pulling this one from the thread.
             let tt = Arc::clone(&self.tt);
+            let answer = Arc::clone(&answer);
             // The default stack for a spawned thread is not something to rely on across platforms
             // and profiles.
             std::thread::Builder::new()
                 .name("search".to_string())
                 .stack_size(SEARCH_STACK_BYTES)
                 .spawn(move || {
+                    let _finishing = Finishing(&answer);
                     let legal = generate_legal(&board);
-                    let hard = time::budget(&limits, board.side_to_move())
-                        .map(|b| Duration::from_millis(b.hard));
                     let go_on = || probing_allowed(&stop, received, hard);
                     let (root_filter, decided, rank) =
                         tablebase_root(tables.as_deref(), &mut board, root_filter, &go_on);
@@ -116,6 +112,7 @@ impl Session {
                         decided,
                         rank,
                         learned: &mut learned,
+                        answer: &answer,
                     };
                     let (best, pv) = if threads == 1 {
                         single_search(go)
@@ -129,18 +126,24 @@ impl Session {
                         .then(|| ponder_move(&mut pos, best, &pv, chess960))
                         .flatten()
                     {
-                        Some(reply) => say(format_args!("bestmove {spelled} ponder {reply}")),
-                        None => say(format_args!("bestmove {spelled}")),
+                        Some(reply) => answer.give(&format!("bestmove {spelled} ponder {reply}")),
+                        None => answer.give(&format!("bestmove {spelled}")),
                     }
-                    learned
+                    (learned, Instant::now())
                 })
         };
         match thread {
             Ok(thread) => {
+                if let Some(hard) = hard {
+                    answer::watch(&answer, &stop, received + hard + DEADLINE_GRACE);
+                }
                 self.search = Some(Running {
                     stop,
                     ponder_hit,
                     thread,
+                    thinking,
+                    answer,
+                    hit_hard,
                 });
             }
             Err(e) => not_started(&e, &fallback),
@@ -165,19 +168,95 @@ impl Session {
     /// The search keeps its tree and spends the clock from here. A flag, because the search that
     /// must hear it is already running.
     pub(super) fn ponderhit(&mut self) {
-        if let Some(running) = &self.search {
+        if let Some(running) = &mut self.search {
             running.ponder_hit.store(true, Ordering::Relaxed);
+            // The move is ours from here, and so is the clock.
+            if let Some(thinking) = &mut running.thinking {
+                thinking.from = Instant::now();
+                thinking.pondering = false;
+            }
+            if let Some(hard) = running.hit_hard.take() {
+                let deadline = Instant::now() + hard + DEADLINE_GRACE;
+                answer::watch(&running.answer, &running.stop, deadline);
+            }
+        }
+    }
+
+    /// The limits a `go` searches with, the session's overhead, lag and move number among them,
+    /// and the clock the move is answered on where it has one of its own.
+    fn limits_for(&mut self, tokens: &[&str], received: Instant) -> (Limits, Option<Thinking>) {
+        let mut limits = Limits::parse(tokens.iter().copied());
+        limits.move_overhead = Some(self.move_overhead);
+        let us = self.board.side_to_move();
+        self.read_lag(&limits, us);
+        limits.lag = self.lag;
+        limits.move_number = Some(u32::from(self.board.fullmove_number()));
+        // A clock not ours reads as zero, which returns the first iteration and looks like a broken
+        // engine from the pipe, so say which it is.
+        if !limits.infinite
+            && limits.movetime.is_none()
+            && limits.is_clocked()
+            && limits.clock(us).is_none()
+        {
+            say(format_args!(
+                "info string go: no clock for the side to move; treating it \
+                 as none left rather than as unlimited"
+            ));
+        }
+        let thinking = if limits.infinite || limits.movetime.is_some() {
+            None
+        } else {
+            limits.clock(us).map(|(clock, inc)| Thinking {
+                side: us,
+                clock,
+                inc,
+                from: received,
+                pondering: limits.ponder,
+            })
+        };
+        (limits, thinking)
+    }
+
+    /// What our last move lost beyond its thinking: the clock it left, less the clock this `go`
+    /// gives. Only our own clock in one game says anything of our move.
+    fn read_lag(&mut self, limits: &Limits, us: Colour) {
+        let (Some(played), Some((clock, _))) = (self.played.take(), limits.clock(us)) else {
+            return;
+        };
+        if played.side == us {
+            let left = played
+                .clock
+                .saturating_add(played.inc)
+                .saturating_sub(played.spent);
+            self.lag = Some(time::fold_lag(self.lag, left.saturating_sub(clock)));
         }
     }
 
     /// The search thread prints its `bestmove` on the way out and returns the histories it was
-    /// lent. One that failed to start or panicked took them with it, so the next `go` starts empty.
+    /// lent. One that failed to start, panicked or was left held up took them with it, so the next
+    /// `go` starts empty.
     pub(super) fn stop_search(&mut self) {
         if let Some(running) = self.search.take() {
             running.stop.store(true, Ordering::Relaxed);
+            if !running.answer.wait(STOP_WAIT) {
+                running
+                    .answer
+                    .give_standing("the search did not stop when asked");
+                return;
+            }
             // The panic hook has already reported a panic in the search thread.
-            if let Ok(learned) = running.thread.join() {
+            if let Ok((learned, printed)) = running.thread.join() {
                 self.learned = learned;
+                // The session may have answered for a thread held up, and the clock ran from then.
+                let answered = running.answer.given_at().unwrap_or(printed);
+                // A ponder never hit was not a move played.
+                self.played = running.thinking.filter(|t| !t.pondering).map(|t| Played {
+                    side: t.side,
+                    clock: t.clock,
+                    inc: t.inc,
+                    spent: u64::try_from(answered.saturating_duration_since(t.from).as_millis())
+                        .unwrap_or(u64::MAX),
+                });
             }
         }
     }
@@ -235,6 +314,8 @@ struct ParallelGo<'a> {
     /// One set per thread, the primary's first; each worker searches with its own, moved to it and
     /// back without a replacement being built.
     learned: &'a mut Vec<Learned>,
+    /// The primary publishes each iteration's move to it and writes through it.
+    answer: &'a Answer,
 }
 
 /// One thread, which reports and samples a level's move itself.
@@ -255,10 +336,15 @@ fn single_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         decided,
         rank,
         learned,
+        answer,
         ..
     } = go;
-    let mut out = std::io::stdout();
+    let mut out = Gated {
+        answer,
+        out: std::io::stdout(),
+    };
     let mut search = Search::new(stop, tt);
+    search.set_standing(&answer.standing);
     search.swap_learned(&mut learned[0]);
     search.set_limits(limits);
     search.set_clock_origin(received);
@@ -299,6 +385,7 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         decided,
         rank,
         learned,
+        answer,
     } = go;
     tt.new_search();
     let nodes: Arc<[AtomicU64]> = (0..threads)
@@ -348,8 +435,12 @@ fn parallel_search(go: ParallelGo<'_>) -> (Move, Vec<Move>) {
         }
     }
 
-    let mut out = std::io::stdout();
+    let mut out = Gated {
+        answer,
+        out: std::io::stdout(),
+    };
     let mut search = Search::new(stop, tt);
+    search.set_standing(&answer.standing);
     search.swap_learned(&mut learned[0]);
     search.set_limits(limits);
     search.set_clock_origin(received);

@@ -112,6 +112,7 @@ impl Search<'_> {
             previous = Some(score);
             self.run.best = best;
             self.run.score = score;
+            self.publish_standing(best);
             // Only accepted iterations reach here, so a run of equal moves is a run of completed
             // ones.
             self.run.roots.push((best, score));

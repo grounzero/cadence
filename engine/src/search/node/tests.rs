@@ -215,7 +215,7 @@ fn a_node_failing_low_takes_its_parents_flag() {
         let key = 0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(i as u64 + 1);
         search.tt_pv = [parent; MAX_PLY];
         search.tt_pv[ply] = own;
-        search.store(key, ply, 5, 0, Move::NULL, bound);
+        search.store(key, ply, 5, 0, Move::NULL, bound, None);
         let hit = tt.probe(key).expect("the entry was stored");
         assert_eq!(
             hit.pv, stored,

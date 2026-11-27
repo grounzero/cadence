@@ -11,6 +11,35 @@ use crate::search::Limits;
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
 pub const MOVE_OVERHEAD_MS: u64 = 5;
 
+/// The fewest moves a game is reckoned to have left, so a long game still keeps back for its end.
+pub const MOVES_LEFT_FLOOR: u64 = 30;
+
+/// Moves reckoned left at the first move, one fewer every two moves down to the floor.
+pub const MOVES_LEFT_START: u64 = 50;
+
+/// The most one move's reading of the lag counts for, so a single stall does not empty the clock.
+pub const MAX_LAG_READING_MS: u64 = 500;
+
+/// Moves likely left at `move_number`, never under the floor; an unknown move number is the first.
+#[must_use]
+pub fn moves_left(move_number: Option<u32>) -> u64 {
+    let number = u64::from(move_number.unwrap_or(1));
+    MOVES_LEFT_START
+        .saturating_sub(number / 2)
+        .max(MOVES_LEFT_FLOOR)
+}
+
+/// The lag with one more move's reading folded in, a quarter of the way to it; the first reading
+/// is taken as it is.
+#[must_use]
+pub fn fold_lag(lag: Option<u64>, reading: u64) -> u64 {
+    let reading = reading.min(MAX_LAG_READING_MS);
+    match lag {
+        None => reading,
+        Some(lag) => (lag * 3 + reading) / 4,
+    }
+}
+
 /// Milliseconds from the start of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
@@ -49,7 +78,14 @@ pub fn budget(limits: &Limits, us: Colour) -> Option<Budget> {
     // A clock that is not ours tells nothing of our time, and the safe reading is zero: the first
     // iteration and no more.
     let (time, inc) = limits.clock(us).unwrap_or((0, 0));
-    let avail = time.saturating_sub(overhead);
+    // With no increment and no count of moves nothing comes back, and every move left loses the
+    // lag again, so that much is kept back before the share is taken.
+    let reserve = if inc == 0 && limits.movestogo.is_none() {
+        moves_left(limits.move_number).saturating_mul(limits.lag.unwrap_or(0))
+    } else {
+        0
+    };
+    let avail = time.saturating_sub(overhead).saturating_sub(reserve);
     let cap = avail / 2;
     let share = match limits.movestogo {
         Some(mtg) => avail / u64::from(mtg.max(1)),
@@ -214,6 +250,8 @@ mod proofs {
             inc: [kani::any(), kani::any()],
             movestogo: kani::any(),
             move_overhead: kani::any(),
+            lag: kani::any(),
+            move_number: kani::any(),
             ..Limits::default()
         }
     }
