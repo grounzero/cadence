@@ -16,7 +16,11 @@ use crate::picker::{Picker, Tables};
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::tt::Bound;
+use crate::tune::Tunables;
 use lookup::Lookup;
+
+/// The net's defaults as constants, for a timing.
+const NET: &Tunables = &Tunables::DEFAULT;
 
 mod late_move;
 mod lookup;
@@ -158,24 +162,12 @@ impl Search<'_> {
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts. An open window refuses
         // it, as it refuses every other margin rule.
-        let futile = !pv
-            && futile_node(
-                &crate::tune::Tunables::DEFAULT,
-                self.heuristics.evals[ply],
-                depth,
-                alpha,
-            );
+        let futile = !pv && futile_node(NET, self.heuristics.evals[ply], depth, alpha);
         self.stats.futility_nodes.add_if(futile);
 
         // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
         // asked first keeps the moves it takes.
-        let give_up = lmp_index(
-            &crate::tune::Tunables::DEFAULT,
-            in_check,
-            pv,
-            depth,
-            legal.len(),
-        );
+        let give_up = lmp_index(NET, in_check, pv, depth, legal.len());
         self.stats.lmp_nodes.add_if(give_up.is_some());
 
         let original_alpha = alpha;
