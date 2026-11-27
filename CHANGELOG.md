@@ -38,11 +38,23 @@ result.
 
 ### Fixed
 
+- Strength levels: `UCI_Elo`'s five levels are refitted on the network's
+  scale, by the rule that first chose them, with the reading taken again
+  on the network. Every level now samples among eight lines within 650
+  centipawns of the best, and the levels are spaced by expected loss a
+  move, from 110 centipawns at 1000 to 2 at 1800. They were fitted on the
+  handcrafted evaluation, whose centipawns the network does not share.
 - Install scripts: an earlier install the user keeps when installing into
   another folder stays in the install record, with the PATH entry the
   installer added for it, so a later `--uninstall` offers to remove both.
   Until now only the new install was recorded and the kept copy had to be
   removed by hand.
+- Tablebases: the engine holds at most 128 table files open at once,
+  closing the one read longest ago and opening it again when it is next
+  read. A 6-piece set, about 1,300 files, no longer runs past the
+  operating system's open-file limit and stops being used part way
+  through a session, and the 3-4-5 piece set no longer needs the limit
+  raised on macOS.
 - Tablebases: a table read held up by a stalled drive no longer holds up
   the answer. `stop` and `quit` wait at most a second for the search, and
   a timed search is answered at most a tenth of a second past its own

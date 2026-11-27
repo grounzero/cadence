@@ -25,48 +25,47 @@ pub struct Rung {
     pub policy: Policy,
 }
 
-/// Chosen by a rule fixed before the reading. Monotone in expected centipawn loss, not in any one
-/// column: the top rung samples two lines at a narrow margin, so it needs a flatter distribution to
-/// lose less.
+/// Chosen by a rule fixed before the reading, taken on the net: eight lines within one margin at
+/// every rung, the temperature solved so that expected centipawn loss falls geometrically.
 pub const LADDER: &[Rung] = &[
     Rung {
         elo: 1000,
         policy: Policy {
             candidates: 8,
-            margin: 500,
-            halving: 59,
+            margin: 650,
+            halving: 512,
         },
     },
     Rung {
         elo: 1200,
         policy: Policy {
             candidates: 8,
-            margin: 500,
-            halving: 34,
+            margin: 650,
+            halving: 77,
         },
     },
     Rung {
         elo: 1400,
         policy: Policy {
             candidates: 8,
-            margin: 500,
-            halving: 19,
+            margin: 650,
+            halving: 26,
         },
     },
     Rung {
         elo: 1600,
         policy: Policy {
             candidates: 8,
-            margin: 500,
-            halving: 8,
+            margin: 650,
+            halving: 12,
         },
     },
     Rung {
         elo: 1800,
         policy: Policy {
-            candidates: 2,
-            margin: 100,
-            halving: 18,
+            candidates: 8,
+            margin: 650,
+            halving: 7,
         },
     },
 ];

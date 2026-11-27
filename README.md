@@ -157,11 +157,11 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
 | `reverse_futility_margin`, `lmp_multiplier`, `futility_margin`, `probcut_margin`, `aspiration_delta` | 81, 0.878, 144, 62, 30 | Search constants offered to tuners (50 to 400, 0 to 2, 50 to 400, 25 to 250, 8 to 64). Leave them alone for play. |
 
-On macOS, raise the open-file limit with `ulimit -n` before starting the
-engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
-A 6-piece set on Linux may need a higher limit too. Keep the tables on a local
-disk: if a stalled drive holds a read, `stop` is answered within a second and a
-timed search just past its deadline, with the move of its last completed depth.
+The engine holds at most 128 table files open at once, closing the one read
+longest ago, so no open-file limit needs raising for any set. Keep the tables
+on a local disk: if a stalled drive holds a read, `stop` is answered within a
+second and a timed search just past its deadline, with the move of its last
+completed depth.
 
 ### Unusual commands
 
