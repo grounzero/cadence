@@ -16,7 +16,7 @@ const CUTOFF_CLOCK: u8 = 90;
 
 impl Search<'_> {
     /// The move comes back whatever the depth says, so the two halves return separately, and the
-    /// hit's flag beside them.
+    /// hit's flag and static evaluation beside them.
     fn probe(
         &self,
         board: &Board,
@@ -25,17 +25,18 @@ impl Search<'_> {
         ply: usize,
         alpha: Score,
         beta: Score,
-    ) -> (Move, Option<Score>, bool) {
+    ) -> (Move, Option<Score>, bool, Option<Score>) {
         let Some(hit) = self.tt.probe(key) else {
-            return (Move::NULL, None, false);
+            return (Move::NULL, None, false, None);
         };
+        let eval = hit.eval.map(Score::from);
         // A result whose depth reaches the draw may rest on a line the clock now cuts short.
         let clock = board.halfmove_clock();
         if u32::from(hit.depth) < depth
             || clock >= CUTOFF_CLOCK
             || u32::from(clock) + u32::from(hit.depth) >= 100
         {
-            return (hit.mv, None, hit.pv);
+            return (hit.mv, None, hit.pv, eval);
         }
         let score = score::from_tt(hit.score, ply);
         let cutoff = match hit.bound {
@@ -43,12 +44,17 @@ impl Search<'_> {
             Bound::Lower => score >= beta,
             Bound::Upper => score <= alpha,
         };
-        (hit.mv, cutoff.then_some(score), hit.pv)
+        (hit.mv, cutoff.then_some(score), hit.pv, eval)
     }
 }
 
 impl Search<'_> {
-    /// The one store, and where a node failing low takes its parent's flag.
+    /// The one store, and where a node failing low takes its parent's flag; `eval` is the node's
+    /// static evaluation before any correction, where it read one.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the node's own values, passed as the store before it took them"
+    )]
     pub(super) fn store(
         &mut self,
         key: u64,
@@ -57,6 +63,7 @@ impl Search<'_> {
         best: Score,
         mv: Move,
         bound: Bound,
+        eval: Option<Score>,
     ) {
         // An aborted node's value is `ABORTED` and not a bound, and the draw score besides.
         debug_assert!(!self.run.aborted, "a store after the stop");
@@ -64,7 +71,8 @@ impl Search<'_> {
         let score = score::to_tt(best, ply);
         // Nothing here beat alpha, so the move into it may have been the good one.
         let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
-        self.tt.store(key, mv, score, stored_depth, bound, pv);
+        self.tt
+            .store_with_eval(key, mv, score, stored_depth, bound, pv, eval);
     }
 }
 
@@ -72,16 +80,22 @@ impl Search<'_> {
 pub(super) enum Lookup {
     /// The node's value, which the search returns at once.
     Cutoff(Score),
-    /// The table's move to try first, and the floor and ceiling the node keeps.
-    Search {
-        tt_move: Move,
-        bounds: (Score, Score),
-    },
+    /// What the node's search starts from.
+    Search(Found),
+}
+
+/// The table's move to try first, the floor and ceiling the node keeps, and the static evaluation
+/// the table holds for it.
+pub(super) struct Found {
+    pub(super) tt_move: Move,
+    pub(super) bounds: (Score, Score),
+    pub(super) eval: Option<Score>,
 }
 
 impl Search<'_> {
-    /// The mate bounds, which narrow the window in place, then the table and the tablebases. The
-    /// node's value when one of them answers it, and otherwise what its search starts from.
+    /// A move that repeats and the mate bounds, which narrow the window in place, then the table
+    /// and the tablebases. The node's value when one of them answers it, and otherwise what its
+    /// search starts from.
     pub(super) fn lookup(
         &mut self,
         board: &Board,
@@ -91,13 +105,25 @@ impl Search<'_> {
         alpha: &mut Score,
         beta: &mut Score,
     ) -> Lookup {
+        // The node is worth at least the draw, and takes no cutoff from a score stored under an
+        // earlier history.
+        let repeats = ply > 0 && *alpha < DRAW && board.has_upcoming_repetition();
+        if repeats {
+            if DRAW >= *beta {
+                return Lookup::Cutoff(DRAW);
+            }
+            // Not where an open window would be left one point wide, since a node's kind reads it.
+            if *beta > DRAW + 1 {
+                *alpha = DRAW;
+            }
+        }
         (*alpha, *beta) = match mate_window(ply, *alpha, *beta) {
             Ok(window) => window,
             Err(score) => return Lookup::Cutoff(score),
         };
         let (alpha, beta) = (*alpha, *beta);
-        let (tt_move, cutoff, hit_pv) = self.probe(board, key, depth, ply, alpha, beta);
-        if let Some(score) = cutoff {
+        let (tt_move, cutoff, hit_pv, eval) = self.probe(board, key, depth, ply, alpha, beta);
+        if let Some(score) = cutoff.filter(|_| !repeats) {
             return Lookup::Cutoff(score);
         }
         // Before any child is searched, since a child that fails low reads it, and before the
@@ -106,7 +132,11 @@ impl Search<'_> {
         // After the table, so a hit saves the probe, and before the static readings, which an
         // ending the tables decide makes moot.
         match self.tablebase(board, key, depth, ply, alpha, beta, tt_move) {
-            Ok(bounds) => Lookup::Search { tt_move, bounds },
+            Ok(bounds) => Lookup::Search(Found {
+                tt_move,
+                bounds,
+                eval,
+            }),
             Err(score) => Lookup::Cutoff(score),
         }
     }
@@ -153,7 +183,7 @@ impl Search<'_> {
         };
         if cuts {
             // The table's move stays, so a later visit that does not cut still tries it first.
-            self.store(key, ply, depth, score, tt_move, bound);
+            self.store(key, ply, depth, score, tt_move, bound, None);
             return Err(score);
         }
         // A mate inside the table's territory is still searched for, and found, under the bound.

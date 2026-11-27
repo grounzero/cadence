@@ -17,6 +17,8 @@ $RepoUrl = "https://github.com/$Repo.git"
 $IssuesUrl = "https://github.com/$Repo/issues"
 # The servers below are replaced only as Test-Urls allows, so a test can serve its own.
 $ApiUrl = "https://api.github.com/repos/$Repo/releases"
+# GitHub redirects this to the latest stable release's page, whose address ends in its tag.
+$LatestUrl = "https://github.com/$Repo/releases/latest"
 $ReleasesUrl = "https://github.com/$Repo/releases/download"
 $AssetsUrl = $ReleasesUrl
 $TablesUrl = 'https://tablebase.lichess.ovh/tables/standard'
@@ -57,9 +59,7 @@ $script:HeldFrom = ''
 $script:Released = ''
 $script:Unlisted = ''
 $script:Earlier = $false
-$script:Named = ''
-$script:Unread = ''
-$script:UnreadLimit = $false
+$script:Tagged = ''
 $script:Fault = ''
 $script:CleanDirs = $false
 $script:Adding = ''
@@ -89,9 +89,9 @@ asked first; a build from source names the tag it builds.
   --tables         download the 3-4-5 piece tablebases without asking
   --yes            take every default without asking
   --keep-log       keep the log even when everything succeeds
-  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_API_URL and CADENCE_TABLES_URL
-                   name servers of their own; without it, CADENCE_RELEASES_URL must be this
-                   repository's releases on github.com and the other two are refused
+  --test-urls      for tests: let CADENCE_RELEASES_URL, CADENCE_LATEST_URL, CADENCE_API_URL and
+                   CADENCE_TABLES_URL name servers of their own; without it, CADENCE_RELEASES_URL
+                   must be this repository's releases on github.com and the others are refused
   --help           show this and stop
 '@
 }
@@ -378,14 +378,19 @@ function Write-SystemReport {
     Write-Log ('powershell: ' + $PSVersionTable.PSVersion)
 }
 
-# CADENCE_RELEASES_URL may name only this repository's releases, and the other two servers stay as
-# they are, unless --test-urls lets a test name its own; whichever is in use is said.
+# CADENCE_RELEASES_URL may name only this repository's releases, and the other servers stay as they
+# are, unless --test-urls lets a test name its own; whichever is in use is said.
 function Test-Urls {
     if ($env:CADENCE_RELEASES_URL) {
         if ($env:CADENCE_RELEASES_URL -cnotin @($ReleasesUrl, "$ReleasesUrl/") -and -not $script:TestUrls) {
             Fail "CADENCE_RELEASES_URL is $env:CADENCE_RELEASES_URL, which is not $ReleasesUrl; only a test may name another server, with --test-urls"
         }
         $script:AssetsUrl = $env:CADENCE_RELEASES_URL.TrimEnd('/')
+    }
+    if ($env:CADENCE_LATEST_URL) {
+        if (-not $script:TestUrls) { Fail 'CADENCE_LATEST_URL is set, which only a test may do, with --test-urls' }
+        $script:LatestUrl = $env:CADENCE_LATEST_URL
+        Say "GitHub's latest release is read from $($script:LatestUrl), as CADENCE_LATEST_URL and --test-urls ask."
     }
     if ($env:CADENCE_API_URL) {
         if (-not $script:TestUrls) { Fail 'CADENCE_API_URL is set, which only a test may do, with --test-urls' }
@@ -523,6 +528,45 @@ function Compare-Version([string]$First, [string]$Second) {
     return 0
 }
 
+# The version GitHub's latest release redirects to, in Tag, read from the Location of its answer
+# without following it; one that is not x.y.z leaves Tag empty, and Rc 2 is no answer, twice.
+function Get-LatestRelease {
+    return Invoke-RetryOnce '' {
+        Write-Log "redirect of $LatestUrl"
+        $response = $null
+        try {
+            $request = [System.Net.HttpWebRequest]::Create($LatestUrl)
+            $request.AllowAutoRedirect = $false
+            $request.UserAgent = "Cadence installer $InstallerVersion"
+            $response = $request.GetResponse()
+            $code = [int]$response.StatusCode
+            $location = "$($response.Headers['Location'])"
+        } catch {
+            # PowerShell 7 throws at a redirect it was told not to follow, with the answer inside.
+            $failed = $_.Exception
+            if ($failed.InnerException -is [System.Net.WebException]) { $failed = $failed.InnerException }
+            $code = 0
+            if ($failed.PSObject.Properties['Response'] -and $failed.Response) {
+                try { $code = [int]$failed.Response.StatusCode } catch { $code = 0 }
+            }
+            if ($code -lt 300 -or $code -ge 400) {
+                $trouble = Get-DownloadTrouble $_
+                $refused = $trouble -eq ' (not found)' -or $trouble -like ' (the server answered 4*'
+                return @{ Rc = $(if ($refused) { 0 } else { 2 }); Tag = ''; Trouble = $trouble }
+            }
+            $response = $failed.Response
+            $location = "$($response.Headers['Location'])"
+        } finally {
+            if ($response) { $response.Close() }
+        }
+        Write-Log "answer: $code $location"
+        $tag = ''
+        if ($code -ge 300 -and $code -lt 400 -and $location -match '/releases/tag/([^/?#]+)$') { $tag = $Matches[1] }
+        if ($tag -notmatch '^\d+\.\d+\.\d+$') { $tag = '' }
+        return @{ Rc = 0; Tag = $tag; Trouble = '' }
+    }
+}
+
 # GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
 # pre-release by version is offered instead, and with neither nothing is built.
 function Find-Release {
@@ -531,17 +575,12 @@ function Find-Release {
         Say "Release $script:Version, as asked."
         return
     }
-    $tag = ''
     # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
     $headers = @{}
     if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-    $latest = Invoke-Fetch "$ApiUrl/latest" '' $headers
+    $latest = Get-LatestRelease
     if ($latest.Rc -eq 2) { Stop-Offline "the name of Cadence's latest release from GitHub" $latest.Trouble }
-    if ($latest.Rc -ne 0) {
-        Test-RateLimit $latest.Trouble $latest.Failure
-    } elseif ($latest.Answer -and $latest.Answer.PSObject.Properties['tag_name']) {
-        $tag = "$($latest.Answer.tag_name)"
-    }
+    $tag = $latest.Tag
     if ($tag -match '^\d+\.\d+\.\d+$') {
         $script:Version = $tag
         Say "The latest stable release is $tag."
@@ -571,9 +610,9 @@ function Find-Release {
             if (-not (Ask "Install pre-release $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
         }
     }
-    # The installer's own version is offered only where a release of it is published.
+    # The installer's own version is offered only where a release of it publishes its SHA256SUMS.
     if ($script:Version -ne $InstallerVersion) {
-        $own = Invoke-Fetch "$ApiUrl/tags/$InstallerVersion" '' $headers
+        $own = Invoke-Fetch "$AssetsUrl/$InstallerVersion/SHA256SUMS" (Join-Path $Work 'installer-sums')
         if ($own.Rc -eq 0) {
             Say "This installer comes with Cadence $InstallerVersion; --version $InstallerVersion installs that one instead."
         } else {
@@ -988,11 +1027,12 @@ function Test-Rust {
     }
 }
 
-# The tag the source is fetched at, the version asked for or found, checked against the repository's.
+# The tag the source is fetched at, the version asked for or found, checked against the repository's,
+# and in Tagged the commit its annotated tag names, which every release has; a test base's may be plain.
 function Resolve-Tag {
     $listed = Invoke-RetryOnce "Listing the releases at $RepoUrl" {
-        Write-Log "`$ git ls-remote --tags --refs $RepoUrl"
-        $listing = @(git ls-remote --tags --refs $RepoUrl 2>&1)
+        Write-Log "`$ git ls-remote --tags $RepoUrl"
+        $listing = @(git ls-remote --tags $RepoUrl 2>&1)
         if ($LASTEXITCODE -eq 0) { return @{ Rc = 0; Lines = $listing } }
         foreach ($line in $listing) { Write-Log "$line" }
         return @{ Rc = 2; Lines = @() }
@@ -1002,6 +1042,16 @@ function Resolve-Tag {
     if ($tags -notcontains $script:Version) {
         if ($script:Version.Contains('+')) { Fail "there is no test base $script:Version at $RepoUrl" }
         Fail "there is no release $script:Version at $RepoUrl"
+    }
+    # An annotated tag is listed twice, the second time peeled to the commit it names.
+    $script:Tagged = ''
+    foreach ($line in $listed.Lines) {
+        $parts = @("$line".Trim() -split '\s+')
+        if ($parts.Count -ge 2 -and $parts[1] -ceq "refs/tags/$($script:Version)^{}") { $script:Tagged = $parts[0]; break }
+    }
+    if ($script:Version.Contains('+')) { return }
+    if ($script:Tagged -cnotmatch '^[0-9a-f]{40}$') {
+        Fail "the tag $($script:Version) at $RepoUrl is not an annotated tag naming a commit, as a release's is, so it is not built"
     }
 }
 
@@ -1025,50 +1075,67 @@ function Get-Source {
     if ($code -ne 0) { Fail "could not check out Cadence $script:Version" }
 }
 
-# The commit the release's notes say it was built from, in Named, or nothing where no release names
-# one: a test base, or a version from before releases had pages. Where GitHub's API does not answer,
-# Unread says why, and the build goes on without the check.
-function Get-ReleaseCommit {
-    $script:Named = ''
-    $script:Unread = ''
-    $script:UnreadLimit = $false
-    if ($script:Version.Contains('+')) { return }
-    $headers = @{}
-    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
-    $fetched = Invoke-Fetch "$ApiUrl/tags/$($script:Version)" '' $headers
-    if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s notes from GitHub" $fetched.Trouble }
-    if ($fetched.Rc -ne 0) {
-        if ($fetched.Trouble -ne ' (not found)') { $script:Unread = $fetched.Trouble }
-        $script:UnreadLimit = Test-GitHubLimit $fetched.Failure
-        return
-    }
-    $release = $fetched.Answer
-    if ("$($release.body)" -match 'built from ([0-9a-f]{40}) at the tag') { $script:Named = $Matches[1] }
-    if (-not $script:Named) { Fail "release $($script:Version)'s notes name no commit, so its source cannot be checked against them" }
-}
-
-# The fetched tag must be the commit the release names before anything is built from it.
+# The fetched source must be the commit the release's annotated tag names, and match what the release
+# publishes, before anything is built from it; a test base has no release to match.
 function Test-Commit {
     $got = "$(git -C $script:Src rev-parse HEAD 2>$null)".Trim()
     if ($LASTEXITCODE -ne 0 -or -not $got) { Fail "could not read the commit Cadence $($script:Version) was fetched at" }
-    Write-Log "fetched commit: $got; the release names: $(if ($script:Named) { $script:Named } else { 'none' })"
-    if ($script:Unread) {
-        Say "GitHub's API did not answer$($script:Unread), so the commit release $($script:Version) names could not be read. It is built at its tag, commit $got, without that check."
-        if ($script:UnreadLimit) { Say 'GitHub limits how often one address asks; set GITHUB_TOKEN to a GitHub token to check it next time.' }
+    Write-Log "fetched commit: $got; the tag names: $(if ($script:Tagged) { $script:Tagged } else { 'none' })"
+    if ($script:Version.Contains('+')) {
+        Say "Test base $($script:Version) is commit $got; a test base has no release to name one."
         return
     }
-    if (-not $script:Named) {
-        if ($script:Version.Contains('+')) {
-            Say "Test base $($script:Version) is commit $got; a test base has no release to name one."
-        } else {
-            Say "Version $($script:Version) has no release page naming its commit, so it is built at its tag, commit $got."
+    if ($got -ne $script:Tagged) {
+        Fail "the tag $($script:Version) names commit $($script:Tagged), and the source fetched at it is commit $got, so it is not built"
+    }
+    Say "The tag $($script:Version) names commit $got, the one fetched."
+    Test-Released $got
+}
+
+# A file the release's SHA256SUMS lists, fetched into the work folder and held to its SHA-256 there.
+function Save-ReleaseFile([string]$Name) {
+    $fetched = Save-Asset $Name
+    if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s $Name" $fetched.Trouble }
+    if ($fetched.Rc -ne 0) { Stop-Tampered "Release $($script:Version) lists $Name in its SHA256SUMS and does not serve it$($fetched.Trouble)" }
+    if ((Get-Sha256 (Join-Path $Work $Name)) -ne (Get-Listed $Name)) { Stop-Tampered "The release's $Name does not match its SHA256SUMS" }
+}
+
+# The source is held to the release's bench.txt, and to the commit its SOURCE names where SHA256SUMS
+# lists one, each file held to SHA256SUMS. A version with no SHA256SUMS has no release to hold it to.
+function Test-Released([string]$Got) {
+    $sums = Join-Path $Work 'SHA256SUMS'
+    if (-not ((Test-Path -LiteralPath $sums) -and (Get-Item -LiteralPath $sums).Length -gt 0)) {
+        $fetched = Save-Asset 'SHA256SUMS'
+        if ($fetched.Rc -eq 2) { Stop-Offline "release $($script:Version)'s SHA256SUMS" $fetched.Trouble }
+        if ($fetched.Rc -ne 0) {
+            Remove-Item -Force -LiteralPath $sums -ErrorAction SilentlyContinue
+            Say "Version $($script:Version) publishes no SHA256SUMS$($fetched.Trouble), so it has no release to hold its source to, and it is built at its tag."
+            return
         }
+    }
+    if (-not (Get-Listed 'bench.txt')) { Stop-Tampered "Release $($script:Version)'s SHA256SUMS lists no bench.txt to check its source against" }
+    Save-ReleaseFile 'bench.txt'
+    $released = "$(Get-Content -Raw -Path (Join-Path $Work 'bench.txt'))".Trim()
+    $own = ''
+    $ownPath = Join-Path $script:Src 'bench.txt'
+    if (Test-Path -LiteralPath $ownPath) { $own = "$(Get-Content -Raw -Path $ownPath)".Trim() }
+    if ($released -cne $own) {
+        Fail "release $($script:Version)'s bench.txt says $(if ($released) { $released } else { 'nothing' }) and the source at its tag says $(if ($own) { $own } else { 'nothing' }), so it is not built"
+    }
+    Say "The source's bench.txt says $own, as the release's does."
+    if (-not (Get-Listed 'SOURCE')) {
+        Say "Release $($script:Version) lists no SOURCE in its SHA256SUMS, so it predates the file naming a release's commit, and its tag and bench.txt are the checks."
         return
     }
-    if ($got -ne $script:Named) {
-        Fail "the tag $($script:Version) is commit $got, and the release names $($script:Named), so it is not built"
+    Save-ReleaseFile 'SOURCE'
+    Say "Release $($script:Version)'s SOURCE matches its SHA256SUMS."
+    if (-not (Test-Attestation 'SOURCE')) { Stop-Tampered $script:Why }
+    $named = "$(Get-Content -Raw -Path (Join-Path $Work 'SOURCE'))".Trim()
+    if ($named -cnotmatch '^[0-9a-f]{40}$') { Stop-Tampered "Release $($script:Version)'s SOURCE names no commit" }
+    if ($named -ne $Got) {
+        Fail "release $($script:Version)'s SOURCE names commit $named, and its tag names $Got, so it is not built"
     }
-    Say "The tag $($script:Version) is commit $got, the one the release names."
+    Say "Release $($script:Version)'s SOURCE names commit $Got, the one fetched."
 }
 
 # Whether rustup holds a toolchain for a channel.
@@ -1487,6 +1554,7 @@ function Install-Binary {
         if ((Get-Sha256 $script:Target) -ne $want) { Fail "the binary at $($script:Target) does not match the one checked" }
     }
     Set-StateValue 'binary' $script:Target
+    Clear-KeptAt $script:Target
     Set-StateValue 'version' $script:Version
     Set-StateValue 'sha256' (Get-Sha256 $script:Target)
     Set-StateValue 'build' $(if ($script:Made) { $script:Made } else { $script:Build })
@@ -1556,7 +1624,8 @@ function Remove-Previous([string]$Previous) {
         $default = $false
     }
     if (-not (Ask 'Remove that copy, and the PATH entry this script added for it?' $default)) {
-        Say 'Kept it. This script now records only the new install, so its uninstall will not remove that copy.'
+        Save-Kept $Previous $folder $sum
+        Say 'Kept it. The install record still names it, so an uninstall offers to remove it and its PATH entry.'
         return
     }
     try {
@@ -1570,6 +1639,73 @@ function Remove-Previous([string]$Previous) {
         [void](Remove-FromPath $added -Now)
         Remove-StateValue 'path_windows'
     }
+}
+
+# The kept copies the state records, one slot name each.
+function Get-KeptSlots {
+    return @(Get-StateLines | Where-Object { $_ -match '^(kept[0-9]+)_binary=' } | ForEach-Object { ($_ -split '_binary=')[0] })
+}
+
+# A copy the user keeps stays in the state under a slot of its own, with the PATH entry this script
+# added for its folder, so the uninstall can still offer to remove them.
+function Save-Kept([string]$Previous, [string]$Folder, [string]$Sum) {
+    $last = @(Get-KeptSlots | ForEach-Object { [int]$_.Substring(4) } | Sort-Object | Select-Object -Last 1)
+    $slot = 'kept' + $(if ($last.Count -gt 0) { $last[0] + 1 } else { 1 })
+    Set-StateValue "$($slot)_binary" $Previous
+    # Only a sum the copy still matches marks it as the file installed there.
+    if ($Sum -and (Get-Sha256 $Previous) -eq $Sum) { Set-StateValue "$($slot)_sha256" $Sum }
+    $added = Get-StateValue 'path_windows'
+    if ($added -and (Test-SameFile $added $Folder)) {
+        Set-StateValue "$($slot)_path_windows" $added
+        Remove-StateValue 'path_windows'
+    }
+}
+
+# A kept copy installed over becomes the install the state records, and its PATH entry goes back to
+# the key an install's own uses where that is free.
+function Clear-KeptAt([string]$Target) {
+    foreach ($slot in Get-KeptSlots) {
+        if (-not (Test-SameFile (Get-StatePath "$($slot)_binary") $Target)) { continue }
+        $added = Get-StateValue "$($slot)_path_windows"
+        if ($added -and -not (Get-StateValue 'path_windows')) { Set-StateValue 'path_windows' $added }
+        foreach ($key in @('binary', 'sha256', 'path_rc', 'path_line', 'path_rc_made', 'path_windows')) { Remove-StateValue "$($slot)_$key" }
+    }
+}
+
+# A kept copy, offered at the uninstall with the PATH entry this script added for it; yes by default
+# only while it is still the file installed there. Returns what stays.
+function Uninstall-Kept([string]$Slot) {
+    $left = @()
+    $bin = Get-StatePath "$($Slot)_binary"
+    $sum = Get-StateValue "$($Slot)_sha256"
+    if (Test-Path -LiteralPath $bin) {
+        $default = [bool]($sum -and (Get-Sha256 $bin) -eq $sum)
+        if (-not $default) { Say "The copy kept at $bin has changed since it was installed, or has no SHA-256 recorded, so it may be your own." }
+        if (Ask "Remove the copy kept at $($bin)?" $default) {
+            try {
+                Remove-Item -Force -LiteralPath $bin -ErrorAction Stop
+            } catch {
+                Fail "could not remove $($bin); if Cadence is running, close it and run this again"
+            }
+            Say 'Removed it.'
+        } else {
+            $left += "Cadence at $bin"
+        }
+    } else {
+        Say "There is no Cadence at $bin any more."
+    }
+    # A line install.sh kept in a profile under Git Bash is that script's to remove, so it is named.
+    $rc = Get-StateValue "$($Slot)_path_rc"
+    if ($rc) { $left += "the PATH line in $rc" }
+    $added = Get-StateValue "$($Slot)_path_windows"
+    if ($added) {
+        if (Remove-FromPath $added) { Remove-StateValue "$($Slot)_path_windows" } else { $left += "$added on your PATH" }
+    }
+    if ($left.Count -eq 0) {
+        Remove-StateValue "$($Slot)_binary"
+        Remove-StateValue "$($Slot)_sha256"
+    }
+    return $left
 }
 
 # A folder other than the default is the caller's to manage, so the offer defaults to no there.
@@ -1714,7 +1850,10 @@ function Uninstall-Cadence {
         $folder = if ($script:Prefix) { $script:Prefix } else { $DefaultPrefix }
         $bin = Join-Path $folder 'cadence.exe'
     }
-    if (Test-Path $bin) {
+    # A kept copy where an install would be is offered as the kept copy it is, below.
+    $keptThere = (-not $recorded) -and @(Get-KeptSlots | Where-Object { Test-SameFile (Get-StatePath "$($_)_binary") $bin }).Count -gt 0
+    if ($keptThere) {
+    } elseif (Test-Path $bin) {
         $remove = $false
         if ($recorded) {
             $remove = Ask "Remove $($bin)?" $true
@@ -1745,6 +1884,7 @@ function Uninstall-Cadence {
     if ($added) {
         if (Remove-FromPath $added) { Remove-StateValue 'path_windows' } else { $kept += "$added on your PATH" }
     }
+    foreach ($slot in Get-KeptSlots) { $kept += @(Uninstall-Kept $slot) }
     $tables = Get-StatePath 'tables'
     if ($tables -and (Test-Path -LiteralPath $tables)) {
         if (Ask "Remove the tablebases at $tables, about 1 GB?" $true) {
@@ -1809,7 +1949,6 @@ try {
                 Request-Source
                 Test-Git
                 Resolve-Tag
-                Get-ReleaseCommit
                 Get-Source
                 Test-Commit
                 Test-Linker

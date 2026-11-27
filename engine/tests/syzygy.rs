@@ -108,6 +108,64 @@ fn named_positions_probe_to_their_known_outcome() {
     assert_eq!(tables.failures(), 0);
 }
 
+/// Positions across most of the fixture tables, whose probes open their files and those of the
+/// endings their captures reach.
+const ACROSS_TABLES: [&str; 10] = [
+    "k7/8/1K6/8/8/8/7Q/8 w - - 0 1",
+    "8/8/8/4k3/8/8/8/R3K3 w - - 0 1",
+    "8/8/8/4k3/8/8/8/1N2K1B1 w - - 0 1",
+    "8/8/3k4/8/8/2r5/8/R3K3 w - - 0 1",
+    "8/4k3/8/3p4/8/4P3/8/4K3 w - - 0 1",
+    "8/8/3k4/8/8/2r5/8/RR2K3 w - - 0 1",
+    "8/4k3/8/8/8/3PP3/8/4K3 w - - 0 1",
+    "8/8/3k4/5b2/8/8/8/R3K3 w - - 0 1",
+    "8/4k3/3p4/8/8/3PP3/8/4K3 b - - 0 1",
+    "8/8/3k4/8/8/8/8/2B1K3 w - - 0 1",
+];
+
+/// A position's WDL and DTZ answers, each `None` where the tables gave none.
+type Answer = (Option<Wdl>, Option<i32>);
+
+/// Every answer `ACROSS_TABLES` reads, probed twice over, with the most files held open at once.
+fn probed(tables: &Tables) -> (Vec<Answer>, usize) {
+    let mut answers = Vec::new();
+    let mut most = 0;
+    for _ in 0..2 {
+        for fen in ACROSS_TABLES {
+            let b = board(fen);
+            answers.push((tables.probe_wdl(&b), tables.probe_dtz(&b)));
+            most = most.max(tables.open_files());
+        }
+    }
+    (answers, most)
+}
+
+/// At its limit a set closes nothing; past it, down to two files, it answers as an unlimited one
+/// does and never holds more than its limit open.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_set_at_or_past_its_open_file_limit_answers_as_an_unlimited_one() {
+    let dir = fixture_set("open-limit").display().to_string();
+    let unlimited = loaded(&dir);
+    let (expected, needed) = probed(&unlimited);
+    assert!(needed > 2, "the positions open only {needed} files");
+    for limit in [needed, needed - 1, 2] {
+        let (tables, problems) = Tables::load_with_open_limit(&dir, 7, limit);
+        assert!(problems.is_empty(), "{problems:?}");
+        let (answers, most) = probed(&tables);
+        assert_eq!(answers, expected, "limit {limit}");
+        assert!(most <= limit, "limit {limit}: {most} open");
+        if limit == needed {
+            assert_eq!(
+                tables.open_files(),
+                needed,
+                "at the limit, nothing is closed"
+            );
+        }
+        assert_eq!(tables.failures(), unlimited.failures(), "limit {limit}");
+    }
+}
+
 /// No move here mates or zeroes, so at a counter of 99 every win runs past the hundredth half-move:
 /// a cursed win, still ranked above every draw.
 #[test]
@@ -1153,4 +1211,75 @@ fn a_rounded_five_piece_distance_on_the_hundredth_half_move_is_not_a_certain_win
         }
     }
     assert!(rounded > 0, "no quiet move read a rounded distance");
+}
+
+/// Long enough that a search waiting on the read fails each gate below by a wide margin.
+const HELD_MS: &str = "20000";
+
+/// A session whose first open of a table the operating system holds, as a stalled drive would, and
+/// whose root is in the tables, so a `go` reads one before it searches.
+fn held_up() -> Engine {
+    let mut e = Engine::spawn_with(&[("CADENCE_TABLE_OPEN_DELAY_MS", HELD_MS)]);
+    e.send(&format!("setoption name SyzygyPath value {}", fixtures()));
+    e.send("position fen k7/8/1K6/8/8/8/7Q/8 w - - 0 1");
+    e.sync();
+    e
+}
+
+/// The `bestmove` line's move, which must be legal at the root `held_up` sets.
+fn answered(lines: &[String]) -> Move {
+    let line = lines.last().expect("a bestmove line");
+    let spelled = line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_else(|| panic!("{line}"));
+    let legal = generate_legal(&board("k7/8/1K6/8/8/8/7Q/8 w - - 0 1"));
+    parse_uci(&legal, spelled).unwrap_or_else(|| panic!("{line}: not legal"))
+}
+
+/// `stop` waits a bounded time for the search, then answers for it with a legal move.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn stop_is_answered_while_a_tablebase_read_is_held_up() {
+    let (waited, lines) = Engine::within(std::time::Duration::from_secs(60), || {
+        let mut e = held_up();
+        e.send("go infinite");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let sent = std::time::Instant::now();
+        e.send("stop");
+        let lines = e.read_until("bestmove ");
+        (sent.elapsed(), lines)
+    });
+    assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
+    answered(&lines);
+}
+
+/// No `stop` comes, so the answer is owed by the move's own deadline.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn a_timed_search_held_up_in_a_tablebase_read_answers_by_its_deadline() {
+    let (waited, lines) = Engine::within(std::time::Duration::from_secs(60), || {
+        let mut e = held_up();
+        let sent = std::time::Instant::now();
+        e.send("go movetime 300");
+        let lines = e.read_until("bestmove ");
+        (sent.elapsed(), lines)
+    });
+    assert!(waited < std::time::Duration::from_secs(2), "{waited:?}");
+    answered(&lines);
+}
+
+/// The process ends without waiting for the read.
+#[test]
+#[ignore = "reads the Syzygy fixtures from CADENCE_SYZYGY_PATH"]
+fn quit_ends_a_session_held_up_in_a_tablebase_read() {
+    let waited = Engine::within(std::time::Duration::from_secs(60), || {
+        let mut e = held_up();
+        e.send("go infinite");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let sent = std::time::Instant::now();
+        e.quit();
+        sent.elapsed()
+    });
+    assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
 }

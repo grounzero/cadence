@@ -18,7 +18,8 @@ thinking, with no say in its moves.
 
 | Version | Estimate (own gauntlet) | CCRL Blitz | CCRL 40/15 | Released |
 | --- | --- | --- | --- | --- |
-| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) | - | [2801 ± 23](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit), as of 2026-11-21 | - | 2026-11-14 |
+| [0.7.0](https://github.com/grounzero/cadence/releases/tag/0.7.0) | 3418 ± 9 | - | - | 2026-11-25 |
+| [0.6.0](https://github.com/grounzero/cadence/releases/tag/0.6.0) | - | [2801 ± 23](https://computerchess.org.uk/404/cgi/engine_details.cgi?print=Details&each_game=1&eng=Cadence%200.6.0%2064-bit) | - | 2026-11-14 |
 | [0.6.0-rc.3](https://github.com/grounzero/cadence/releases/tag/0.6.0-rc.3) | 2796 ± 9 | - | - | - |
 | [0.4.8](https://github.com/grounzero/cadence/tree/0.4.8) | 2289 ± 14 | - | - | 2026-09-04 |
 
@@ -156,10 +157,11 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 | `UCI_EngineAbout` | read only | The engine's name, version, author and repository. |
 | `reverse_futility_margin`, `lmp_multiplier`, `futility_margin`, `probcut_margin`, `aspiration_delta` | 81, 0.878, 144, 62, 30 | Search constants offered to tuners (50 to 400, 0 to 2, 50 to 400, 25 to 250, 8 to 64). Leave them alone for play. |
 
-On macOS, raise the open-file limit with `ulimit -n` before starting the
-engine or the GUI: the 3-4-5 piece tables are 290 files, and macOS allows 256.
-A 6-piece set on Linux may need a higher limit too. Keep the tables on a local
-disk: a stalled network drive can delay `stop`.
+The engine holds at most 128 table files open at once, closing the one read
+longest ago, so no open-file limit needs raising for any set. Keep the tables
+on a local disk: if a stalled drive holds a read, `stop` is answered within a
+second and a timed search just past its deadline, with the move of its last
+completed depth.
 
 ### Unusual commands
 

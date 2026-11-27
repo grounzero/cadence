@@ -842,3 +842,38 @@ fn a_mirrored_net_scores_a_position_and_its_flip_alike() {
         "{differing} of {compared}"
     );
 }
+
+/// An update written into a slot, whatever the slot held, equals the board's refresh, for a plain
+/// net and a mirrored one at both widths, through random DFRC games with castles and promotions.
+#[test]
+fn an_update_written_into_a_slot_is_the_refresh() {
+    fn walk<const H: usize>(nets: [&Network<H>; 2]) -> usize {
+        let mut compared = 0;
+        for (start, moves) in games(17, 20, 120) {
+            let mut board = start.duplicate();
+            for net in nets {
+                let mut parent = net.refresh(&board);
+                let mut made = Vec::new();
+                for &m in &moves {
+                    let dirty = board.make_move(m);
+                    made.push(m);
+                    // The slot starts as another position's sums, as a stack's slot does.
+                    let mut slot = net.refresh(&start);
+                    slot.sums[0][0] = slot.sums[0][0].wrapping_add(1);
+                    net.update_into(&parent, &dirty, &board, &mut slot);
+                    assert_eq!(slot, net.refresh(&board), "after {m:?}");
+                    assert_eq!(net.update(&parent, &dirty, &board), slot, "after {m:?}");
+                    parent = slot;
+                    compared += 1;
+                }
+                for &m in made.iter().rev() {
+                    board.unmake_move(m);
+                }
+            }
+        }
+        compared
+    }
+    let narrow = walk([&net(), &mirrored::<HIDDEN>()]);
+    let wide = walk([&wide(), &mirrored::<WIDE>()]);
+    assert!(narrow > 1_000 && wide > 1_000, "{narrow} and {wide}");
+}

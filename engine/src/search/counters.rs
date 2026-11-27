@@ -107,6 +107,8 @@ pub(super) struct Stats {
     pub(super) evasion_exchanges: Counter,
     /// Every static reading, the net's or the handcrafted one's, so a timing can price it per node.
     pub(super) static_evals: Counter,
+    /// Static evaluations taken from the table in place of a reading.
+    pub(super) table_evals: Counter,
 }
 
 impl Search<'_> {
@@ -119,6 +121,12 @@ impl Search<'_> {
     #[must_use]
     pub fn static_evals(&self) -> u64 {
         self.stats.static_evals.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn table_evals(&self) -> u64 {
+        self.stats.table_evals.get()
     }
 
     #[cfg(feature = "counters")]
@@ -502,21 +510,41 @@ impl Search<'_> {
         }
     }
 
-    /// Read before the node folds anything in, so no correction has seen the score it will be
-    /// scored against.
+    /// The static evaluation, with the corrected one written to the node's row, read before the
+    /// node folds anything in so no correction has seen the score it will be scored against.
+    /// `stored` is the table's, which is the board's own reading.
     pub(super) fn corrected_eval(
         &mut self,
         board: &Position,
+        ply: usize,
         in_check: bool,
         keys: &CorrectionKeys,
         side: Colour,
+        stored: Option<Score>,
     ) -> Option<Score> {
         if in_check {
+            self.heuristics.evals[ply] = None;
             return None;
         }
+        let raw = match stored {
+            Some(eval) => self.table_eval(board, eval),
+            None => self.static_eval(board),
+        };
         let correction = self.heuristics.corrhist.correction(keys, side);
         self.stats.corrhist_applied.add_if(correction != 0);
-        Some(self.static_eval(board) + correction)
+        self.heuristics.evals[ply] = Some(raw + correction);
+        Some(raw)
+    }
+
+    /// A debug build reads the board again, so a stored evaluation that is not the board's fails.
+    fn table_eval(&mut self, board: &Position, eval: Score) -> Score {
+        self.stats.table_evals.add_one();
+        debug_assert_eq!(
+            eval,
+            board.net_eval().unwrap_or_else(|| eval::evaluate(board)),
+            "the table's evaluation is not the board's"
+        );
+        eval
     }
 
     /// The net's score where the position carries one, the handcrafted evaluation's otherwise.

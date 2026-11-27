@@ -6,7 +6,7 @@
 
 use cadence_core::features::{feature_index, mirrored_feature_index, mirrors};
 use cadence_core::position::Board;
-use cadence_core::{Colour, DirtyPieces, MAX_PLY, Piece, PieceType, Square};
+use cadence_core::{Colour, DirtyPieces, MAX_DIRTY, MAX_PLY, Piece, PieceType, Square};
 
 use crate::net::{HIDDEN, Inputs, Network};
 
@@ -18,6 +18,10 @@ pub struct Accumulator<const H: usize = HIDDEN> {
 }
 
 const COLOURS: [Colour; 2] = [Colour::White, Colour::Black];
+
+/// The lanes an update changes in one pass: eight 256-bit registers, and a whole number of them
+/// at every width a net is built at.
+const BLOCK: usize = 128;
 
 impl<const H: usize> Network<H> {
     /// Every piece on the board added to the biases, the path an update must always agree with.
@@ -32,9 +36,8 @@ impl<const H: usize> Network<H> {
         acc
     }
 
-    /// Every subtraction before any addition: a DFRC castle can empty and fill one square, and
-    /// a lane must never hold more than the board's pieces. `board` is the position the move
-    /// left, which names each king's square and is what a crossing perspective is rebuilt from.
+    /// The child of `parent` by the pieces a move changed, as `update_into` writes it. `board` is
+    /// the position the move left, which names each king's square.
     #[must_use]
     pub fn update(
         &self,
@@ -42,26 +45,73 @@ impl<const H: usize> Network<H> {
         dirty: &DirtyPieces,
         board: &Board,
     ) -> Accumulator<H> {
-        let mut acc = *parent;
+        let mut child = *parent;
+        self.update_into(parent, dirty, board, &mut child);
+        child
+    }
+
+    /// `update` written into `child`, whatever it held, so a search's stack is never copied twice.
+    /// A perspective whose own king crossed the middle is rebuilt from `board`; any other is moved
+    /// by every subtraction before any addition, as a DFRC castle can empty and fill one square.
+    pub fn update_into(
+        &self,
+        parent: &Accumulator<H>,
+        dirty: &DirtyPieces,
+        board: &Board,
+        child: &mut Accumulator<H>,
+    ) {
         for persp in COLOURS {
+            let sums = &mut child.sums[persp.index()];
             if self.crossed(dirty, persp) {
-                acc.sums[persp.index()] = self.rebuilt(board, persp);
+                *sums = self.rebuilt(board, persp);
                 continue;
             }
             let king = board.king_square(persp);
-            let sums = &mut acc.sums[persp.index()];
+            let (mut removed, mut added) = ([0; MAX_DIRTY], [0; MAX_DIRTY]);
+            let (mut r, mut a) = (0, 0);
             for d in dirty.as_slice() {
                 if let Some(from) = d.from.get() {
-                    self.sub(sums, self.index(persp, king, d.piece, from));
+                    removed[r] = self.index(persp, king, d.piece, from);
+                    r += 1;
                 }
-            }
-            for d in dirty.as_slice() {
                 if let Some(to) = d.to.get() {
-                    self.add(sums, self.index(persp, king, d.piece, to));
+                    added[a] = self.index(persp, king, d.piece, to);
+                    a += 1;
                 }
             }
+            self.moved(
+                &parent.sums[persp.index()],
+                sums,
+                &removed[..r],
+                &added[..a],
+            );
         }
-        acc
+    }
+
+    /// One perspective's lanes `BLOCK` at a time, each read from the parent, taken down by every
+    /// removed row before any added row and written once, so a lane stays within the board.
+    /// Never inlined, so that CI can find it in a release binary and check that it is vector code.
+    #[inline(never)]
+    fn moved(&self, parent: &[i16; H], child: &mut [i16; H], removed: &[usize], added: &[usize]) {
+        const { assert!(H.is_multiple_of(BLOCK), "a width of whole blocks") };
+        let (from, _) = parent.as_chunks::<BLOCK>();
+        let (to, _) = child.as_chunks_mut::<BLOCK>();
+        for (at, (from, to)) in from.iter().zip(to).enumerate() {
+            let mut block = *from;
+            for &row in removed {
+                let (rows, _) = self.weights[row].as_chunks::<BLOCK>();
+                for (s, &w) in block.iter_mut().zip(&rows[at]) {
+                    *s -= w;
+                }
+            }
+            for &row in added {
+                let (rows, _) = self.weights[row].as_chunks::<BLOCK>();
+                for (s, &w) in block.iter_mut().zip(&rows[at]) {
+                    *s += w;
+                }
+            }
+            *to = block;
+        }
     }
 
     /// One perspective's sums from every piece on the board.
@@ -102,12 +152,6 @@ impl<const H: usize> Network<H> {
             *s += w;
         }
     }
-
-    fn sub(&self, sums: &mut [i16; H], index: usize) {
-        for (s, &w) in sums.iter_mut().zip(&self.weights[index]) {
-            *s -= w;
-        }
-    }
 }
 
 /// One accumulator a ply, allocated once and never resized, its cursor kept in step with the
@@ -137,9 +181,9 @@ impl<const H: usize> AccumulatorStack<H> {
     ///
     /// Past `MAX_PLY` plies, which the search's own bound keeps it from reaching.
     pub fn push(&mut self, net: &Network<H>, dirty: &DirtyPieces, board: &Board) {
-        let child = net.update(&self.stack[self.top], dirty, board);
+        let (parents, children) = self.stack.split_at_mut(self.top + 1);
+        net.update_into(&parents[self.top], dirty, board, &mut children[0]);
         self.top += 1;
-        self.stack[self.top] = child;
     }
 
     /// A null move changes no piece, so the child is the parent.
