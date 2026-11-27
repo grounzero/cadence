@@ -27,7 +27,7 @@ fn mate_plies(n: u32) -> Score {
     Score::try_from(plies).unwrap_or(Score::MAX)
 }
 
-impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
+impl<S: crate::search::Settings> Search<'_, S> {
     /// `Move::NULL` when there is none. Under `infinite` or an unhit ponder it returns only on
     /// `stop`.
     pub fn run(&mut self, board: &mut Position, out: &mut dyn Write) -> Move {

@@ -10,7 +10,7 @@ use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 
-impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
+impl<S: crate::search::Settings> Search<'_, S> {
     /// Stands pat only out of check: a side in check must answer it.
     pub(super) fn quiesce(
         &mut self,
@@ -67,7 +67,7 @@ impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
             if stand_pat >= beta {
                 // A stand-pat cut on a stalemate would score it as the evaluation.
                 return if has_legal_move(board) {
-                    if SOFT_STAND_PAT { stand_pat } else { beta }
+                    if S::SOFT_STAND_PAT { stand_pat } else { beta }
                 } else {
                     DRAW
                 };

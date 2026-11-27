@@ -11,7 +11,7 @@ use crate::search::depth::null_reduction;
 use crate::search::pruning::has_non_pawn_material;
 use crate::search::{Expected, Search};
 
-impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
+impl<S: crate::search::Settings> Search<'_, S> {
     pub(super) fn null_move(
         &mut self,
         board: &mut Position,

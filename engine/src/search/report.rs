@@ -10,7 +10,7 @@ use super::{CURRMOVE_AFTER_MS, RootLine, Search};
 use crate::position::Position;
 use crate::score::{self, Score};
 
-impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
+impl<S: crate::search::Settings> Search<'_, S> {
     /// Under a depth or node limit nothing is written and no clock is read.
     pub(super) fn name_current(
         &self,

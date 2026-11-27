@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
@@ -98,9 +99,30 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
     killers[0] = m;
 }
 
-/// Per thread; nothing is global. `SOFT_STAND_PAT` compiles a second copy for datagen alone, whose
-/// quiescence stand-pat cut answers with the stand pat rather than beta.
-pub struct Search<'a, const SOFT_STAND_PAT: bool = false> {
+/// What a copy of the search is compiled with, so no setting is checked in its hot path. Only
+/// [`Play`] can be made outside datagen, which keeps every other copy out of play's reach.
+pub trait Settings: sealed::Sealed + Copy {
+    /// A quiescence stand-pat cut answers with the stand pat rather than beta.
+    const SOFT_STAND_PAT: bool;
+}
+
+/// Play's and `bench`'s copy, the default.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Play;
+
+impl sealed::Sealed for Play {}
+
+impl Settings for Play {
+    const SOFT_STAND_PAT: bool = false;
+}
+
+/// Keeps [`Settings`] to this crate's own copies.
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// Per thread; nothing is global.
+pub struct Search<'a, S: Settings = Play> {
     limits: Limits,
     stop: &'a AtomicBool,
     /// A flag rather than new limits, because the search that must hear it is already running.
@@ -139,6 +161,8 @@ pub struct Search<'a, const SOFT_STAND_PAT: bool = false> {
     pawns: PawnCache,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
+    /// Made from a value of `S`, so only code that can make one has this copy.
+    settings: PhantomData<S>,
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
     /// The move made at each ply of the current path, which each call's entry takes.
@@ -358,17 +382,17 @@ impl Clock {
 }
 
 impl<'a> Search<'a> {
-    /// Play's search, and `bench`'s, whose stand-pat cut answers with beta.
+    /// Play's search, and `bench`'s: the default copy.
     #[must_use]
     pub fn new(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
-        Search::with_stand_pat(stop, tt)
+        Search::with_settings(stop, tt, Play)
     }
 }
 
-impl<'a, const SOFT_STAND_PAT: bool> Search<'a, SOFT_STAND_PAT> {
-    /// Either copy, named by its type. Datagen alone asks for the fail-soft one.
+impl<'a, S: Settings> Search<'a, S> {
+    /// The copy compiled for `settings`, which only datagen can make other than [`Play`].
     #[must_use]
-    pub fn with_stand_pat(stop: &'a AtomicBool, tt: &'a Table) -> Self {
+    pub fn with_settings(stop: &'a AtomicBool, tt: &'a Table, _settings: S) -> Self {
         Search {
             limits: Limits::default(),
             stop,
@@ -391,6 +415,7 @@ impl<'a, const SOFT_STAND_PAT: bool> Search<'a, SOFT_STAND_PAT> {
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
             pawns: PawnCache::new(),
             root_depth: 0,
+            settings: PhantomData,
             tt_pv: [false; MAX_PLY],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],

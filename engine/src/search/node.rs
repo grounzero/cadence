@@ -33,7 +33,7 @@ fn stored_depth(board: &Board, depth: u32) -> u32 {
     }
 }
 
-impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
+impl<S: crate::search::Settings> Search<'_, S> {
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
         self.node_window(board, depth, ply, -INFINITE, INFINITE)
