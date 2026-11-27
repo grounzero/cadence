@@ -24,11 +24,13 @@ impl Search<'_> {
         kind: Expected,
     ) -> Option<Score> {
         let eval = self.heuristics.evals[ply];
-        let Some(raised) = probcut_bound(&self.tunables, eval, depth, alpha, beta) else {
+        let Some(raised) = probcut_bound(&crate::tune::Tunables::DEFAULT, eval, depth, alpha, beta)
+        else {
             // Asked as though the window were null, so the counter sees only nodes the window
             // alone refused.
             if beta != alpha + 1
-                && probcut_bound(&self.tunables, eval, depth, beta - 1, beta).is_some()
+                && probcut_bound(&crate::tune::Tunables::DEFAULT, eval, depth, beta - 1, beta)
+                    .is_some()
             {
                 self.stats.probcut_refused_window.add_one();
             }
