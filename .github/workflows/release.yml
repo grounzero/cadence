@@ -1,4 +1,4 @@
-# Release binaries from a version tag: nine builds, their checksums and a provenance attestation for
+# Release binaries from a version tag: ten builds, their checksums and a provenance attestation for
 # each, with bench.txt, the two install scripts and SOURCE, which names the tag's commit and is attested
 # as each binary is, summed beside them, drafted for publishing by hand, a release candidate as a
 # pre-release. A manual run or a change to this file only builds and checks, unless a manual run at an
@@ -168,6 +168,13 @@ jobs:
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             features: +neon
+          # Static, for a system without glibc 2.34; install.sh still takes the glibc build. `host` names
+          # the runner's triple where the target is not it.
+          - name: linux-aarch64-musl
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            host: aarch64-unknown-linux-gnu
+            features: +neon,+crt-static
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -180,9 +187,10 @@ jobs:
     env:
       CONFIG_ARG: ${{ matrix.config && format('--config {0}', matrix.config) || '' }}
       # Without `--target` the target's flags reach build scripts too, which then run on the runner,
-      # so an AVX-512 build names its target and its build scripts run on any processor.
-      TARGET_ARG: ${{ contains(matrix.features, '+avx512f') && format('--target {0}', matrix.target) || '' }}
-      BIN: ${{ contains(matrix.features, '+avx512f') && format('target/{0}/release', matrix.target) || 'target/release' }}
+      # so an AVX-512 build names its target and its build scripts run on any processor. A build for a
+      # triple other than the runner's names it too.
+      TARGET_ARG: ${{ (contains(matrix.features, '+avx512f') || matrix.host) && format('--target {0}', matrix.target) || '' }}
+      BIN: ${{ (contains(matrix.features, '+avx512f') || matrix.host) && format('target/{0}/release', matrix.target) || 'target/release' }}
       EXPECTED: ${{ needs.version.outputs.expected }}
       COMMIT: ${{ needs.version.outputs.commit }}
     defaults:
@@ -213,12 +221,16 @@ jobs:
           rustup show active-toolchain
           rustc --version --verbose
 
+      - name: The target's standard library, where the target is not the runner's
+        if: matrix.host
+        run: rustup target add ${{ matrix.target }}
+
       - name: Assert the runner is the architecture the build expects
         run: |
           host=$(rustc -vV | sed -n 's/^host: //p')
           echo "host triple: $host"
-          if [ "$host" != "${{ matrix.target }}" ]; then
-            echo "::error::expected ${{ matrix.target }}, runner is $host"
+          if [ "$host" != "${{ matrix.host || matrix.target }}" ]; then
+            echo "::error::expected ${{ matrix.host || matrix.target }}, runner is $host"
             exit 1
           fi
 
@@ -300,6 +312,58 @@ jobs:
           fi
           printf '### %s\n%s\n' "${{ matrix.name }}" "$last" >> "$GITHUB_STEP_SUMMARY"
 
+      # A static binary asks for no interpreter and no shared library, so it starts without glibc.
+      - name: The binary is static
+        if: matrix.host
+        run: |
+          file "$BIN/cadence"
+          if readelf -lW "$BIN/cadence" | grep -q 'INTERP'; then
+            echo "::error::the binary names an interpreter"; exit 1
+          fi
+          if readelf -dW "$BIN/cadence" | grep -q '(NEEDED)'; then
+            echo "::error::the binary needs a shared library"; exit 1
+          fi
+          echo "no interpreter and no shared library"
+
+      # Against the glibc build of the same commit on this runner: the same bench count, and a paired
+      # timing, alternating which runs first, whose slowdown is reported without failing the build.
+      - name: The same bench as the glibc build, and a paired timing against it
+        if: matrix.host
+        run: |
+          cargo build --locked --release -p cadence-engine --bin cadence
+          glibc=target/release/cadence
+          musl="$BIN/cadence"
+          a=$("$glibc" bench 2> /dev/null | tail -n 1)
+          b=$("$musl" bench 2> /dev/null | tail -n 1)
+          echo "glibc: $a"
+          echo "static: $b"
+          if [ "${a%% *}" != "${b%% *}" ]; then
+            echo "::error::the static build's bench is ${b%% *} nodes and the glibc build's ${a%% *}"
+            exit 1
+          fi
+          pairs=8
+          : > timing.txt
+          for i in $(seq 1 "$pairs"); do
+            if [ $((i % 2)) = 1 ]; then
+              g=$("$glibc" bench 2> /dev/null | tail -n 1 | awk '{print $3}')
+              m=$("$musl" bench 2> /dev/null | tail -n 1 | awk '{print $3}')
+            else
+              m=$("$musl" bench 2> /dev/null | tail -n 1 | awk '{print $3}')
+              g=$("$glibc" bench 2> /dev/null | tail -n 1 | awk '{print $3}')
+            fi
+            echo "$i $g $m" >> timing.txt
+          done
+          awk '{d = ($3 / $2 - 1) * 100; printf "pair %d: glibc %d nps, static %d nps, %+.2f%%\n", $1, $2, $3, d}' timing.txt \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          read -r mean slower <<< "$(awk '{d = ($3 / $2 - 1) * 100; t += d; if (d < 0) s++}
+            END {printf "%+.2f %d", t / NR, s}' timing.txt)"
+          line="the static build's speed against the glibc build is $mean% on the mean of $pairs pairs, slower in $slower"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          case "$mean" in
+            -*) echo "::warning title=static build slower::$line" ;;
+            *) echo "::notice title=static build timing::$line" ;;
+          esac
+
       # Its digest travels with it, taken here where the checks above ran, so the jobs after this one
       # can show they hold the binary this one checked.
       - name: Name the binary
@@ -317,10 +381,10 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The nine together, summed with bench.txt, the install scripts and SOURCE on every run, so a dry run
+  # The ten together, summed with bench.txt, the install scripts and SOURCE on every run, so a dry run
   # checks what a release would assemble.
   assemble:
-    name: the nine together
+    name: the ten together
     needs: [version, build]
     runs-on: ubuntu-latest
     steps:
@@ -343,7 +407,7 @@ jobs:
 
       # SOURCE holds the commit the tag names, 40 lowercase hex digits and a newline, so an install
       # from source can hold the commit it fetched to the release's own record of it.
-      - name: Nine binaries and their checksums
+      - name: Ten binaries and their checksums
         shell: bash
         env:
           COMMIT: ${{ needs.version.outputs.commit }}
@@ -351,9 +415,9 @@ jobs:
           cd dist
           ls -l
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 9 ] || { echo "::error::$n binaries and not nine"; exit 1; }
+          [ "$n" -eq 10 ] || { echo "::error::$n binaries and not ten"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 9 ] || { echo "::error::$n digests and not nine"; exit 1; }
+          [ "$n" -eq 10 ] || { echo "::error::$n digests and not ten"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           cp ../install.sh ../install.ps1 ../bench.txt .
           printf '%s\n' "$COMMIT" > SOURCE
@@ -434,9 +498,9 @@ jobs:
         run: |
           cd dist
           n=$(ls cadence-* | wc -l)
-          [ "$n" -eq 9 ] || { echo "::error::$n binaries and not nine"; exit 1; }
+          [ "$n" -eq 10 ] || { echo "::error::$n binaries and not ten"; exit 1; }
           n=$(ls digests/*.sha256 | wc -l)
-          [ "$n" -eq 9 ] || { echo "::error::$n digests and not nine"; exit 1; }
+          [ "$n" -eq 10 ] || { echo "::error::$n digests and not ten"; exit 1; }
           cat digests/*.sha256 | sha256sum -c
           cp ../install.sh ../install.ps1 ../bench.txt .
           printf '%s\n' "$COMMIT" > SOURCE
@@ -477,7 +541,7 @@ jobs:
               echo "A release candidate, published as a pre-release."
             fi
             echo
-            echo "Nine binaries: Windows and Linux x86-64, each in an AVX-512 build for processors with AVX-512F and AVX-512BW, an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of the install scripts, of bench.txt, which holds the bench count each binary was checked against where its build machine could run it, and of SOURCE, which holds the commit the tag names; the install scripts check the bench again on the machine they install on. Each binary and SOURCE carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo "Ten binaries: Windows and Linux x86-64, each in an AVX-512 build for processors with AVX-512F and AVX-512BW, an AVX2 build and a generic one for processors without AVX2 (it still needs POPCNT), Linux aarch64, also in a static build (musl) for a system without glibc 2.34, macOS arm64, and macOS x86-64 in an AVX2 build. SHA256SUMS lists their checksums, with those of the install scripts, of bench.txt, which holds the bench count each binary was checked against where its build machine could run it, and of SOURCE, which holds the commit the tag names; the install scripts check the bench again on the machine they install on. Each binary and SOURCE carries a build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             echo
             echo "The macOS binaries are not notarized. Before running one, make it executable and clear its quarantine flag: \`chmod +x <file>\`, then \`xattr -d com.apple.quarantine <file>\`. Or build from source."
             echo
