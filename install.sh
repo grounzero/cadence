@@ -78,8 +78,7 @@ Usage: install.sh [options]
 Installs Cadence's release binary for this system once its checksum and bench match the
 release's, or builds it from source where no binary fits. It asks before building, installing a
 compiler or Rust, replacing an install, changing your PATH or downloading tablebases. Without
---version it takes the latest stable release, or where none is published the newest pre-release,
-asked first; a build from source names the tag it builds.
+--version it takes the latest stable release; a build from source names the tag it builds.
 
   --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
@@ -433,8 +432,7 @@ checksum() {
         | awk '{print $1}'
 }
 
-# A quiet wget says nothing when it fails, so its exit status is put into words for said(). curl keeps
-# the answer's headers for github_limit().
+# A quiet wget says nothing when it fails, so its exit status is put into words for said().
 download() {
     local rc=0 header=""
     rm -f "$OUT.headers"
@@ -726,71 +724,6 @@ release_name() {
     esac
 }
 
-# Whether the last download's answer says it is GitHub's rate limit, as its headers do; a refusal
-# for any other reason, or one through wget, is not explained as one.
-github_limit() {
-    [ -f "$OUT.headers" ] && tr -d '\r' < "$OUT.headers" | grep -qiE '^(x-ratelimit-remaining: *0|retry-after:)'
-}
-
-# GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
-rate_limited() {
-    case "$1" in
-        " (the server answered 403)" | " (the server answered 429)")
-            github_limit || return 0
-            fail "GitHub refused to name Cadence's releases$1: it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again." ;;
-    esac
-}
-
-# The highest of the x.y.z-rc.n versions named on standard input, compared number by number.
-newest_candidate() {
-    grep -Ex '[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+' | awk -F '[.-]' '{print $1, $2, $3, $5, $0}' \
-        | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1 | awk '{print $5}'
-}
-
-# The string values a JSON document on standard input gives a key, one to a line, whatever the
-# spacing and field order; a key inside a string is not one, and \" and \\ are read as one character.
-json_values() {
-    awk -v key="$1" '
-        function unescape(r,    out, i, e) {
-            out = ""
-            while ((i = index(r, "\\")) > 0) {
-                e = substr(r, i + 1, 1)
-                out = out substr(r, 1, i - 1) ((e == "\"" || e == "\\" || e == "/") ? e : "\\" e)
-                r = substr(r, i + 2)
-            }
-            return out r
-        }
-        {
-            # Split at every quote, the pieces alternate between outside a string and inside one.
-            n = split($0, part, "\"")
-            inside = 0
-            raw = ""
-            for (k = 1; k <= n; k++) {
-                if (!inside) {
-                    t = part[k]
-                    gsub(/[ \t\r]/, "", t)
-                    if (t != "") {
-                        value = named && t == ":"
-                        named = 0
-                    }
-                    inside = 1
-                    continue
-                }
-                raw = raw part[k]
-                # A quote after an odd run of backslashes is escaped, so the string goes on past it.
-                if (k < n && match(part[k], /\\+$/) && RLENGTH % 2) {
-                    raw = raw "\""
-                    continue
-                }
-                if (value) print unescape(raw)
-                named = !value && raw == key
-                value = 0
-                raw = ""
-                inside = 0
-            }
-        }'
-}
-
 # The version GitHub's latest release redirects to, in LATEST, read from the Location of its answer
 # without following it; one that is not x.y.z leaves LATEST empty, and no answer returns 2.
 latest_once() {
@@ -824,8 +757,7 @@ latest_once() {
     if printf '%s' "$tag" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then LATEST=$tag; fi
 }
 
-# GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
-# pre-release by version is offered instead, and with neither nothing is built.
+# GitHub's latest release is the newest stable one, never a pre-release, and one is always published.
 find_release() {
     step "Finding the release"
     if [ -n "$VERSION" ]; then
@@ -835,30 +767,9 @@ find_release() {
     local rc=0
     retry_once "" latest_once || rc=$?
     [ "$rc" != 2 ] || offline "the name of Cadence's latest release from GitHub"
-    if [ -n "$LATEST" ]; then
-        VERSION=$LATEST
-        say "The latest stable release is $VERSION."
-    else
-        rc=0
-        fetch "$API_URL?per_page=100" "$WORK/releases.json" || rc=$?
-        [ "$rc" != 2 ] || offline "the list of Cadence's releases from GitHub"
-        if [ "$rc" != 0 ]; then
-            rate_limited "$TROUBLE"
-            fail "could not read Cadence's releases from GitHub$TROUBLE"
-        fi
-        VERSION=$(json_values tag_name < "$WORK/releases.json" | newest_candidate)
-        if [ -z "$VERSION" ]; then
-            [ "$SOURCE" != 1 ] || stop "With no published release, --source needs --version."
-            say "Cadence has no published release yet, so there is no binary to install."
-            stop "--source --version X.Y.Z builds a tagged version from source."
-        fi
-        say "No stable release of Cadence exists yet. The newest pre-release is $VERSION."
-        if [ "$SOURCE" != 1 ]; then
-            say "To install it without this question:"
-            if [ "$MODE" = update ]; then say "bash install.sh --update --version $VERSION"; else say "bash install.sh --version $VERSION"; fi
-            ask "Install pre-release $VERSION?" y || stop "Nothing was installed."
-        fi
-    fi
+    [ -n "$LATEST" ] || fail "GitHub's latest release named no version of Cadence; --version X.Y.Z names one"
+    VERSION=$LATEST
+    say "The latest stable release is $VERSION."
     # The installer's own version is offered only where a release of it publishes its SHA256SUMS.
     if [ "$VERSION" != "$INSTALLER_VERSION" ]; then
         if fetch "$ASSETS_URL/$INSTALLER_VERSION/SHA256SUMS" "$WORK/installer-sums"; then
@@ -906,8 +817,10 @@ listed_as() {
 }
 
 # The release workflow attests every binary it builds, run at the version's tag, and gh checks that
-# attestation where it is installed and signed in. Where gh cannot check, that is said and the install
-# goes on; any other failure, in whatever words, leaves WHY.
+# attestation where it is installed and signed in. Only gh's refusal leaves WHY: any other answer is a
+# warning, and the checksum and the bench still hold the file.
+# gh's own words for each refusal, as it prints them in English.
+GH_REFUSAL='verifying with issuer|HTTP 404: Not Found \(https://api\.github\.com/repos/[^ ]+/attestations/sha256:'
 attested() {
     local file=$1 rc last identity="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VERSION"
     ATTESTED=no
@@ -926,23 +839,21 @@ attested() {
         say "Its build attestation verifies: GitHub's release workflow built it at the tag $VERSION."
         return 0
     fi
+    # A refusal: the signature, or the workflow and tag it names, does not verify, or GitHub holds no
+    # attestation for this file's digest.
+    if grep -qE "$GH_REFUSAL" "$OUT"; then
+        WHY="$file's build attestation does not verify ($last)"
+        return 1
+    fi
     # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
     if [ "$rc" -eq 4 ]; then
-        say "Its build attestation was not verified: gh is installed but not signed in (gh auth login)."
-        return 0
+        say "Warning: Its build attestation was not verified: gh is installed but not signed in (gh auth login)."
+    elif grep -qE 'unknown (command|flag|shorthand flag)' "$OUT"; then
+        say "Warning: Its build attestation was not verified: this gh is too old to check one."
+    else
+        say "Warning: Its build attestation was not verified: gh could not check it ($last)."
     fi
-    if grep -qE 'unknown (command|flag|shorthand flag)' "$OUT"; then
-        say "Its build attestation was not verified: this gh is too old to check one."
-        return 0
-    fi
-    # A verifier or trust root that never loaded is gh failing to check. Every other failure is a
-    # verdict, so a wording gh has not used before stops the run.
-    if grep -qE 'error creating Sigstore verifier|failed to choose verifier|initialization may have failed' "$OUT"; then
-        say "Its build attestation was not verified: gh could not check it ($last)."
-        return 0
-    fi
-    WHY="$file's build attestation does not verify ($last)"
-    return 1
+    return 0
 }
 
 # Leaves the checked binary in BUILT, or the reason there is none for this system in WHY. A binary

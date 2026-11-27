@@ -21,6 +21,12 @@ result.
 
 ### Changed
 
+- Install scripts: gh stays optional, and only its refusal of a build
+  attestation stops an install. Any other answer, gh signed out or a gh too
+  old to check, is a warning, and the checksum and the bench still hold the
+  file. Without `--version` the scripts take the latest stable release and no
+  longer look for a pre-release.
+
 - Search: a node the search visits again takes its static evaluation from
   the hash table, where the entry holds it, rather than evaluating the
   position again. Every evaluation is the same, so play is unchanged.

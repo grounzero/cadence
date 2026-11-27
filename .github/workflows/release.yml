@@ -545,7 +545,7 @@ jobs:
             echo
             echo "The macOS binaries are not notarized. Before running one, make it executable and clear its quarantine flag: \`chmod +x <file>\`, then \`xattr -d com.apple.quarantine <file>\`. Or build from source."
             echo
-            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. A download that does not match its checksum, attestation or bench stops the install, and nothing is built in its place. They build the release from source only with \`--source\`, or where no binary fits, as on an Intel Mac without AVX2, and hold the build to the same bench. Without \`--version\` they take the latest stable release, or while none is published they offer the newest pre-release; \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
+            echo "install.sh (Linux, macOS, and Windows under Git Bash or WSL) and install.ps1 (Windows PowerShell) install the binary for the system they run on once its SHA-256 matches SHA256SUMS and its bench matches bench.txt. A download that does not match its checksum, attestation or bench stops the install, and nothing is built in its place. They build the release from source only with \`--source\`, or where no binary fits, as on an Intel Mac without AVX2, and hold the build to the same bench. Without \`--version\` they take the latest stable release; \`--version $VERSION\` names this one. Their SHA-256s, as in SHA256SUMS:"
             echo
             echo '```'
             grep -E ' install\.(sh|ps1)$' dist/SHA256SUMS
