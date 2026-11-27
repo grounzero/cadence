@@ -7,7 +7,7 @@ use crate::score::Score;
 use crate::search::depth::{cut_node_reduction, history_reduction, pv_reduction, reduced_depth};
 use crate::search::{Expected, Search, Via};
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// A reduced search that beats alpha is re-run at full depth before it is believed.
     #[allow(
         clippy::too_many_arguments,

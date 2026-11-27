@@ -14,7 +14,7 @@ use crate::tt::Bound;
 /// has since cut short; only the entry's move is kept.
 const CUTOFF_CLOCK: u8 = 90;
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// The move comes back whatever the depth says, so the two halves return separately, and the
     /// hit's flag and static evaluation beside them.
     fn probe(
@@ -48,7 +48,7 @@ impl Search<'_> {
     }
 }
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// The one store, and where a node failing low takes its parent's flag; `eval` is the node's
     /// static evaluation before any correction, where it read one.
     #[allow(
@@ -92,7 +92,7 @@ pub(super) struct Found {
     pub(super) eval: Option<Score>,
 }
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// A move that repeats and the mate bounds, which narrow the window in place, then the table
     /// and the tablebases. The node's value when one of them answers it, and otherwise what its
     /// search starts from.
@@ -142,7 +142,7 @@ impl Search<'_> {
     }
 }
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// `Err` is the node's value. Otherwise the floor and the ceiling a PV node keeps, unbounded at
     /// every other node and wherever no table answers.
     #[allow(

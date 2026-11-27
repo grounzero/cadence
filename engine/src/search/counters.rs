@@ -110,7 +110,7 @@ pub(super) struct Stats {
     pub(super) table_evals: Counter,
 }
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     #[must_use]
     pub fn nodes(&self) -> u64 {
         self.run.nodes

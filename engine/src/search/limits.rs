@@ -142,7 +142,7 @@ fn moves_to_go<'a>(it: &mut Peekable<impl Iterator<Item = &'a str>>) -> u32 {
     u32::try_from(clock(it)).unwrap_or(u32::MAX)
 }
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// The limits and stop flag at every node; the clock only every `CLOCK_INTERVAL` nodes, and
     /// only with a budget.
     pub(super) fn out_of_time(&mut self) -> bool {

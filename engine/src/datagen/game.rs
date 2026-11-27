@@ -139,11 +139,19 @@ pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
 ///
 /// If the search returns an illegal move.
 pub fn play_as(board: &mut Position, nodes: u64, tt: &Table, stand_pat_fail_soft: bool) -> Played {
+    if stand_pat_fail_soft {
+        play_with::<true>(board, nodes, tt)
+    } else {
+        play_with::<false>(board, nodes, tt)
+    }
+}
+
+/// The setting is chosen once per game, so neither copy of the search checks it.
+fn play_with<const SOFT_STAND_PAT: bool>(board: &mut Position, nodes: u64, tt: &Table) -> Played {
     tt.clear();
     let stop = AtomicBool::new(false);
-    let mut search = Search::new(&stop, tt);
+    let mut search = Search::<SOFT_STAND_PAT>::with_stand_pat(&stop, tt);
     search.set_limits(node_limit(nodes));
-    search.set_stand_pat_fail_soft(stand_pat_fail_soft);
     let mut learned = Learned::new();
     search.swap_learned(&mut learned);
     let mut moves = Vec::new();
@@ -167,7 +175,7 @@ pub fn play_as(board: &mut Position, nodes: u64, tt: &Table, stand_pat_fail_soft
     }
 }
 
-fn label(search: &Search<'_>) -> Option<Score> {
+fn label<const SOFT_STAND_PAT: bool>(search: &Search<'_, SOFT_STAND_PAT>) -> Option<Score> {
     (search.completed_depth() > 0).then_some(search.score())
 }
 

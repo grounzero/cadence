@@ -11,7 +11,7 @@ use crate::search::pruning::{PROBCUT_REDUCTION, probcut_bound};
 use crate::search::{Expected, Search, Via};
 use crate::see;
 
-impl Search<'_> {
+impl<const SOFT_STAND_PAT: bool> Search<'_, SOFT_STAND_PAT> {
     /// Each capture is screened by the quiescence search before the reduced search; a cutoff is
     /// never on the decided scale.
     pub(super) fn probcut(
