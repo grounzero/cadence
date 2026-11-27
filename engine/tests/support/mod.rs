@@ -365,7 +365,13 @@ pub struct Engine {
 
 impl Engine {
     pub fn spawn() -> Engine {
+        Engine::spawn_with(&[])
+    }
+
+    /// With `env` added to the process's environment.
+    pub fn spawn_with(env: &[(&str, &str)]) -> Engine {
         let mut child = Command::new(binary())
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

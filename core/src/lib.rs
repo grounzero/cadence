@@ -15,6 +15,7 @@ pub mod attacks;
 pub mod bitboard;
 pub mod castling;
 pub mod chess960;
+pub mod cycles;
 pub mod dirty;
 pub mod features;
 pub mod fen;
