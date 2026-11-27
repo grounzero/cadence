@@ -74,8 +74,7 @@ Usage: install.ps1 [options]
 Installs Cadence's release binary for this system once its checksum and bench match the
 release's, or builds it from source where no binary fits. It asks before building, installing a
 compiler or Rust, replacing an install, changing your PATH or downloading tablebases. Without
---version it takes the latest stable release, or where none is published the newest pre-release,
-asked first; a build from source names the tag it builds.
+--version it takes the latest stable release; a build from source names the tag it builds.
 
   --version V      this release rather than the default; with --source, also a test base x.y.z+n
   --dir DIR        install into DIR rather than the default folder; --prefix DIR is the same
@@ -567,49 +566,19 @@ function Get-LatestRelease {
     }
 }
 
-# GitHub's latest release is the newest stable one, never a pre-release, so without one the newest
-# pre-release by version is offered instead, and with neither nothing is built.
+# GitHub's latest release is the newest stable one, never a pre-release, and one is always published.
 function Find-Release {
     Step 'Finding the release'
     if ($script:Version) {
         Say "Release $script:Version, as asked."
         return
     }
-    # GitHub's API limits requests by address unless they carry a token, so GITHUB_TOKEN is sent there.
-    $headers = @{}
-    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
     $latest = Get-LatestRelease
     if ($latest.Rc -eq 2) { Stop-Offline "the name of Cadence's latest release from GitHub" $latest.Trouble }
     $tag = $latest.Tag
-    if ($tag -match '^\d+\.\d+\.\d+$') {
-        $script:Version = $tag
-        Say "The latest stable release is $tag."
-    } else {
-        $list = Invoke-Fetch "${ApiUrl}?per_page=100" '' $headers
-        if ($list.Rc -eq 2) { Stop-Offline "the list of Cadence's releases from GitHub" $list.Trouble }
-        if ($list.Rc -ne 0) {
-            Test-RateLimit $list.Trouble $list.Failure
-            Fail "could not read Cadence's releases from GitHub$($list.Trouble)"
-        }
-        $releases = $list.Answer
-        foreach ($release in @($releases)) {
-            $name = "$($release.tag_name)"
-            if ($name -notmatch '^\d+\.\d+\.\d+-rc\.\d+$') { continue }
-            if (-not $script:Version -or (Compare-Version $name $script:Version) -gt 0) { $script:Version = $name }
-        }
-        if (-not $script:Version) {
-            if ($script:Source) { Stop-Install 'With no published release, --source needs --version.' }
-            Say 'Cadence has no published release yet, so there is no binary to install.'
-            Stop-Install '--source --version X.Y.Z builds a tagged version from source.'
-        }
-        Say "No stable release of Cadence exists yet. The newest pre-release is $script:Version."
-        if (-not $script:Source) {
-            Say 'To install it without this question:'
-            $update = if ($script:Mode -eq 'update') { ' --update' } else { '' }
-            Say "powershell -ExecutionPolicy Bypass -File install.ps1$update --version $script:Version"
-            if (-not (Ask "Install pre-release $($script:Version)?" $true)) { Stop-Install 'Nothing was installed.' }
-        }
-    }
+    if ($tag -notmatch '^\d+\.\d+\.\d+$') { Fail "GitHub's latest release named no version of Cadence; --version X.Y.Z names one" }
+    $script:Version = $tag
+    Say "The latest stable release is $tag."
     # The installer's own version is offered only where a release of it publishes its SHA256SUMS.
     if ($script:Version -ne $InstallerVersion) {
         $own = Invoke-Fetch "$AssetsUrl/$InstallerVersion/SHA256SUMS" (Join-Path $Work 'installer-sums')
@@ -618,29 +587,6 @@ function Find-Release {
         } else {
             Write-Log "release $InstallerVersion is not offered$($own.Trouble)"
         }
-    }
-}
-
-# Whether a failed request's answer says it is GitHub's rate limit, as its headers do; a refusal for
-# any other reason is not explained as one.
-function Test-GitHubLimit($Failure) {
-    try {
-        $answer = $Failure.Exception.Response.Headers
-        if ($answer -is [System.Net.WebHeaderCollection]) {
-            return ($answer['X-RateLimit-Remaining'] -eq '0' -or [bool]$answer['Retry-After'])
-        }
-        $values = $null
-        if ($answer.TryGetValues('X-RateLimit-Remaining', [ref]$values) -and @($values) -contains '0') { return $true }
-        return [bool]$answer.Contains('Retry-After')
-    } catch {
-        return $false
-    }
-}
-
-# GitHub refusing the lookup for its hourly limit is said as such, never read as there being no release.
-function Test-RateLimit([string]$Trouble, $Failure) {
-    if (($Trouble -eq ' (the server answered 403)' -or $Trouble -eq ' (the server answered 429)') -and (Test-GitHubLimit $Failure)) {
-        Fail "GitHub refused to name Cadence's releases$($Trouble): it limits how often one address asks. Try again in an hour, or set GITHUB_TOKEN to a GitHub token and run this again."
     }
 }
 
@@ -804,8 +750,10 @@ function Test-SameFile([string]$First, [string]$Second) {
 function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower() }
 
 # The release workflow attests every binary it builds, run at the version's tag, and gh checks that
-# attestation where it is installed and signed in. Where gh cannot check, that is said and the install
-# goes on; any other failure, in whatever words, leaves Why.
+# attestation where it is installed and signed in. Only gh's refusal leaves Why: any other answer is a
+# warning, and the checksum and the bench still hold the file.
+# gh's own words for each refusal, as it prints them in English.
+$GhRefusal = 'verifying with issuer|HTTP 404: Not Found \(https://api\.github\.com/repos/[^ ]+/attestations/sha256:'
 function Test-Attestation([string]$File) {
     $script:Attested = 'no'
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -825,23 +773,21 @@ function Test-Attestation([string]$File) {
         Say "Its build attestation verifies: GitHub's release workflow built it at the tag $($script:Version)."
         return $true
     }
+    # A refusal: the signature, or the workflow and tag it names, does not verify, or GitHub holds no
+    # attestation for this file's digest.
+    if (($said -join "`n") -cmatch $GhRefusal) {
+        $script:Why = "$File's build attestation does not verify ($last)"
+        return $false
+    }
     # gh exits 4 when it is not signed in, and an older gh does not know the command or its options.
     if ($code -eq 4) {
-        Say 'Its build attestation was not verified: gh is installed but not signed in (gh auth login).'
-        return $true
+        Say 'Warning: Its build attestation was not verified: gh is installed but not signed in (gh auth login).'
+    } elseif (($said -join "`n") -match 'unknown (command|flag|shorthand flag)') {
+        Say 'Warning: Its build attestation was not verified: this gh is too old to check one.'
+    } else {
+        Say "Warning: Its build attestation was not verified: gh could not check it ($last)."
     }
-    if (($said -join "`n") -match 'unknown (command|flag|shorthand flag)') {
-        Say 'Its build attestation was not verified: this gh is too old to check one.'
-        return $true
-    }
-    # A verifier or trust root that never loaded is gh failing to check. Every other failure is a
-    # verdict, so a wording gh has not used before stops the run.
-    if (($said -join "`n") -cmatch 'error creating Sigstore verifier|failed to choose verifier|initialization may have failed') {
-        Say "Its build attestation was not verified: gh could not check it ($last)."
-        return $true
-    }
-    $script:Why = "$File's build attestation does not verify ($last)"
-    return $false
+    return $true
 }
 
 # Leaves the checked binary in Built, or the reason there is none for this system in Why. A binary
