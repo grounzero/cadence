@@ -2,14 +2,17 @@
 
 //! The inference against its own oracles: the file round trip and its refusals, every update
 //! against a refresh, the fast output against the reference, a position against its mirror, and
-//! one digest every target's build must print, at each of the two widths a header may name.
+//! one digest every target's build must print, at each of the two widths a header may name. A net
+//! with king buckets is read, bounded and updated against the same oracles.
 
 use cadence_core::chess960::dfrc_fen;
-use cadence_core::features::{NUM_INPUTS, mirrored_feature_index, mirrors};
+use cadence_core::features::{
+    KING_BUCKETS, NUM_INPUTS, bucketed_feature_index, king_bucket, mirrored_feature_index, mirrors,
+};
 use cadence_core::mv::parse_uci;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
-use cadence_core::{Colour, FenStyle, Move, generate_legal};
+use cadence_core::{Colour, FenStyle, Move, Piece, Square, generate_legal};
 use cadence_nnue::net::{EMBEDDED, HEADER_LEN, PAYLOAD_LEN, payload_len};
 use cadence_nnue::{
     AccumulatorStack, AnyNetwork, HIDDEN, Inputs, LoadError, Network, Provenance, WIDE,
@@ -608,45 +611,169 @@ fn words<const H: usize>(net: &Network<H>) -> Vec<i16> {
         .collect()
 }
 
-/// Both perspectives' sums written out from the file's words by the mirrored index, sharing
+/// The seeded net of either width with a block of rows for each king bucket.
+fn bucketed<const H: usize>() -> Network<H> {
+    Network::<H>::generate_as(0xb0c4, Inputs::Bucketed, Provenance::SelfPlay)
+}
+
+/// A first-layer index that reads the perspective's own king.
+type Index = fn(Colour, Square, Piece, Square) -> usize;
+
+/// Both perspectives' sums written out from the file's words by `index` over `rows` rows, sharing
 /// nothing with the accumulator but that index, which the trainer's own holds.
-fn mirrored_sums<const H: usize>(words: &[i16], board: &Board) -> [[i16; H]; 2] {
+fn oracle_sums<const H: usize>(
+    words: &[i16],
+    board: &Board,
+    rows: usize,
+    index: Index,
+) -> [[i16; H]; 2] {
     let mut sums = [[0_i16; H]; 2];
     for persp in [Colour::White, Colour::Black] {
         let king = board.king_square(persp);
         for (lane, sum) in sums[persp.index()].iter_mut().enumerate() {
-            *sum = words[NUM_INPUTS * H + lane];
+            *sum = words[rows * H + lane];
             for sq in board.occupied() {
                 let piece = board.piece_at(sq).expect("an occupied square");
-                *sum += words[mirrored_feature_index(persp, king, piece, sq) * H + lane];
+                *sum += words[index(persp, king, piece, sq) * H + lane];
             }
         }
     }
     sums
 }
 
-/// The header's layout byte is read as plain or mirrored, kept by a round trip, and refused at
-/// any other value.
+fn mirrored_sums<const H: usize>(words: &[i16], board: &Board) -> [[i16; H]; 2] {
+    oracle_sums(words, board, NUM_INPUTS, mirrored_feature_index)
+}
+
+fn bucketed_sums<const H: usize>(words: &[i16], board: &Board) -> [[i16; H]; 2] {
+    let rows = KING_BUCKETS * NUM_INPUTS;
+    oracle_sums(words, board, rows, bucketed_feature_index)
+}
+
+/// The header's layout byte is read as plain, mirrored or bucketed, kept by a round trip, and
+/// refused at any other value.
 #[test]
-fn the_header_names_plain_or_mirrored_inputs_and_nothing_else() {
+fn the_header_names_its_input_layout_and_refuses_any_other() {
     assert_eq!(net().inputs(), Inputs::Plain);
     assert_eq!(net().to_bytes()[INPUTS_AT], 0);
     let net = mirrored::<HIDDEN>();
     assert_eq!(net.inputs(), Inputs::Mirrored);
     assert_eq!(net.to_bytes()[INPUTS_AT], 1);
     assert_eq!(mirrored::<WIDE>().inputs(), Inputs::Mirrored);
+    assert_eq!(bucketed::<HIDDEN>().inputs(), Inputs::Bucketed);
+    assert_eq!(bucketed::<WIDE>().to_bytes()[INPUTS_AT], 2);
     let mut other = net.to_bytes();
-    other[INPUTS_AT] = 2;
+    other[INPUTS_AT] = 3;
     assert_eq!(
         Network::from_bytes(&other).err(),
-        Some(LoadError::Inputs(2))
+        Some(LoadError::Inputs(3))
     );
+    assert_eq!(
+        AnyNetwork::file_len(&other[..HEADER_LEN]).err(),
+        Some(LoadError::Inputs(3))
+    );
+}
+
+/// A bucketed net's file holds a block of rows for each king bucket, is as long as its header says,
+/// and round trips at either width. Its length is none a header without king buckets names, which
+/// is the first thing a build that never read the layout byte weighs.
+#[test]
+fn a_bucketed_net_round_trips_at_its_own_length() {
+    let bytes = bucketed::<WIDE>().to_bytes();
+    assert_eq!(bytes.len(), 3_148_930);
+    assert_eq!(bytes.len(), HEADER_LEN + Inputs::Bucketed.payload_len(WIDE));
+    assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), 3_072);
+    assert_eq!(AnyNetwork::file_len(&bytes[..HEADER_LEN]), Ok(bytes.len()));
+    let back = AnyNetwork::from_bytes(&bytes).expect("loads by its width");
+    assert!(matches!(&back, AnyNetwork::Wide(n) if n.inputs() == Inputs::Bucketed));
+    assert_eq!(back.to_bytes(), bytes);
+    let narrow = bucketed::<HIDDEN>().to_bytes();
+    assert_eq!(
+        narrow.len(),
+        HEADER_LEN + Inputs::Bucketed.payload_len(HIDDEN)
+    );
+    let back = Network::from_bytes(&narrow).expect("loads at the narrow width");
+    assert_eq!(back.to_bytes(), narrow);
+    for plain in [payload_len(HIDDEN), payload_len(WIDE)] {
+        assert!(![narrow.len(), bytes.len()].contains(&(HEADER_LEN + plain)));
+    }
+}
+
+/// The layout byte and the inputs word are read as a pair. Either changed alone is refused: the
+/// word by name, and the byte by the length it implies, which is weighed before the header.
+#[test]
+fn the_layout_byte_and_the_inputs_word_are_checked_together() {
+    let bucketed = bucketed::<HIDDEN>().to_bytes();
+    let plain = net().to_bytes();
+    let mut word = bucketed.clone();
+    word[6..8].copy_from_slice(&768_u16.to_le_bytes());
+    assert_eq!(
+        Network::from_bytes(&word).err(),
+        Some(LoadError::Architecture {
+            field: "inputs",
+            file: 768,
+            build: 3_072
+        })
+    );
+    let mut word = plain.clone();
+    word[6..8].copy_from_slice(&3_072_u16.to_le_bytes());
+    assert_eq!(
+        Network::from_bytes(&word).err(),
+        Some(LoadError::Architecture {
+            field: "inputs",
+            file: 3_072,
+            build: 768
+        })
+    );
+    let mut byte = bucketed.clone();
+    byte[INPUTS_AT] = 1;
+    assert_eq!(
+        Network::from_bytes(&byte).err(),
+        Some(LoadError::Length {
+            want: plain.len(),
+            got: bucketed.len()
+        })
+    );
+    let mut byte = plain.clone();
+    byte[INPUTS_AT] = 2;
+    assert_eq!(
+        AnyNetwork::from_bytes(&byte).err(),
+        Some(LoadError::Length {
+            want: bucketed.len(),
+            got: plain.len()
+        })
+    );
+}
+
+/// A lane is bounded inside each king bucket's rows, as a perspective reads one bucket at a time:
+/// 32 rows at 1,100 load when two buckets share them and are refused when one bucket holds them.
+#[test]
+fn a_bucketed_lane_is_bounded_within_each_bucket() {
+    let good = bucketed::<HIDDEN>().to_bytes();
+    let set = |bytes: &mut Vec<u8>, row: usize| {
+        let at = HEADER_LEN + 2 * row * HIDDEN;
+        bytes[at..at + 2].copy_from_slice(&1_100_i16.to_le_bytes());
+    };
+    let mut shared = good.clone();
+    for f in 0..16 {
+        set(&mut shared, f);
+        set(&mut shared, NUM_INPUTS + f);
+    }
+    assert!(Network::from_bytes(&shared).is_ok());
+    let mut held = good;
+    for f in 0..32 {
+        set(&mut held, 2 * NUM_INPUTS + f);
+    }
+    assert!(matches!(
+        Network::from_bytes(&held),
+        Err(LoadError::Lane { lane: 0, .. })
+    ));
 }
 
 /// Castling positions, Chess960's among them, each with the file White's king and then Black's
 /// lands on: a king crosses the middle either way, stays on its half, stays on its square, and
-/// trades squares with its rook.
-const CASTLES: [(&str, [u8; 2]); 9] = [
+/// trades squares with its rook. The last takes a king to the next king bucket on its own half.
+const CASTLES: [(&str, [u8; 2]); 10] = [
     (
         "r3k2r/pppppppp/2n5/8/8/5N2/PPPPPPPP/R3K2R w KQkq - 0 1",
         *b"gc",
@@ -662,6 +789,7 @@ const CASTLES: [(&str, [u8; 2]); 9] = [
     ("3k3r/pppppppp/8/8/8/8/PPPPPPPP/3K3R w Hh - 0 1", *b"gg"),
     ("r2k4/pppppppp/8/8/8/8/PPPPPPPP/R2K4 w Aa - 0 1", *b"cc"),
     ("2rk4/pppppppp/8/8/8/8/PPPPPPPP/2RK4 w Cc - 0 1", *b"cc"),
+    ("rk6/pppppppp/8/8/8/8/PPPPPPPP/RK6 w Aa - 0 1", *b"cc"),
 ];
 
 /// The side to move's castle that lands its king on `file`.
@@ -687,36 +815,36 @@ fn castle_to(board: &mut Board, file: u8) -> Move {
     found[0]
 }
 
-/// Through each side's castle in every castling position, a mirrored net's stack is the refresh
-/// and the refresh is the oracle's sums, at both widths; the kings cross the middle eight times.
-fn castles_update_as_the_oracle<const H: usize>() -> usize {
-    let net = mirrored::<H>();
-    let words = words(&net);
-    let mut crossings = 0;
+/// Through each side's castle in every castling position, `net`'s stack is the refresh and the
+/// refresh is `oracle`'s sums. The counts are the kings that crossed the middle, those that changed
+/// king bucket, and those that changed bucket on their own half.
+fn castles_update_as_the_oracle<const H: usize>(
+    net: &Network<H>,
+    oracle: fn(&[i16], &Board) -> [[i16; H]; 2],
+) -> [usize; 3] {
+    let words = words(net);
+    let (mut crossings, mut buckets, mut alone) = (0, 0, 0);
     for (fen, files) in CASTLES {
         let mut board = Board::from_fen(fen).unwrap_or_else(|e| panic!("{fen}: {e:?}"));
-        let mut stack = AccumulatorStack::new(&net, &board);
-        assert_eq!(
-            stack.current().sums,
-            mirrored_sums::<H>(&words, &board),
-            "{fen}"
-        );
+        let mut stack = AccumulatorStack::new(net, &board);
+        assert_eq!(stack.current().sums, oracle(&words, &board), "{fen}");
         let mut made = Vec::new();
         for file in files {
             let us = board.side_to_move();
-            let before = mirrors(board.king_square(us));
+            let before = board.king_square(us);
             let m = castle_to(&mut board, file);
             let dirty = board.make_move(m);
             made.push(m);
-            crossings += usize::from(before != mirrors(board.king_square(us)));
-            stack.push(&net, &dirty, &board);
+            let after = board.king_square(us);
+            let crossed = mirrors(before) != mirrors(after);
+            let changed = king_bucket(us, before) != king_bucket(us, after);
+            crossings += usize::from(crossed);
+            buckets += usize::from(changed);
+            alone += usize::from(changed && !crossed);
+            stack.push(net, &dirty, &board);
             let fresh = net.refresh(&board);
             assert_eq!(*stack.current(), fresh, "{fen}, after {m:?}");
-            assert_eq!(
-                fresh.sums,
-                mirrored_sums::<H>(&words, &board),
-                "{fen}, after {m:?}"
-            );
+            assert_eq!(fresh.sums, oracle(&words, &board), "{fen}, after {m:?}");
         }
         for &m in made.iter().rev() {
             board.unmake_move(m);
@@ -728,13 +856,82 @@ fn castles_update_as_the_oracle<const H: usize>() -> usize {
             );
         }
     }
-    crossings
+    [crossings, buckets, alone]
 }
 
 #[test]
 fn a_mirrored_net_follows_each_castle_chess960s_among_them() {
-    assert_eq!(castles_update_as_the_oracle::<HIDDEN>(), 8);
-    assert_eq!(castles_update_as_the_oracle::<WIDE>(), 8);
+    let narrow = castles_update_as_the_oracle(&mirrored::<HIDDEN>(), mirrored_sums);
+    let wide = castles_update_as_the_oracle(&mirrored::<WIDE>(), mirrored_sums);
+    assert_eq!((narrow[0], wide[0]), (8, 8));
+}
+
+/// The same castles under king buckets, at both widths: eight kings cross the middle, six change
+/// bucket, and four of those change it without crossing.
+#[test]
+fn a_bucketed_net_follows_each_castle_chess960s_among_them() {
+    let narrow = castles_update_as_the_oracle(&bucketed::<HIDDEN>(), bucketed_sums);
+    let wide = castles_update_as_the_oracle(&bucketed::<WIDE>(), bucketed_sums);
+    assert_eq!((narrow, wide), ([8, 6, 4], [8, 6, 4]));
+}
+
+/// After every move and unmake of random DFRC games a bucketed net's stack equals a refresh, the
+/// refresh equals the oracle's sums, and the fast output equals the reference. Kings change bucket
+/// on their own half, cross the middle inside a bucket, and move without doing either.
+#[test]
+fn a_bucketed_net_updates_as_a_refresh_through_every_bucket_change() {
+    let net = bucketed::<HIDDEN>();
+    let words = words(&net);
+    let (mut both, mut buckets, mut halves, mut stays) = (0, 0, 0, 0);
+    for (start, moves) in games(13, 60, 160) {
+        let mut board = start.duplicate();
+        let mut stack = AccumulatorStack::new(&net, &board);
+        let mut boards = vec![board.duplicate()];
+        for (ply, &m) in moves.iter().enumerate() {
+            let us = board.side_to_move();
+            let before = board.king_square(us);
+            let dirty = board.make_move(m);
+            let after = board.king_square(us);
+            let crossed = mirrors(before) != mirrors(after);
+            let changed = king_bucket(us, before) != king_bucket(us, after);
+            both += usize::from(crossed && changed);
+            buckets += usize::from(changed && !crossed);
+            halves += usize::from(crossed && !changed);
+            stays += usize::from(!crossed && !changed && before != after);
+            stack.push(&net, &dirty, &board);
+            let fresh = net.refresh(&board);
+            assert_eq!(*stack.current(), fresh, "after {m:?}");
+            if ply % 8 == 0 || crossed || changed {
+                assert_eq!(
+                    fresh.sums,
+                    bucketed_sums::<HIDDEN>(&words, &board),
+                    "after {m:?}"
+                );
+            }
+            let stm = board.side_to_move();
+            assert_eq!(
+                net.evaluate(&fresh, stm),
+                net.evaluate_reference(&fresh, stm)
+            );
+            boards.push(board.duplicate());
+        }
+        for &m in moves.iter().rev() {
+            board.unmake_move(m);
+            stack.pop();
+            boards.pop();
+            let parent = boards.last().expect("the root stays");
+            assert_eq!(
+                *stack.current(),
+                net.refresh(parent),
+                "after unmaking {m:?}"
+            );
+        }
+    }
+    assert!(
+        buckets > 0 && halves > 0 && stays > 0,
+        "{buckets} bucket changes on a half, {halves} crossings inside a bucket, {both} of both, \
+         {stays} king moves that are neither"
+    );
 }
 
 /// After every move and unmake of random DFRC games a mirrored net's stack equals a refresh, the
@@ -844,10 +1041,11 @@ fn a_mirrored_net_scores_a_position_and_its_flip_alike() {
 }
 
 /// An update written into a slot, whatever the slot held, equals the board's refresh, for a plain
-/// net and a mirrored one at both widths, through random DFRC games with castles and promotions.
+/// net, a mirrored one and a bucketed one at both widths, through random DFRC games with castles
+/// and promotions.
 #[test]
 fn an_update_written_into_a_slot_is_the_refresh() {
-    fn walk<const H: usize>(nets: [&Network<H>; 2]) -> usize {
+    fn walk<const H: usize>(nets: [&Network<H>; 3]) -> usize {
         let mut compared = 0;
         for (start, moves) in games(17, 20, 120) {
             let mut board = start.duplicate();
@@ -873,7 +1071,7 @@ fn an_update_written_into_a_slot_is_the_refresh() {
         }
         compared
     }
-    let narrow = walk([&net(), &mirrored::<HIDDEN>()]);
-    let wide = walk([&wide(), &mirrored::<WIDE>()]);
+    let narrow = walk([&net(), &mirrored::<HIDDEN>(), &bucketed::<HIDDEN>()]);
+    let wide = walk([&wide(), &mirrored::<WIDE>(), &bucketed::<WIDE>()]);
     assert!(narrow > 1_000 && wide > 1_000, "{narrow} and {wide}");
 }
