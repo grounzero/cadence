@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use cadence_core::chess960::dfrc_fen;
-use cadence_core::features::{NUM_INPUTS, feature_index, mirrored_feature_index};
+use cadence_core::features::{bucketed_feature_index, feature_index, mirrored_feature_index};
 use cadence_core::generate_legal;
 use cadence_core::position::Board;
 use cadence_core::rng::Rng;
@@ -39,11 +39,13 @@ struct Reference<const H: usize> {
 }
 
 impl<const H: usize> Reference<H> {
-    /// `words` in the file's order, each divided by the scale it was saved at.
+    /// `words` in the file's order, each divided by the scale it was saved at. The first layer's
+    /// rows are what the words leave after its biases and the output layer.
     fn from_words(words: &[f32], feature: f32, output: f32, output_bias: f32) -> Reference<H> {
         let mut at = words.iter().copied();
         let mut take = |scale: f32| at.next().unwrap_or(0.0) / scale;
-        let columns = (0..NUM_INPUTS)
+        let rows = words.len().saturating_sub(3 * H + 1) / H;
+        let columns = (0..rows)
             .map(|_| core::array::from_fn(|_| take(feature)))
             .collect();
         let bias = core::array::from_fn(|_| take(feature));
@@ -102,6 +104,7 @@ impl<const H: usize> Reference<H> {
                     let index = match self.inputs {
                         Inputs::Plain => feature_index(persp, piece, sq),
                         Inputs::Mirrored => mirrored_feature_index(persp, king, piece, sq),
+                        Inputs::Bucketed => bucketed_feature_index(persp, king, piece, sq),
                     };
                     let column = &self.columns[index];
                     for (s, w) in sums.iter_mut().zip(column) {

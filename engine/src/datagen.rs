@@ -316,7 +316,8 @@ fn workers(threads: usize, games: u64) -> usize {
 const USAGE: &str = "usage: cadence datagen play --games N --seed S [--threads N] [--out PATH]\n       \
      cadence datagen extract <games> --train PATH --holdout PATH [--every N]\n       \
      cadence datagen run --out DIR --run-seed HEX|fresh [--threads N] [--chunk-games N] \
-     [--standard-share P] [--host NAME] (packed-datagen feature)\n       \
+     [--standard-share P] [--stand-pat fail-hard|fail-soft] [--host NAME] (packed-datagen \
+     feature)\n       \
      cadence datagen repair CHUNK.tmp (packed-datagen feature)\n       \
      cadence datagen verify PATH... [--replay 1/N] [--threads N] [--manifest] (packed-datagen \
      feature)\n\
@@ -368,8 +369,9 @@ fn run_from_args(args: &[String]) -> Result<(), Failure> {
     let net = packed::shipped_net().map_err(Failure::Work)?;
     std::fs::create_dir_all(&settings.dir)
         .map_err(|e| Failure::Work(format!("{}: {e}", settings.dir.display())))?;
+    let fail_soft = settings.stand_pat_fail_soft;
     let player = |seed: u64, index: u32, share: u8, tt: &Table| {
-        packed::play(seed, index, share, tt, net.as_ref())
+        packed::play(seed, index, share, fail_soft, tt, net.as_ref())
     };
     let written = packed::run(&settings, &build, &player);
     if let Ok(written) = &written {

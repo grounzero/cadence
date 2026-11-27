@@ -16,7 +16,7 @@ use cadence_engine::eval;
 use cadence_engine::picker::{capture_key, noisy_key, sort_noisy};
 use cadence_engine::position::Position;
 use cadence_engine::score::{self, Score, mate_in};
-use cadence_engine::search::{Learned, Limits};
+use cadence_engine::search::{Learned, Limits, Play, Search, Settings};
 use cadence_engine::see::see;
 use support::table;
 
@@ -381,6 +381,26 @@ fn the_stand_pat_carries_the_correction_for_its_pawns_pieces_and_side() {
             expected,
             "{fen}: each leaf's stand pat is its evaluation plus its own correction"
         );
+    }
+}
+
+/// Play builds its searches with `Search::new`, typed here as the default copy so this fails to
+/// compile if it ever returns another. The side to move has no capture, so its stand-pat cut on a
+/// window far below answers with beta.
+#[test]
+fn play_s_search_is_the_default_copy_and_its_stand_pat_cut_answers_with_beta() {
+    const _: () = assert!(!<Play as Settings>::SOFT_STAND_PAT);
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for (fen, _) in both_colours(STAND_PAT, "a1a1") {
+        let mut b = support::position(&fen);
+        assert!(
+            generate_noisy(&b).is_empty(),
+            "{fen}: the side to move has a capture"
+        );
+        let beta = eval::evaluate(&b) - 100;
+        let mut s: Search<'_, Play> = Search::new(&stop, &tt);
+        assert_eq!(s.node_window(&mut b, 0, 1, beta - 1, beta), beta, "{fen}");
     }
 }
 

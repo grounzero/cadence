@@ -39,12 +39,18 @@ fn written(dir: &Path, seed: u64) -> PathBuf {
 
 /// As `written`, played by `net` where one is given and its header naming it.
 fn written_by(dir: &Path, seed: u64, net: Option<&AnyNetwork>) -> PathBuf {
+    written_with(dir, seed, net, false)
+}
+
+/// As `written_by`, with the stand pat failing soft where `fail_soft` is set.
+fn written_with(dir: &Path, seed: u64, net: Option<&AnyNetwork>, fail_soft: bool) -> PathBuf {
     let settings = Settings {
         dir: dir.to_path_buf(),
         run_seed: seed,
         threads: 2,
         chunk_games: 3,
         standard_share: 50,
+        stand_pat_fail_soft: fail_soft,
         host: "test".to_string(),
         ahead: 1_024,
         poll: Duration::from_millis(10),
@@ -63,7 +69,7 @@ fn written_by(dir: &Path, seed: u64, net: Option<&AnyNetwork>) -> PathBuf {
         if index == 2 {
             std::fs::write(dir.join("STOP"), "").expect("writes");
         }
-        packed::play(s, index, share, tt, net)
+        packed::play(s, index, share, fail_soft, tt, net)
     };
     packed::run(&settings, &build, &stop).expect("a run");
     std::fs::remove_file(dir.join("STOP")).expect("the stop is removed");
@@ -140,7 +146,14 @@ fn a_chunk_played_by_the_shipped_net_names_it_and_regenerates_with_it() {
     );
     let first = &read.records[0];
     let seed = packed::chunk_seed(SEED, 0);
-    let handcrafted = packed::play(seed, first.index, read.header.standard_share, &tt, None);
+    let handcrafted = packed::play(
+        seed,
+        first.index,
+        read.header.standard_share,
+        false,
+        &tt,
+        None,
+    );
     assert_ne!(
         handcrafted.encode().expect("encodes"),
         first.encode().expect("encodes"),
@@ -395,6 +408,49 @@ fn the_manifest_refuses_chunks_of_different_builds() {
     same.name = "same".to_string();
     let one_build = verify::manifest(&[first, same]);
     one_build.expect("one build's chunks are listed");
+}
+
+/// A run whose stand pat fails soft names it in its header and its manifest, plays other games than
+/// one that fails hard, and regenerates only as it was played.
+#[test]
+fn a_fail_soft_run_names_its_stand_pat_and_regenerates_only_with_it() {
+    let (soft_dir, hard_dir) = (scratch("stand-pat-soft"), scratch("stand-pat-hard"));
+    let soft = written_with(&soft_dir, SEED, None, true);
+    let hard = written(&hard_dir, SEED);
+    let (soft_sum, hard_sum) = (check(&soft, Some(1)), check(&hard, None));
+    let soft_bytes = std::fs::read(&soft).expect("the chunk");
+    let hard_bytes = std::fs::read(&hard).expect("the chunk");
+    replace(
+        &soft,
+        &with_header(&soft_bytes, |h| h.stand_pat_fail_soft = 0),
+    );
+    let claimed_hard = check(&soft, Some(1));
+    let _ = std::fs::remove_dir_all(&soft_dir);
+    let _ = std::fs::remove_dir_all(&hard_dir);
+    let (soft_sum, hard_sum) = (soft_sum.expect("regenerates"), hard_sum.expect("verifies"));
+    assert_eq!(soft_sum.header.stand_pat_fail_soft, 1);
+    assert_eq!(soft_sum.replayed, 3);
+    assert_eq!(hard_sum.header.stand_pat_fail_soft, 0);
+    let records = |bytes: &[u8]| Chunk::read(bytes).expect("reads").records;
+    assert_ne!(
+        records(&soft_bytes),
+        records(&hard_bytes),
+        "the switch changed no game"
+    );
+    assert!(
+        claimed_hard.is_err_and(|e| e.contains("does not regenerate")),
+        "a fail-soft chunk whose header says fail-hard was taken"
+    );
+    let named = verify::manifest(std::slice::from_ref(&soft_sum)).expect("listed");
+    assert!(named.contains("\nstand-pat\tfail-soft\n"), "{named}");
+    let unnamed = verify::manifest(std::slice::from_ref(&hard_sum)).expect("listed");
+    assert!(!unnamed.contains("stand-pat"), "{unnamed}");
+    let mut other = hard_sum;
+    other.name = "other".to_string();
+    assert!(
+        verify::manifest(&[soft_sum, other]).is_err_and(|e| e.contains("different builds")),
+        "fail-soft and fail-hard chunks were listed together"
+    );
 }
 
 /// The manifest names the run's chunk size, which numbers each game in its run, and refuses chunks

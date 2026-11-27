@@ -367,6 +367,21 @@ fn check_provenance(set: &Dataset, name: &str, h: &Header) -> Result<(), String>
             ));
         }
     }
+    // A manifest names the stand pat only where it failed soft.
+    let have = if h.stand_pat_fail_soft == 0 {
+        "fail-hard"
+    } else {
+        "fail-soft"
+    };
+    let want = set
+        .provenance
+        .get("stand-pat")
+        .map_or("fail-hard", String::as_str);
+    if have != want {
+        return Err(format!(
+            "{name}: stand-pat {have} in its header, and the manifest says {want}"
+        ));
+    }
     Ok(())
 }
 
@@ -1751,8 +1766,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BUCKETS, Buckets, CopyCounts, KeySet, RECORD_LEN, Request, bucket, convert, copies,
-        copy_key, game_number, in_sample, input_key, logistic, request_from, result_for_mover,
+        BUCKETS, Buckets, CopyCounts, KeySet, RECORD_LEN, Request, bucket, check_provenance,
+        convert, copies, copy_key, game_number, in_sample, input_key, logistic, read_manifest,
+        request_from, result_for_mover,
     };
     use cadence_core::chess960::dfrc_fen;
     use cadence_core::generate_legal;
@@ -1799,6 +1815,7 @@ mod tests {
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [0; 32],
+            stand_pat_fail_soft: 0,
         }
     }
 
@@ -1844,6 +1861,34 @@ mod tests {
             piece_keep: None,
             contradiction_skip: None,
             mate_score: None,
+        }
+    }
+
+    /// A manifest names the stand pat only where it failed soft, and each header must agree.
+    #[test]
+    fn a_header_and_its_manifest_agree_on_the_stand_pat() {
+        let dir =
+            std::env::temp_dir().join(format!("cadence-convert-stand-pat-{}", std::process::id()));
+        let request = fixture(&dir);
+        let manifest = &request.manifests[0];
+        let hard = read_manifest(manifest).expect("reads");
+        let text = std::fs::read_to_string(manifest).expect("reads");
+        let named = text.replace("chunk-games\t", "stand-pat\tfail-soft\nchunk-games\t");
+        std::fs::write(manifest, named).expect("writes");
+        let soft = read_manifest(manifest).expect("reads");
+        let _ = std::fs::remove_dir_all(&dir);
+        let soft_header = Header {
+            stand_pat_fail_soft: 1,
+            ..test_header()
+        };
+        check_provenance(&hard, "c", &test_header()).expect("both fail hard");
+        check_provenance(&soft, "c", &soft_header).expect("both fail soft");
+        for (set, header) in [(&hard, &soft_header), (&soft, &test_header())] {
+            let refused = check_provenance(set, "c", header);
+            assert!(
+                refused.is_err_and(|e| e.contains("stand-pat")),
+                "a header and its manifest disagreeing on the stand pat were taken"
+            );
         }
     }
 
