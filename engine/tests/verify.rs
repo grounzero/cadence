@@ -146,7 +146,14 @@ fn a_chunk_played_by_the_shipped_net_names_it_and_regenerates_with_it() {
     );
     let first = &read.records[0];
     let seed = packed::chunk_seed(SEED, 0);
-    let handcrafted = packed::play(seed, first.index, read.header.standard_share, &tt, None);
+    let handcrafted = packed::play(
+        seed,
+        first.index,
+        read.header.standard_share,
+        false,
+        &tt,
+        None,
+    );
     assert_ne!(
         handcrafted.encode().expect("encodes"),
         first.encode().expect("encodes"),
