@@ -12,11 +12,11 @@ use crate::score::{self, Score};
 /// Enough that a game's pawn keys rarely collide, small enough to sit in cache beside the history.
 const TABLE_SLOTS: usize = 1 << 14;
 
-/// So the update does not round a small persistent correction away.
+/// So the weighted mean does not round a small persistent correction away.
 pub const GRAIN: i32 = 256;
 
-/// The step's denominator. One observation adds at most `MAX_WEIGHT / WEIGHT_UNIT` of the error
-/// it reports.
+/// The weighted mean's denominator. An observation moves an entry at most `MAX_WEIGHT /
+/// WEIGHT_UNIT` of the distance to itself.
 const WEIGHT_UNIT: i32 = 256;
 pub const MAX_WEIGHT: i32 = 16;
 
@@ -25,13 +25,13 @@ pub const MAX_WEIGHT: i32 = 16;
 pub const MAX_CORRECTION: Score = 256;
 const _: () = assert!(score::MAX_EVAL + MAX_CORRECTION < score::TB_WIN_IN_MAX_PLY);
 
-/// A larger disagreement is a tactic, not an evaluation error, and would dominate the table.
+/// A larger disagreement is a tactic, not an evaluation error, and would dominate the mean.
 pub const MAX_DELTA: Score = 1024;
 
 /// The pawn table, then one for each side's other pieces, each with a half per side to move.
 const TABLES: usize = 3;
 
-/// The most one table's slot holds, which its update approaches and cannot pass.
+/// The most one table's slot holds, which an update clamps it to.
 const LIMIT: i32 = MAX_CORRECTION * GRAIN;
 
 /// What a position reads the tables by, taken once per node.
@@ -128,12 +128,11 @@ impl CorrectionHistory {
         )
     }
 
-    /// `delta` is the error left after the tables' correction, so every table adds the same step
-    /// of it and they stop together when none is left.
+    /// A deeper search is a better opinion, so it moves each table's entry further, up to the
+    /// weight ceiling.
     pub fn update(&mut self, keys: &CorrectionKeys, side: Colour, delta: Score, depth: u32) {
-        let step = step(delta, depth);
         for i in Self::indices(keys, side) {
-            self.slots[i] = fold(self.slots[i], step);
+            self.slots[i] = fold(self.slots[i], delta, depth);
         }
     }
 
@@ -157,19 +156,15 @@ impl Default for CorrectionHistory {
     }
 }
 
-/// A step of the error, larger for a deeper search, up to the weight ceiling.
-fn step(delta: Score, depth: u32) -> i32 {
+/// A weighted mean of the slot and the delta, whose weight grows with depth up to the ceiling.
+fn fold(slot: i32, delta: Score, depth: u32) -> i32 {
     let delta = delta.clamp(-MAX_DELTA, MAX_DELTA);
     let weight = i32::try_from(depth)
         .unwrap_or(MAX_WEIGHT)
         .saturating_add(1)
         .min(MAX_WEIGHT);
-    delta * GRAIN * weight / WEIGHT_UNIT
-}
-
-/// The slot adds the step and is pulled back by its own size against the limit.
-fn fold(slot: i32, step: i32) -> i32 {
-    (slot + step - slot * step.abs() / LIMIT).clamp(-LIMIT, LIMIT)
+    let next = (slot * (WEIGHT_UNIT - weight) + delta * GRAIN * weight) / WEIGHT_UNIT;
+    next.clamp(-LIMIT, LIMIT)
 }
 
 fn read(sum: i32) -> Score {
@@ -201,7 +196,7 @@ mod proofs {
     fn an_update_keeps_its_slot_in_bounds() {
         let slot: i32 = kani::any();
         kani::assume((-LIMIT..=LIMIT).contains(&slot));
-        let next = fold(slot, step(kani::any(), kani::any()));
+        let next = fold(slot, kani::any(), kani::any());
         assert!((-LIMIT..=LIMIT).contains(&next));
     }
 
