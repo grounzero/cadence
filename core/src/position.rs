@@ -3,6 +3,7 @@
 use crate::attacks;
 use crate::bitboard::Bitboard;
 use crate::castling::{CastleSide, CastlingLayout, CastlingRights, ci};
+use crate::cycles;
 use crate::dirty::{DirtyPiece, DirtyPieces};
 use crate::mv::Move;
 use crate::types::{Colour, OptSquare, Piece, PieceType, PromoPiece, Square};
@@ -338,6 +339,50 @@ impl Board {
                 }
             }
             d += 2;
+        }
+        false
+    }
+
+    /// Whether one reversible move from here reaches a position [`Board::is_repetition`] would call
+    /// a draw: one earlier in the search, or one the game has already repeated before the root.
+    #[must_use]
+    pub fn has_upcoming_repetition(&self) -> bool {
+        let cur = self.key();
+        let root = self.history.len();
+        let current = root + self.ply as usize;
+        // The move adds a ply to both counts, so the scan from where it leads ends here too.
+        let bound = core::cmp::min(self.state().halfmove as usize, self.plies_from_null());
+        let occupied = self.occupied();
+        // One ply back the other side moved, so the nearest position a move of ours returns to is
+        // three plies back.
+        let mut d = 3;
+        while d <= bound && d <= current {
+            let i = current - d;
+            if let Some((piece, a, b)) = cycles::find(cur ^ self.key_at(i)) {
+                let at_a = occupied.contains(a);
+                if at_a != occupied.contains(b)
+                    && (attacks::between(a, b) & occupied).is_empty()
+                    && piece.colour() == self.stm
+                    && self.piece_at(if at_a { a } else { b }) == Some(piece)
+                    && (i >= root || self.occurs_before(i, current.saturating_sub(bound)))
+                {
+                    return true;
+                }
+            }
+            d += 2;
+        }
+        false
+    }
+
+    /// Whether the position at `i` occurred at an earlier index no lower than `floor`.
+    fn occurs_before(&self, i: usize, floor: usize) -> bool {
+        let key = self.key_at(i);
+        let mut j = i;
+        while j >= floor + 2 {
+            j -= 2;
+            if self.key_at(j) == key {
+                return true;
+            }
         }
         false
     }
