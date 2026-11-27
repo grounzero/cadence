@@ -66,8 +66,8 @@ Each is named `cadence-<version>-` followed by the ending below.
 - **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
   if it won't start (older processors), or `linux-x86-64-avx512` on a
   processor with AVX-512, or `linux-aarch64` for 64-bit ARM.
-  The Linux builds need glibc 2.34 or later, except `linux-aarch64-musl`,
-  a static build for 64-bit ARM that needs no glibc. Make the file executable:
+  On Android or musl Linux on 64-bit ARM, use `linux-aarch64-musl`.
+  The Linux builds need glibc 2.34 or later. Make the file executable:
 
   ```sh
   chmod +x cadence-<version>-linux-x86-64-avx2
