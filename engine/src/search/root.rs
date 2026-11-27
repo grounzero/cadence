@@ -27,7 +27,7 @@ fn mate_plies(n: u32) -> Score {
     Score::try_from(plies).unwrap_or(Score::MAX)
 }
 
-impl Search<'_> {
+impl<S: crate::search::Settings> Search<'_, S> {
     /// `Move::NULL` when there is none. Under `infinite` or an unhit ponder it returns only on
     /// `stop`.
     pub fn run(&mut self, board: &mut Position, out: &mut dyn Write) -> Move {

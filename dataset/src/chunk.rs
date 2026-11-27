@@ -95,6 +95,9 @@ pub struct Header {
     pub modified: u8,
     /// Of the whole `cfg` feature string, which the 64-byte field cannot hold.
     pub cfg_sha256: [u8; 32],
+    /// 1 where each quiescence stand-pat cut answered with the stand pat rather than beta, else 0.
+    /// It was a reserved byte, so a chunk written without the switch reads as before.
+    pub stand_pat_fail_soft: u8,
 }
 
 /// Where each string field starts and how long it is.
@@ -104,13 +107,17 @@ const FEATURES_FIELD: (usize, usize) = (92, 64);
 const HOST_FIELD: (usize, usize) = (186, 32);
 const MODIFIED_AT: usize = 258;
 const CFG_AT: usize = 259;
-const RESERVED_AT: usize = 291;
+const STAND_PAT_AT: usize = 291;
+const RESERVED_AT: usize = 292;
 
 impl Header {
     /// # Errors
     ///
-    /// A string too long for its field or not ASCII.
+    /// A string too long for its field or not ASCII, or a stand-pat byte other than 0 or 1.
     pub fn encode(&self) -> Result<[u8; HEADER_LEN], String> {
+        if self.stand_pat_fail_soft > 1 {
+            return Err(format!("a stand-pat byte of {}", self.stand_pat_fail_soft));
+        }
         let mut b = [0_u8; HEADER_LEN];
         b[0..4].copy_from_slice(&MAGIC);
         b[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -132,14 +139,15 @@ impl Header {
         b[218..226].copy_from_slice(&self.start_time.to_le_bytes());
         b[226..258].copy_from_slice(&self.net_sha256);
         b[MODIFIED_AT] = self.modified;
-        b[CFG_AT..RESERVED_AT].copy_from_slice(&self.cfg_sha256);
+        b[CFG_AT..STAND_PAT_AT].copy_from_slice(&self.cfg_sha256);
+        b[STAND_PAT_AT] = self.stand_pat_fail_soft;
         Ok(b)
     }
 
     /// # Errors
     ///
     /// A magic, format version or header length not this format's, a string field that is not
-    /// NUL-padded ASCII, or a reserved byte that is not zero.
+    /// NUL-padded ASCII, a stand-pat byte other than 0 or 1, or a reserved byte that is not zero.
     pub fn decode(b: &[u8; HEADER_LEN]) -> Result<Header, String> {
         if b[0..4] != MAGIC {
             return Err("not a chunk: the magic is wrong".to_string());
@@ -155,12 +163,15 @@ impl Header {
         if b[RESERVED_AT..].iter().any(|&byte| byte != 0) {
             return Err("a reserved header byte is not zero".to_string());
         }
+        if b[STAND_PAT_AT] > 1 {
+            return Err(format!("a stand-pat byte of {}", b[STAND_PAT_AT]));
+        }
         let mut commit = [0; 20];
         commit.copy_from_slice(&b[8..28]);
         let mut net_sha256 = [0; 32];
         net_sha256.copy_from_slice(&b[226..258]);
         let mut cfg_sha256 = [0; 32];
-        cfg_sha256.copy_from_slice(&b[CFG_AT..RESERVED_AT]);
+        cfg_sha256.copy_from_slice(&b[CFG_AT..STAND_PAT_AT]);
         Ok(Header {
             commit,
             version: get_text(b, VERSION_FIELD, "version")?,
@@ -180,6 +191,7 @@ impl Header {
             net_sha256,
             modified: b[MODIFIED_AT],
             cfg_sha256,
+            stand_pat_fail_soft: b[STAND_PAT_AT],
         })
     }
 }
@@ -543,6 +555,7 @@ mod tests {
             net_sha256: [0; 32],
             modified: 0,
             cfg_sha256: [7; 32],
+            stand_pat_fail_soft: 0,
         }
     }
 
@@ -617,6 +630,24 @@ mod tests {
             bad[at] ^= 1;
             assert!(Header::decode(&bad).is_err(), "a changed {what} was read");
         }
+        let soft = Header {
+            stand_pat_fail_soft: 1,
+            ..header()
+        };
+        let soft_bytes = soft.encode().expect("encodes");
+        assert_eq!(soft_bytes[291], 1, "the stand-pat byte");
+        assert_eq!(Header::decode(&soft_bytes).expect("decodes"), soft);
+        let mut bad = soft_bytes;
+        bad[291] = 2;
+        assert!(
+            Header::decode(&bad).is_err(),
+            "a stand-pat byte of 2 was read"
+        );
+        let two = Header {
+            stand_pat_fail_soft: 2,
+            ..header()
+        };
+        assert!(two.encode().is_err(), "a stand-pat byte of 2 was written");
     }
 
     #[test]
