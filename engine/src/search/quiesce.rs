@@ -66,12 +66,10 @@ impl Search<'_> {
             let stand_pat = self.static_eval(board) + correction;
             if stand_pat >= beta {
                 // A stand-pat cut on a stalemate would score it as the evaluation.
-                return if !has_legal_move(board) {
-                    DRAW
-                } else if self.stand_pat_fail_soft {
-                    stand_pat
-                } else {
-                    beta
+                return match (has_legal_move(board), self.stand_pat_fail_soft) {
+                    (false, _) => DRAW,
+                    (true, false) => beta,
+                    (true, true) => stand_pat,
                 };
             }
             if stand_pat > alpha {

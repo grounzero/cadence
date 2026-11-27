@@ -295,8 +295,8 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
             h.random_plies,
             h.window,
             h.standard_share,
-            h.games_planned,
-            h.stand_pat_fail_soft,
+            // Paired, as the standard library compares tuples of at most twelve.
+            (h.games_planned, h.stand_pat_fail_soft),
         )
     };
     if let Some(other) = summaries
