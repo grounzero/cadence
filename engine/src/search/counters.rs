@@ -96,6 +96,9 @@ pub(super) struct Stats {
     pub(super) probcut_cutoffs: Counter,
     pub(super) probcut_refused_window: Counter,
     pub(super) iir_nodes: Counter,
+    /// Nodes that searched a legal stored move before generating, and those it cut.
+    pub(super) stored_first: Counter,
+    pub(super) stored_first_cutoffs: Counter,
     /// The first shows the in-check horizon is reached, without which the second proves nothing.
     pub(super) evasion_lists: Counter,
     pub(super) evasion_lists_reordered: Counter,
@@ -224,6 +227,18 @@ impl Search<'_> {
     #[must_use]
     pub fn lmp_nodes(&self) -> u64 {
         self.stats.lmp_nodes.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn stored_first(&self) -> u64 {
+        self.stats.stored_first.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn stored_first_cutoffs(&self) -> u64 {
+        self.stats.stored_first_cutoffs.get()
     }
 
     /// Observations folded into the correction table, and nodes that read a non-zero correction
