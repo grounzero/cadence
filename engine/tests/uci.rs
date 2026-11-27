@@ -326,19 +326,25 @@ fn multicore_infinite_search_stops_cleanly() {
 /// depends on the helpers being scheduled.
 #[test]
 fn four_threads_out_node_one_at_a_fixed_depth() {
-    // Kiwipete at depth eight is about 230,000 nodes, where four threads read about 3.7 times one;
-    // the start position's tree was too small to separate them on a three-core runner.
-    const DEPTH: u32 = 8;
-    let one = nodes_at_fixed_depth(1, DEPTH);
-    let four = nodes_at_fixed_depth(4, DEPTH);
+    // The first depth whose single-thread tree passes the floor, so a search that prunes more
+    // cannot shrink the tree under the helpers; depth eight had fallen to about 30,000 nodes.
+    let (depth, one) = (8..=20)
+        .map(|depth| (depth, nodes_at_fixed_depth(1, depth)))
+        .find(|&(_, nodes)| nodes >= THREAD_TREE_NODES)
+        .unwrap_or_else(|| panic!("no depth up to 20 reached {THREAD_TREE_NODES} nodes"));
+    let four = nodes_at_fixed_depth(4, depth);
     assert!(
         four > one,
-        "four threads reported {four} nodes at depth {DEPTH} against one thread's {one}; \
+        "four threads reported {four} nodes at depth {depth} against one thread's {one}; \
          equal means the group contributed nothing, which is a single-threaded host"
     );
 }
 
-/// Kiwipete, whose depth-eight tree leaves the helpers room to contribute.
+/// About the tree Kiwipete's depth eight searched when four threads read 3.7 times one; the start
+/// position's tree was too small to separate them on a three-core runner.
+const THREAD_TREE_NODES: u64 = 200_000;
+
+/// Kiwipete, whose tree at the depth the floor picks leaves the helpers room to contribute.
 const THREAD_POSITION: &str =
     "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
 
