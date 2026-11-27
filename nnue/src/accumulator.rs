@@ -21,6 +21,47 @@ pub struct Accumulator<const H: usize = HIDDEN> {
 
 const COLOURS: [Colour; 2] = [Colour::White, Colour::Black];
 
+/// How one input layout reads the board: the first-layer row of a piece, and whether a move of
+/// a perspective's own king changes the row of every piece it reads.
+trait Layout {
+    fn index(&self, persp: Colour, king: Square, piece: Piece, sq: Square) -> usize;
+    fn crossed(&self, persp: Colour, from: Square, to: Square) -> bool;
+}
+
+struct Plain;
+struct Mirrored;
+struct Bucketed;
+
+impl Layout for Plain {
+    fn index(&self, persp: Colour, _: Square, piece: Piece, sq: Square) -> usize {
+        feature_index(persp, piece, sq)
+    }
+
+    fn crossed(&self, _: Colour, _: Square, _: Square) -> bool {
+        false
+    }
+}
+
+impl Layout for Mirrored {
+    fn index(&self, persp: Colour, king: Square, piece: Piece, sq: Square) -> usize {
+        mirrored_feature_index(persp, king, piece, sq)
+    }
+
+    fn crossed(&self, _: Colour, from: Square, to: Square) -> bool {
+        mirrors(from) != mirrors(to)
+    }
+}
+
+impl Layout for Bucketed {
+    fn index(&self, persp: Colour, king: Square, piece: Piece, sq: Square) -> usize {
+        bucketed_feature_index(persp, king, piece, sq)
+    }
+
+    fn crossed(&self, persp: Colour, from: Square, to: Square) -> bool {
+        mirrors(from) != mirrors(to) || king_bucket(persp, from) != king_bucket(persp, to)
+    }
+}
+
 /// The lanes an update changes in one pass: eight 256-bit registers, and a whole number of them
 /// at every width a net is built at.
 const BLOCK: usize = 128;
@@ -33,7 +74,11 @@ impl<const H: usize> Network<H> {
             sums: [self.bias; 2],
         };
         for persp in COLOURS {
-            acc.sums[persp.index()] = self.rebuilt(board, persp);
+            acc.sums[persp.index()] = match self.inputs() {
+                Inputs::Plain => self.rebuilt(board, persp, &Plain),
+                Inputs::Mirrored => self.rebuilt(board, persp, &Mirrored),
+                Inputs::Bucketed => self.rebuilt(board, persp, &Bucketed),
+            };
         }
         acc
     }
@@ -53,8 +98,8 @@ impl<const H: usize> Network<H> {
     }
 
     /// `update` written into `child`, whatever it held, so a search's stack is never copied twice.
-    /// A perspective whose own king `crossed` is rebuilt from `board`; any other is moved by every
-    /// subtraction before any addition, as a DFRC castle can empty and fill one square.
+    /// The layout is matched once and each arm runs its own copy of the loop, so no piece pays
+    /// for a layout the net does not have.
     pub fn update_into(
         &self,
         parent: &Accumulator<H>,
@@ -62,10 +107,36 @@ impl<const H: usize> Network<H> {
         board: &Board,
         child: &mut Accumulator<H>,
     ) {
+        match self.inputs() {
+            Inputs::Plain => self.updated(parent, dirty, board, child, &Plain),
+            Inputs::Mirrored => self.updated(parent, dirty, board, child, &Mirrored),
+            Inputs::Bucketed => self.updated(parent, dirty, board, child, &Bucketed),
+        }
+    }
+
+    /// `update_into` under one layout. A perspective whose own king `crossed` is rebuilt from
+    /// `board`; any other is moved by every subtraction before any addition, as a DFRC castle can
+    /// empty and fill one square.
+    fn updated<L: Layout>(
+        &self,
+        parent: &Accumulator<H>,
+        dirty: &DirtyPieces,
+        board: &Board,
+        child: &mut Accumulator<H>,
+        layout: &L,
+    ) {
         for persp in COLOURS {
             let sums = &mut child.sums[persp.index()];
-            if self.crossed(dirty, persp) {
-                *sums = self.rebuilt(board, persp);
+            let own = Piece::new(persp, PieceType::King);
+            let crossed = dirty.as_slice().iter().any(|d| {
+                d.piece == own
+                    && matches!(
+                        (d.from.get(), d.to.get()),
+                        (Some(from), Some(to)) if layout.crossed(persp, from, to)
+                    )
+            });
+            if crossed {
+                *sums = self.rebuilt(board, persp, layout);
                 continue;
             }
             let king = board.king_square(persp);
@@ -73,11 +144,11 @@ impl<const H: usize> Network<H> {
             let (mut r, mut a) = (0, 0);
             for d in dirty.as_slice() {
                 if let Some(from) = d.from.get() {
-                    removed[r] = self.index(persp, king, d.piece, from);
+                    removed[r] = layout.index(persp, king, d.piece, from);
                     r += 1;
                 }
                 if let Some(to) = d.to.get() {
-                    added[a] = self.index(persp, king, d.piece, to);
+                    added[a] = layout.index(persp, king, d.piece, to);
                     a += 1;
                 }
             }
@@ -117,40 +188,15 @@ impl<const H: usize> Network<H> {
     }
 
     /// One perspective's sums from every piece on the board.
-    fn rebuilt(&self, board: &Board, persp: Colour) -> [i16; H] {
+    fn rebuilt<L: Layout>(&self, board: &Board, persp: Colour, layout: &L) -> [i16; H] {
         let king = board.king_square(persp);
         let mut sums = self.bias;
         for sq in board.occupied() {
             if let Some(piece) = board.piece_at(sq) {
-                self.add(&mut sums, self.index(persp, king, piece, sq));
+                self.add(&mut sums, layout.index(persp, king, piece, sq));
             }
         }
         sums
-    }
-
-    /// Whether the move took this perspective's own king to the other half of the board, or to
-    /// another king bucket of a bucketed net: either changes the index of every piece it reads.
-    fn crossed(&self, dirty: &DirtyPieces, persp: Colour) -> bool {
-        let inputs = self.inputs();
-        inputs != Inputs::Plain
-            && dirty.as_slice().iter().any(|d| {
-                d.piece == Piece::new(persp, PieceType::King)
-                    && matches!(
-                        (d.from.get(), d.to.get()),
-                        (Some(from), Some(to)) if mirrors(from) != mirrors(to)
-                            || (inputs == Inputs::Bucketed
-                                && king_bucket(persp, from) != king_bucket(persp, to))
-                    )
-            })
-    }
-
-    /// The first-layer column a perspective reads a piece by, under the layout the header names.
-    fn index(&self, persp: Colour, king: Square, piece: Piece, sq: Square) -> usize {
-        match self.inputs() {
-            Inputs::Plain => feature_index(persp, piece, sq),
-            Inputs::Mirrored => mirrored_feature_index(persp, king, piece, sq),
-            Inputs::Bucketed => bucketed_feature_index(persp, king, piece, sq),
-        }
     }
 
     fn add(&self, sums: &mut [i16; H], index: usize) {
