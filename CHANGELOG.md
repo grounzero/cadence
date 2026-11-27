@@ -41,6 +41,7 @@ result.
 - Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.
 - Tools: `cadence-tools forward` prints the offset rounding leaves between a net and its unquantised weights; `--correct-bias OUT` writes the net with its output bias moved against it, and `--fens FILE` reads the positions from a file.
 - Releases: each release publishes `SOURCE`, the commit its tag names, listed in `SHA256SUMS` and attested as the binaries are.
+- Releases: a static build for 64-bit ARM Linux, `linux-aarch64-musl`, which needs no glibc and so runs on Android and on musl Linux, beside the glibc build, so a release has ten binaries. The install scripts still take the glibc build.
 
 ### Changed
 
