@@ -11,6 +11,10 @@ use crate::search::Limits;
 /// For the pipe, thread scheduling and the GUI's own clock; `Move Overhead` replaces it.
 pub const MOVE_OVERHEAD_MS: u64 = 5;
 
+/// The move a clock with no increment is kept for, some way past the longest of the engine's own
+/// online games without one.
+pub const MOVES_LEFT_HORIZON: u64 = 150;
+
 /// The fewest moves a game is reckoned to have left, so a long game still keeps back for its end.
 pub const MOVES_LEFT_FLOOR: u64 = 30;
 
