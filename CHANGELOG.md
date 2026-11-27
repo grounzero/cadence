@@ -43,6 +43,11 @@ result.
 
 ### Fixed
 
+- Time: with no increment, each move keeps back the connection's measured
+  delay for every move still to come before move 150, and never for fewer
+  than 60 moves, rather than for the 30 to 50 moves a game was reckoned to
+  have left. A long game no longer runs out of time once that shorter
+  reserve is spent.
 - Strength levels: `UCI_Elo`'s five levels are refitted on the network's
   scale, by the rule that first chose them, with the reading taken again
   on the network. Every level now samples among eight lines within 650
