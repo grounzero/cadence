@@ -80,6 +80,10 @@ impl Search<'_> {
     }
 
     /// Fail-soft. After an abort the value means nothing, and every caller discards it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the move loop reads a dozen of the preamble's locals, and passing them separately measured faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     pub(super) fn negamax(
         &mut self,
         board: &mut Position,
