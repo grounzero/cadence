@@ -4,7 +4,9 @@
 //! search are child modules, which call `negamax` back.
 
 use cadence_core::position::Board;
-use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, has_legal_move};
+use cadence_core::{
+    Colour, MAX_MOVES, MAX_PLY, Move, MoveList, generate_legal, has_legal_move, is_legal,
+};
 
 #[cfg(debug_assertions)]
 use super::Call;
@@ -78,6 +80,10 @@ impl Search<'_> {
     }
 
     /// Fail-soft. After an abort the value means nothing, and every caller discards it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the move loop reads a dozen of the preamble's locals, and passing them separately measured faster than a shared node type (pull request 233 timing, 2026-11-08)"
+    )]
     pub(super) fn negamax(
         &mut self,
         board: &mut Position,
@@ -145,15 +151,25 @@ impl Search<'_> {
         // depth.
         let depth = self.iir_depth(depth, pv, in_check, found.tt_move);
 
-        let mut legal = generate_legal(board);
-        if legal.is_empty() {
-            return if in_check { mated_in(ply) } else { DRAW };
+        // A legal stored move is searched before the rest are generated, and rules out mate and
+        // stalemate. Without one the list is made here, where the mate check needs it.
+        let stored = if is_legal(board, found.tt_move) {
+            found.tt_move
+        } else {
+            Move::NULL
+        };
+        self.stats.stored_first.add_if(!stored.is_null());
+        let mut legal = MoveList::new();
+        if stored.is_null() {
+            legal = generate_legal(board);
+            if legal.is_empty() {
+                return if in_check { mated_in(ply) } else { DRAW };
+            }
         }
         // After the mate check: mate on the hundredth half-move is mate.
         if board.halfmove_clock() >= 100 {
             return DRAW;
         }
-        let (killers, mut picker) = self.order(board, &mut legal, found.tt_move, us, ply);
 
         // Below the null move, unlike the other margin tests: nothing between writes what it reads,
         // so the placement saves the test at every node the null move cuts. An open window refuses
@@ -161,68 +177,114 @@ impl Search<'_> {
         let futile = !pv && futile_node(&self.tunables, self.heuristics.evals[ply], depth, alpha);
         self.stats.futility_nodes.add_if(futile);
 
-        // Beside the margin, not above it: they overlap on 43% of one population, and whichever is
-        // asked first keeps the moves it takes.
-        let give_up = lmp_index(&self.tunables, in_check, pv, depth, legal.len());
-        self.stats.lmp_nodes.add_if(give_up.is_some());
-
         let original_alpha = alpha;
         alpha = alpha.max(found.bounds.0);
         let mut best = -INFINITE;
         let mut best_move = Move::NULL;
         // Written at one site above `make_move`, so every rule giving a move up is excluded unasked.
         let mut searched = Searched::default();
-        while let Some((m, i, quiet_index)) = picker.next(board, &mut legal, &mut self.slots[ply]) {
-            // Before the move is made, which is the whole saving; above the reduction, which never
-            // sees a move given up.
-            if self.futile(board, futile, m, i)
-                || self.given_up(board, give_up, m, killers, quiet_index)
-            {
-                continue;
-            }
-            searched.set(i);
-            let losing = losing_capture(m, i, picker.lost());
-            self.make(board, ply, m);
-            // Free after `make_move`, and also the reduction's check exemption.
-            let gives_check = board.in_check();
-            let ext = extension(gives_check, ply + 1, self.root_depth);
-            let child = depth - 1 + ext;
-            // The first move gets the node's own window; every later one is asked the null-window
-            // question first.
-            let mut score = if i == 0 {
-                self.own_window(board, child, ply, alpha, beta, kind, Via::First)
-            } else {
-                // The index decides whether to reduce, the history score by how much.
-                let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
-                self.count_lmr_losing_capture(base, m);
-                let history = move_history(m, self.heuristics.history.get(us, m));
-                self.late_move(board, child, base, history, ply, alpha, pv, kind)
-            };
-            // None at or above beta, which is the bound already returned, and none at a null-window
-            // node.
-            if i > 0 && !self.run.aborted && score > alpha && score < beta {
-                score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
-            }
-            board.unmake_move(m);
+        let cut = !stored.is_null() && {
+            searched.set(0);
+            self.make(board, ply, stored);
+            let ext = extension(board.in_check(), ply + 1, self.root_depth);
+            let score = self.own_window(board, depth - 1 + ext, ply, alpha, beta, kind, Via::First);
+            board.unmake_move(stored);
             if self.run.aborted {
                 return ABORTED;
             }
-            if score > best {
-                best = score;
-                best_move = m;
-                if score > alpha {
-                    alpha = score;
-                    // At a null window a raise is a cutoff, so the parent fails low and never copies
-                    // this row.
-                    if beta > original_alpha + 1 {
-                        self.table.update(ply, m);
-                    }
-                    if alpha >= beta {
-                        remember_killer(&mut self.heuristics.killers[ply], m);
-                        // A move the margin or the count gave up was never played, so it is
-                        // passed over rather than debited.
-                        self.remember_history(board, ply, legal.as_slice(), i, &searched, depth);
-                        break;
+            best = score;
+            best_move = stored;
+            let raised = score > alpha;
+            if raised {
+                alpha = score;
+                if beta > original_alpha + 1 {
+                    self.table.update(ply, stored);
+                }
+            }
+            raised && alpha >= beta
+        };
+        if cut {
+            self.stats.stored_first_cutoffs.add_one();
+            remember_killer(&mut self.heuristics.killers[ply], stored);
+            // The stored move is the whole list a cut on it leaves.
+            self.remember_history(board, ply, &[stored], 0, &searched, depth);
+        } else {
+            if !stored.is_null() {
+                legal = generate_legal(board);
+            }
+            // The rest are keyed by the history as the stored move's search left it.
+            let (killers, mut picker) = self.order(board, &mut legal, stored, us, ply);
+
+            // Beside the margin, not above it: they overlap on 43% of one population, and whichever
+            // is asked first keeps the moves it takes.
+            let give_up = lmp_index(&self.tunables, in_check, pv, depth, legal.len());
+            self.stats.lmp_nodes.add_if(give_up.is_some());
+
+            while let Some((m, i, quiet_index)) =
+                picker.next(board, &mut legal, &mut self.slots[ply])
+            {
+                // Searched above, and the first: no rule below skips or reduces the first move.
+                if i == 0 && !stored.is_null() {
+                    continue;
+                }
+                // Before the move is made, which is the whole saving; above the reduction, which
+                // never sees a move given up.
+                if self.futile(board, futile, m, i)
+                    || self.given_up(board, give_up, m, killers, quiet_index)
+                {
+                    continue;
+                }
+                searched.set(i);
+                let losing = losing_capture(m, i, picker.lost());
+                self.make(board, ply, m);
+                // Free after `make_move`, and also the reduction's check exemption.
+                let gives_check = board.in_check();
+                let ext = extension(gives_check, ply + 1, self.root_depth);
+                let child = depth - 1 + ext;
+                // The first move gets the node's own window; every later one is asked the
+                // null-window question first.
+                let mut score = if i == 0 {
+                    self.own_window(board, child, ply, alpha, beta, kind, Via::First)
+                } else {
+                    // The index decides whether to reduce, the history score by how much.
+                    let base = reduction(in_check, gives_check, m, losing, killers, depth, i);
+                    self.count_lmr_losing_capture(base, m);
+                    let history = move_history(m, self.heuristics.history.get(us, m));
+                    self.late_move(board, child, base, history, ply, alpha, pv, kind)
+                };
+                // None at or above beta, which is the bound already returned, and none at a
+                // null-window node.
+                if i > 0 && !self.run.aborted && score > alpha && score < beta {
+                    score = self.own_window(board, child, ply, alpha, beta, kind, Via::Open);
+                }
+                board.unmake_move(m);
+                if self.run.aborted {
+                    return ABORTED;
+                }
+                if score > best {
+                    best = score;
+                    best_move = m;
+                    if score > alpha {
+                        alpha = score;
+                        // At a null window a raise is a cutoff, so the parent fails low and never
+                        // copies this row.
+                        if beta > original_alpha + 1 {
+                            self.table.update(ply, m);
+                        }
+                        if alpha >= beta {
+                            remember_killer(&mut self.heuristics.killers[ply], m);
+                            // A move the margin or the count gave up was never played, so it is
+                            // passed over rather than debited.
+                            self.remember_history(
+                                board,
+                                ply,
+                                legal.as_slice(),
+                                i,
+                                &searched,
+                                depth,
+                            );
+                            break;
+                        }
                     }
                 }
             }
