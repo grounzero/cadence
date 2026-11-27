@@ -55,11 +55,20 @@ pub fn play(
     chunk_seed: u64,
     index: u32,
     share: u8,
+    stand_pat_fail_soft: bool,
     tt: &Table,
     net: Option<&AnyNetwork>,
 ) -> GameRecord {
     let probe = |board: &mut _, tt: &Table| game::probe(board, opening::SCREEN_NODES, tt);
-    play_with(chunk_seed, index, share, tt, &probe, net)
+    play_with(
+        chunk_seed,
+        index,
+        share,
+        stand_pat_fail_soft,
+        tt,
+        &probe,
+        net,
+    )
 }
 
 /// The net a build ships, of either width, which every game of its runs plays with: `None` where
@@ -84,7 +93,8 @@ pub fn shipped_net_sha256() -> [u8; 32] {
     }
 }
 
-/// `probe` screens a start, so a test can refuse some.
+/// `probe` screens a start, so a test can refuse some. The switch reaches the game's searches and
+/// not the screen's, so both settings draw the same starts.
 ///
 /// # Panics
 ///
@@ -93,6 +103,7 @@ pub fn play_with(
     chunk_seed: u64,
     index: u32,
     share: u8,
+    stand_pat_fail_soft: bool,
     tt: &Table,
     probe: &Probe<'_>,
     net: Option<&AnyNetwork>,
@@ -102,7 +113,7 @@ pub fn play_with(
     let kind = start_kind(&mut rng, share);
     let (mut start, refused) =
         opening::next_of_kind(&mut rng, tt, kind == KIND_STANDARD, probe, net);
-    let played = game::play(&mut start.board, NODES, tt);
+    let played = game::play_as(&mut start.board, NODES, tt, stand_pat_fail_soft);
     let label = |score: Option<i32>| {
         score.map_or(NO_SCORE, |s| {
             i16::try_from(s)
@@ -147,6 +158,8 @@ pub struct Settings {
     pub threads: usize,
     pub chunk_games: u32,
     pub standard_share: u8,
+    /// `--stand-pat fail-soft`: a quiescence stand-pat cut answers with the stand pat, not beta.
+    pub stand_pat_fail_soft: bool,
     pub host: String,
     /// Games handed out past the next to be written, at least the thread count.
     pub ahead: u32,
@@ -195,6 +208,7 @@ pub fn settings_from_args(args: &[String]) -> Result<Settings, String> {
     }
     let (mut dir, mut run_seed, mut threads, mut chunk_games, mut share, mut host) =
         (None, None, 1, 1_000, 50, None);
+    let mut stand_pat_fail_soft = false;
     for (name, value) in &flags {
         match name.as_str() {
             "--out" => dir = Some(PathBuf::from(value)),
@@ -210,6 +224,13 @@ pub fn settings_from_args(args: &[String]) -> Result<Settings, String> {
                 share = u8::try_from(number(name, value)?).map_err(|_| "bad --standard-share")?;
             }
             "--host" => host = Some(value.clone()),
+            "--stand-pat" => {
+                stand_pat_fail_soft = match value.as_str() {
+                    "fail-hard" => false,
+                    "fail-soft" => true,
+                    _ => return Err(format!("bad --stand-pat `{value}`: fail-hard or fail-soft")),
+                };
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -226,6 +247,7 @@ pub fn settings_from_args(args: &[String]) -> Result<Settings, String> {
         threads,
         chunk_games,
         standard_share: share,
+        stand_pat_fail_soft,
         host,
         ahead,
         poll: Duration::from_secs(1),
@@ -714,6 +736,7 @@ fn header(settings: &Settings, build: &Build, chunk_index: u32) -> Result<Header
         net_sha256: build.net_sha256,
         modified: u8::from(build.modified),
         cfg_sha256: sha256(build.cfg_features.as_bytes()),
+        stand_pat_fail_soft: u8::from(settings.stand_pat_fail_soft),
     })
 }
 

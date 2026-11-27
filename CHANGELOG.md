@@ -40,6 +40,7 @@ result.
   earlier build refuses such a file by its length.
 - Training: `cadence-train run --inputs mirrored` trains a network with mirrored inputs, and `export` writes the layout into the file's header.
 - Tools: `cadence-tools forward` prints the offset rounding leaves between a net and its unquantised weights; `--correct-bias OUT` writes the net with its output bias moved against it, and `--fens FILE` reads the positions from a file.
+- Data generation: `cadence datagen run --stand-pat fail-soft` answers a quiescence stand-pat cut with the stand pat rather than beta, and records it in each chunk's header and the dataset's manifest. It is off by default, and play and the bench are unchanged.
 - Releases: each release publishes `SOURCE`, the commit its tag names, listed in `SHA256SUMS` and attested as the binaries are.
 - Releases: a static build for 64-bit ARM Linux, `linux-aarch64-musl`, which needs no glibc and so runs on Android and on musl Linux, beside the glibc build, so a release has ten binaries. The install scripts still take the glibc build.
 

@@ -361,6 +361,34 @@ fn the_stand_pat_carries_the_correction_for_its_pawns_and_side() {
     }
 }
 
+/// The side to move has no capture, so a horizon node here is its stand pat alone. Asked with a
+/// window far below it, the node answers with beta, or with its own score where datagen's switch
+/// is on.
+#[test]
+fn a_stand_pat_cutoff_returns_beta_and_the_stand_pat_only_under_the_switch() {
+    let stop = AtomicBool::new(false);
+    let tt = table();
+    for (fen, _) in both_colours(STAND_PAT, "a1a1") {
+        for fail_soft in [false, true] {
+            let mut b = support::position(&fen);
+            assert!(
+                generate_noisy(&b).is_empty(),
+                "{fen}: the side to move has a capture"
+            );
+            let stand_pat = eval::evaluate(&b);
+            let beta = stand_pat - 100;
+            let mut s = support::search(Limits::default(), &stop, &tt);
+            s.set_stand_pat_fail_soft(fail_soft);
+            let score = s.node_window(&mut b, 0, 1, beta - 1, beta);
+            let want = if fail_soft { stand_pat } else { beta };
+            assert_eq!(
+                score, want,
+                "{fen}, fail-soft {fail_soft}: the cutoff answered {score}"
+            );
+        }
+    }
+}
+
 /// Where no root move allows a capture or promotion, each leaf is one node, plus one for each root
 /// move the null window searches twice. `root_re_searches` computes that term from the static
 /// evaluations, so this pins the re-search rule as well as the cost of a quiet horizon.

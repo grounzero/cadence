@@ -98,7 +98,16 @@ pub fn chunk(
         }
         replay(record, &mut summary).map_err(game)?;
         if replay_every.is_some_and(|n| n > 0 && record.index.is_multiple_of(n)) {
-            let again = packed::play(seed, record.index, read.header.standard_share, tt, player);
+            let header = &read.header;
+            let fail_soft = header.stand_pat_fail_soft != 0;
+            let again = packed::play(
+                seed,
+                record.index,
+                header.standard_share,
+                fail_soft,
+                tt,
+                player,
+            );
             let (stored, regenerated) = (
                 record.encode().map_err(game)?,
                 again.encode().map_err(game)?,
@@ -287,6 +296,7 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
             h.window,
             h.standard_share,
             h.games_planned,
+            h.stand_pat_fail_soft,
         )
     };
     if let Some(other) = summaries
@@ -321,6 +331,10 @@ pub fn manifest(summaries: &[Summary]) -> Result<String, String> {
         "random-plies\t{}\nwindow\t{}\nstandard-share\t{}",
         h.random_plies, h.window, h.standard_share
     );
+    // Named only where it is on, so a dataset made without the switch has the manifest it had.
+    if h.stand_pat_fail_soft != 0 {
+        let _ = writeln!(text, "stand-pat\tfail-soft");
+    }
     let _ = writeln!(text, "chunk-games\t{}", h.games_planned);
     let _ = writeln!(text, "run-seeds\t{}", seeds.join(" "));
     let _ = writeln!(text, "chunk\tsha256\tgames\tplies\tuniform\tstandard");

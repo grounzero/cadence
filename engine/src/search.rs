@@ -138,6 +138,8 @@ pub struct Search<'a> {
     pawns: PawnCache,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
+    /// Set only by datagen: a quiescence stand-pat cut answers with the stand pat, not beta.
+    stand_pat_fail_soft: bool,
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
     /// The move made at each ply of the current path, which each call's entry takes.
@@ -381,6 +383,7 @@ impl<'a> Search<'a> {
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
             pawns: PawnCache::new(),
             root_depth: 0,
+            stand_pat_fail_soft: false,
             tt_pv: [false; MAX_PLY],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
@@ -407,6 +410,11 @@ impl<'a> Search<'a> {
     /// Without one, a `go ponder` still waits for `stop`.
     pub fn set_ponder_hit(&mut self, flag: &'a AtomicBool) {
         self.ponder_hit = Some(flag);
+    }
+
+    /// For datagen alone, which records it in each chunk's header. Play and `bench` leave it off.
+    pub fn set_stand_pat_fail_soft(&mut self, on: bool) {
+        self.stand_pat_fail_soft = on;
     }
 
     pub fn set_chess960(&mut self, on: bool) {

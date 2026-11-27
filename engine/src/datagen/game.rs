@@ -129,10 +129,21 @@ pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Option<Score> {
 ///
 /// If the search returns an illegal move.
 pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
+    play_as(board, nodes, tt, false)
+}
+
+/// As [`play`], with every search's quiescence stand-pat cut answering with the stand pat where
+/// `stand_pat_fail_soft` is set.
+///
+/// # Panics
+///
+/// If the search returns an illegal move.
+pub fn play_as(board: &mut Position, nodes: u64, tt: &Table, stand_pat_fail_soft: bool) -> Played {
     tt.clear();
     let stop = AtomicBool::new(false);
     let mut search = Search::new(&stop, tt);
     search.set_limits(node_limit(nodes));
+    search.set_stand_pat_fail_soft(stand_pat_fail_soft);
     let mut learned = Learned::new();
     search.swap_learned(&mut learned);
     let mut moves = Vec::new();
