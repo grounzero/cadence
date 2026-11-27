@@ -344,9 +344,12 @@ fn the_stand_pat_carries_the_correction_for_its_pawns_pieces_and_side() {
         b.make_move(first);
         let seed = CorrectionKeys::of(&b);
         b.unmake_move(first);
+        // Each update is the error left, so the seeded leaf settles at 100, a third of it a table,
+        // well inside the clamp on the sum.
         let mut learned = Learned::new();
-        for _ in 0..10_000 {
-            learned.corrhist_mut().update(&seed, leaf_side, 100, 64);
+        for _ in 0..1_000 {
+            let left = 100 - learned.corrhist_mut().correction(&seed, leaf_side);
+            learned.corrhist_mut().update(&seed, leaf_side, left, 64);
         }
         let mut expected = Score::MIN;
         let mut corrections = Vec::new();
