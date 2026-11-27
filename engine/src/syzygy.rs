@@ -84,6 +84,14 @@ impl Filesystem for OpenOnce {
         if !first {
             return Err(io::Error::other("failed before, so not opened again"));
         }
+        // Test builds only: a first open held this long stands in for a stalled drive.
+        #[cfg(feature = "counters")]
+        if let Some(ms) = std::env::var("CADENCE_TABLE_OPEN_DELAY_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         match Pool::add(&self.pool, path) {
             Ok(file) => Ok(Box::new(file)),
             Err(e) => {

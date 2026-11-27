@@ -159,7 +159,9 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 
 The engine holds at most 128 table files open at once, closing the one read
 longest ago, so no open-file limit needs raising for any set. Keep the tables
-on a local disk: a stalled network drive can delay `stop`.
+on a local disk: if a stalled drive holds a read, `stop` is answered within a
+second and a timed search just past its deadline, with the move of its last
+completed depth.
 
 ### Unusual commands
 

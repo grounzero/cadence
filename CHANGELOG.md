@@ -60,6 +60,11 @@ result.
   operating system's open-file limit and stops being used part way
   through a session, and the 3-4-5 piece set no longer needs the limit
   raised on macOS.
+- Tablebases: a table read held up by a stalled drive no longer holds up
+  the answer. `stop` and `quit` wait at most a second for the search, and
+  a timed search is answered at most a tenth of a second past its own
+  deadline, with the move of its last completed depth, or the first legal
+  move if it had none.
 
 ## [0.7.0] - 2026-11-24
 
