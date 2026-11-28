@@ -642,10 +642,14 @@ fn to_chess(board: &Board) -> Option<Chess> {
 mod tests {
     use cadence_core::FenStyle;
     use cadence_core::position::Board;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+
     use shakmaty::EnPassantMode;
     use shakmaty::fen::Fen;
+    use shakmaty_syzygy::filesystem::{RandomAccessFile, ReadHint};
 
-    use super::{oldest_first, to_chess};
+    use super::{Pool, Pooled, oldest_first, to_chess};
 
     /// The move counter is left out: the conversion never carries it, since no table reads it.
     fn first_five(fen: &str) -> String {
@@ -690,6 +694,47 @@ mod tests {
         let mut still: Vec<u64> = (0..200).rev().collect();
         oldest_first(&mut still, |&tick| tick);
         assert_eq!(still, (0..200).collect::<Vec<_>>());
+    }
+
+    /// Eight threads read 96 files through a pool that holds 64, so files close and reopen while
+    /// other threads stamp their reads. A sort on keys read as it ran panicked here.
+    #[test]
+    fn threads_reading_past_the_pool_s_limit_read_every_file_and_never_panic() {
+        const FILES: usize = 96;
+        const LIMIT: usize = 64;
+        let dir = std::env::temp_dir().join(format!("cadence-pool-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = Arc::new(Pool {
+            limit: LIMIT,
+            clock: AtomicU64::new(0),
+            slots: Mutex::new(Vec::new()),
+        });
+        let files: Vec<Pooled> = (0..FILES)
+            .map(|i| {
+                let path = dir.join(format!("{i}.bin"));
+                std::fs::write(&path, [u8::try_from(i).unwrap(); 4]).unwrap();
+                Pool::add(&pool, &path).unwrap()
+            })
+            .collect();
+        std::thread::scope(|scope| {
+            for thread in 0..8 {
+                let files = &files;
+                scope.spawn(move || {
+                    let mut byte = [0; 1];
+                    // An odd stride per thread, so each thread cycles through every file.
+                    for n in 0..5_000 {
+                        let i = (n * (2 * thread + 1) + thread) % FILES;
+                        files[i].read_at(&mut byte, 0, ReadHint::Data).unwrap();
+                        assert_eq!(usize::from(byte[0]), i);
+                    }
+                });
+            }
+        });
+        assert!(pool.held() <= LIMIT, "{} held", pool.held());
+        // Closed first, since Windows deletes no file that is still open.
+        drop(files);
+        drop(pool);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The crate validates more than the FEN parser does: two knights cannot both have given the
