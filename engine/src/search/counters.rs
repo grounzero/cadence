@@ -10,6 +10,7 @@ use cadence_core::{Colour, Move};
 use super::node::Searched;
 use super::{Limits, NODE_PUBLISH_INTERVAL, Search};
 use crate::conthist::{self, ContinuationHistory, OFFSETS};
+use crate::corrhist::CorrectionKeys;
 use crate::eval;
 use crate::history::{self, History};
 use crate::position::Position;
@@ -517,7 +518,7 @@ impl<S: crate::search::Settings> Search<'_, S> {
         board: &Position,
         ply: usize,
         in_check: bool,
-        pawn_key: u64,
+        keys: &CorrectionKeys,
         side: Colour,
         stored: Option<Score>,
     ) -> Option<Score> {
@@ -529,7 +530,7 @@ impl<S: crate::search::Settings> Search<'_, S> {
             Some(eval) => self.table_eval(board, eval),
             None => self.static_eval(board),
         };
-        let correction = self.heuristics.corrhist.correction(pawn_key, side);
+        let correction = self.heuristics.corrhist.correction(keys, side);
         self.stats.corrhist_applied.add_if(correction != 0);
         self.heuristics.evals[ply] = Some(raw + correction);
         Some(raw)
@@ -558,11 +559,11 @@ impl<S: crate::search::Settings> Search<'_, S> {
     /// pointing against the difference.
     #[allow(
         clippy::too_many_arguments,
-        reason = "passing the pawn key and side measured +0.23% faster than reading them from the board (pull request 231 timing, 2026-11-08)"
+        reason = "passing the keys and side follows pull request 231, where passing the pawn key measured +0.23% faster than reading it from the board (2026-11-08)"
     )]
     pub(super) fn remember_correction(
         &mut self,
-        pawn_key: u64,
+        keys: &CorrectionKeys,
         side: Colour,
         ply: usize,
         best: Score,
@@ -584,7 +585,7 @@ impl<S: crate::search::Settings> Search<'_, S> {
         if usable {
             self.heuristics
                 .corrhist
-                .update(pawn_key, side, best - eval, depth);
+                .update(keys, side, best - eval, depth);
             self.stats.corrhist_updates.add_one();
         }
     }

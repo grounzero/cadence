@@ -5,6 +5,7 @@
 use cadence_core::{MAX_PLY, generate_legal, generate_noisy, has_legal_move};
 
 use super::Search;
+use crate::corrhist::CorrectionKeys;
 use crate::picker;
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -57,11 +58,11 @@ impl<S: crate::search::Settings> Search<'_, S> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            // Corrected as the main search's evaluation is, for this structure and side to move.
+            // Corrected as the main search's evaluation is, by all three keys and the side to move.
             let correction = self
                 .heuristics
                 .corrhist
-                .correction(board.pawn_key(), board.side_to_move());
+                .correction(&CorrectionKeys::of(board), board.side_to_move());
             self.stats.corrhist_applied.add_if(correction != 0);
             let stand_pat = self.static_eval(board) + correction;
             if stand_pat >= beta {

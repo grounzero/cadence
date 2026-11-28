@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 use cadence_core::position::Board;
 use cadence_core::types::PromoPiece;
 use cadence_core::{Colour, Move, PieceType, START_FEN, generate_legal, generate_noisy, parse_uci};
+use cadence_engine::corrhist::CorrectionKeys;
 use cadence_engine::eval;
 use cadence_engine::picker::{capture_key, noisy_key, sort_noisy};
 use cadence_engine::position::Position;
@@ -331,22 +332,44 @@ fn a_losing_capture_is_never_forced_on_the_side_to_move_at_the_horizon() {
     }
 }
 
-/// Every root move is a king move, so every leaf has the root's pawns with the other side to move,
-/// and one seeded correction reaches all of them. The stand pat carries it, so the score moves by it.
+/// Every root move is a king move, so every leaf keeps the root's pawns and the other side's
+/// pieces, and a correction seeded at one leaf reaches every leaf in part. Each stand pat carries
+/// its own leaf's sum of the three tables, so the score moves by exactly that.
 #[test]
-fn the_stand_pat_carries_the_correction_for_its_pawns_and_side() {
+fn the_stand_pat_carries_the_correction_for_its_pawns_pieces_and_side() {
     for (fen, _) in both_colours(STAND_PAT, "a1a1") {
         let mut b = support::position(&fen);
-        let expected = best_static_reply(&mut b);
         let leaf_side = b.side_to_move().flip();
+        let first = generate_legal(&b).as_slice()[0];
+        b.make_move(first);
+        let seed = CorrectionKeys::of(&b);
+        b.unmake_move(first);
+        // Each update is the error left, so the seeded leaf's three tables settle near three
+        // quarters of 100 between them, well inside the clamp on the sum.
         let mut learned = Learned::new();
-        for _ in 0..10_000 {
-            learned
-                .corrhist_mut()
-                .update(b.pawn_key(), leaf_side, 100, 64);
+        for _ in 0..1_000 {
+            let left = 100 - learned.corrhist_mut().correction(&seed, leaf_side);
+            learned.corrhist_mut().update(&seed, leaf_side, left, 64);
         }
-        let correction = learned.corrhist_mut().correction(b.pawn_key(), leaf_side);
-        assert!(correction > 0, "{fen}: the seed did not take");
+        let mut expected = Score::MIN;
+        let mut corrections = Vec::new();
+        for m in generate_legal(&b).iter() {
+            b.make_move(m);
+            let correction = learned
+                .corrhist_mut()
+                .correction(&CorrectionKeys::of(&b), leaf_side);
+            corrections.push(correction);
+            expected = expected.max(-(eval::evaluate(&b) + correction));
+            b.unmake_move(m);
+        }
+        assert!(
+            corrections.iter().all(|&c| c > 0),
+            "{fen}: the seed did not reach every leaf: {corrections:?}"
+        );
+        assert!(
+            corrections.iter().any(|&c| c != corrections[0]),
+            "{fen}: every leaf read one correction, so the mover's pieces were not read"
+        );
         let stop = AtomicBool::new(false);
         let tt = table();
         let mut s = support::search(Limits::depth(1), &stop, &tt);
@@ -355,8 +378,8 @@ fn the_stand_pat_carries_the_correction_for_its_pawns_and_side() {
         s.swap_learned(&mut learned);
         assert_eq!(
             s.score(),
-            expected - correction,
-            "{fen}: each leaf's stand pat is its evaluation plus {correction}"
+            expected,
+            "{fen}: each leaf's stand pat is its evaluation plus its own correction"
         );
     }
 }
