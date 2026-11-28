@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Every node's table and tablebase reads, made before any move is generated, and the one store.
+//! Every node's table and tablebase reads, made before any move is generated, and the stores.
 
 use cadence_core::Move;
 use cadence_core::position::Board;
@@ -17,7 +17,7 @@ const CUTOFF_CLOCK: u8 = 90;
 impl<S: crate::search::Settings> Search<'_, S> {
     /// The move comes back whatever the depth says, so the two halves return separately, and the
     /// hit's flag and static evaluation beside them.
-    fn probe(
+    pub(in crate::search) fn probe(
         &self,
         board: &Board,
         key: u64,
@@ -79,6 +79,39 @@ impl<S: crate::search::Settings> Search<'_, S> {
         let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
         self.tt
             .store_with_eval(key, mv, score, stored_depth, stored_bound, pv, eval);
+    }
+}
+
+impl<S: crate::search::Settings> Search<'_, S> {
+    /// A quiescence node's result, at depth 0 and as a bound by beta, never exact. From a clock of
+    /// `CUTOFF_CLOCK` a line of evasions can reach the draw, so the entry keeps only its move.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the node's own values, as the main search's store takes them"
+    )]
+    pub(in crate::search) fn store_quiescence(
+        &self,
+        board: &Board,
+        key: u64,
+        ply: usize,
+        best: Score,
+        mv: Move,
+        beta: Score,
+        pv: bool,
+        eval: Option<Score>,
+    ) {
+        debug_assert!(!self.run.aborted, "a store after the stop");
+        let bound = if best >= beta {
+            Bound::Lower
+        } else {
+            Bound::Upper
+        };
+        let score = if board.halfmove_clock() >= CUTOFF_CLOCK {
+            MOVE_ONLY
+        } else {
+            score::to_tt(best, ply)
+        };
+        self.tt.store_with_eval(key, mv, score, 0, bound, pv, eval);
     }
 }
 

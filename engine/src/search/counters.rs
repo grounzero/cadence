@@ -545,7 +545,7 @@ impl<S: crate::search::Settings> Search<'_, S> {
     }
 
     /// A debug build reads the board again, so a stored evaluation that is not the board's fails.
-    fn table_eval(&mut self, board: &Position, eval: Score) -> Score {
+    pub(super) fn table_eval(&mut self, board: &Position, eval: Score) -> Score {
         self.stats.table_evals.add_one();
         debug_assert_eq!(
             eval,
