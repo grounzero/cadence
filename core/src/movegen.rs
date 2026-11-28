@@ -19,29 +19,41 @@ struct Ctx {
     pinned: Bitboard,
     /// In single check, the checker and the squares between it and the king.
     targets: Bitboard,
+    /// The squares whose pieces move.
+    from: Bitboard,
 }
 
 /// In no defined order.
 #[must_use]
 pub fn generate_legal(board: &Board) -> MoveList {
-    generate::<false, false>(board)
+    generate::<false, false>(board, Bitboard::FULL)
 }
 
 /// The noisy subsequence of [`generate_legal`], in its order.
 #[must_use]
 pub fn generate_noisy(board: &Board) -> MoveList {
-    generate::<true, false>(board)
+    generate::<true, false>(board, Bitboard::FULL)
 }
 
 /// Stops at the first block of the generator that yields a move.
 #[must_use]
 pub fn has_legal_move(board: &Board) -> bool {
-    !generate::<false, true>(board).is_empty()
+    !generate::<false, true>(board, Bitboard::FULL).is_empty()
+}
+
+/// Whether [`generate_legal`] would yield `m`, from the moves of the piece on its origin alone, so
+/// a move read from a table can be tried before the list is made.
+#[must_use]
+pub fn is_legal(board: &Board, m: Move) -> bool {
+    !m.is_null()
+        && board.by_colour(board.side_to_move()).contains(m.from_sq())
+        && generate::<false, false>(board, m.from_sq().bb()).contains(m)
 }
 
 /// Both generators walk the branches in one order, which is what makes the noisy list a
-/// subsequence. `ANY` returns at a block boundary once the list holds a move.
-fn generate<const NOISY: bool, const ANY: bool>(board: &Board) -> MoveList {
+/// subsequence. `ANY` returns at a block boundary once the list holds a move, and only pieces on
+/// `from` move.
+fn generate<const NOISY: bool, const ANY: bool>(board: &Board, from: Bitboard) -> MoveList {
     let mut list = MoveList::new();
     let us = board.side_to_move();
     let them = us.flip();
@@ -55,7 +67,12 @@ fn generate<const NOISY: bool, const ANY: bool>(board: &Board) -> MoveList {
 
     let occ_without_king = occ.without(ksq);
     let king_targets = (if NOISY { enemy } else { !own }) & not_a_king;
-    for to in attacks::king_attacks(ksq) & king_targets {
+    let king_moves = if from.contains(ksq) {
+        attacks::king_attacks(ksq)
+    } else {
+        Bitboard::EMPTY
+    };
+    for to in king_moves & king_targets {
         if (board.attackers_to(to, occ_without_king) & enemy).is_empty() {
             list.push(capture_or_quiet(ksq, to, enemy));
         }
@@ -74,6 +91,7 @@ fn generate<const NOISY: bool, const ANY: bool>(board: &Board) -> MoveList {
         ksq,
         checkers,
         pinned: board.blockers(us) & own,
+        from,
         targets: match checkers.lsb() {
             Some(checker) => checkers | attacks::between(ksq, checker),
             None => !own,
@@ -81,7 +99,7 @@ fn generate<const NOISY: bool, const ANY: bool>(board: &Board) -> MoveList {
     };
 
     // Never noisy: the destination holds our own rook.
-    if !NOISY && checkers.is_empty() {
+    if !NOISY && checkers.is_empty() && from.contains(ksq) {
         let layout = board.layout();
         for s in CastleSide::ALL {
             if board.can_castle(us, s)
@@ -109,7 +127,7 @@ fn pieces<const NOISY: bool, const ANY: bool>(board: &Board, c: &Ctx, list: &mut
     } else {
         c.targets
     };
-    for from in board.pieces(c.us, PieceType::Knight) & !c.pinned {
+    for from in board.pieces(c.us, PieceType::Knight) & !c.pinned & c.from {
         for to in attacks::knight_attacks(from) & targets {
             list.push(capture_or_quiet(from, to, c.enemy));
         }
@@ -118,7 +136,7 @@ fn pieces<const NOISY: bool, const ANY: bool>(board: &Board, c: &Ctx, list: &mut
         return;
     }
     let queens = board.pieces(c.us, PieceType::Queen);
-    for from in board.pieces(c.us, PieceType::Bishop) | queens {
+    for from in (board.pieces(c.us, PieceType::Bishop) | queens) & c.from {
         let mut to_set = attacks::bishop_attacks(from, c.occ) & targets;
         if c.pinned.contains(from) {
             to_set &= attacks::ray(c.ksq, from);
@@ -130,7 +148,7 @@ fn pieces<const NOISY: bool, const ANY: bool>(board: &Board, c: &Ctx, list: &mut
     if ANY && !list.is_empty() {
         return;
     }
-    for from in board.pieces(c.us, PieceType::Rook) | queens {
+    for from in (board.pieces(c.us, PieceType::Rook) | queens) & c.from {
         let mut to_set = attacks::rook_attacks(from, c.occ) & targets;
         if c.pinned.contains(from) {
             to_set &= attacks::ray(c.ksq, from);
@@ -148,7 +166,7 @@ fn pawns<const NOISY: bool>(board: &Board, c: &Ctx, list: &mut MoveList) {
     let ep = board.ep_square();
     let their_rq = board.pieces(c.them, PieceType::Rook) | board.pieces(c.them, PieceType::Queen);
     let their_bq = board.pieces(c.them, PieceType::Bishop) | board.pieces(c.them, PieceType::Queen);
-    for from in board.pieces(c.us, PieceType::Pawn) {
+    for from in board.pieces(c.us, PieceType::Pawn) & c.from {
         let pin_line = if c.pinned.contains(from) {
             attacks::ray(c.ksq, from)
         } else {
