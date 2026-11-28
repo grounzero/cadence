@@ -184,7 +184,7 @@ impl Pool {
 /// Puts the open files read longest ago first, reading each one's last read once. Another thread
 /// stamps a read without the lock on `slots`, and a key that moves mid-sort breaks the total order.
 fn oldest_first<T>(open: &mut [T], last_read: impl FnMut(&T) -> u64) {
-    open.sort_by_key(last_read);
+    open.sort_by_cached_key(last_read);
 }
 
 impl RandomAccessFile for Pooled {
