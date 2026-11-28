@@ -161,7 +161,7 @@ impl Pool {
             return Ok(file);
         }
         let mut open: Vec<&Arc<Slot>> = slots.iter().filter(|s| lock(&s.file).is_some()).collect();
-        open.sort_by_key(|s| s.read.load(Ordering::Relaxed));
+        oldest_first(&mut open, |s| s.read.load(Ordering::Relaxed));
         for closing in open
             .iter()
             .take((open.len() + 1).saturating_sub(self.limit))
@@ -179,6 +179,12 @@ impl Pool {
             .filter(|s| lock(&s.file).is_some())
             .count()
     }
+}
+
+/// Puts the open files read longest ago first, reading each one's last read once. Another thread
+/// stamps a read without the lock on `slots`, and a key that moves mid-sort breaks the total order.
+fn oldest_first<T>(open: &mut [T], last_read: impl FnMut(&T) -> u64) {
+    open.sort_by_key(last_read);
 }
 
 impl RandomAccessFile for Pooled {
@@ -639,7 +645,7 @@ mod tests {
     use shakmaty::EnPassantMode;
     use shakmaty::fen::Fen;
 
-    use super::to_chess;
+    use super::{oldest_first, to_chess};
 
     /// The move counter is left out: the conversion never carries it, since no table reads it.
     fn first_five(fen: &str) -> String {
@@ -663,6 +669,27 @@ mod tests {
                 "{fen}"
             );
         }
+    }
+
+    /// A file read on another thread mid-sort changes its key, so each key is read once per sort
+    /// and the sort never sees two answers for one file.
+    #[test]
+    fn each_open_file_s_last_read_is_read_once_per_sort() {
+        let mut open: Vec<u64> = (0..200).rev().collect();
+        let mut reads = 0;
+        // Every read of a key moves it, as a read stamped meanwhile does.
+        oldest_first(&mut open, |&tick| {
+            reads += 1;
+            if reads % 2 == 0 {
+                u64::MAX - tick
+            } else {
+                tick
+            }
+        });
+        assert_eq!(reads, 200);
+        let mut still: Vec<u64> = (0..200).rev().collect();
+        oldest_first(&mut still, |&tick| tick);
+        assert_eq!(still, (0..200).collect::<Vec<_>>());
     }
 
     /// The crate validates more than the FEN parser does: two knights cannot both have given the
