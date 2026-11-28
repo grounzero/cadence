@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Every node's table and tablebase reads, made before any move is generated, and the one store.
+//! Every node's table and tablebase reads, made before any move is generated, and the stores.
 
 use cadence_core::Move;
 use cadence_core::position::Board;
@@ -8,7 +8,7 @@ use cadence_core::position::Board;
 use crate::score::{self, DRAW, INFINITE, Score, mated_in};
 use crate::search::Search;
 use crate::syzygy::Wdl;
-use crate::tt::Bound;
+use crate::tt::{Bound, MOVE_ONLY};
 
 /// The key does not carry the fifty-move clock, so from here a cutoff could rest on a line the draw
 /// has since cut short; only the entry's move is kept.
@@ -17,7 +17,7 @@ const CUTOFF_CLOCK: u8 = 90;
 impl<S: crate::search::Settings> Search<'_, S> {
     /// The move comes back whatever the depth says, so the two halves return separately, and the
     /// hit's flag and static evaluation beside them.
-    fn probe(
+    pub(in crate::search) fn probe(
         &self,
         board: &Board,
         key: u64,
@@ -33,6 +33,7 @@ impl<S: crate::search::Settings> Search<'_, S> {
         // A result whose depth reaches the draw may rest on a line the clock now cuts short.
         let clock = board.halfmove_clock();
         if u32::from(hit.depth) < depth
+            || hit.score == MOVE_ONLY
             || clock >= CUTOFF_CLOCK
             || u32::from(clock) + u32::from(hit.depth) >= 100
         {
@@ -68,11 +69,49 @@ impl<S: crate::search::Settings> Search<'_, S> {
         // An aborted node's value is `ABORTED` and not a bound, and the draw score besides.
         debug_assert!(!self.run.aborted, "a store after the stop");
         let stored_depth = depth.min(u32::from(u8::MAX)) as u8;
-        let score = score::to_tt(best, ply);
+        // At depth 0 the entry keeps only its move, so its score is one no probe cuts on.
+        let (score, stored_bound) = if stored_depth == 0 {
+            (MOVE_ONLY, Bound::Lower)
+        } else {
+            (score::to_tt(best, ply), bound)
+        };
         // Nothing here beat alpha, so the move into it may have been the good one.
         let pv = self.tt_pv[ply] || (bound == Bound::Upper && ply > 0 && self.tt_pv[ply - 1]);
         self.tt
-            .store_with_eval(key, mv, score, stored_depth, bound, pv, eval);
+            .store_with_eval(key, mv, score, stored_depth, stored_bound, pv, eval);
+    }
+}
+
+impl<S: crate::search::Settings> Search<'_, S> {
+    /// A quiescence node's result, at depth 0 and as a bound by beta, never exact. From a clock of
+    /// `CUTOFF_CLOCK` a line of evasions can reach the draw, so the entry keeps only its move.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the node's own values, as the main search's store takes them"
+    )]
+    pub(in crate::search) fn store_quiescence(
+        &self,
+        board: &Board,
+        key: u64,
+        ply: usize,
+        best: Score,
+        mv: Move,
+        beta: Score,
+        pv: bool,
+        eval: Option<Score>,
+    ) {
+        debug_assert!(!self.run.aborted, "a store after the stop");
+        let bound = if best >= beta {
+            Bound::Lower
+        } else {
+            Bound::Upper
+        };
+        let score = if board.halfmove_clock() >= CUTOFF_CLOCK {
+            MOVE_ONLY
+        } else {
+            score::to_tt(best, ply)
+        };
+        self.tt.store_with_eval(key, mv, score, 0, bound, pv, eval);
     }
 }
 
