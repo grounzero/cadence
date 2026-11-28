@@ -75,6 +75,10 @@ const EVAL_OFFSET: i32 = 1 << 14;
 /// The widest evaluation an entry holds; a wider one is stored as none and read from the board.
 pub const MAX_STORED_EVAL: i32 = EVAL_OFFSET - 1;
 
+/// The score of an entry that keeps only its move, below every score a search returns. No probe
+/// cuts on it, whatever its depth or bound.
+pub const MOVE_ONLY: i16 = -32_001;
+
 impl Entry {
     /// No bound, so it decodes to nothing.
     pub const EMPTY: Entry = Entry(0);

@@ -109,6 +109,8 @@ pub(super) struct Stats {
     pub(super) static_evals: Counter,
     /// Static evaluations taken from the table in place of a reading.
     pub(super) table_evals: Counter,
+    /// Quiescence nodes the table answered before their stand pat.
+    pub(super) quiescence_table_cutoffs: Counter,
 }
 
 impl<S: crate::search::Settings> Search<'_, S> {
@@ -127,6 +129,12 @@ impl<S: crate::search::Settings> Search<'_, S> {
     #[must_use]
     pub fn table_evals(&self) -> u64 {
         self.stats.table_evals.get()
+    }
+
+    #[cfg(feature = "counters")]
+    #[must_use]
+    pub fn quiescence_table_cutoffs(&self) -> u64 {
+        self.stats.quiescence_table_cutoffs.get()
     }
 
     #[cfg(feature = "counters")]
