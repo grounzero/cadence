@@ -122,11 +122,11 @@ fn a_second_quiescence_search_reads_the_evaluations_the_first_stored() {
     );
 }
 
-/// Every child of the root is searched where its line reaches the fifty-move draw, so each entry
-/// there keeps only its move.
+/// At a clock of 98 every child of the root reaches the fifty-move draw at any depth, so each entry
+/// there keeps only its move, the main search's and quiescence's alike.
 #[test]
 fn a_result_that_reaches_the_fifty_move_draw_keeps_only_its_move() {
-    let late = "7k/8/8/8/8/8/8/KQ6 w - - 95 1";
+    let late = "7k/8/8/8/8/8/8/KQ6 w - - 98 1";
     let stop = AtomicBool::new(false);
     let tt = table();
     let mut b = support::position(late);
