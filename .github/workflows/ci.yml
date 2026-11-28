@@ -392,7 +392,7 @@ jobs:
           passed=$(grep -h '^test result:' test.log | awk '{n += $4} END {print n + 0}')
           echo "$passed passed" >> "$GITHUB_STEP_SUMMARY"
           [ "$status" -eq 0 ] || exit "$status"
-          floor=1000
+          floor=1020
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             # The floor drops by the tests the slow files would have passed here, counted from their lists.
             slow=0
@@ -951,7 +951,7 @@ jobs:
           esac
 
       # Read here and not from the script, so a script that checked the wrong thing would fail: the
-      # latest stable release, or where none is published the newest pre-release, named and offered.
+      # latest stable release, named.
       - name: The installed binary's bench and id name
         env:
           GH_TOKEN: ${{ github.token }}
@@ -965,21 +965,9 @@ jobs:
           api=https://api.github.com/repos/grounzero/cadence/releases
           version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api/latest" 2> /dev/null \
             | sed -n 's/.*"tag_name": *"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' | head -n 1) || version=""
-          if [ -n "$version" ]; then
-            grep -qF "The latest stable release is $version." install.txt \
-              || { echo "::error::the run did not take the latest stable release, $version"; exit 1; }
-          else
-            # The highest candidate by version, whatever order GitHub lists them in.
-            version=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?per_page=100" \
-              | grep -o '"tag_name": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' \
-              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' | awk -F '[.-]' '{print $1, $2, $3, $5, $0}' \
-              | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1 | awk '{print $5}')
-            [ -n "$version" ] || { echo "::error::GitHub lists no release the run could have installed"; exit 1; }
-            grep -qF "No stable release of Cadence exists yet. The newest pre-release is $version." install.txt \
-              || { echo "::error::the run did not name the newest pre-release, $version"; exit 1; }
-            grep -qF "Install pre-release $version? [Y/n]: y (--yes)" install.txt \
-              || { echo "::error::the run did not offer the newest pre-release, $version"; exit 1; }
-          fi
+          [ -n "$version" ] || { echo "::error::GitHub names no latest stable release"; exit 1; }
+          grep -qF "The latest stable release is $version." install.txt \
+            || { echo "::error::the run did not take the latest stable release, $version"; exit 1; }
           grep -qF "Release files come from https://github.com/grounzero/cadence/releases/download." install.txt \
             || { echo "::error::the run did not say where the release files come from"; exit 1; }
           if [ "$RUNNER_OS" = Windows ]; then
@@ -1321,7 +1309,7 @@ jobs:
 
       # What the refusals below are served: a binary whose checksum matches but whose attestation cannot,
       # a genuine binary under another version, release notes naming another commit or none, an API that
-      # refuses every request, one listing candidates out of version order, releases whose SOURCE or
+      # refuses every request, one listing a candidate no installer reads, releases whose SOURCE or
       # bench.txt holds the source to its tag, a binary that never answers uci, 290 small tables, and a
       # table list naming a path outside. Stand-ins for gh and the Rust toolchain go beside them.
       - name: Fixtures for the installers' refusals
@@ -1336,14 +1324,8 @@ jobs:
           cp "$r/good/$v/$RELEASE_FILE" "$r/good/$v/bench.txt" "$r/tampered/$v/"
           printf 'x' >> "$r/tampered/$v/$RELEASE_FILE"
           (cd "$r/tampered/$v" && $hash "$RELEASE_FILE" bench.txt > SHA256SUMS)
-          # The candidates out of order, one key on a line apart from its value, keys before and after
-          # other fields, and a key and a higher candidate quoted inside a release's notes.
-          {
-            printf '[ {"body": "Notes that quote \\"tag_name\\": \\"0.6.0-rc.99\\" and end in a \\\\", "tag_name" : "0.6.0-rc.3"},\n'
-            printf '  {\n    "draft": false, "tag_name"\n      :\n    "0.6.0-rc.10"\n  },\n'
-            printf '  {"assets": [{"name": "x \\"tag_name\\""}],"tag_name":"0.6.0-rc.9"}, {"tag_name":\t"0.5.23" } ]\n'
-          } > "$r/api-list/releases"
-          cat "$r/api-list/releases"
+          # A list naming a candidate, which no installer reads to find a release.
+          printf '[{"tag_name": "0.6.0-rc.10"}]\n' > "$r/api-list/releases"
           # Notes naming another commit, and notes edited to name none, neither of which an installer reads.
           printf '{"tag_name": "%s", "body": "Cadence %s, built from %s at the tag %s."}\n' \
             "$v" "$v" 0000000000000000000000000000000000000000 "$v" > "$r/moved/releases/tags/$v"
@@ -1445,7 +1427,13 @@ jobs:
             offline)
               echo "Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host" >&2
               exit 1 ;;
-            verdict) echo "X The attestation is signed by a workflow this check does not accept" >&2; exit 1 ;;
+            strange) echo "Error: an answer no gh has given" >&2; exit 1 ;;
+            signed-out) echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4 ;;
+            old) echo "unknown command \"attestation\" for \"gh\"" >&2; exit 1 ;;
+            verdict) echo 'Error: verifying with issuer "sigstore.dev"' >&2; exit 1 ;;
+            missing)
+              echo "Error: HTTP 404: Not Found (https://api.github.com/repos/grounzero/cadence/attestations/sha256:0f0f?per_page=30)" >&2
+              exit 1 ;;
             *) echo "error creating Sigstore verifier: no valid Sigstore verifiers could be initialized" >&2; exit 1 ;;
           esac
           EOF
@@ -1551,13 +1539,6 @@ jobs:
                       self.send_header("Location", "https://github.com/grounzero/cadence/releases" + ("/tag/" + tag if tag else ""))
                       self.send_header("Content-Length", "0")
                       self.end_headers()
-                      return
-                  if self.path.startswith("/limited/"):
-                      self.send_response(403)
-                      self.send_header("Content-Type", "application/json")
-                      self.send_header("x-ratelimit-remaining", "0")
-                      self.end_headers()
-                      self.wfile.write(b'{"message": "API rate limit exceeded"}')
                       return
                   super().do_GET()
           http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
@@ -1668,8 +1649,24 @@ jobs:
             '  echo Error: failed to fetch attestations from grounzero/cadence: dial tcp: lookup api.github.com: no such host 1>&2',
             '  exit /b 1',
             ')',
+            'if "%FAKE_GH%"=="strange" (',
+            '  echo Error: an answer no gh has given 1>&2',
+            '  exit /b 1',
+            ')',
+            'if "%FAKE_GH%"=="signed-out" (',
+            '  echo To get started with GitHub CLI, please run:  gh auth login 1>&2',
+            '  exit /b 4',
+            ')',
+            'if "%FAKE_GH%"=="old" (',
+            '  echo unknown command "attestation" for "gh" 1>&2',
+            '  exit /b 1',
+            ')',
             'if "%FAKE_GH%"=="verdict" (',
-            '  echo X The attestation is signed by a workflow this check does not accept 1>&2',
+            '  echo Error: verifying with issuer "sigstore.dev" 1>&2',
+            '  exit /b 1',
+            ')',
+            'if "%FAKE_GH%"=="missing" (',
+            '  echo Error: HTTP 404: Not Found ^(https://api.github.com/repos/grounzero/cadence/attestations/sha256:0f0f?per_page=30^) 1>&2',
             '  exit /b 1',
             ')',
             'echo error creating Sigstore verifier: no valid Sigstore verifiers could be initialized 1>&2',
@@ -1768,15 +1765,14 @@ jobs:
           grep -qF "GET /latest/$v " "$tmp/serve.log" || { cat "$tmp/serve.log"; bad "install.sh did not ask for the redirect"; }
           if grep -qF 'GET /api-known/releases/latest' "$tmp/serve.log"; then bad "install.sh asked the API for the latest release"; fi
 
-          # The redirect names no stable release, so the list is read: it puts rc.3 first, rc.10 after
-          # rc.9 with its key on a line of its own, and a higher one inside notes. Nothing is served
-          # for rc.10, so the run then fails.
+          # A redirect naming no stable release stops the run, and no list of releases is read for one.
+          rc=0
           CADENCE_RELEASES_URL="$url/none" CADENCE_LATEST_URL="$url/latest/" CADENCE_API_URL="$url/api-list/releases" \
-            bash install.sh --yes --test-urls --dir "$tmp/newest" > newest.txt 2>&1 || true
-          said newest.txt "The newest pre-release is 0.6.0-rc.10." "install.sh did not take the highest candidate"
-          if grep -qF 'This installer comes with' newest.txt; then
-            bad "install.sh offered its own version, which the server there does not publish"
-          fi
+            bash install.sh --yes --test-urls --dir "$tmp/newest" > newest.txt 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { cat newest.txt; bad "install.sh installed where the redirect names no release"; }
+          said newest.txt "GitHub's latest release named no version of Cadence; --version X.Y.Z names one" \
+            "install.sh did not say the redirect named no version"
+          if grep -qF 'GET /api-list/releases' "$tmp/serve.log"; then bad "install.sh read the list of releases"; fi
           # The installer's own version is offered where its release files are, whatever the API says.
           iv=$(sed -n 's/^INSTALLER_VERSION="\(.*\)"$/\1/p' install.sh)
           CADENCE_RELEASES_URL="$url/known" CADENCE_LATEST_URL="$url/latest/9.9.9" CADENCE_API_URL="$url/api-known/releases" \
@@ -1905,7 +1901,7 @@ jobs:
           rc=0
           from_source source-verdict source-right verdict || rc=$?
           [ "$rc" -ne 0 ] || { cat source-verdict.txt; bad "install.sh built where gh refused the SOURCE's attestation"; }
-          said source-verdict.txt "SOURCE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" \
+          said source-verdict.txt "SOURCE's build attestation does not verify (Error: verifying with issuer \"sigstore.dev\")" \
             "install.sh did not refuse the SOURCE's attestation"
           said source-verdict.txt "The file may be corrupt, or tampered with on its way here" "install.sh did not say SOURCE may be tampered with"
           for name in source-wrong source-bench source-verdict; do
@@ -1941,14 +1937,15 @@ jobs:
               "install.sh did not refuse an attestation made at another tag"
           fi
 
-          # gh failing to check, which the install goes on past: at its setup, and with a trust root that
-          # never loaded, whose failed verification is not a verdict. What gh was asked is read from its
-          # arguments: the release workflow at this version's tag, exactly.
-          for mode in setup trust-root; do
+          # Every gh answer but a refusal is a warning the install goes on past, held to the checksum and
+          # the bench. What gh was asked is read from its arguments: the release workflow at this tag.
+          for mode in setup trust-root offline strange signed-out old; do
             rc=0
             PATH="$tmp/fake-gh:$PATH" FAKE_GH=$mode FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
               bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unchecked-$mode" > "unchecked-$mode.txt" 2>&1 || rc=$?
             [ "$rc" -eq 0 ] || { cat "unchecked-$mode.txt"; bad "install.sh exited $rc when gh could not check ($mode)"; }
+            said "unchecked-$mode.txt" "Warning: Its build attestation was not verified: " "install.sh gave no warning ($mode)"
+            said "unchecked-$mode.txt" "Its SHA-256 matches the release's SHA256SUMS." "install.sh did not check the checksum ($mode)"
             said "unchecked-$mode.txt" "Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed." \
               "install.sh did not repeat at the end that the attestation was not verified ($mode)"
           done
@@ -1956,9 +1953,16 @@ jobs:
             "install.sh did not say gh could not check at its setup"
           said unchecked-trust-root.txt "Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed))." \
             "install.sh took a trust root that never loaded for a failed attestation"
-          # Any other failure is a verdict, so it stops the run: one in words this script has never seen,
-          # and one where gh did not reach GitHub.
-          for mode in verdict offline; do
+          said unchecked-offline.txt "Its build attestation was not verified: gh could not check it (Error: failed to fetch attestations" \
+            "install.sh did not say gh could not reach GitHub"
+          said unchecked-strange.txt "Its build attestation was not verified: gh could not check it (Error: an answer no gh has given)." \
+            "install.sh did not pass on gh's unrecognised answer"
+          said unchecked-signed-out.txt "Its build attestation was not verified: gh is installed but not signed in (gh auth login)." \
+            "install.sh did not say gh is signed out"
+          said unchecked-old.txt "Its build attestation was not verified: this gh is too old to check one." \
+            "install.sh did not say gh is too old"
+          # gh's refusal stops the run: a signature or tag that does not verify, and no attestation at all.
+          for mode in verdict missing; do
             rc=0
             PATH="$tmp/fake-gh:$PATH" FAKE_GH=$mode FAKE_GH_ARGS="$tmp/gh-args" CADENCE_RELEASES_URL="$url/good" \
               bash install.sh --yes --test-urls --version "$v" --dir "$tmp/unverified-$mode" > "unverified-$mode.txt" 2>&1 || rc=$?
@@ -1971,7 +1975,9 @@ jobs:
             [ ! -e "$tmp/unverified-$mode/cadence" ] && [ ! -e "$tmp/unverified-$mode/cadence.exe" ] \
               || bad "a binary was installed whose attestation gh did not verify ($mode)"
           done
-          said unverified-verdict.txt "$RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" \
+          said unverified-verdict.txt "$RELEASE_FILE's build attestation does not verify (Error: verifying with issuer \"sigstore.dev\")" \
+            "install.sh did not name gh's own words"
+          said unverified-missing.txt "$RELEASE_FILE's build attestation does not verify (Error: HTTP 404: Not Found (" \
             "install.sh did not name gh's own words"
           said "$tmp/gh-args" "--repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v" \
             "gh was not asked for the release workflow at this version's tag"
@@ -2068,17 +2074,6 @@ jobs:
             [ -f "$state" ] || bad "the install left no record"
             if grep -q '^installed_toolchain=' "$state"; then cat "$state"; bad "install.sh recorded a toolchain whose install failed"; fi
           fi
-          # Finding the release: a refusal is the rate limit only where GitHub's answer says it is.
-          for api in forbidden limited; do
-            CADENCE_LATEST_URL="$url/latest/" CADENCE_API_URL="$url/$api/releases" bash install.sh --yes --test-urls \
-              --dir "$tmp/find-$api" > "find-$api.txt" 2>&1 \
-              && { cat "find-$api.txt"; bad "install.sh found a release through an API that refuses"; }
-          done
-          said find-forbidden.txt "could not read Cadence's releases from GitHub (the server answered 403)" "install.sh did not say the API refused"
-          if grep -qF 'limits how often' find-forbidden.txt; then bad "install.sh called a 403 GitHub's rate limit without GitHub saying so"; fi
-          said find-limited.txt "GitHub refused to name Cadence's releases (the server answered 403): it limits how often one address asks." \
-            "install.sh did not name GitHub's rate limit where GitHub said so"
-
           # A build that cannot run here gives way to the tier below it, held to the same checks.
           if [ -d "$tmp/releases/illegal/$v" ]; then
             generic=$(tr -d '\r' < "$tmp/releases/illegal/$v/SHA256SUMS" | sed -n 's/^[0-9a-f]*  *\(cadence-.*-generic\(\.exe\)\{0,1\}\)$/\1/p')
@@ -2298,15 +2293,16 @@ jobs:
             if (-not $served.Contains("GET /latest/$v ")) { Write-Host $served; throw 'install.ps1 did not ask for the redirect' }
             if ($served.Contains('GET /api-known/releases/latest')) { throw 'install.ps1 asked the API for the latest release' }
 
-            # The redirect names no stable release, so the list is read: it puts rc.3 first, rc.10 after
-            # rc.9 with its key on a line of its own, and a higher one inside notes. Nothing is served
-            # for rc.10, so the run then fails.
+            # A redirect naming no stable release stops the run, and no list of releases is read for one.
             $env:CADENCE_RELEASES_URL = "$url/none"
             $env:CADENCE_LATEST_URL = "$url/latest/"
             $env:CADENCE_API_URL = "$url/api-list/releases"
             $run = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp 'newest'))
-            Said $run 'The newest pre-release is 0.6.0-rc.10.' 'install.ps1 did not take the highest candidate'
-            if ($run.Out.Contains('This installer comes with')) { throw 'install.ps1 offered its own version, which the server there does not publish' }
+            if ($run.Code -eq 0) { Write-Host $run.Out; throw 'install.ps1 installed where the redirect names no release' }
+            Said $run "GitHub's latest release named no version of Cadence; --version X.Y.Z names one" 'install.ps1 did not say the redirect named no version'
+            $stream = [System.IO.File]::Open((Join-Path $tmp 'serve.log'), 'Open', 'Read', 'ReadWrite')
+            try { $served = (New-Object System.IO.StreamReader $stream).ReadToEnd() } finally { $stream.Close() }
+            if ($served.Contains('GET /api-list/releases')) { throw 'install.ps1 read the list of releases' }
             # The installer's own version is offered where its release files are, whatever the API says.
             $iv = [regex]::Match((Get-Content -Raw install.ps1), "(?m)^\`$InstallerVersion = '([^']+)'").Groups[1].Value
             $env:CADENCE_RELEASES_URL = "$url/known"
@@ -2476,7 +2472,7 @@ jobs:
             Said $benchOff "release $v's bench.txt says $([int64]$count + 1) and the source at its tag says $count, so it is not built" "install.ps1 did not refuse a source whose bench.txt is not the release's"
             $verdict = FromSource 'source-verdict' 'source-right' 'verdict'
             if ($verdict.Code -eq 0) { Write-Host $verdict.Out; throw "install.ps1 built where gh refused the SOURCE's attestation" }
-            Said $verdict "SOURCE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" "install.ps1 did not refuse the SOURCE's attestation"
+            Said $verdict "SOURCE's build attestation does not verify (Error: verifying with issuer `"sigstore.dev`")" "install.ps1 did not refuse the SOURCE's attestation"
             Said $verdict 'The file may be corrupt, or tampered with on its way here' 'install.ps1 did not say SOURCE may be tampered with'
             foreach ($refused in @(@{ Run = $wrong; Dir = 'source-wrong' }, @{ Run = $benchOff; Dir = 'source-bench' }, @{ Run = $verdict; Dir = 'source-verdict' })) {
               if ($refused.Run.Out.Contains('== The Rust toolchain')) { Write-Host $refused.Run.Out; throw "install.ps1 reached the toolchain before checking the source ($($refused.Dir))" }
@@ -2514,35 +2510,37 @@ jobs:
               Said $run "$env:RENAMED_FILE's build attestation does not verify (" 'install.ps1 did not refuse an attestation made at another tag'
             }
 
-            # gh failing to check, which the install goes on past: at its setup, and with a trust root
-            # that never loaded, whose failed verification is not a verdict. What gh was asked is read
-            # from its arguments: the release workflow at this version's tag, exactly.
+            # Every gh answer but a refusal is a warning the install goes on past, held to the checksum
+            # and the bench. What gh was asked is read from its arguments: the release workflow at this tag.
             $env:CADENCE_RELEASES_URL = "$url/good"
             $env:FAKE_GH_ARGS = Join-Path $tmp 'gh-args.txt'
             $path = $env:Path
             $env:Path = (Join-Path $tmp 'fake-gh-cmd') + ';' + $env:Path
+            $gave = @{}
             try {
-              $env:FAKE_GH = 'setup'
-              $run = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unchecked-setup'))
-              $env:FAKE_GH = 'trust-root'
-              $root = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unchecked-trust-root'))
-              $env:FAKE_GH = 'offline'
-              $offline = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unchecked-offline'))
-              $env:FAKE_GH = 'verdict'
-              $verdict = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp 'unknown-verdict'))
+              foreach ($mode in @('setup', 'trust-root', 'offline', 'strange', 'signed-out', 'old', 'verdict', 'missing')) {
+                $env:FAKE_GH = $mode
+                $gave[$mode] = Install @('--yes', '--test-urls', '--version', $v, '--dir', (Join-Path $tmp "gh-$mode"))
+              }
             } finally {
               $env:Path = $path
               Remove-Item Env:FAKE_GH, Env:FAKE_GH_ARGS -ErrorAction SilentlyContinue
             }
-            foreach ($unchecked in @($run, $root)) {
-              if ($unchecked.Code -ne 0) { Write-Host $unchecked.Out; throw "install.ps1 exited $($unchecked.Code) when gh could not check" }
-              Said $unchecked 'Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed.' 'install.ps1 did not repeat at the end that the attestation was not verified'
+            foreach ($mode in @('setup', 'trust-root', 'offline', 'strange', 'signed-out', 'old')) {
+              $unchecked = $gave[$mode]
+              if ($unchecked.Code -ne 0) { Write-Host $unchecked.Out; throw "install.ps1 exited $($unchecked.Code) when gh could not check ($mode)" }
+              Said $unchecked 'Warning: Its build attestation was not verified: ' "install.ps1 gave no warning ($mode)"
+              Said $unchecked "Its SHA-256 matches the release's SHA256SUMS." "install.ps1 did not check the checksum ($mode)"
+              Said $unchecked 'Its build attestation was not verified, so its SHA-256 and its bench are the checks it passed.' "install.ps1 did not repeat at the end that the attestation was not verified ($mode)"
             }
-            Said $run 'Its build attestation was not verified: gh could not check it (error creating Sigstore verifier: no valid Sigstore verifiers could be initialized).' 'install.ps1 did not say gh could not check at its setup'
-            Said $root 'Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed)).' 'install.ps1 took a trust root that never loaded for a failed attestation'
-            # Any other failure is a verdict, so it stops the run: one in words this script has never seen,
-            # and one where gh did not reach GitHub.
-            foreach ($unverified in @(@{ Run = $verdict; Dir = 'unknown-verdict' }, @{ Run = $offline; Dir = 'unchecked-offline' })) {
+            Said $gave['setup'] 'Its build attestation was not verified: gh could not check it (error creating Sigstore verifier: no valid Sigstore verifiers could be initialized).' 'install.ps1 did not say gh could not check at its setup'
+            Said $gave['trust-root'] 'Its build attestation was not verified: gh could not check it (Error: failed to choose verifier: public good verifier is not available (initialization may have failed)).' 'install.ps1 took a trust root that never loaded for a failed attestation'
+            Said $gave['offline'] 'Its build attestation was not verified: gh could not check it (Error: failed to fetch attestations' 'install.ps1 did not say gh could not reach GitHub'
+            Said $gave['strange'] 'Its build attestation was not verified: gh could not check it (Error: an answer no gh has given).' "install.ps1 did not pass on gh's unrecognised answer"
+            Said $gave['signed-out'] 'Its build attestation was not verified: gh is installed but not signed in (gh auth login).' 'install.ps1 did not say gh is signed out'
+            Said $gave['old'] 'Its build attestation was not verified: this gh is too old to check one.' 'install.ps1 did not say gh is too old'
+            # gh's refusal stops the run: a signature or tag that does not verify, and no attestation at all.
+            foreach ($unverified in @(@{ Run = $gave['verdict']; Dir = 'gh-verdict' }, @{ Run = $gave['missing']; Dir = 'gh-missing' })) {
               $u = $unverified.Run
               if ($u.Code -eq 0) { Write-Host $u.Out; throw "install.ps1 installed a binary whose attestation gh did not verify ($($unverified.Dir))" }
               Said $u "$env:RELEASE_FILE's build attestation does not verify (" "install.ps1 did not refuse an attestation gh did not verify ($($unverified.Dir))"
@@ -2550,7 +2548,8 @@ jobs:
               if ($u.Out.Contains('Building from source')) { throw 'install.ps1 built from source in place of an unverified binary' }
               if (Test-Path (Join-Path $tmp "$($unverified.Dir)\cadence.exe")) { throw "install.ps1 installed a binary whose attestation gh did not verify ($($unverified.Dir))" }
             }
-            Said $verdict "$env:RELEASE_FILE's build attestation does not verify (X The attestation is signed by a workflow this check does not accept)" "install.ps1 did not name gh's own words"
+            Said $gave['verdict'] "$env:RELEASE_FILE's build attestation does not verify (Error: verifying with issuer `"sigstore.dev`")" "install.ps1 did not name gh's own words"
+            Said $gave['missing'] "$env:RELEASE_FILE's build attestation does not verify (Error: HTTP 404: Not Found (" "install.ps1 did not name gh's own words"
             if (-not (Get-Content -Raw (Join-Path $tmp 'gh-args.txt')).Contains("--repo grounzero/cadence --cert-identity https://github.com/grounzero/cadence/.github/workflows/release.yml@refs/tags/$v")) { throw "gh was not asked for the release workflow at this version's tag" }
 
             # gh signed out, by a configuration folder of its own and no token.
@@ -2666,18 +2665,7 @@ jobs:
             Said $run 'This rustup installs the Rust version Cadence pins as the build starts instead.' 'the stand-in toolchain install did not fail'
             $recorded = @(Get-Content (Join-Path $tmp 'no-toolchain-home\Cadence\install-state'))
             if ($recorded -like 'installed_toolchain=*') { Write-Host ($recorded -join "`n"); throw 'install.ps1 recorded a toolchain whose install failed' }
-            # Finding the release: a refusal is the rate limit only where GitHub's answer says it is.
-            $found = @{}
-            $env:CADENCE_LATEST_URL = "$url/latest/"
-            foreach ($api in @('forbidden', 'limited')) {
-              $env:CADENCE_API_URL = "$url/$api/releases"
-              $found[$api] = Install @('--yes', '--test-urls', '--dir', (Join-Path $tmp "find-$api"))
-              if ($found[$api].Code -eq 0) { Write-Host $found[$api].Out; throw 'install.ps1 found a release through an API that refuses' }
-            }
-            Remove-Item Env:CADENCE_API_URL, Env:CADENCE_LATEST_URL
-            Said $found['forbidden'] "could not read Cadence's releases from GitHub (the server answered 403)" 'install.ps1 did not say the API refused'
-            if ($found['forbidden'].Out.Contains('limits how often')) { throw "install.ps1 called a 403 GitHub's rate limit without GitHub saying so" }
-            Said $found['limited'] "GitHub refused to name Cadence's releases (the server answered 403): it limits how often one address asks." "install.ps1 did not name GitHub's rate limit where GitHub said so"
+            Remove-Item Env:CADENCE_API_URL
 
             # A download that fails for the network is tried once more: each file's first answer of 503
             # is followed by the file, and a server that never answers stops the run after two tries.
@@ -2789,12 +2777,12 @@ jobs:
           v=$RELEASE_VERSION
           bad() { echo "::error::$*"; exit 1; }
           said() { grep -qF -- "$2" "$1" || { cat "$1"; bad "$3"; }; }
-          # The published release just below this one, from GitHub's list.
+          # The published stable release just below this one, from GitHub's list.
           old=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/grounzero/cadence/releases?per_page=100" \
             | $py -c 'import json, sys; print("\n".join(r["tag_name"] for r in json.load(sys.stdin) if not r["draft"]))' \
             | tr -d '\r' | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?' \
             | awk -F '[.-]' '{rc = ($4 == "rc"); print $1, $2, $3, (rc ? 0 : 1), (rc ? $5 : 0), $0}' \
-            | sort -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | awk -v v="$v" '$6 == v {exit} {o = $6} END {print o}')
+            | sort -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | awk -v v="$v" '$6 == v {exit} $4 == 1 {o = $6} END {print o}')
           [ -n "$old" ] || bad "GitHub lists no published release older than $v"
           echo "older: $old; this: $v"
 
@@ -2879,19 +2867,11 @@ jobs:
           [ "$(marks)" = 1 ] || bad "the second run added the PATH entry again"
 
           # An older release found without --version is a downgrade, declined by default; one named by
-          # --version under --yes is taken, and the upgrade then restores this one. A stable one is found
-          # through the redirect naming it, and a candidate in the list where the redirect names none.
+          # --version under --yes is taken, and the upgrade then restores this one. It is found through
+          # the redirect naming it.
           mkdir -p "$tmp/releases/api-old/releases"
-          case "$old" in
-            *-rc.*)
-              printf '[{"tag_name": "%s"}]\n' "$old" > "$tmp/releases/api-old/releases/index.html"
-              latest="$url/latest/"
-              ;;
-            *)
-              printf '{"tag_name": "%s"}\n' "$old" > "$tmp/releases/api-old/releases/latest"
-              latest="$url/latest/$old"
-              ;;
-          esac
+          printf '{"tag_name": "%s"}\n' "$old" > "$tmp/releases/api-old/releases/latest"
+          latest="$url/latest/$old"
           for mode in "" --update; do
             rc=0
             CADENCE_LATEST_URL="$latest" CADENCE_API_URL="$url/api-old/releases" bash install.sh --yes --test-urls $mode \
@@ -3279,11 +3259,11 @@ jobs:
               try { Invoke-WebRequest -UseBasicParsing -Uri "$url/tables/sha256" -ErrorAction Stop | Out-Null; $up = $true } catch { Start-Sleep -Seconds 1 }
             }
             if (-not $up) { throw 'the tables are not served' }
-            # The published release just below this one, from GitHub's list.
+            # The published stable release just below this one, from GitHub's list.
             $listed = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/grounzero/cadence/releases?per_page=100' `
               -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
             $key = { param($t) if ($t -match '^(\d+)\.(\d+)\.(\d+)(-rc\.(\d+))?$') { '{0:D6}{1:D6}{2:D6}{3}{4:D6}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $(if ($Matches[4]) { 0 } else { 1 }), $(if ($Matches[5]) { [int]$Matches[5] } else { 0 }) } }
-            $older = @($listed | Where-Object { -not $_.draft -and $_.tag_name -match '^\d+\.\d+\.\d+(-rc\.\d+)?$' -and (& $key $_.tag_name) -lt (& $key $v) } |
+            $older = @($listed | Where-Object { -not $_.draft -and $_.tag_name -match '^\d+\.\d+\.\d+$' -and (& $key $_.tag_name) -lt (& $key $v) } |
               Sort-Object { & $key $_.tag_name })
             if (-not $older) { throw "GitHub lists no published release older than $v" }
             $old = $older[-1].tag_name
@@ -3346,16 +3326,11 @@ jobs:
             Remove-Item Env:CADENCE_TABLES_URL
 
             # An older release found without --version is a downgrade, declined by default; one named by
-            # --version under --yes is taken, and the upgrade then restores this one. A stable one is found
-            # through the redirect naming it, and a candidate in the list where the redirect names none.
+            # --version under --yes is taken, and the upgrade then restores this one. It is found through
+            # the redirect naming it.
             New-Item -ItemType Directory -Force -Path (Join-Path $releases 'api-old\releases') | Out-Null
-            if ($old -match '-rc\.') {
-              Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\index.html') -Value ('[{"tag_name": "' + $old + '"}]')
-              $env:CADENCE_LATEST_URL = "$url/latest/"
-            } else {
-              Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\latest') -Value ('{"tag_name": "' + $old + '"}')
-              $env:CADENCE_LATEST_URL = "$url/latest/$old"
-            }
+            Set-Content -Encoding ascii -Path (Join-Path $releases 'api-old\releases\latest') -Value ('{"tag_name": "' + $old + '"}')
+            $env:CADENCE_LATEST_URL = "$url/latest/$old"
             $env:CADENCE_API_URL = "$url/api-old/releases"
             foreach ($mode in @('', '--update')) {
               $list = @('--yes', '--test-urls')

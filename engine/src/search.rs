@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use cadence_core::{Colour, MAX_MOVES, MAX_PLY, Move, MoveList};
@@ -97,8 +99,30 @@ pub fn remember_killer(killers: &mut [Move; 2], m: Move) {
     killers[0] = m;
 }
 
+/// What a copy of the search is compiled with, so no setting is checked in its hot path. Only
+/// [`Play`] can be made outside datagen, which keeps every other copy out of play's reach.
+pub trait Settings: sealed::Sealed + Copy {
+    /// A quiescence stand-pat cut answers with the stand pat rather than beta.
+    const SOFT_STAND_PAT: bool;
+}
+
+/// Play's and `bench`'s copy, the default.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Play;
+
+impl sealed::Sealed for Play {}
+
+impl Settings for Play {
+    const SOFT_STAND_PAT: bool = false;
+}
+
+/// Keeps [`Settings`] to this crate's own copies.
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
 /// Per thread; nothing is global.
-pub struct Search<'a> {
+pub struct Search<'a, S: Settings = Play> {
     limits: Limits,
     stop: &'a AtomicBool,
     /// A flag rather than new limits, because the search that must hear it is already running.
@@ -110,6 +134,9 @@ pub struct Search<'a> {
     probing: Option<&'a Tables>,
     /// What the tables read at the root, which the report prints in place of the search's score.
     root_rank: Option<Rank>,
+    /// Given each completed iteration's best move, for the session to answer with if this thread
+    /// is held up past where it should answer.
+    standing: Option<&'a Mutex<Move>>,
     /// Spelling in `info` lines only.
     chess960: bool,
     /// What this run reads: [`Tunables::HCE`] unless a net scores the position, and then `given`.
@@ -134,6 +161,8 @@ pub struct Search<'a> {
     pawns: PawnCache,
     /// The check extension's ply cap is a multiple of it.
     root_depth: u32,
+    /// Made from a value of `S`, so only code that can make one has this copy.
+    settings: PhantomData<S>,
     /// Each node's ttPv flag, written once its probe has answered, so a child reads its parent's.
     tt_pv: [bool; MAX_PLY],
     /// The move made at each ply of the current path, which each call's entry takes.
@@ -353,8 +382,17 @@ impl Clock {
 }
 
 impl<'a> Search<'a> {
+    /// Play's search, and `bench`'s: the default copy.
     #[must_use]
     pub fn new(stop: &'a AtomicBool, tt: &'a Table) -> Search<'a> {
+        Search::with_settings(stop, tt, Play)
+    }
+}
+
+impl<'a, S: Settings> Search<'a, S> {
+    /// The copy compiled for `settings`, which only datagen can make other than [`Play`].
+    #[must_use]
+    pub fn with_settings(stop: &'a AtomicBool, tt: &'a Table, _settings: S) -> Self {
         Search {
             limits: Limits::default(),
             stop,
@@ -363,6 +401,7 @@ impl<'a> Search<'a> {
             tables: None,
             probing: None,
             root_rank: None,
+            standing: None,
             chess960: false,
             tunables: Tunables::HCE,
             given: Tunables::DEFAULT,
@@ -376,6 +415,7 @@ impl<'a> Search<'a> {
             slots: vec![[Slot::default(); MAX_MOVES]; MAX_PLY].into_boxed_slice(),
             pawns: PawnCache::new(),
             root_depth: 0,
+            settings: PhantomData,
             tt_pv: [false; MAX_PLY],
             #[cfg(debug_assertions)]
             moved: [Move::NULL; MAX_PLY],
@@ -464,6 +504,18 @@ impl<'a> Search<'a> {
     /// Changes what the report prints and nothing the search decides.
     pub fn set_root_rank(&mut self, rank: Option<Rank>) {
         self.root_rank = rank;
+    }
+
+    /// Written once an iteration, so the search decides nothing differently for it.
+    pub fn set_standing(&mut self, standing: &'a Mutex<Move>) {
+        self.standing = Some(standing);
+    }
+
+    /// Stands until the next iteration completes.
+    fn publish_standing(&self, best: Move) {
+        if let Some(standing) = self.standing {
+            *standing.lock().unwrap_or_else(PoisonError::into_inner) = best;
+        }
     }
 
     /// From the next run on; a move not legal at the root is never searched.

@@ -11,7 +11,7 @@ use cadence_core::{Colour, Move, generate_legal};
 
 use crate::position::Position;
 use crate::score::Score;
-use crate::search::{Learned, Limits, Search};
+use crate::search::{Learned, Limits, Play, Search, Settings, sealed};
 use crate::tt::Table;
 
 /// Every variant is a rule of chess.
@@ -129,9 +129,39 @@ pub fn probe(board: &mut Position, nodes: u64, tt: &Table) -> Option<Score> {
 ///
 /// If the search returns an illegal move.
 pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
+    play_as(board, nodes, tt, false)
+}
+
+/// As [`play`], with every search's quiescence stand-pat cut answering with the stand pat where
+/// `stand_pat_fail_soft` is set.
+///
+/// # Panics
+///
+/// If the search returns an illegal move.
+pub fn play_as(board: &mut Position, nodes: u64, tt: &Table, stand_pat_fail_soft: bool) -> Played {
+    if stand_pat_fail_soft {
+        play_with(board, nodes, tt, SoftStandPat(()))
+    } else {
+        play_with(board, nodes, tt, Play)
+    }
+}
+
+/// Datagen's copy of the search, whose quiescence stand-pat cut answers with the stand pat. Private
+/// to this module and made from a private field, so play cannot name or make it.
+#[derive(Clone, Copy, Debug)]
+struct SoftStandPat(());
+
+impl sealed::Sealed for SoftStandPat {}
+
+impl Settings for SoftStandPat {
+    const SOFT_STAND_PAT: bool = true;
+}
+
+/// The setting is chosen once per game, so neither copy of the search checks it.
+fn play_with<S: Settings>(board: &mut Position, nodes: u64, tt: &Table, settings: S) -> Played {
     tt.clear();
     let stop = AtomicBool::new(false);
-    let mut search = Search::new(&stop, tt);
+    let mut search = Search::with_settings(&stop, tt, settings);
     search.set_limits(node_limit(nodes));
     let mut learned = Learned::new();
     search.swap_learned(&mut learned);
@@ -156,7 +186,7 @@ pub fn play(board: &mut Position, nodes: u64, tt: &Table) -> Played {
     }
 }
 
-fn label(search: &Search<'_>) -> Option<Score> {
+fn label<S: Settings>(search: &Search<'_, S>) -> Option<Score> {
     (search.completed_depth() > 0).then_some(search.score())
 }
 
@@ -164,5 +194,40 @@ fn node_limit(nodes: u64) -> Limits {
     Limits {
         nodes: Some(nodes),
         ..Limits::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cadence_core::generate_noisy;
+
+    use super::*;
+    use crate::eval;
+
+    /// Only the side to move's king can move and nothing can be taken, so a horizon node is its
+    /// stand pat alone.
+    const STAND_PAT: &str = "7k/5q2/8/8/1p6/pP6/P7/7K w - - 0 1";
+
+    fn cut<S: Settings>(settings: S, beta: Score) -> Score {
+        let stop = AtomicBool::new(false);
+        let tt = Table::new(crate::tt::DEFAULT_HASH_MB).expect("a table");
+        let mut board = Position::new(Board::from_fen(STAND_PAT).expect("a fen"));
+        let mut search = Search::with_settings(&stop, &tt, settings);
+        search.node_window(&mut board, 0, 1, beta - 1, beta)
+    }
+
+    /// Asked with a window far below its stand pat, play's copy answers with beta and datagen's
+    /// with the stand pat.
+    #[test]
+    fn a_stand_pat_cut_answers_beta_in_play_s_copy_and_the_stand_pat_in_datagen_s() {
+        let board = Board::from_fen(STAND_PAT).expect("a fen");
+        assert!(
+            generate_noisy(&board).is_empty(),
+            "the side to move can take"
+        );
+        let stand_pat = eval::evaluate(&board);
+        let beta = stand_pat - 100;
+        assert_eq!(cut(Play, beta), beta, "play's copy");
+        assert_eq!(cut(SoftStandPat(()), beta), stand_pat, "datagen's copy");
     }
 }

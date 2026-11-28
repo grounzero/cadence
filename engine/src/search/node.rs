@@ -14,6 +14,7 @@ use super::depth::{extension, iir_reduction, losing_capture, move_history, reduc
 use super::pruning::{futile_node, lmp_index};
 use super::{Expected, Search, Via, bound_for, order_first, remember_killer};
 use crate::conthist::{self, OFFSETS};
+use crate::corrhist::CorrectionKeys;
 use crate::picker::{Picker, Tables};
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
@@ -35,7 +36,7 @@ fn stored_depth(board: &Board, depth: u32) -> u32 {
     }
 }
 
-impl Search<'_> {
+impl<S: crate::search::Settings> Search<'_, S> {
     #[must_use]
     pub fn node(&mut self, board: &mut Position, depth: u32, ply: usize) -> Score {
         self.node_window(board, depth, ply, -INFINITE, INFINITE)
@@ -125,10 +126,10 @@ impl Search<'_> {
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
-        let pawn_key = board.pawn_key();
+        let keys = CorrectionKeys::of(board);
         // Before any move is made: the correction row and the history rows below are the mover's.
         let us = board.side_to_move();
-        let raw_eval = self.corrected_eval(board, ply, in_check, pawn_key, us, found.eval);
+        let raw_eval = self.corrected_eval(board, ply, in_check, &keys, us, found.eval);
 
         // Above the null move: below it the rule would be nothing but its own error case.
         if let Some(bound) = self.reverse_futility(board, depth, ply, alpha, beta) {
@@ -294,7 +295,7 @@ impl Search<'_> {
         let (best, bound) = within(best, original_alpha, beta, found.bounds);
         let depth_stored = stored_depth(board, depth);
         self.store(key, ply, depth_stored, best, best_move, bound, raw_eval);
-        self.remember_correction(pawn_key, us, ply, best, best_move, bound, depth);
+        self.remember_correction(&keys, us, ply, best, best_move, bound, depth);
         best
     }
 

@@ -66,6 +66,7 @@ Each is named `cadence-<version>-` followed by the ending below.
 - **Linux**: the file ending `linux-x86-64-avx2`, or `linux-x86-64-generic`
   if it won't start (older processors), or `linux-x86-64-avx512` on a
   processor with AVX-512, or `linux-aarch64` for 64-bit ARM.
+  On Android or musl Linux on 64-bit ARM, use `linux-aarch64-musl`.
   The Linux builds need glibc 2.34 or later. Make the file executable:
 
   ```sh
@@ -159,7 +160,9 @@ AVX-512BW. Build from the repository's root, where Cargo finds
 
 The engine holds at most 128 table files open at once, closing the one read
 longest ago, so no open-file limit needs raising for any set. Keep the tables
-on a local disk: a stalled network drive can delay `stop`.
+on a local disk: if a stalled drive holds a read, `stop` is answered within a
+second and a timed search just past its deadline, with the move of its last
+completed depth.
 
 ### Unusual commands
 

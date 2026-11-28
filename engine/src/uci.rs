@@ -19,6 +19,7 @@ use crate::time;
 use crate::tt::{self, Table};
 use crate::tune::{self, Tunables};
 
+mod answer;
 mod go;
 mod options;
 pub(crate) mod say;
@@ -129,6 +130,9 @@ struct Running {
     /// The histories it was lent, and when it printed its `bestmove`.
     thread: JoinHandle<(Vec<Learned>, Instant)>,
     thinking: Option<Thinking>,
+    answer: Arc<answer::Answer>,
+    /// The hard budget a `ponderhit` brings, taken by the first one.
+    hit_hard: Option<std::time::Duration>,
 }
 
 impl Default for Session {

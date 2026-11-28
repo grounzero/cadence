@@ -90,7 +90,8 @@ refuses an input with repeated seeds or games, or an edited header.";
 
 const DATAGEN_RUN: &str = "\
 usage: cadence datagen run --out DIR --run-seed HEX|fresh [--threads N]
-                           [--chunk-games N] [--standard-share P] [--host NAME]
+                           [--chunk-games N] [--standard-share P]
+                           [--stand-pat fail-hard|fail-soft] [--host NAME]
 
 Writes packed chunks of games into DIR until a STOP file appears there; a PAUSE
 file pauses it. The games are played with the network built into the engine,
@@ -102,6 +103,9 @@ packed-datagen feature.
   --chunk-games N        games in each chunk
   --standard-share P     the percent of games from standard-chess openings,
                          0 to 100
+  --stand-pat fail-soft  a quiescence stand-pat cut answers with the stand pat
+                         rather than beta; recorded in each chunk's header, and
+                         off (fail-hard) by default
   --host NAME            the machine name recorded with the run, by default
                          the hostname";
 

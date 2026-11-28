@@ -5,12 +5,13 @@
 use cadence_core::{MAX_PLY, generate_legal, generate_noisy, has_legal_move};
 
 use super::Search;
+use crate::corrhist::CorrectionKeys;
 use crate::picker;
 use crate::position::Position;
 use crate::score::{ABORTED, DRAW, INFINITE, Score, mated_in};
 use crate::see;
 
-impl Search<'_> {
+impl<S: crate::search::Settings> Search<'_, S> {
     /// Stands pat only out of check: a side in check must answer it.
     pub(super) fn quiesce(
         &mut self,
@@ -57,16 +58,20 @@ impl Search<'_> {
             if board.halfmove_clock() >= 100 {
                 return DRAW;
             }
-            // Corrected as the main search's evaluation is, for this structure and side to move.
+            // Corrected as the main search's evaluation is, by all three keys and the side to move.
             let correction = self
                 .heuristics
                 .corrhist
-                .correction(board.pawn_key(), board.side_to_move());
+                .correction(&CorrectionKeys::of(board), board.side_to_move());
             self.stats.corrhist_applied.add_if(correction != 0);
             let stand_pat = self.static_eval(board) + correction;
             if stand_pat >= beta {
                 // A stand-pat cut on a stalemate would score it as the evaluation.
-                return if has_legal_move(board) { beta } else { DRAW };
+                return if has_legal_move(board) {
+                    if S::SOFT_STAND_PAT { stand_pat } else { beta }
+                } else {
+                    DRAW
+                };
             }
             if stand_pat > alpha {
                 alpha = stand_pat;

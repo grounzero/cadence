@@ -46,6 +46,7 @@ fn settings(dir: &Path, chunk_games: u32, threads: usize) -> Settings {
         threads,
         chunk_games,
         standard_share: 50,
+        stand_pat_fail_soft: false,
         host: "test".to_string(),
         ahead: 1_024,
         poll: Duration::from_millis(10),
@@ -156,7 +157,7 @@ fn a_refused_start_is_drawn_again_under_its_kind() {
             game::probe(board, SCREEN_NODES, tt)
         }
     };
-    let record = packed::play_with(chunk_seed(SEED, 0), 0, 100, &tt, &probe, None);
+    let record = packed::play_with(chunk_seed(SEED, 0), 0, 100, false, &tt, &probe, None);
     assert_eq!(record.kind, KIND_STANDARD);
     assert_eq!((record.white, record.black), (518, 518));
     assert_eq!(record.refused, 3);
@@ -171,7 +172,7 @@ fn a_chunk_holds_the_same_records_at_any_thread_count() {
             if index == 2 {
                 std::fs::write(dir.join("STOP"), "").expect("writes");
             }
-            packed::play(seed, index, share, tt, None)
+            packed::play(seed, index, share, false, tt, None)
         };
         let written = packed::run(&settings(&dir, 3, threads), &build(), &stop_after);
         assert_eq!(written.expect("a run").chunks, 1);

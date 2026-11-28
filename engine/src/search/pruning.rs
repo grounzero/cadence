@@ -160,7 +160,7 @@ pub fn probcut_bound(
     .then_some(raised)
 }
 
-impl Search<'_> {
+impl<S: crate::search::Settings> Search<'_, S> {
     /// `gives_check` last: it is the only expensive question, and only a move about to be skipped
     /// has to answer it.
     pub(super) fn futile(&mut self, board: &Board, futile: bool, m: Move, index: usize) -> bool {

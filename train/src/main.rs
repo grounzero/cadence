@@ -97,7 +97,7 @@ macro_rules! recipe {
 }
 
 /// `$body` with `$trainer` bound to the recipe's trainer under the layout `$inputs` names. The two
-/// layouts are two input types, so the body is written once and compiled for each.
+/// layouts a run trains are two input types, so the body is written once and compiled for each.
 macro_rules! with_recipe {
     ($inputs:expr, $hidden:expr, |$trainer:ident| $body:expr) => {
         match $inputs {
@@ -109,6 +109,7 @@ macro_rules! with_recipe {
                 let mut $trainer = recipe!($hidden, ChessBucketsMirrored::default());
                 $body
             }
+            Inputs::Bucketed => unreachable!("no name on a command line or in a run stands for it"),
         }
     };
 }
