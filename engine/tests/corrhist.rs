@@ -5,6 +5,7 @@
 //! it makes the engine stronger is the SPRT's question.
 
 use cadence_core::Colour;
+use cadence_engine::conthist::{Frame, PIECE_TO};
 use cadence_engine::corrhist::{
     CorrectionHistory, CorrectionKeys, GRAIN, MAX_CORRECTION, MAX_DELTA, MAX_WEIGHT,
 };
@@ -18,10 +19,25 @@ const KEY_B: u64 = 0x0fed_cba9_8765_4321;
 const A: CorrectionKeys = CorrectionKeys {
     pawn: KEY_A,
     non_pawn: [KEY_A.rotate_left(1), KEY_A.rotate_left(2)],
+    continuation: None,
 };
 const B: CorrectionKeys = CorrectionKeys {
     pawn: KEY_B,
     non_pawn: [KEY_B.rotate_left(1), KEY_B.rotate_left(2)],
+    continuation: None,
+};
+
+/// A knight's move then a bishop's, as one continuation entry: below `PIECE_TO` squared.
+const PAIR: u32 = 70 * PIECE_TO as u32 + 400;
+
+/// A and B, each reached by the same two moves.
+const A_AFTER: CorrectionKeys = CorrectionKeys {
+    continuation: Some(PAIR),
+    ..A
+};
+const B_AFTER: CorrectionKeys = CorrectionKeys {
+    continuation: Some(PAIR),
+    ..B
 };
 
 /// A grain of one would round a small correction away, and a correction reaching the mate scale
@@ -210,6 +226,60 @@ fn two_move_orders_to_one_position_read_the_same_keys() {
     assert_eq!(
         reach(&["g1f3", "g8f6", "b1c3", "b8c6"]),
         reach(&["b1c3", "b8c6", "g1f3", "g8f6"])
+    );
+}
+
+/// The same two moves before different positions are the same continuation, so an error learned
+/// after them in one position is read after them in another.
+#[test]
+fn an_error_learned_after_two_moves_is_read_after_them_in_another_position() {
+    let mut t = CorrectionHistory::new();
+    for _ in 0..10_000 {
+        t.update(&A_AFTER, Colour::White, 100, 64);
+    }
+    let read = t.correction(&B_AFTER, Colour::White);
+    assert!(
+        (90..=100).contains(&read),
+        "B read {read} after the two moves A learned 100 after"
+    );
+    assert_eq!(
+        t.correction(&B, Colour::White),
+        0,
+        "B reached by other moves reads nothing"
+    );
+}
+
+/// A continuation entry is 16 bits, so it saturates at 127 centipawns, inside the sum's bound.
+#[test]
+fn a_continuation_entry_saturates_at_127() {
+    let mut t = CorrectionHistory::new();
+    for _ in 0..100_000 {
+        t.update(&A_AFTER, Colour::White, MAX_DELTA, MAX_WEIGHT as u32);
+    }
+    assert_eq!(t.correction(&B_AFTER, Colour::White), 127);
+    assert_eq!(t.correction(&A_AFTER, Colour::White), MAX_CORRECTION);
+}
+
+/// The pair is the frames one and two plies up, and absent where either is.
+#[test]
+fn the_pair_is_read_from_the_two_frames_above_and_is_absent_after_a_null_move() {
+    let b = Board::from_fen(START_FEN).expect("the start");
+    let frames: [Frame; 5] = [Some(10), Some(20), None, Some(30), Some(40)];
+    let at = |ply| CorrectionKeys::on_path(&b, &frames, ply);
+    let row = PIECE_TO as u32;
+    assert_eq!(at(2).continuation, Some(10 * row + 20));
+    assert_eq!(at(5).continuation, Some(30 * row + 40));
+    assert_eq!(at(0).continuation, None, "at the root");
+    assert_eq!(at(1).continuation, None, "one ply from the root");
+    assert_eq!(at(3).continuation, None, "just after a null move");
+    assert_eq!(at(4).continuation, None, "two plies after it");
+    assert_eq!(
+        CorrectionKeys {
+            continuation: None,
+            ..at(2)
+        },
+        CorrectionKeys::of(&b),
+        "the board's own keys are unchanged"
     );
 }
 

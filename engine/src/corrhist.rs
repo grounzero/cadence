@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A static evaluation is wrong in ways that repeat, so the difference is held per pawn structure,
-//! per each side's other pieces and per side to move, and offered back to any rule comparing a
-//! static score against a bound.
+//! per each side's other pieces, per side to move and per pair of moves that reached the position,
+//! and offered back to any rule comparing a static score against a bound.
 
 use cadence_core::position::Board;
 use cadence_core::{Colour, PieceType};
 
+use crate::conthist::{self, Frame, PIECE_TO};
 use crate::score::{self, Score};
 
 /// Enough that a game's pawn keys rarely collide, small enough to sit in cache beside the history.
@@ -40,6 +41,9 @@ pub struct CorrectionKeys {
     pub pawn: u64,
     /// Indexed by colour: that side's knights, bishops, rooks, queens and king.
     pub non_pawn: [u64; 2],
+    /// The move before the last and the last, as one continuation entry. `None` after a null move
+    /// and within two plies of the root.
+    pub continuation: Option<u32>,
 }
 
 impl CorrectionKeys {
@@ -52,8 +56,25 @@ impl CorrectionKeys {
         CorrectionKeys {
             pawn: board.pawn_key(),
             non_pawn,
+            continuation: None,
         }
     }
+
+    /// The board's keys with the two moves that reached it, read from the path's frames.
+    #[must_use]
+    pub fn on_path(board: &Board, frames: &[Frame], ply: usize) -> CorrectionKeys {
+        CorrectionKeys {
+            continuation: pair(frames, ply),
+            ..CorrectionKeys::of(board)
+        }
+    }
+}
+
+/// Below `PIECE_TO` squared for any two frames, each below `PIECE_TO`.
+fn pair(frames: &[Frame], ply: usize) -> Option<u32> {
+    let before = conthist::context(frames, ply, 2)?;
+    let last = conthist::context(frames, ply, 1)?;
+    Some(u32::from(before) * PIECE_TO as u32 + u32::from(last))
 }
 
 /// Read from the piece sets rather than kept move by move. Each multiply spreads its low bits

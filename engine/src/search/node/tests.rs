@@ -229,6 +229,23 @@ fn a_node_failing_low_takes_its_parents_flag() {
 const DEPTH: u32 = 9;
 const BETA: Score = 300;
 
+/// Quiescence writes the frame of each move it makes, so a node below it reads its own path's
+/// moves and not a stale frame an earlier node left there.
+#[test]
+fn quiescence_writes_the_frame_of_each_move_it_makes() {
+    let stop = AtomicBool::new(false);
+    let tt = Table::new(1).expect("a one mebibyte table");
+    let mut search = Search::new(&stop, &tt);
+    // White's one capture, after which Black has none.
+    let root = Board::from_fen("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1").expect("a fen");
+    let capture = parse_uci(&generate_legal(&root), "e4d5").expect("a legal move");
+    let expected = conthist::frame(&root, capture);
+    let mut board = Position::new(root);
+    search.heuristics.frames[1] = Some(11 * 64);
+    let _ = search.quiesce(&mut board, 1, -INFINITE, INFINITE);
+    assert_eq!(search.heuristics.frames[1], expected);
+}
+
 /// A null move at ply 1 over the frame an earlier node left there, its static evaluation planted
 /// above beta: the child reads no move one ply up and the root's move two plies up.
 #[test]
