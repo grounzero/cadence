@@ -120,7 +120,7 @@ impl<S: crate::search::Settings> Search<'_, S> {
 
         // Written even if unread here: a rule at `p + 2` compares against it.
         let in_check = board.in_check();
-        let keys = CorrectionKeys::of(board);
+        let keys = CorrectionKeys::on_path(board, &self.heuristics.frames, ply);
         // Before any move is made: the correction row and the history rows below are the mover's.
         let us = board.side_to_move();
         let raw_eval = self.corrected_eval(board, ply, in_check, &keys, us, found.eval);

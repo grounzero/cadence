@@ -35,6 +35,14 @@ const TABLES: usize = 3;
 /// The most one table's slot holds, which an update clamps it to.
 const LIMIT: i32 = MAX_CORRECTION * GRAIN;
 
+/// The continuation table: an entry per move and the move before it, whose pieces' colours name
+/// the side to move.
+const PAIRS: usize = PIECE_TO * PIECE_TO;
+
+/// A continuation entry is 16 bits, so its limit is about half a slot's: 127 centipawns.
+const PAIR_LIMIT: i32 = i16::MAX as i32;
+const _: () = assert!(PAIR_LIMIT < LIMIT);
+
 /// What a position reads the tables by, taken once per node.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CorrectionKeys {
@@ -70,7 +78,7 @@ impl CorrectionKeys {
     }
 }
 
-/// Below `PIECE_TO` squared for any two frames, each below `PIECE_TO`.
+/// Below `PAIRS` for any two frames, each below `PIECE_TO`.
 fn pair(frames: &[Frame], ply: usize) -> Option<u32> {
     let before = conthist::context(frames, ply, 2)?;
     let last = conthist::context(frames, ply, 1)?;
@@ -96,9 +104,11 @@ fn non_pawn_key(board: &Board, colour: Colour) -> u64 {
     key ^ (key >> 29)
 }
 
-/// Per `Search`, not shared between threads, which keeps a node count a function of the code.
+/// Per `Search`, not shared between threads, which keeps a node count a function of the code. The
+/// continuation entries take 1,179,648 bytes, as the continuation history does.
 pub struct CorrectionHistory {
     slots: Box<[i32]>,
+    pairs: Box<[i16]>,
 }
 
 impl CorrectionHistory {
@@ -106,18 +116,20 @@ impl CorrectionHistory {
     pub fn new() -> CorrectionHistory {
         CorrectionHistory {
             slots: vec![0; TABLES * 2 * TABLE_SLOTS].into_boxed_slice(),
+            pairs: vec![0; PAIRS].into_boxed_slice(),
         }
     }
 
     pub fn clear(&mut self) {
         self.slots.fill(0);
+        self.pairs.fill(0);
     }
 
     /// For the gates: whether every entry reads as a new table's.
     #[cfg(feature = "counters")]
     #[must_use]
     pub fn is_clear(&self) -> bool {
-        self.slots.iter().all(|&v| v == 0)
+        self.slots.iter().all(|&v| v == 0) && self.pairs.iter().all(|&v| v == 0)
     }
 
     /// For the gates: the correction a position reads, from its own keys and side to move.
@@ -141,11 +153,15 @@ impl CorrectionHistory {
     /// The tables' sum, so a structure seen before still corrects a new set of pieces in part.
     #[must_use]
     pub fn correction(&self, keys: &CorrectionKeys, side: Colour) -> Score {
+        let pair = keys
+            .continuation
+            .map_or(0, |p| i32::from(self.pairs[p as usize]));
         read(
             Self::indices(keys, side)
                 .iter()
                 .map(|&i| self.slots[i])
-                .sum(),
+                .sum::<i32>()
+                + pair,
         )
     }
 
@@ -153,7 +169,11 @@ impl CorrectionHistory {
     /// weight ceiling.
     pub fn update(&mut self, keys: &CorrectionKeys, side: Colour, delta: Score, depth: u32) {
         for i in Self::indices(keys, side) {
-            self.slots[i] = fold(self.slots[i], delta, depth);
+            self.slots[i] = fold(self.slots[i], delta, depth, LIMIT);
+        }
+        if let Some(p) = keys.continuation {
+            let entry = &mut self.pairs[p as usize];
+            *entry = fold(i32::from(*entry), delta, depth, PAIR_LIMIT) as i16;
         }
     }
 
@@ -178,14 +198,14 @@ impl Default for CorrectionHistory {
 }
 
 /// A weighted mean of the slot and the delta, whose weight grows with depth up to the ceiling.
-fn fold(slot: i32, delta: Score, depth: u32) -> i32 {
+fn fold(slot: i32, delta: Score, depth: u32, limit: i32) -> i32 {
     let delta = delta.clamp(-MAX_DELTA, MAX_DELTA);
     let weight = i32::try_from(depth)
         .unwrap_or(MAX_WEIGHT)
         .saturating_add(1)
         .min(MAX_WEIGHT);
     let next = (slot * (WEIGHT_UNIT - weight) + delta * GRAIN * weight) / WEIGHT_UNIT;
-    next.clamp(-LIMIT, LIMIT)
+    next.clamp(-limit, limit)
 }
 
 fn read(sum: i32) -> Score {
@@ -196,8 +216,8 @@ fn read(sum: i32) -> Score {
 mod proofs {
     use super::*;
 
-    /// Any sum of three slots reads within `MAX_CORRECTION`, too little to make an evaluation
-    /// decisive.
+    /// Any sum of three slots and a continuation entry reads within `MAX_CORRECTION`, too little to
+    /// make an evaluation decisive.
     #[kani::proof]
     fn a_corrected_evaluation_is_never_decisive() {
         let slot = || {
@@ -205,7 +225,8 @@ mod proofs {
             kani::assume((-LIMIT..=LIMIT).contains(&v));
             v
         };
-        let correction = read(slot() + slot() + slot());
+        let pair = i32::from(kani::any::<i16>());
+        let correction = read(slot() + slot() + slot() + pair);
         assert!(correction.abs() <= MAX_CORRECTION);
         let eval: Score = kani::any();
         kani::assume(eval > -score::MAX_EVAL && eval < score::MAX_EVAL);
@@ -217,8 +238,26 @@ mod proofs {
     fn an_update_keeps_its_slot_in_bounds() {
         let slot: i32 = kani::any();
         kani::assume((-LIMIT..=LIMIT).contains(&slot));
-        let next = fold(slot, kani::any(), kani::any());
+        let next = fold(slot, kani::any(), kani::any(), LIMIT);
         assert!((-LIMIT..=LIMIT).contains(&next));
+    }
+
+    /// A continuation entry's update stays within 16 bits, so its narrowing is lossless.
+    #[kani::proof]
+    fn a_continuation_update_narrows_without_loss() {
+        let entry = i32::from(kani::any::<i16>());
+        let next = fold(entry, kani::any(), kani::any(), PAIR_LIMIT);
+        assert!(i16::try_from(next).is_ok());
+    }
+
+    /// Any two frames below `PIECE_TO` index an entry of the continuation table.
+    #[kani::proof]
+    fn every_pair_of_frames_indexes_an_entry() {
+        let (before, last): (u16, u16) = (kani::any(), kani::any());
+        kani::assume(usize::from(before) < PIECE_TO && usize::from(last) < PIECE_TO);
+        let frames = [Some(before), Some(last)];
+        let p = pair(&frames, 2).expect("both frames are present");
+        assert!((p as usize) < PAIRS);
     }
 
     /// Every table, key and side index a slot of the tables.
